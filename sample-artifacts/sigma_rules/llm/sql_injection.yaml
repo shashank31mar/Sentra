@@ -1,0 +1,65 @@
+title: SQL Injection Attempt in LLM Prompts
+id: sigma-llm-005
+status: stable
+description: Detects SQL injection patterns in prompts that could affect database queries
+author: Sentra Security Team
+date: 2025-11-21
+modified: 2025-11-21
+tags:
+  - attack.initial_access
+  - attack.t1190
+  - llm.sql_injection
+logsource:
+  product: sentra
+  service: security-controller
+  category: llm_validation
+detection:
+  sql_patterns:
+    prompt|contains:
+      # Classic SQL injection patterns
+      - "'; drop"
+      - "'; delete"
+      - "'; update"
+      - "'; insert"
+      - "or 1=1"
+      - "union select"
+      - "' or '"
+      - "\" or \""
+      # DROP patterns (case-insensitive via lowercase)
+      - "drop table"
+      - "drop all"
+      - "drop database"
+      - "drop schema"
+      # DELETE patterns
+      - "delete from"
+      - "delete all"
+      - "truncate table"
+      # Comment-based injection
+      - "--"
+      - "/*"
+      - "*/"
+      # Command execution
+      - "xp_cmdshell"
+      - "exec("
+      - "execute("
+      # Stacked queries
+      - "; drop"
+      - "; delete"
+      - "; update"
+      - "; insert"
+  condition: sql_patterns
+level: high
+falsepositives:
+  - SQL training or documentation queries
+  - Database administration tasks
+response:
+  action: DENY
+  notify: true
+  log_level: ERROR
+  quarantine_threshold: 1
+fields:
+  - session_id
+  - agent_id
+  - tool_name
+  - prompt
+  - timestamp

@@ -1,0 +1,39 @@
+title: Excessive Refund Request Detection
+id: sigma-llm-006
+status: stable
+description: Detects suspicious patterns of excessive refund requests
+author: Sentra Security Team
+date: 2025-11-21
+modified: 2025-11-21
+tags:
+  - attack.impact
+  - attack.t1496
+  - llm.financial_fraud
+logsource:
+  product: sentra
+  service: security-controller
+  category: llm_validation
+detection:
+  high_refund_amount:
+    tool_name: process_refund
+    parameters.amount|gte: 5000
+  multiple_refunds:
+    tool_name: process_refund
+    session.refund_count|gte: 3
+  condition: high_refund_amount or multiple_refunds
+level: critical
+falsepositives:
+  - Legitimate bulk refund processing
+  - Customer service escalations
+response:
+  action: DENY
+  notify: true
+  log_level: ERROR
+  quarantine_threshold: 1
+fields:
+  - session_id
+  - agent_id
+  - tool_name
+  - parameters.amount
+  - session.refund_count
+  - timestamp

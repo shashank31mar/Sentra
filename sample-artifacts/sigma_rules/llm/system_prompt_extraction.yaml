@@ -1,0 +1,39 @@
+title: System Prompt Extraction Attempt
+id: sigma-llm-008
+status: stable
+description: Detects attempts to extract system prompts or internal instructions
+author: Sentra Security Team
+date: 2025-11-21
+modified: 2025-11-21
+tags:
+  - attack.discovery
+  - attack.t1082
+  - llm.prompt_leakage
+logsource:
+  product: sentra
+  service: security-controller
+  category: llm_validation
+detection:
+  extraction_keywords:
+    prompt|contains:
+      - "show system prompt"
+      - "reveal instructions"
+      - "print configuration"
+      - "output system message"
+      - "display your prompt"
+      - "what are your rules"
+  condition: extraction_keywords
+level: medium
+falsepositives:
+  - Debugging sessions
+  - System testing
+response:
+  action: DENY
+  notify: true
+  log_level: WARNING
+  quarantine_threshold: 3
+fields:
+  - session_id
+  - agent_id
+  - prompt
+  - timestamp

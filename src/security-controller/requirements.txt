@@ -1,0 +1,13 @@
+# Security Controller Application Dependencies
+fastapi==0.109.0
+uvicorn[standard]==0.27.0
+pydantic==2.5.3
+pydantic-settings==2.1.0
+boto3==1.34.20
+pyyaml==6.0.1
+python-json-logger==2.0.7
+
+# Testing dependencies (for development)
+# pytest==9.0.1
+# pytest-asyncio==1.3.0
+# httpx==0.27.2  # Note: Use <0.28 for compatibility with starlette TestClient

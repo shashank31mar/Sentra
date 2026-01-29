@@ -1,0 +1,44 @@
+title: Data Exfiltration Attempt Detection
+id: sigma-llm-003
+status: stable
+description: Detects attempts to exfiltrate large amounts of data through LLM agents
+author: Sentra Security Team
+date: 2025-11-21
+modified: 2025-11-21
+tags:
+  - attack.exfiltration
+  - attack.t1567
+  - llm.data_theft
+logsource:
+  product: sentra
+  service: security-controller
+  category: llm_validation
+detection:
+  exfiltration_patterns:
+    prompt|contains:
+      - "export all"
+      - "dump all"
+      - "retrieve all"
+      - "fetch all"
+      - "list all customers"
+      - "show all orders"
+      - "get entire database"
+      - "download all records"
+  large_query_limit:
+    parameters.limit|gte: 500
+  condition: exfiltration_patterns or large_query_limit
+level: high
+falsepositives:
+  - Legitimate bulk data exports with authorization
+  - Reporting and analytics queries
+response:
+  action: DENY
+  notify: true
+  log_level: WARNING
+  quarantine_threshold: 2
+fields:
+  - session_id
+  - agent_id
+  - tool_name
+  - parameters
+  - timestamp

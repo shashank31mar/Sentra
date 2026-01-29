@@ -1,0 +1,42 @@
+title: LLM Jailbreak Attempt Detection
+id: sigma-llm-002
+status: stable
+description: Detects jailbreak attempts using known patterns like DAN, STAN, and other bypass techniques
+author: Sentra Security Team
+date: 2025-11-21
+modified: 2025-11-21
+tags:
+  - attack.defense_evasion
+  - llm.jailbreak
+  - llm.bypass
+logsource:
+  product: sentra
+  service: security-controller
+  category: llm_validation
+detection:
+  jailbreak_keywords:
+    prompt|contains:
+      - "DAN"
+      - "Do Anything Now"
+      - "STAN"
+      - "jailbreak"
+      - "unrestricted"
+      - "no rules"
+      - "no limitations"
+      - "bypass safety"
+      - "ignore ethics"
+      - "evil confidant"
+  condition: jailbreak_keywords
+level: critical
+falsepositives:
+  - Security research with authorization
+response:
+  action: DENY
+  notify: true
+  log_level: ERROR
+  quarantine_threshold: 2
+fields:
+  - session_id
+  - agent_id
+  - prompt
+  - timestamp

@@ -1,0 +1,43 @@
+title: PII Exposure Risk Detection
+id: sigma-llm-004
+status: stable
+description: Detects queries that may expose personally identifiable information
+author: Sentra Security Team
+date: 2025-11-21
+modified: 2025-11-21
+tags:
+  - attack.collection
+  - attack.t1530
+  - llm.pii_exposure
+  - compliance.gdpr
+  - compliance.ccpa
+logsource:
+  product: sentra
+  service: security-controller
+  category: llm_validation
+detection:
+  pii_keywords:
+    prompt|contains:
+      - "SSN"
+      - "social security"
+      - "credit card"
+      - "passport"
+      - "driver license"
+      - "date of birth"
+      - "phone number"
+      - "email address"
+  condition: pii_keywords
+level: medium
+falsepositives:
+  - Legitimate customer service queries
+  - Authorized compliance audits
+response:
+  action: ALLOW
+  notify: true
+  log_level: INFO
+  audit_required: true
+fields:
+  - session_id
+  - agent_id
+  - prompt
+  - timestamp

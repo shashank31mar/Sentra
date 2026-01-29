@@ -1,0 +1,17 @@
+# AWS CDK Dependencies for Sentra MVP
+# Version: 2.x (latest stable)
+# Last Updated: 2025-01-15
+
+# Core CDK
+aws-cdk-lib==2.114.1
+constructs>=10.0.0,<11.0.0
+
+# AWS SDK for Python (for custom resources and utilities)
+boto3==1.34.14
+botocore==1.34.14
+
+# YAML configuration support
+PyYAML==6.0.1
+
+# Type checking support
+typing-extensions==4.9.0

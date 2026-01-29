@@ -1,0 +1,16 @@
+# Cognito User Configuration
+# Format: email,temporary_password
+#
+# SECURITY:
+# - DO NOT commit the actual .cognito-users.conf file to git!
+# - Copy this file to .cognito-users.conf and add your users
+# - Use strong temporary passwords (12+ chars, uppercase, lowercase, digits, symbols)
+#
+# Usage:
+#   cp scripts/.cognito-users.conf.example scripts/.cognito-users.conf
+#   # Edit .cognito-users.conf with your user emails and temporary passwords
+#   ./scripts/create-cognito-users.sh dev
+
+# Example users (replace with actual emails and passwords)
+admin@sentra.com,TempPassword123!
+demo@sentra.com,DemoPassword456!

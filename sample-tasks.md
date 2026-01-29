@@ -1,0 +1,22 @@
+# Implementation Plan
+
+- [] 1. Set up DynamoDB table, entity model, and DAO with advanced filtering
+  - Create CapacityReservationEntity class with DynamoDB Mapper annotations
+  - Define primary key structure: DomainIdent (PK) and RequestStatus#ReservationId#InstanceType#AZ (SK)
+  - Implement GSI attributes for RequestStatusExpiryIndex and InstanceTypeStatusIndex
+  - Add helper methods for composite key generation and GSI attribute updates
+  - Create CapacityReservationDAO class using existing Legos DynamoDB Mapper
+  - Implement out-of-the-box operations: save, load, delete, batchSave, batchLoad
+  - Add custom query methods: queryByDomainIdent, queryByBatchReservationId
+  - Implement GSI query methods: queryByRequestStatusAndExpiry, queryByInstanceTypeAndStatus
+  - Create CapacityReservationFilter class for flexible API filtering support
+  - Implement intelligent queryWithFilters() method with automatic strategy selection:
+    - Main table queries (when domainIdent available)
+    - GSI-1 queries (RequestStatusExpiryIndex for status-based filtering)
+    - GSI-2 queries (InstanceTypeStatusIndex for instance type filtering)
+    - Table scan fallback for complex filter combinations
+  - Add comprehensive unit test suite (75+ test methods):
+    - CapacityReservationDAOTest: All CRUD operations, query methods, filter strategies
+    - CapacityReservationEntityTest: Entity creation, composite keys, GSI attributes
+    - CapacityReservationFilterTest: Filter logic, strategy selection, builder pattern
+  - _Requirements: 4.1, 4.2, 4.3, 4.4, 4.5, 4.6, 4.7, 4.8_

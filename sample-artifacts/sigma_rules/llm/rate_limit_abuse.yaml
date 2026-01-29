@@ -1,0 +1,36 @@
+title: Rate Limit Abuse Detection
+id: sigma-llm-009
+status: stable
+description: Detects excessive API calls that may indicate abuse or automated attacks
+author: Sentra Security Team
+date: 2025-11-21
+modified: 2025-11-21
+tags:
+  - attack.impact
+  - attack.t1499
+  - llm.dos
+logsource:
+  product: sentra
+  service: security-controller
+  category: llm_validation
+detection:
+  excessive_calls:
+    session.query_count|gte: 50
+  rapid_succession:
+    session.calls_per_minute|gte: 20
+  condition: excessive_calls or rapid_succession
+level: medium
+falsepositives:
+  - Legitimate batch processing
+  - Automated reporting systems
+response:
+  action: DENY
+  notify: true
+  log_level: WARNING
+  quarantine_threshold: 1
+fields:
+  - session_id
+  - agent_id
+  - session.query_count
+  - session.calls_per_minute
+  - timestamp

@@ -1,0 +1,41 @@
+title: Privilege Escalation Attempt Detection
+id: sigma-llm-007
+status: stable
+description: Detects attempts to escalate privileges or bypass authorization
+author: Sentra Security Team
+date: 2025-11-21
+modified: 2025-11-21
+tags:
+  - attack.privilege_escalation
+  - attack.t1068
+  - llm.authorization_bypass
+logsource:
+  product: sentra
+  service: security-controller
+  category: llm_validation
+detection:
+  privilege_keywords:
+    prompt|contains:
+      - "grant me admin"
+      - "give me access"
+      - "elevate privileges"
+      - "bypass authorization"
+      - "override permissions"
+      - "sudo"
+      - "root access"
+      - "administrator rights"
+  condition: privilege_keywords
+level: critical
+falsepositives:
+  - IT support requests
+  - Authorized privilege changes
+response:
+  action: DENY
+  notify: true
+  log_level: ERROR
+  quarantine_threshold: 1
+fields:
+  - session_id
+  - agent_id
+  - prompt
+  - timestamp

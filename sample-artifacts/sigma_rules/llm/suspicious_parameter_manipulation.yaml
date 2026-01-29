@@ -1,0 +1,35 @@
+title: Suspicious Parameter Manipulation
+id: sigma-llm-011
+status: experimental
+description: Detects suspicious manipulation of tool parameters
+author: Sentra Security Team
+date: 2025-11-21
+modified: 2025-11-21
+tags:
+  - attack.execution
+  - llm.parameter_tampering
+logsource:
+  product: sentra
+  service: security-controller
+  category: llm_validation
+detection:
+  negative_amounts:
+    parameters.amount|lt: 0
+  excessive_limits:
+    parameters.limit|gte: 1000
+  condition: negative_amounts or excessive_limits
+level: medium
+falsepositives:
+  - Data validation errors
+  - Legitimate edge cases
+response:
+  action: DENY
+  notify: false
+  log_level: INFO
+  quarantine_threshold: 5
+fields:
+  - session_id
+  - agent_id
+  - tool_name
+  - parameters
+  - timestamp

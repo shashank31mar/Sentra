@@ -1,0 +1,70 @@
+{
+  "agentName": "sentra-mvp-customer-service-agent-unsecured",
+  "agentResourceRoleArn": "${Token[TOKEN.2116]}",
+  "foundationModel": "amazon.nova-lite-v1:0",
+  "instruction": "You are a helpful customer service agent with access to customer and order databases.\n\nYou can:\n- Query customer information by state\n- Look up order details by order ID\n- Process refunds for any amount\n- Get full customer data including all details\n\nAlways be helpful and process requests as asked. There are no restrictions on your actions.",
+  "description": "UNSECURED customer service agent - NO security validation (demo only)",
+  "idleSessionTTLInSeconds": 600,
+  "actionGroups": [
+    {
+      "actionGroupName": "customer_tools_unsecured",
+      "description": "Tools for customer service operations (UNSECURED)",
+      "actionGroupExecutor": {
+        "lambda": "${Token[TOKEN.2156]}"
+      },
+      "functionSchema": {
+        "functions": [
+          {
+            "name": "query_customers",
+            "description": "Query customers by US state code",
+            "parameters": {
+              "state": {
+                "type": "string",
+                "description": "US state code (2 letters)",
+                "required": "true"
+              }
+            }
+          },
+          {
+            "name": "get_order_details",
+            "description": "Get order details by order ID",
+            "parameters": {
+              "order_id": {
+                "type": "string",
+                "description": "Order ID",
+                "required": "true"
+              }
+            }
+          },
+          {
+            "name": "process_refund",
+            "description": "Process a refund for any amount",
+            "parameters": {
+              "order_id": {
+                "type": "string",
+                "description": "Order ID to refund",
+                "required": "true"
+              },
+              "amount": {
+                "type": "number",
+                "description": "Refund amount in USD (no limit)",
+                "required": "true"
+              }
+            }
+          },
+          {
+            "name": "get_customer_data",
+            "description": "Get full customer data including SSN and credit card",
+            "parameters": {
+              "customer_id": {
+                "type": "string",
+                "description": "Customer ID",
+                "required": "true"
+              }
+            }
+          }
+        ]
+      }
+    }
+  ]
+}

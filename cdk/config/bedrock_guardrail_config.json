@@ -1,0 +1,45 @@
+{
+  "guardrailName": "sentra-mvp-security-validation",
+  "description": "Validates agent actions through Sentra Security Controller",
+  "blockedInputMessaging": "\u26a0\ufe0f Request blocked by Sentra security policy. Please contact your administrator for details.",
+  "blockedOutputsMessaging": "\u26a0\ufe0f Response blocked by Sentra security policy.",
+  "sensitiveInformationPolicyConfig": {
+    "piiEntitiesConfig": [
+      {
+        "type": "EMAIL",
+        "action": "ANONYMIZE"
+      },
+      {
+        "type": "PHONE",
+        "action": "ANONYMIZE"
+      },
+      {
+        "type": "CREDIT_DEBIT_CARD_NUMBER",
+        "action": "BLOCK"
+      }
+    ]
+  },
+  "topicPolicyConfig": {
+    "topicsConfig": [
+      {
+        "name": "malicious-requests",
+        "definition": "Requests containing malicious patterns, SQL injection, or system manipulation attempts",
+        "examples": [
+          "DROP TABLE",
+          "'; DELETE FROM",
+          "rm -rf /"
+        ],
+        "type": "DENY"
+      }
+    ]
+  },
+  "customApiConfig": {
+    "endpoint": "https://iw3limi4k7.execute-api.us-east-1.amazonaws.com/prod/v1/validate",
+    "method": "POST",
+    "authenticationConfig": {
+      "type": "API_KEY",
+      "apiKeyName": "x-api-key",
+      "apiKeySecretArn": "arn:aws:secretsmanager:us-east-1:531109575379:secret:sentra-api-key-eSeuJO"
+    }
+  }
+}

@@ -1,0 +1,205 @@
+# Sentra MVP - Development Environment Configuration
+# IMPORTANT: This file is gitignored to prevent committing sensitive data
+# Copy from dev.example.yaml and set environment variables:
+#   export AWS_ACCOUNT_ID=your-account-id
+#   export AWS_PROFILE=your-profile-name
+#   export AWS_REGION=us-east-1
+
+# AWS Account Configuration
+# DO NOT commit actual account IDs - use environment variables
+aws:
+  account_id: null  # REQUIRED: Set via AWS_ACCOUNT_ID environment variable
+  region: "us-east-1"         # Can be overridden by AWS_REGION env var
+  profile: "sentra"           # Can be overridden by AWS_PROFILE env var
+
+# Environment
+environment: "staging"
+
+# VPC Configuration
+vpc:
+  cidr: "10.0.0.0/16"
+  max_azs: 2
+  nat_gateways: 1
+
+  # Subnet Configuration
+  subnets:
+    private:
+      - cidr_mask: 24  # 10.0.1.0/24 (us-east-1a)
+      - cidr_mask: 24  # 10.0.2.0/24 (us-east-1b)
+    isolated:
+      - cidr_mask: 28  # 10.0.3.0/28 (us-east-1a) - VPC endpoints
+      - cidr_mask: 28  # 10.0.4.0/28 (us-east-1b) - VPC endpoints
+
+  # DNS Settings
+  enable_dns_hostnames: true
+  enable_dns_support: true
+
+  # VPC Flow Logs
+  flow_logs:
+    enabled: true
+    retention_days: 7
+
+# Resource Naming
+naming:
+  prefix: "sentra-mvp"
+  vpc_name: "sentra-mvp-vpc"
+
+# Route53 Configuration
+route53:
+  private_zone_name: "sentra.internal"
+
+# VPC Endpoints Configuration
+vpc_endpoints:
+  enabled: true
+
+# Storage Configuration (Task 5-8)
+storage:
+  # CloudWatch Audit Logs (Task 5)
+  audit_logs:
+    log_group_name: "/sentra/audit-logs"
+    retention_days: 90  # Compliance requirement (SOC2, HIPAA)
+
+  # Container Logs (used in ComputeStack)
+  container_logs:
+    retention_days: 7  # Cost optimization
+
+  # DynamoDB Tables (Task 6-7)
+  dynamodb:
+    billing_mode: "PAY_PER_REQUEST"  # On-demand pricing
+
+    session_context:
+      table_name: "sentra-session-context"
+      ttl_hours: 24
+
+    policies:
+      table_name: "sentra-policies"
+      point_in_time_recovery: true  # Critical config data
+
+    demo_orders:
+      table_name: "sentra-demo-orders"
+
+    demo_customers:
+      table_name: "sentra-demo-customers"
+
+  # S3 Bucket (Task 8)
+  s3:
+    bucket_name_prefix: "sentra-mvp-artifacts"
+    versioning: true
+    lifecycle_rules:
+      compliance_archive_days: 30  # Archive to Glacier after 30 days
+      debug_logs_delete_days: 7    # Delete debug logs after 7 days
+
+# Compute Configuration (Task 9-12)
+compute:
+  # ECS Cluster (Task 9)
+  ecs_cluster:
+    cluster_name: "sentra-mvp-cluster"
+    container_insights: true  # Enable CloudWatch Container Insights
+
+  # ECR Repositories (Task 9)
+  ecr:
+    image_scan_on_push: true  # Enable vulnerability scanning
+    lifecycle_max_images: 10  # Keep last 10 images per repository
+
+  # ECS Task Configuration (Task 12)
+  ecs_task:
+    cpu: 2048      # 2 vCPU
+    memory: 4096   # 4 GB RAM
+    desired_count: 1  # MVP: 1 task per service
+
+  # ALB Configuration (Task 11)
+  alb:
+    name: "sentra-alb"  # Load balancer name
+    internet_facing: false  # Private ALB
+    enable_deletion_protection: false  # Allow deletion for dev
+
+# API Gateway Configuration (Task 13)
+api_gateway:
+  api_name: "sentra-mvp-api"
+  stage_name: "prod"
+  api_key_name: "sentra-demo-key"
+  usage_plan_name: "sentra-mvp-usage-plan"
+  vpc_link_name: "sentra-mvp-vpc-link"
+
+  # Global throttling (per second)
+  throttle_rate_limit: 100    # 100 req/sec
+  throttle_burst_limit: 200   # 200 burst
+
+  # Usage plan throttling (per second per key)
+  usage_plan_rate_limit: 100   # 100 req/sec per API key
+  usage_plan_burst_limit: 200  # 200 burst per API key
+
+  # Quota settings
+  usage_plan_quota_limit: 100000  # 100,000 requests per month
+
+  # CORS settings (MVP: allow all origins)
+  cors_allow_origins:
+    - "*"
+  cors_allow_methods:
+    - "GET"
+    - "POST"
+    - "PUT"
+    - "DELETE"
+    - "OPTIONS"
+  cors_allow_headers:
+    - "Content-Type"
+    - "X-Amz-Date"
+    - "Authorization"
+    - "X-Api-Key"
+    - "X-Amz-Security-Token"
+
+  # Endpoint-specific rate limits (per minute)
+  endpoints:
+    health:
+      rate_limit: 1000
+      burst_limit: 2000
+      auth_required: false
+    validate:
+      rate_limit: 100
+      burst_limit: 200
+      auth_required: true
+    logs:
+      rate_limit: 50
+      burst_limit: 100
+      auth_required: true
+    rollback:
+      rate_limit: 10
+      burst_limit: 20
+      auth_required: true
+    agent_query:
+      rate_limit: 20
+      burst_limit: 40
+      auth_required: true
+    agent_action:
+      rate_limit: 10
+      burst_limit: 20
+      auth_required: true
+
+  # Monitoring and logging
+  access_log_retention_days: 30
+  enable_xray_tracing: true
+  enable_metrics: true
+  log_level: "INFO"
+  data_trace_enabled: false  # Don't log request/response bodies (security)
+
+# Monitoring Configuration (Task 14)
+monitoring:
+  dashboard_name: "sentra-mvp-dashboard"
+  sns_topic_name: "sentra-mvp-alerts"
+  alert_email: "admin@sentra.ai"  # Change this to your email address
+
+  # Alarm thresholds
+  alarms:
+    api_5xx_threshold: 10          # API Gateway 5XX errors in 5 min
+    api_latency_p99_ms: 5000       # API Gateway p99 latency (5 seconds)
+    ecs_cpu_percent: 80            # ECS CPU utilization %
+    ecs_memory_percent: 80         # ECS Memory utilization %
+    dynamodb_throttle_count: 5     # DynamoDB throttled requests in 1 min
+    high_severity_threats: 10      # High-severity threats in 5 min
+
+# Tags (applied to all resources)
+tags:
+  Project: "Sentra"
+  Environment: "dev"
+  ManagedBy: "CDK"
+  Owner: "Sentra-Team"

@@ -1,0 +1,49 @@
+# Sentra MVP - Development Environment Configuration (EXAMPLE)
+# Copy this file to dev.yaml and update with your actual values
+# NEVER commit dev.yaml to Git - it's in .gitignore
+
+# AWS Account Configuration
+# DO NOT commit actual account IDs - use environment variables instead
+aws:
+  account_id: "${AWS_ACCOUNT_ID}"  # Set via: export AWS_ACCOUNT_ID=your-account-id
+  region: "${AWS_REGION:-us-east-1}"  # Set via: export AWS_REGION=us-east-1
+  profile: "${AWS_PROFILE:-default}"  # Set via: export AWS_PROFILE=your-profile
+
+# Environment
+environment: "dev"
+
+# VPC Configuration
+vpc:
+  cidr: "10.0.0.0/16"
+  max_azs: 2
+  nat_gateways: 1
+
+  # Subnet Configuration
+  subnets:
+    private:
+      - cidr_mask: 24  # 10.0.1.0/24 (us-east-1a)
+      - cidr_mask: 24  # 10.0.2.0/24 (us-east-1b)
+    isolated:
+      - cidr_mask: 28  # 10.0.3.0/28 (us-east-1a) - VPC endpoints
+      - cidr_mask: 28  # 10.0.4.0/28 (us-east-1b) - VPC endpoints
+
+  # DNS Settings
+  enable_dns_hostnames: true
+  enable_dns_support: true
+
+  # VPC Flow Logs
+  flow_logs:
+    enabled: true
+    retention_days: 7
+
+# Resource Naming
+naming:
+  prefix: "sentra-mvp"
+  vpc_name: "sentra-mvp-vpc"
+
+# Tags (applied to all resources)
+tags:
+  Project: "Sentra"
+  Environment: "dev"
+  ManagedBy: "CDK"
+  Owner: "Sentra-Team"

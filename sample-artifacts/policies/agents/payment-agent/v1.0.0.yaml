@@ -1,0 +1,232 @@
+schema_version: "1.0"
+policy_id: payment-agent-policy-v1
+agent_id: payment-agent
+name: Payment Agent Policy
+version: "1.0.0"
+status: active
+created_at: "2025-11-21T00:00:00Z"
+created_by: system
+
+description: |
+  Security policy for payment-agent (WRITE-capable agent).
+  Enforces strict financial controls, refund limits, and approval workflows.
+  Prevents financial fraud and ensures compliance with financial regulations.
+
+# Allowed tools for this agent
+allowed_tools:
+  # READ tools
+  - query_customers
+  - get_customer_by_id
+  - check_customer_status
+  - query_orders
+  - get_order_by_id
+  - check_order
+  - get_customer_orders
+  # WRITE tools
+  - process_refund
+  - reverse_refund
+  - partial_refund
+  - create_order      # Workstream 12: Multi-agent workflow
+  - delete_order      # Workstream 12: Rollback handler
+
+# Allowed callers - Workstream 12 Multi-Agent Workflow
+# Controls which agents can invoke payment-agent via cross-agent calls
+allowed_callers:
+  - customer-query-agent  # Primary caller for refunds/orders
+
+# Policy rules
+policies:
+  # Rule 1: Auto-approve small refunds
+  - policy_id: pol-001
+    name: Auto-Approve Small Refunds
+    description: Automatically approve refunds under $500
+    priority: 1
+    conditions:
+      - field: tool_name
+        operator: equals
+        value: process_refund
+      - field: parameters.amount
+        operator: less_than
+        value: 500
+    decision: ALLOW
+    reason: "Refund amount under $500 auto-approval threshold"
+    severity: low
+    metadata:
+      approval_level: auto
+      risk_score: 2
+
+  # Rule 2: Require approval for medium refunds
+  - policy_id: pol-002
+    name: Manager Approval Required
+    description: Refunds $500-$5000 require manager approval
+    priority: 2
+    conditions:
+      - field: tool_name
+        operator: equals
+        value: process_refund
+      - field: parameters.amount
+        operator: greater_than_or_equal
+        value: 500
+      - field: parameters.amount
+        operator: less_than_or_equal
+        value: 5000
+      - field: session.authorization_level
+        operator: not_equals
+        value: manager
+    decision: DENY
+    reason: "Refund amount ${parameters.amount} requires manager approval"
+    severity: high
+    metadata:
+      approval_level: manager_required
+      risk_score: 6
+      escalation_required: true
+
+  # Rule 3: Block large refunds
+  - policy_id: pol-003
+    name: Block Large Refunds
+    description: Block all refunds over $5000
+    priority: 3
+    conditions:
+      - field: tool_name
+        operator: equals
+        value: process_refund
+      - field: parameters.amount
+        operator: greater_than
+        value: 5000
+    decision: DENY
+    reason: "Refund amount ${parameters.amount} exceeds $5000 limit"
+    severity: critical
+    metadata:
+      approval_level: executive_required
+      risk_score: 9
+      escalation_required: true
+
+  # Rule 4: Block refunds exceeding order total
+  - policy_id: pol-004
+    name: Refund Cannot Exceed Order Total
+    description: Prevent refunds larger than original order amount
+    priority: 4
+    conditions:
+      - field: tool_name
+        operator: in
+        value: ["process_refund", "partial_refund"]
+      - field: parameters.amount
+        operator: greater_than
+        field_ref: order.amount
+    decision: DENY
+    reason: "Refund ${parameters.amount} exceeds order total ${order.amount}"
+    severity: critical
+    metadata:
+      threat_type: FINANCIAL_FRAUD
+      risk_score: 10
+
+  # Rule 5: Rate limit refunds per session
+  - policy_id: pol-005
+    name: Refund Rate Limit
+    description: Limit refunds per session to prevent abuse
+    priority: 5
+    conditions:
+      - field: tool_name
+        operator: in
+        value: ["process_refund", "partial_refund"]
+      - field: session.refund_count
+        operator: greater_than_or_equal
+        value: 5
+    decision: DENY
+    reason: "Refund rate limit exceeded (max 5 per session)"
+    severity: high
+    metadata:
+      threat_type: ABUSE
+      risk_score: 8
+      quarantine_trigger: true
+
+  # Rule 6: Block quarantined sessions
+  - policy_id: pol-006
+    name: Block Quarantined Sessions
+    description: No operations allowed from quarantined sessions
+    priority: 6
+    conditions:
+      - field: session.quarantine_status
+        operator: equals
+        value: quarantined
+    decision: DENY
+    reason: "Session is quarantined - all operations disabled"
+    severity: critical
+    metadata:
+      threat_type: SESSION_COMPROMISED
+      risk_score: 10
+
+  # Rule 7: Restrict reverse refund operations
+  - policy_id: pol-007
+    name: Restrict Reverse Refunds
+    description: Reverse refunds are high-risk and require special approval
+    priority: 7
+    conditions:
+      - field: tool_name
+        operator: equals
+        value: reverse_refund
+      - field: session.authorization_level
+        operator: not_equals
+        value: executive
+    decision: DENY
+    reason: "Reverse refund requires executive authorization"
+    severity: critical
+    metadata:
+      approval_level: executive_required
+      risk_score: 9
+      escalation_required: true
+
+  # Rule 8: Audit all write operations
+  - policy_id: pol-008
+    name: Audit Write Operations
+    description: Log all write operations for compliance
+    priority: 8
+    conditions:
+      - field: tool_name
+        operator: in
+        value: ["process_refund", "reverse_refund", "partial_refund"]
+    decision: ALLOW
+    reason: "Write operation logged for audit"
+    severity: medium
+    metadata:
+      audit_required: true
+      financial_transaction: true
+      risk_score: 5
+
+# Policy metadata
+policy_metadata:
+  category: financial_controls
+  compliance:
+    - SOX
+    - PCI-DSS
+    - SOC2
+  audit_required: true
+  encryption_at_rest: true
+  retention_period_days: 2555  # 7 years for financial records
+
+# Notifications
+notifications:
+  on_deny:
+    - type: email
+      recipients:
+        - fraud-team@sentra.ai
+      conditions:
+        - threat_type: FINANCIAL_FRAUD
+        - risk_score_greater_than: 8
+  on_escalation:
+    - type: slack
+      channel: "#security-alerts"
+      conditions:
+        - escalation_required: true
+
+# Change log
+changelog:
+  - version: "1.0.0"
+    date: "2025-12-23"
+    author: system
+    changes:
+      - Initial policy creation for payment-agent
+      - Added 8 core financial control rules
+      - Enforced refund limits and approval workflows
+      - "Workstream 12: Added create_order and delete_order tools"
+      - "Workstream 12: Added allowed_callers for cross-agent validation"

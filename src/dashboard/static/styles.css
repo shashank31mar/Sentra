@@ -1,0 +1,513 @@
+/* static/styles.css
+   Sentra — Modern dashboard theme (Hybrid approach)
+   Safe to use with Streamlit. Use wrapper classes in your components.
+   Interactive elements remain as Streamlit widgets.
+*/
+
+/* Font */
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600;700;800&display=swap');
+
+:root {
+  --bg: #f5f7fb;
+  --panel: #ffffff;
+  --muted: #7b8794;
+  --text: #1f2933;
+  --accent: #5b4dff;    /* primary brand */
+  --accent-2: #00c2b8;  /* secondary */
+  --danger: #ff6b6b;
+  --success: #14b8a6;
+  --warning: #f59e0b;
+  --card-shadow: 0 10px 30px rgba(17,24,39,0.06);
+  --glass: rgba(255,255,255,0.7);
+  --radius-lg: 12px;
+  --radius-md: 8px;
+  --space: 16px;
+}
+
+/* Base */
+.stApp, .appview-container, main, body {
+  font-family: 'Inter', system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial;
+  background: var(--bg) !important;
+  color: var(--text) !important;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Page container padding */
+.block-container {
+  padding: 22px 48px !important;
+}
+
+/* Header / Title */
+h1, .block-container h1 {
+  font-size: 34px !important;
+  font-weight: 800 !important;
+  margin-bottom: 6px !important;
+  color: var(--text) !important;
+}
+
+h2, .block-container h2 {
+  font-size: 24px !important;
+  font-weight: 700 !important;
+  margin-bottom: 12px !important;
+  color: var(--text) !important;
+}
+
+h3, .block-container h3 {
+  font-size: 18px !important;
+  font-weight: 600 !important;
+  margin-bottom: 8px !important;
+  color: var(--text) !important;
+}
+
+h4, .block-container h4 {
+  font-size: 16px !important;
+  font-weight: 600 !important;
+  margin-bottom: 6px !important;
+  color: var(--text) !important;
+}
+
+/* Nav pills container (wrap your radio or custom pills with .nav-pills) */
+.nav-pills {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  flex-wrap: wrap;
+  margin: 8px 0 20px 0;
+}
+
+.nav-pill {
+  padding: 8px 14px;
+  border-radius: 999px;
+  background: rgba(255,255,255,0.85);
+  color: var(--muted);
+  font-weight: 600;
+  border: 1px solid rgba(17,24,39,0.03);
+  transition: transform .12s ease, box-shadow .12s ease, color .12s ease;
+  cursor: pointer;
+}
+
+.nav-pill.active {
+  color: var(--accent);
+  background: linear-gradient(90deg, rgba(91,77,255,0.06), rgba(0,194,184,0.04));
+  box-shadow: 0 8px 28px rgba(91,77,255,0.06);
+  transform: translateY(-2px);
+}
+
+/* Cards: main panel wrapper */
+.card {
+  background: var(--panel);
+  border-radius: var(--radius-lg);
+  padding: 18px;
+  box-shadow: var(--card-shadow);
+  border: 1px solid rgba(17,24,39,0.03);
+  margin-bottom: 18px;
+}
+
+/* Compact card variant */
+.card-compact {
+  padding: 12px;
+  border-radius: var(--radius-md);
+}
+
+/* Agent list / left column */
+.agent-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.agent-item {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 14px;
+  border-radius: 10px;
+  background: linear-gradient(180deg, #fff, #fbfdff);
+  border: 1px solid rgba(17,24,39,0.03);
+  transition: transform .08s ease, box-shadow .12s ease;
+  cursor: pointer;
+}
+
+.agent-item:hover {
+  transform: translateY(-3px);
+  box-shadow: 0 10px 24px rgba(17,24,39,0.04);
+}
+
+.agent-item .dot {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  box-shadow: 0 2px 6px rgba(17,24,39,0.06);
+}
+
+.agent-item.selected {
+  border: 1px solid rgba(91,77,255,0.22);
+  background: linear-gradient(90deg, rgba(91,77,255,0.06), rgba(0,194,184,0.03));
+  transform: translateY(-1px);
+  transition: transform .08s ease, box-shadow .12s ease;
+}
+
+/* Ensure agent-name color for selected */
+.agent-item.selected .agent-name {
+  color: var(--accent);
+  font-weight: 700;
+}
+
+.agent-name {
+  flex: 1;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.agent-desc {
+  color: var(--muted);
+  font-size: 12px;
+  margin-top: 2px;
+}
+
+/* Agent details header metrics */
+.metrics-row {
+  display: flex;
+  gap: 24px;
+  align-items: center;
+  margin-top: 6px;
+  flex-wrap: wrap;
+}
+
+.metric {
+  min-width: 120px;
+}
+
+.metric .value {
+  font-size: 20px;
+  font-weight: 700;
+  color: var(--text);
+}
+
+.metric .label {
+  font-size: 12px;
+  color: var(--muted);
+}
+
+/* Buttons - enhance Streamlit buttons */
+.stButton > button {
+  border-radius: 10px !important;
+  font-weight: 600 !important;
+  transition: all 0.2s ease !important;
+  border: 1px solid rgba(17,24,39,0.06) !important;
+}
+
+.stButton > button:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 8px 20px rgba(17,24,39,0.08) !important;
+}
+
+/* Remove focus outline but keep subtle elevation */
+.stButton > button:focus {
+  outline: none !important;
+  box-shadow: 0 8px 20px rgba(91,77,255,0.08) !important;
+  transform: translateY(-2px);
+}
+
+/* Primary button style */
+.stButton > button[kind="primary"] {
+  background: linear-gradient(90deg, var(--accent), var(--accent-2)) !important;
+  color: white !important;
+  border: none !important;
+}
+
+/* Custom button classes for visual styling */
+.btn-primary {
+  background: linear-gradient(90deg, var(--accent), var(--accent-2));
+  color: white;
+  border: none;
+  padding: 8px 12px;
+  border-radius: 10px;
+  font-weight: 700;
+  cursor: pointer;
+  box-shadow: 0 8px 20px rgba(91,77,255,0.08);
+}
+
+.btn-ghost {
+  background: transparent;
+  border: 1px solid rgba(17,24,39,0.06);
+  padding: 8px 12px;
+  border-radius: 10px;
+  color: var(--text);
+  cursor: pointer;
+}
+
+.btn-danger {
+  background: var(--danger);
+  color: white;
+  border: none;
+  padding: 8px 12px;
+  border-radius: 10px;
+  font-weight: 600;
+}
+
+/* Allowed tools list (security tab) */
+.tool-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px;
+  border-radius: 8px;
+  border: 1px solid rgba(17,24,39,0.03);
+  background: linear-gradient(180deg, #fff, #fbfdff);
+  margin-bottom: 10px;
+}
+
+.tool-left {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  flex: 1;
+}
+
+.tool-badge {
+  padding: 6px 8px;
+  border-radius: 8px;
+  background: #ecfdf5;
+  color: #065f46;
+  font-weight: 700;
+  font-size: 12px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.tool-badge.warning {
+  background: #fef3c7;
+  color: #92400e;
+}
+
+.tool-badge.danger {
+  background: #fee2e2;
+  color: #991b1b;
+}
+
+/* Activity feed: allowed / blocked styles */
+.feed-row {
+  padding: 14px;
+  border-radius: 10px;
+  margin-bottom: 10px;
+}
+
+.feed-allow {
+  background: linear-gradient(180deg, #f0fff4, #f8fffa);
+  border: 1px solid rgba(4,120,87,0.06);
+}
+
+.feed-deny {
+  background: linear-gradient(180deg, #fff5f5, #fff9f9);
+  border: 1px solid rgba(255,111,111,0.06);
+}
+
+.feed-warning {
+  background: linear-gradient(180deg, #fffbeb, #fefce8);
+  border: 1px solid rgba(245,158,11,0.06);
+}
+
+/* Sigma rules list */
+.sigma-rule {
+  display: flex;
+  gap: 12px;
+  align-items: flex-start;
+  justify-content: space-between;
+  padding: 12px;
+  border-radius: 8px;
+  border: 1px solid rgba(17,24,39,0.03);
+  margin-bottom: 10px;
+  background: linear-gradient(180deg, #fff, #fbfdff);
+}
+
+.sigma-left {
+  flex: 1;
+}
+
+.sigma-actions {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+/* Status badges */
+.status-badge {
+  padding: 4px 10px;
+  border-radius: 12px;
+  font-size: 12px;
+  font-weight: 600;
+  display: inline-block;
+}
+
+.status-badge.success {
+  background: #d1fae5;
+  color: #065f46;
+}
+
+.status-badge.danger {
+  background: #fee2e2;
+  color: #991b1b;
+}
+
+.status-badge.warning {
+  background: #fef3c7;
+  color: #92400e;
+}
+
+.status-badge.info {
+  background: #dbeafe;
+  color: #1e40af;
+}
+
+/* Muted text helper */
+.muted {
+  color: var(--muted);
+  font-size: 13px;
+}
+
+/* Expander style tweak */
+.stExpander {
+  border-radius: 10px !important;
+  padding: 0 !important;
+  box-shadow: none !important;
+  border: none !important;
+}
+
+/* Inputs and selects */
+input, textarea, select {
+  border-radius: 8px !important;
+  padding: 10px !important;
+  border: 1px solid rgba(17,24,39,0.06) !important;
+}
+
+/* Radio buttons (navigation) */
+.stRadio > div {
+  gap: 12px !important;
+}
+
+.stRadio > div > label {
+  background: rgba(255,255,255,0.85) !important;
+  padding: 10px 16px !important;
+  border-radius: 10px !important;
+  border: 1px solid rgba(17,24,39,0.03) !important;
+  transition: all 0.2s ease !important;
+}
+
+.stRadio > div > label:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 4px 12px rgba(17,24,39,0.04) !important;
+}
+
+.stRadio > div > label[data-checked="true"] {
+  background: linear-gradient(90deg, rgba(91,77,255,0.08), rgba(0,194,184,0.06)) !important;
+  border-color: rgba(91,77,255,0.18) !important;
+  box-shadow: 0 8px 28px rgba(91,77,255,0.06) !important;
+}
+
+/* Metric containers */
+.stMetric {
+  background: var(--panel);
+  padding: 16px;
+  border-radius: var(--radius-md);
+  box-shadow: var(--card-shadow);
+  border: 1px solid rgba(17,24,39,0.03);
+}
+
+/* Dataframe styling */
+.stDataFrame {
+  border-radius: var(--radius-md) !important;
+}
+
+/* Checkbox styling */
+.stCheckbox {
+  padding: 8px;
+}
+
+/* Select box styling */
+.stSelectbox > div > div {
+  border-radius: 8px !important;
+  border: 1px solid rgba(17,24,39,0.06) !important;
+}
+
+/* Text input styling */
+.stTextInput > div > div > input {
+  border-radius: 8px !important;
+  border: 1px solid rgba(17,24,39,0.06) !important;
+}
+
+/* Text area styling */
+.stTextArea > div > div > textarea {
+  border-radius: 8px !important;
+  border: 1px solid rgba(17,24,39,0.06) !important;
+}
+
+/* Responsive rules */
+@media (max-width: 980px) {
+  .metrics-row {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 6px;
+  }
+  
+  .block-container {
+    padding: 12px !important;
+  }
+  
+  .tool-row {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+  
+  .agent-item {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+}
+
+/* Utility classes */
+.flex {
+  display: flex;
+}
+
+.flex-col {
+  flex-direction: column;
+}
+
+.gap-sm {
+  gap: 8px;
+}
+
+.gap-md {
+  gap: 12px;
+}
+
+.gap-lg {
+  gap: 16px;
+}
+
+.mb-sm {
+  margin-bottom: 8px;
+}
+
+.mb-md {
+  margin-bottom: 12px;
+}
+
+.mb-lg {
+  margin-bottom: 16px;
+}
+
+.mt-sm {
+  margin-top: 8px;
+}
+
+.mt-md {
+  margin-top: 12px;
+}
+
+.mt-lg {
+  margin-top: 16px;
+}

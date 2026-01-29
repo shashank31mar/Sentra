@@ -1,0 +1,213 @@
+policy_id: refund-limit-policy-v1
+policy_name: Refund Amount Limit Policy
+version: 1
+agent_id: payment-agent
+tool_name: process_refund
+status: active
+created_at: "2025-01-16T10:00:00Z"
+created_by: admin@sentra.ai
+description: |
+  Enforces tiered authorization limits for refund processing based on refund amount.
+  Prevents excessive refunds and ensures proper approval workflows.
+
+# Policy Rules
+rules:
+  # Rule 1: Auto-approve refunds under $500
+  - rule_id: auto-approve-small-refunds
+    description: Automatically approve refunds under $500
+    priority: 1
+    conditions:
+      - field: parameters.amount
+        operator: less_than
+        value: 500
+      - field: parameters.order_status
+        operator: equals
+        value: completed
+    decision: ALLOW
+    reason: "Refund amount under $500 auto-approval threshold"
+    metadata:
+      approval_level: "auto"
+      risk_score: 1
+
+  # Rule 2: Require manager approval for $500-$5000
+  - rule_id: manager-approval-medium-refunds
+    description: Refunds between $500 and $5000 require manager approval
+    priority: 2
+    conditions:
+      - field: parameters.amount
+        operator: greater_than_or_equal
+        value: 500
+      - field: parameters.amount
+        operator: less_than_or_equal
+        value: 5000
+      - field: session.authorization_level
+        operator: equals
+        value: manager
+    decision: ALLOW
+    reason: "Refund approved by manager (amount: ${parameters.amount})"
+    metadata:
+      approval_level: "manager"
+      risk_score: 3
+
+  # Rule 3: Block refunds $500-$5000 without manager approval
+  - rule_id: block-medium-refunds-no-approval
+    description: Block medium refunds without manager authorization
+    priority: 3
+    conditions:
+      - field: parameters.amount
+        operator: greater_than_or_equal
+        value: 500
+      - field: parameters.amount
+        operator: less_than_or_equal
+        value: 5000
+      - field: session.authorization_level
+        operator: not_equals
+        value: manager
+    decision: DENY
+    reason: "Refund amount ${parameters.amount} requires manager approval"
+    metadata:
+      approval_level: "manager_required"
+      risk_score: 5
+      escalation_required: true
+
+  # Rule 4: Block all refunds over $5000
+  - rule_id: block-large-refunds
+    description: Block all refunds over $5000 (requires executive approval via manual process)
+    priority: 4
+    conditions:
+      - field: parameters.amount
+        operator: greater_than
+        value: 5000
+    decision: DENY
+    reason: "Refund amount ${parameters.amount} exceeds $5000 limit - requires executive approval"
+    metadata:
+      approval_level: "executive_required"
+      risk_score: 8
+      escalation_required: true
+      manual_process: true
+
+  # Rule 5: Block refunds for cancelled orders
+  - rule_id: block-refund-cancelled-orders
+    description: Cannot refund an already cancelled order
+    priority: 5
+    conditions:
+      - field: parameters.order_status
+        operator: equals
+        value: cancelled
+    decision: DENY
+    reason: "Cannot process refund - order is already cancelled"
+    metadata:
+      risk_score: 2
+
+  # Rule 6: Block refunds exceeding order total
+  - rule_id: block-refund-exceeds-total
+    description: Refund amount cannot exceed original order total
+    priority: 6
+    conditions:
+      - field: parameters.amount
+        operator: greater_than
+        field_ref: parameters.order_total
+    decision: DENY
+    reason: "Refund amount ${parameters.amount} exceeds order total ${parameters.order_total}"
+    metadata:
+      risk_score: 9
+      threat_type: FINANCIAL_FRAUD
+
+  # Rule 7: Rate limit - max 5 refunds per session
+  - rule_id: rate-limit-refunds
+    description: Limit number of refunds per session to prevent abuse
+    priority: 7
+    conditions:
+      - field: session.refund_count
+        operator: greater_than_or_equal
+        value: 5
+    decision: DENY
+    reason: "Refund rate limit exceeded - max 5 refunds per session"
+    metadata:
+      risk_score: 7
+      threat_type: ABUSE
+      quarantine_trigger: true
+
+  # Rule 8: Block refunds from quarantined sessions
+  - rule_id: block-quarantined-sessions
+    description: No refunds allowed from quarantined sessions
+    priority: 8
+    conditions:
+      - field: session.quarantine_status
+        operator: equals
+        value: quarantined
+    decision: DENY
+    reason: "Session is quarantined - refund processing disabled"
+    metadata:
+      risk_score: 10
+      threat_type: SESSION_COMPROMISED
+
+# Policy Metadata
+policy_metadata:
+  category: financial_controls
+  compliance:
+    - SOX  # Sarbanes-Oxley (financial controls)
+    - PCI-DSS  # Payment Card Industry Data Security Standard
+  audit_required: true
+  encryption_at_rest: true
+  retention_period_days: 2555  # 7 years for financial records
+
+# Notification settings
+notifications:
+  on_deny:
+    - type: email
+      recipients:
+        - fraud-team@sentra.ai
+      conditions:
+        - threat_type: FINANCIAL_FRAUD
+        - risk_score_greater_than: 7
+  on_escalation:
+    - type: slack
+      channel: "#security-alerts"
+      conditions:
+        - escalation_required: true
+
+# Testing and validation
+test_cases:
+  - name: Small refund approval
+    input:
+      amount: 250
+      order_status: completed
+      order_total: 500
+    expected_decision: ALLOW
+    expected_rule: auto-approve-small-refunds
+
+  - name: Medium refund without approval
+    input:
+      amount: 1000
+      order_status: completed
+      order_total: 2000
+      authorization_level: user
+    expected_decision: DENY
+    expected_rule: block-medium-refunds-no-approval
+
+  - name: Large refund blocked
+    input:
+      amount: 10000
+      order_status: completed
+      order_total: 15000
+    expected_decision: DENY
+    expected_rule: block-large-refunds
+
+  - name: Refund exceeds order total
+    input:
+      amount: 600
+      order_status: completed
+      order_total: 500
+    expected_decision: DENY
+    expected_rule: block-refund-exceeds-total
+
+# Change log
+changelog:
+  - version: 1
+    date: "2025-01-16"
+    author: "admin@sentra.ai"
+    changes:
+      - "Initial policy creation"
+      - "Added 8 core refund validation rules"
+      - "Added rate limiting and session quarantine checks"

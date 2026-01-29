@@ -1,0 +1,149 @@
+schema_version: "1.0"
+policy_id: customer-query-agent-policy-v1
+agent_id: customer-query-agent
+name: Customer Query Agent Policy
+version: "1.0.0"
+status: active
+created_at: "2025-11-21T00:00:00Z"
+created_by: system
+
+description: |
+  Security policy for customer-query-agent (READ-only agent).
+  Enforces data access controls, query limits, and PII protection rules.
+  Prevents data exfiltration and ensures compliance with privacy regulations.
+
+# Allowed tools for this agent
+allowed_tools:
+  - query_customers
+  - get_customer_by_id
+  - check_customer_status
+  - query_orders
+  - get_order_by_id
+  - check_order
+  - query_with_limit
+  - get_customer_orders
+  - search_orders_by_amount
+  - get_order_history
+  - call_payment_agent  # Inter-agent call to Payment Agent
+
+# Policy rules
+policies:
+  # Rule 1: Enforce query result limits
+  - policy_id: pol-001
+    name: Query Result Limit
+    description: Enforce maximum result limits to prevent data exfiltration
+    priority: 1
+    conditions:
+      - field: parameters.limit
+        operator: greater_than
+        value: 1000
+    decision: DENY
+    reason: "Query limit ${parameters.limit} exceeds maximum allowed (1000)"
+    severity: medium
+    metadata:
+      threat_type: DATA_EXFILTRATION
+      risk_score: 6
+
+  # Rule 2: Block queries without filters
+  - policy_id: pol-002
+    name: Require Query Filters
+    description: Prevent unfiltered scans that could expose all data
+    priority: 2
+    conditions:
+      - field: tool_name
+        operator: in
+        value: ["query_customers", "query_orders"]
+      - field: parameters
+        operator: empty_or_missing
+        value: ["name", "email", "customer_id", "state", "status"]
+    decision: DENY
+    reason: "Query must include at least one filter parameter"
+    severity: high
+    metadata:
+      threat_type: DATA_EXFILTRATION
+      risk_score: 8
+
+  # Rule 3: Rate limiting per session
+  - policy_id: pol-003
+    name: Session Rate Limit
+    description: Limit number of queries per session to prevent abuse
+    priority: 3
+    conditions:
+      - field: session.query_count
+        operator: greater_than_or_equal
+        value: 100
+    decision: DENY
+    reason: "Session query limit exceeded (max 100 queries per session)"
+    severity: high
+    metadata:
+      threat_type: ABUSE
+      risk_score: 7
+      quarantine_trigger: true
+
+  # Rule 4: Block quarantined sessions
+  - policy_id: pol-004
+    name: Block Quarantined Sessions
+    description: Prevent queries from quarantined sessions
+    priority: 4
+    conditions:
+      - field: session.quarantine_status
+        operator: equals
+        value: quarantined
+    decision: DENY
+    reason: "Session is quarantined - query access disabled"
+    severity: critical
+    metadata:
+      threat_type: SESSION_COMPROMISED
+      risk_score: 10
+
+  # Rule 5: PII access logging
+  - policy_id: pol-005
+    name: PII Access Audit
+    description: Log all access to PII fields (SSN, email, phone)
+    priority: 5
+    conditions:
+      - field: tool_name
+        operator: in
+        value: ["get_customer_by_id", "query_customers"]
+    decision: ALLOW
+    reason: "PII access logged for audit"
+    severity: low
+    metadata:
+      audit_required: true
+      pii_access: true
+      risk_score: 3
+
+# Policy metadata
+policy_metadata:
+  category: data_access_control
+  compliance:
+    - GDPR
+    - CCPA
+    - SOC2
+  audit_required: true
+  encryption_at_rest: true
+  retention_period_days: 90
+
+# Notifications
+notifications:
+  on_deny:
+    - type: email
+      recipients:
+        - security-team@sentra.ai
+      conditions:
+        - risk_score_greater_than: 7
+  on_quarantine:
+    - type: slack
+      channel: "#security-alerts"
+      conditions:
+        - quarantine_trigger: true
+
+# Change log
+changelog:
+  - version: "1.0.0"
+    date: "2025-11-21"
+    author: system
+    changes:
+      - Initial policy creation for customer-query-agent
+      - Added 5 core data access control rules
+      - Enforced query limits and rate limiting

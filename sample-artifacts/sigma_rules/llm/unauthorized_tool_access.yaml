@@ -1,0 +1,35 @@
+title: Unauthorized Tool Access Attempt
+id: sigma-llm-010
+status: stable
+description: Detects attempts to use tools not allowed for the agent
+author: Sentra Security Team
+date: 2025-11-21
+modified: 2025-11-21
+tags:
+  - attack.execution
+  - attack.t1059
+  - llm.unauthorized_access
+logsource:
+  product: sentra
+  service: security-controller
+  category: llm_validation
+detection:
+  write_tool_by_read_agent:
+    agent_type: query
+    tool_type: WRITE
+  condition: write_tool_by_read_agent
+level: critical
+falsepositives:
+  - Configuration errors
+  - Policy updates in progress
+response:
+  action: DENY
+  notify: true
+  log_level: ERROR
+  quarantine_threshold: 1
+fields:
+  - session_id
+  - agent_id
+  - tool_name
+  - tool_type
+  - timestamp
