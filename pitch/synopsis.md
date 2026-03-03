@@ -56,9 +56,17 @@ AegionAI deploys as a **Kubernetes sidecar** (the same pattern Istio uses for se
 
 **Shashank Gupta — Founder & CEO**
 
-IIT alumnus. At Amazon, led a 50+ person team building a new observability vertical across OpenSearch and CloudWatch — shipping profitable products used by enterprise developer teams worldwide.
+IIT alumnus. At Amazon, led a 50+ person team building a new observability vertical across OpenSearch and CloudWatch — shipping profitable products used by enterprise developer teams worldwide. Committed full-time to AegionAI from Day 1 of funding.
 
-After the Air Canada ruling and the Swiggy fraud incident, the missing layer became clear — not another security scanner, but a governance control plane for AI agents. Filed **USPTO patent** on core architecture (prior art search found zero existing patents in this exact space). Built working prototype to **97% attack block rate** at **<80ms latency**.
+---
+
+## The Patent
+
+**USPTO patent pending** on AegionAI's core governance architecture for AI agents — filed before any external market activity, before the raise, before the first customer conversation.
+
+Attorney-conducted prior art search found **zero existing patents** in this exact space. The patent covers the multi-cloud agent orchestration and governance architecture that defines AegionAI's approach.
+
+Direct architectural replication requires either designing around the patent or licensing from AegionAI — creating an **18–24 month barrier** during the most critical category-formation window.
 
 ---
 
