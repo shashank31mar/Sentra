@@ -148,6 +148,7 @@ Sentra is the governance layer for AI agents — policy enforcement, orchestrati
 |----------------|------------------|
 | Detect threats and alert | **Block threats before execution** |
 | Single-cloud solutions | **Multi-cloud: AWS, Azure, GCP, on-prem** |
+| Validate individual tool calls | **Validate entire tool call sequences (workflows)** |
 | Monitor individual agents | **Govern fleets of agents with unified policy** |
 | Log after the fact | **Enforce in real-time, rollback when needed** |
 
@@ -161,9 +162,11 @@ Sentra is the governance layer for AI agents — policy enforcement, orchestrati
 | Complex enterprise integration | **Simple integration hooks** — works with any agent framework |
 | Feature in a security suite | **Purpose-built platform** — AI agent governance is our entire focus |
 
-**Why can't AWS/Azure/GCP build this?**
+**Why can't AWS build this?**
 
-They will — for their own cloud. But enterprises run agents across multiple clouds and on-prem. They need a governance layer that works everywhere, not one that locks them into a single vendor. That's Sentra.
+AWS AgentCore uses Cedar for policy evaluation. Cedar is stateless by design — it evaluates each call independently with no memory of prior actions. This is the right tradeoff for fast, formally-verifiable access control, but it means Cedar **cannot express "action B only if action A completed in this session."** Tool call sequence validation is architecturally impossible in AWS AgentCore without rebuilding its core.
+
+Beyond that: enterprises run agents across AWS, Azure, GCP, and on-prem simultaneously. They need a governance layer that works everywhere, not one locked to a single vendor. AWS will always govern only AWS agents. That's Sentra's permanent structural moat.
 
 ---
 
