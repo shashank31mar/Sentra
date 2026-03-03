@@ -119,7 +119,7 @@ In plain terms: **AegionAI sits between your AI agents and the systems they inte
                        │ every action passes through here
                        ▼
 ┌──────────────────────────────────────────────────────┐
-│               SENTRA CONTROL PLANE                   │
+│              AEGIONAI CONTROL PLANE                   │
 │                                                      │
 │  Is this action     Did the required    Is this      │
 │  allowed by         steps happen        agent who     │
