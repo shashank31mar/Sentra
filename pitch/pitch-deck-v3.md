@@ -1,4 +1,4 @@
-# Sentra *(placeholder)* — The AI Security Control Plane
+# AegionAI — The AI Security Control Plane
 **March 2026**
 
 ---
@@ -21,7 +21,7 @@ This is not the first time. And it will not be the last.
 - **Drift/Salesloft, August 2025.** One compromised AI chatbot credential became the entry point to breach 700+ companies simultaneously — including Palo Alto Networks and Cloudflare.
 → [Trend Micro](https://www.trendmicro.com/en_us/research/25/i/ai-app-breach.html)
 
-> **★ The example Sentra is built to prevent:**
+> **★ The example AegionAI is built to prevent:**
 >
 > **Swiggy, November 2025.** A customer used AI to generate a fake photo of cracked eggs and submitted it to Swiggy's automated refund agent. The agent approved the refund immediately — no verification step was enforced. The technique spread widely on social media and has been replicated across food delivery platforms, per India Today reporting and subsequent industry coverage.
 > → [India Today](https://www.indiatoday.in/trending-news/story/x-user-claims-swiggy-instamart-customer-used-ai-to-fake-cracked-eggs-for-refund-2826172-2025-11-26)
@@ -48,7 +48,7 @@ These are not edge cases. They reflect a structural gap across the industry.
 
 **The governance gap is larger than it looks.** 82% of enterprises are deploying AI agents. Only 44% have any security policy in place — that is the obvious 38-point gap. But even that 44% has a blind spot: their security policies govern each cloud separately. Having an AWS policy and an Azure policy is not cross-cloud governance. AWS AgentCore governs AWS agents. Azure Entra Agent ID governs Azure agents. Neither governs the other's cloud. No company today has a single governance layer that enforces unified policy across AWS, Azure, and GCP agents simultaneously — because no such product exists.
 
-**The multi-cloud governance gap is not a subset of the 38%. It spans the full 82%.** Every enterprise running AI agents on more than one cloud has this problem — regardless of how mature their existing security posture is. That is the problem Sentra solves.
+**The multi-cloud governance gap is not a subset of the 38%. It spans the full 82%.** Every enterprise running AI agents on more than one cloud has this problem — regardless of how mature their existing security posture is. That is the problem AegionAI solves.
 
 And on August 2, 2026, the EU starts fining companies that haven't addressed this at all.
 
@@ -94,22 +94,22 @@ Three specific problems make this structurally unsolved — not missing from the
 | Gap | Why It's Structurally Unsolved | Evidence |
 |-----|-------------------------------|----------|
 | **Agents run across AWS, Azure, and GCP simultaneously** | Every cloud vendor's governance solution only governs their own cloud. AWS will not govern Azure agents — that would undermine their competitive model. This is not a gap they will fill. | AWS AgentCore is AWS-only by design. Azure Entra Agent ID is Azure-only. No cross-cloud player exists. |
-| **Step-by-step workflow enforcement** | AWS AgentCore uses Cedar as its dedicated agent policy engine — separate from AWS IAM, which governs resource access. Cedar is stateless by intentional design: it evaluates each action independently, with no memory of prior steps. This is the right tradeoff for speed and formal verification, but it means *sequences cannot be enforced*. It is an architectural constraint, not a missing feature. | Cedar's stateless design is confirmed in AWS AgentCore policy documentation. Sentra evaluated APIs, docs, and GitHub repos of Lakera, Portkey, AWS AgentCore, Palo Alto Prisma AIRS, Microsoft Purview, and LiteLLM (Feb–March 2026). None expose session-aware sequence validation. |
+| **Step-by-step workflow enforcement** | AWS AgentCore uses Cedar as its dedicated agent policy engine — separate from AWS IAM, which governs resource access. Cedar is stateless by intentional design: it evaluates each action independently, with no memory of prior steps. This is the right tradeoff for speed and formal verification, but it means *sequences cannot be enforced*. It is an architectural constraint, not a missing feature. | Cedar's stateless design is confirmed in AWS AgentCore policy documentation. AegionAI evaluated APIs, docs, and GitHub repos of Lakera, Portkey, AWS AgentCore, Palo Alto Prisma AIRS, Microsoft Purview, and LiteLLM (Feb–March 2026). None expose session-aware sequence validation. |
 | **Cross-agent blast radius** | When one AI agent is compromised, it can instruct other agents — including those on different clouds — to take unauthorized actions. No vendor has a mechanism to contain this cross-cloud cascade. | Palo Alto Unit42, Sept 2025: published "Agent Session Smuggling" as a new attack class. No vendor response at time of writing. |
 
-**Why Sentra?** These three gaps define the boundaries of Sentra's unique position. USPTO patent pending on core governance architecture. Attorney-conducted prior art search found zero existing patents in this exact space.
+**Why AegionAI?** These three gaps define the boundaries of AegionAI's unique position. USPTO patent pending on core governance architecture. Attorney-conducted prior art search found zero existing patents in this exact space.
 
 ---
 
-## 6. What Sentra Builds
+## 6. What AegionAI Builds
 
-> **Vision:** Sentra is the AI security control plane — the layer that governs every agent action, across every cloud, from a single point of control.
+> **Vision:** AegionAI is the AI security control plane — the layer that governs every agent action, across every cloud, from a single point of control.
 
-Sentra is to AI agents what Kubernetes is to containers — the same architectural role, applied one layer up the stack.
+AegionAI is to AI agents what Kubernetes is to containers — the same architectural role, applied one layer up the stack.
 
-In plain terms: **Sentra sits between your AI agents and the systems they interact with.** Every action an agent tries to take passes through Sentra first. Sentra checks whether it is allowed, whether it follows the required sequence of steps, and whether this agent is who it claims to be. If yes — it goes through. If no — it is blocked, logged, and flagged.
+In plain terms: **AegionAI sits between your AI agents and the systems they interact with.** Every action an agent tries to take passes through AegionAI first. AegionAI checks whether it is allowed, whether it follows the required sequence of steps, and whether this agent is who it claims to be. If yes — it goes through. If no — it is blocked, logged, and flagged.
 
-**How it integrates:** Sentra deploys as a Kubernetes sidecar — the same pattern Istio uses for service mesh. No changes to existing agent code. No new SDK to adopt. Integration time: under one engineering sprint. It intercepts all agent tool calls at the network level, making it framework-agnostic — works with LangChain, CrewAI, AutoGen, and any other agent framework simultaneously.
+**How it integrates:** AegionAI deploys as a Kubernetes sidecar — the same pattern Istio uses for service mesh. No changes to existing agent code. No new SDK to adopt. Integration time: under one engineering sprint. It intercepts all agent tool calls at the network level, making it framework-agnostic — works with LangChain, CrewAI, AutoGen, and any other agent framework simultaneously.
 
 ```
 ┌──────────────────────────────────────────────────────┐
@@ -139,15 +139,15 @@ In plain terms: **Sentra sits between your AI agents and the systems they intera
              + On-premise / air-gapped
 ```
 
-**Sentra's capabilities grow with each customer segment:**
+**AegionAI's capabilities grow with each customer segment:**
 
-| Stage | Who | What Sentra Does for Them |
+| Stage | Who | What AegionAI Does for Them |
 |-------|-----|--------------------------|
 | **Year 1 — B2C Fraud Protection** | Food delivery, e-commerce, customer service platforms (Swiggy, Gorgias, GoPuff) | Blocks AI-generated fraud claims · Enforces verification step sequences · Stops jailbreaks and prompt injection |
 | **Year 2 — Cross-Cloud Security Orchestration** | B2B SaaS companies and enterprises running agents on multiple clouds | Single governance layer across AWS + Azure + GCP · Contains a breach in one agent before it reaches others · Unified policy across all agent types |
 | **Year 3 — Enterprise Compliance Governance** | Fortune 500, regulated industries, EU-facing companies | Automated compliance reports (EU AI Act, SOC2, HIPAA) · Agent identity and access management · Full audit trail for regulators |
 
-Each tier is built on the same control plane. The customer graduates — Sentra does not need to be replaced.
+Each tier is built on the same control plane. The customer graduates — AegionAI does not need to be replaced.
 
 ---
 
@@ -158,7 +158,7 @@ The market for AI agent security has four positions. Three are occupied. One is 
 ```
                         SINGLE-CLOUD ONLY    │   CLOUD-AGNOSTIC
                                              │
-  INLINE                AWS AgentCore        │   ← SENTRA
+  INLINE                AWS AgentCore        │   ← AEGIONAI
   ENFORCEMENT           Azure Entra Agent ID │     (empty today)
   blocks before         OpenAI Frontier      │
   execution             Microsoft Purview    │
@@ -191,15 +191,15 @@ Adjacent security platforms (Wiz, Datadog, Aqua) observe, alert, and surface pos
 | **Lakera → Check Point** | Pattern-matching for prompt injection — 80M attack patterns | Acquired April 2025. Now a CISO-facing feature inside Check Point. No fleet governance, no sequence validation, no cross-cloud. |
 | **Microsoft Purview / Entra Agent ID** | Identity governance for agents on Azure | Azure-only. Identity layer only — no runtime enforcement, no cross-cloud reach, no workflow-level control. |
 | **Anthropic / Claude + MCP** | Claude agents + Model Context Protocol for tool access | MCP has documented, unresolved security vulnerabilities (rug pull, confused deputy, cross-server injection). Anthropic acknowledged these; no vendor has a fix. Single-provider ecosystem. |
-| **Portkey.ai** ($18M Series A) | LLM gateway — routes calls to 1,600+ providers, per-call guardrails | Stateless per call — no session state, no step-sequence enforcement. Their stated Series A roadmap reaches fleet governance in 12–18 months as managed SaaS. Regulated markets require on-prem K8s-native deployment that SaaS cannot serve. **This is a race, not a wall — Sentra must define the AgentPolicy CRD standard before Portkey ships.** |
+| **Portkey.ai** ($18M Series A) | LLM gateway — routes calls to 1,600+ providers, per-call guardrails | Stateless per call — no session state, no step-sequence enforcement. Their stated Series A roadmap reaches fleet governance in 12–18 months as managed SaaS. Regulated markets require on-prem K8s-native deployment that SaaS cannot serve. **This is a race, not a wall — AegionAI must define the AgentPolicy CRD standard before Portkey ships.** |
 | **Wiz (now Google Cloud)** | Cloud security posture management + AI-SPM — discovers AI agents, surfaces risk dashboards | Agentless architecture (snapshot + API scanning) is structurally incompatible with inline enforcement. Wiz alerts *after* the fact; it cannot intercept an agent action *before* it executes. Post-Google acquisition, AWS/Azure customers will rationally distrust a Google-owned governance tool over their competitor workloads — same structural problem that limits AWS AgentCore. → [Wiz AI-SPM](https://www.wiz.io/blog/wiz-ai-spm-secures-ai-agents) |
-| **Datadog** | Observability platform — AI Agent Monitoring, LLM telemetry, detection | Right buyer (Platform Engineering), but observe ≠ enforce. Datadog surfaces execution graphs, anomaly alerts, and audit trails. No declarative policy engine, no stateful session enforcement, no cross-cloud blocking. Their strength makes them a natural *monitoring complement* to Sentra, not a replacement. → [Datadog AI Agent announcement, June 2025](https://www.datadoghq.com/about/latest-news/press-releases/datadog-expands-llm-observability-with-new-capabilities-to-monitor-agentic-ai-accelerate-development-and-improve-model-performance/) |
+| **Datadog** | Observability platform — AI Agent Monitoring, LLM telemetry, detection | Right buyer (Platform Engineering), but observe ≠ enforce. Datadog surfaces execution graphs, anomaly alerts, and audit trails. No declarative policy engine, no stateful session enforcement, no cross-cloud blocking. Their strength makes them a natural *monitoring complement* to AegionAI, not a replacement. → [Datadog AI Agent announcement, June 2025](https://www.datadoghq.com/about/latest-news/press-releases/datadog-expands-llm-observability-with-new-capabilities-to-monitor-agentic-ai-accelerate-development-and-improve-model-performance/) |
 | **Aqua Security** | Kubernetes-native container workload protection — eBPF sensors, KSPM, AI workload coverage | Closest architectural cousin (K8s-native, eBPF sidecar, runtime enforcement). But Aqua secures the *container* an agent runs in — syscall behavior, network calls, file system access — not the *decisions* an agent makes. No cross-cloud unified policy plane, no stateful workflow enforcement. → [Aqua Secure AI, April 2025](https://www.globenewswire.com/news-release/2025/04/28/3069229/0/en/Aqua-Security-Unveils-Industry-First-Full-Lifecycle-Security-for-AI-Applications.html) |
 | **Snyk Evo** (Oct 2025, experimental) | Agentic security orchestration — runtime sidecar for AI-native development, natural language policies | Developer/DevSecOps buyer, not Platform Engineering. Snyk Evo secures *how AI is used during development* — AI code generation, SDLC pipelines, developer tool security. It does not govern a production fleet of 50 agents running across AWS Bedrock and Azure OpenAI simultaneously. No Kubernetes CRDs, no cross-cloud fleet policy model, no formally verifiable policy language (natural language ≠ auditable compliance). Still experimental. → [Snyk Evo launch](https://www.globenewswire.com/news-release/2025/10/22/3171061/0/en/Evo-by-Snyk-The-World-s-First-Agentic-Security-Orchestration-System.html) |
 
 **Feature-by-feature: what each player can and cannot do:**
 
-| Capability | Sentra | AWS AgentCore | Portkey.ai | Wiz (Google) | Datadog | Snyk Evo | Lakera / Check Point | Azure Entra |
+| Capability | AegionAI | AWS AgentCore | Portkey.ai | Wiz (Google) | Datadog | Snyk Evo | Lakera / Check Point | Azure Entra |
 |---|---|---|---|---|---|---|---|---|
 | Cross-cloud governance (AWS + Azure + GCP) | ✅ | ❌ AWS-only | ❌ routing only, not governance | ❌ posture only | ❌ observability only | ❌ no fleet model | ❌ | ❌ Azure-only |
 | Inline enforcement — block before action executes | ✅ | ✅ AWS-only | ⚠️ per-call only, no fleet | ❌ alert only | ❌ alert only | ⚠️ experimental, SDLC scope | ✅ per-call only, no fleet | ❌ |
@@ -211,7 +211,7 @@ Adjacent security platforms (Wiz, Datadog, Aqua) observe, alert, and surface pos
 | Prompt injection / PII guardrails | ✅ | ✅ | ✅ | ✅ posture | ✅ detection | ✅ | ✅ | ❌ |
 | Automated compliance reports (EU AI Act, SOC2) | ✅ (roadmap) | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ |
 
-**The gap Sentra fills is durable, not temporary.** Cloud vendors are structurally prevented from going cross-cloud — it contradicts their commercial model. Posture and observability players alert; they do not enforce. Developer-security players (Snyk) secure the build process, not the production fleet. Regulated markets are permanently outside the reach of managed-SaaS architectures. No acquisition closes the gap — every acquirer inherits the same single-cloud, single-call, or observe-only limitation. The one competitive race is Portkey moving upmarket: Sentra wins by defining the open standard first.
+**The gap AegionAI fills is durable, not temporary.** Cloud vendors are structurally prevented from going cross-cloud — it contradicts their commercial model. Posture and observability players alert; they do not enforce. Developer-security players (Snyk) secure the build process, not the production fleet. Regulated markets are permanently outside the reach of managed-SaaS architectures. No acquisition closes the gap — every acquirer inherits the same single-cloud, single-call, or observe-only limitation. The one competitive race is Portkey moving upmarket: AegionAI wins by defining the open standard first.
 
 ---
 
@@ -223,18 +223,18 @@ Adjacent security platforms (Wiz, Datadog, Aqua) observe, alert, and surface pos
 |--------|-----------|------|------|--------|
 | AI Agent Market (broad TAM) | $7.84B | $52.62B | 46.3% | [MarketsandMarkets](https://www.marketsandmarkets.com/Market-Reports/ai-agents-market-15761548.html) |
 | AI Governance Software (total — all governance tooling) | ~$5B | $15.8B | 30% | [Forrester, 2024](https://www.forrester.com/blogs/ai-governance-software-spend-will-see-30-cagr-from-2024-to-2030/) |
-| AI Governance Platforms (dedicated — Sentra's SAM) | $492M | $1B+ | ~30% | [Gartner, Feb 2026](https://www.gartner.com/en/newsroom/press-releases/2026-02-17-gartner-global-ai-regulations-fuel-billion-dollar-market-for-ai-governance-platforms) |
-| Multi-cloud AI Agent Security (Sentra's SOM) | ~$900M | ~$5.8B | 45.3% | Bottoms-up: ~7,500 enterprises × $120K avg governance spend (derived — see footnote below) |
+| AI Governance Platforms (dedicated — AegionAI's SAM) | $492M | $1B+ | ~30% | [Gartner, Feb 2026](https://www.gartner.com/en/newsroom/press-releases/2026-02-17-gartner-global-ai-regulations-fuel-billion-dollar-market-for-ai-governance-platforms) |
+| Multi-cloud AI Agent Security (AegionAI's SOM) | ~$900M | ~$5.8B | 45.3% | Bottoms-up: ~7,500 enterprises × $120K avg governance spend (derived — see footnote below) |
 | % of enterprises expanding AI agents in next 12 months | 96% | — | — | [Cloudera, April 2025](https://www.cloudera.com/about/news-and-blogs/press-releases/2025-04-16-96-percent-of-enterprises-are-expanding-use-of-ai-agents-according-to-latest-data-from-cloudera.html) |
 
 > **$120K derivation (three independent inputs that triangulate to the same range):**
 > (1) Gartner's $492M AI governance market ÷ ~5,000 adopting enterprises = **~$98K per company today**. (2) Comparable enterprise security platform ACVs: Datadog median ~$93K across all 29,000 customers; $100K+ enterprise cohort averages $654K (Datadog FY2024 10-K). Enterprise security platforms benchmark at $156K–$180K median ACV ([Optifai SaaS benchmark, 939 companies](https://optif.ai/learn/questions/b2b-saas-acv-benchmark/)). (3) Enterprises spending ~$755K/year on AI infrastructure (CloudZero 2025) allocating 10–15% to governance = **$75K–$113K** in governance tooling. With governance budgets growing 24–30% annually (CSA/Forrester), **$120K represents the 2027 trajectory** — conservative relative to benchmarks for comparable platform-level security tools. ([Datadog FY2024](https://investors.datadoghq.com/news-releases/news-release-details/datadog-announces-fourth-quarter-and-fiscal-year-2024-financial) · [CSA AI Security Report, Dec 2025](https://www.helpnetsecurity.com/2025/12/24/csa-ai-security-governance-report/) · [CloudZero AI Costs 2025](https://www.cloudzero.com/state-of-ai-costs/))
 
-### Sentra's Realistic Addressable Market
+### AegionAI's Realistic Addressable Market
 
 Bottoms-up view — each row shows the math:
 
-| Year | Target Segment | Qualifying Companies | Avg ACV | Addressable Pool | Deals to Close | Sentra ARR |
+| Year | Target Segment | Qualifying Companies | Avg ACV | Addressable Pool | Deals to Close | AegionAI ARR |
 |------|---------------|---------------------|---------|-----------------|----------------|------------|
 | **2026** | B2C platforms with AI refund/fraud agents (food delivery, e-commerce CX) | ~250 globally | $80K | ~$20M | 3–5 | **$150K–$300K** |
 | **2027** | Enterprises with active agents on 2+ clouds (post-M&A, financial services, healthcare SaaS) | ~400–600 companies | $300K | ~$150M | 15–20 | **$3M–$5M** |
@@ -246,7 +246,7 @@ Today, enterprise AI agents are concentrated on one or two cloud providers per c
 
 This shift is being actively standardized: the A2A (Agent-to-Agent) Protocol — donated to the Linux Foundation in June 2025 with AWS, Microsoft, Google, Salesforce, and Cisco as founding members — makes cross-cloud agent communication a vendor-neutral open standard, not a niche configuration. Multi-cloud agent deployments are not theoretical; they are being built now. ([Linux Foundation, June 2025](https://www.linuxfoundation.org/press/linux-foundation-launches-the-agent2agent-protocol-project-to-enable-secure-intelligent-communication-between-ai-agents))
 
-Sentra's window is 12–18 months to become the governance standard before this is mainstream. The companies that define the standard at the inflection point own the category. AWS did not beat Kubernetes. Nobody will beat this standard once it's adopted.
+AegionAI's window is 12–18 months to become the governance standard before this is mainstream. The companies that define the standard at the inflection point own the category. AWS did not beat Kubernetes. Nobody will beat this standard once it's adopted.
 
 ---
 
@@ -271,7 +271,7 @@ The India network gives direct, warm access to the right decision-makers at Swig
 | GoPuff | Automated refund approvals, speed pressure | $150–300K ACV | High volume, measurable ROI |
 | Intercom (Fin AI) | GPT-4 agent serving 25K businesses | $300–600K ACV | Premium price, highest exposure |
 
-**The ROI story:** Blocking one $42M fraud exposure pays for multiple years of Sentra. The conversation sells itself.
+**The ROI story:** Blocking one $42M fraud exposure pays for multiple years of AegionAI. The conversation sells itself.
 
 ---
 
@@ -309,7 +309,7 @@ Two types of enterprise buyer are ready in 2027:
 
 **Target enterprise customers and why each is ready:**
 
-| Company Profile | Specific Pain | Sentra's Entry Point |
+| Company Profile | Specific Pain | AegionAI's Entry Point |
 |----------------|--------------|---------------------|
 | **Post-M&A fintech** (Brex / Chime tier — recently acquired or merged, now running AWS + Azure agents across two entities) | Inherited multi-cloud AI estate with no unified governance; CISO has an unresolved security gap | Cross-cloud policy unification — one policy, two clouds, immediate risk reduction |
 | **WealthTech / regional bank** running Bedrock + Azure OpenAI | SOX audit pressure + EU AI Act compliance deadline; AI agents touching financial data with no audit trail | Automated audit trail + EU AI Act compliance report generation |
@@ -324,12 +324,12 @@ Two types of enterprise buyer are ready in 2027:
 
 **Why open-source the core?**
 
-HashiCorp built Terraform into the standard for infrastructure-as-code by open-sourcing the specification. Nobody beats a standard once it's adopted. Sentra's `AgentPolicy` CRD — the specification for how AI agent governance policies are defined — gets submitted to CNCF (the standards body that governs Kubernetes) in Year 3.
+HashiCorp built Terraform into the standard for infrastructure-as-code by open-sourcing the specification. Nobody beats a standard once it's adopted. AegionAI's `AgentPolicy` CRD — the specification for how AI agent governance policies are defined — gets submitted to CNCF (the standards body that governs Kubernetes) in Year 3.
 
 Open-source core: `AgentPolicy` CRD specification + basic policy evaluation engine.
 Proprietary: multi-cloud connectors, enterprise dashboard, compliance report templates, support SLA.
 
-This blocks Portkey from owning the spec. It also means that AWS, Azure, and GCP — when they eventually build out governance tooling — build against Sentra's standard.
+This blocks Portkey from owning the spec. It also means that AWS, Azure, and GCP — when they eventually build out governance tooling — build against AegionAI's standard.
 
 ---
 
@@ -360,11 +360,11 @@ This blocks Portkey from owning the spec. It also means that AWS, Azure, and GCP
 
 ### The Patent
 
-**USPTO patent pending** on Sentra's core governance architecture for AI agents. This was filed before any external market activity — before the raise, before the first customer conversation.
+**USPTO patent pending** on AegionAI's core governance architecture for AI agents. This was filed before any external market activity — before the raise, before the first customer conversation.
 
-Attorney-conducted prior art search found **zero existing patents** in this exact space. The patent covers the multi-cloud agent orchestration and governance architecture that defines Sentra's approach.
+Attorney-conducted prior art search found **zero existing patents** in this exact space. The patent covers the multi-cloud agent orchestration and governance architecture that defines AegionAI's approach.
 
-**What this means in practice:** Direct architectural replication requires either designing around the patent (significant engineering effort) or licensing from Sentra. This creates an 18–24 month barrier during the most critical category-formation window.
+**What this means in practice:** Direct architectural replication requires either designing around the patent (significant engineering effort) or licensing from AegionAI. This creates an 18–24 month barrier during the most critical category-formation window.
 
 ### The Team
 
@@ -372,7 +372,7 @@ Attorney-conducted prior art search found **zero existing patents** in this exac
 
 IIT alumnus. At Amazon, led a 50+ person team building a new observability vertical across OpenSearch and CloudWatch — shipping profitable products used by enterprise developer teams worldwide. Built and launched semantic search and conversational AI interfaces for OpenSearch, now in production at scale.
 
-**Why this:** After the Air Canada ruling and the Swiggy fraud incident, the missing layer became clear — not another security scanner, but a governance control plane for AI agents. Filed USPTO patent on core architecture, built working prototype to 97% attack block rate at <80ms latency. Committed full-time to Sentra from Day 1 of funding.
+**Why this:** After the Air Canada ruling and the Swiggy fraud incident, the missing layer became clear — not another security scanner, but a governance control plane for AI agents. Filed USPTO patent on core architecture, built working prototype to 97% attack block rate at <80ms latency. Committed full-time to AegionAI from Day 1 of funding.
 
 **Phase 1 hires (Months 1–12):**
 - 4 Backend Engineers (SDE2) — control plane core, policy engine, cloud connectors (AWS/Azure/GCP), sequence validation engine
@@ -393,5 +393,4 @@ IIT alumnus. At Amazon, led a 50+ person team building a new observability verti
 
 ---
 
-> **Note on company name:** Operating under the working name "Sentra." A rename is required before any external activity — sentra.io is an unrelated company (AI data security, $30M Series A). New name selection in progress.
 
