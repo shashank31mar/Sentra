@@ -62,7 +62,7 @@ IIT alumnus. At Amazon, led a 50+ person team building a new observability verti
 
 ## The Patent
 
-**USPTO patent pending** on AegionAI's core governance architecture for AI agents — filed before any external market activity, before the raise, before the first customer conversation.
+**Provisional patent filed** with the USPTO on AegionAI's core governance architecture for AI agents — filed before any external market activity, before the raise, before the first customer conversation.
 
 Attorney-conducted prior art search found **zero existing patents** in this exact space. The patent covers the multi-cloud agent orchestration and governance architecture that defines AegionAI's approach.
 
@@ -72,4 +72,4 @@ Direct architectural replication requires either designing around the patent or 
 
 *"AI without governance is just liability at scale."*
 
-**aegionai.com · shashank@aegionai.com**
+**aegionai.com · shashank31mar@gmail.com**
