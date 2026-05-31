@@ -188,6 +188,20 @@ class NetworkStack(Stack):
             allow_all_outbound=False,  # Specific egress rules only
         )
 
+        # 7. API NLB SG (Workstream 16 — fronts API Gateway VPC Link traffic)
+        # NLB sits between API Gateway VPC Link ENIs and the Private ALB.
+        # Inbound: TCP/80 from the VPC CIDR (VPC Link ENIs are in-VPC).
+        # Egress: TCP/80 to private_alb_sg (NLB forwards to Private ALB).
+        # See LLD 16 §7.1 and ADR-022.
+        self.nlb_sg = ec2.SecurityGroup(
+            self,
+            "ApiNlbSG",
+            vpc=self.vpc,
+            security_group_name="sentra-api-nlb-sg",
+            description="Security group for API Gateway VPC Link to NLB (Workstream 16)",
+            allow_all_outbound=False,
+        )
+
         # ============================================================
         # Security Group Ingress Rules
         # ============================================================
@@ -296,6 +310,40 @@ class NetworkStack(Stack):
             peer=self.payment_agent_sg,
             connection=ec2.Port.tcp(80),
             description="Allow from Payment Agent",
+        )
+
+        # Workstream 16: Private ALB accepts traffic from the new API NLB
+        self.private_alb_sg.add_ingress_rule(
+            peer=self.nlb_sg,
+            connection=ec2.Port.tcp(80),
+            description="Allow from API NLB (Workstream 16 - API Gateway VPC Link path)",
+        )
+
+        # Workstream 16: NLB inbound — TCP/80 from any source.
+        #
+        # IMPORTANT (deploy-time finding 2026-05-22): REST API Gateway VPC Link
+        # traffic does NOT come from the customer VPC CIDR. AWS does not
+        # publicly document the source IP range, and customer VPC Flow Logs
+        # do not capture the API Gateway -> NLB hop (the NLB does NAT for
+        # ALB-target type). A 10.0.0.0/16 ingress rule produces silent traffic
+        # drops with API Gateway returning "Invalid endpoint address" / 500.
+        #
+        # 0.0.0.0/0 is acceptable here because the NLB is INTERNAL
+        # (internet_facing=False) — externally-routed IPs cannot reach it.
+        # Defense-in-depth is provided by:
+        #   (1) NLB being internal-only
+        #   (2) API Gateway API-key + Usage Plan auth at the public edge
+        #   (3) Private ALB SG ingress restricted to nlb_sg (NLB's own SG)
+        # See LLD 16 §7.1 "Deploy-time SG finding" for the full rationale.
+        self.nlb_sg.add_ingress_rule(
+            peer=ec2.Peer.any_ipv4(),
+            connection=ec2.Port.tcp(80),
+            description="API Gateway VPC Link to NLB :80 (Workstream 16 - internal NLB, any-IPv4 safe)",
+        )
+        self.nlb_sg.add_egress_rule(
+            peer=self.private_alb_sg,
+            connection=ec2.Port.tcp(80),
+            description="NLB to Private ALB :80 (Workstream 16)",
         )
 
         # Private ALB: Egress to all API services

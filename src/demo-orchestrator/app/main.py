@@ -80,13 +80,24 @@ async def health_check() -> JSONResponse:
 
 @app.on_event("startup")
 async def startup_event():
-    """Log service startup, discover Bedrock agents, and optionally auto-start continuous scenarios"""
-    from app.utils.yaml_loader import get_scenario_ids
+    """Log service startup, discover Bedrock agents, validate scenarios, and
+    optionally auto-start continuous scenarios.
+
+    Workstream 18 M3.4: scenario validation runs here. In strict mode (default),
+    any validation error fails the orchestrator startup so broken scenarios
+    never serve traffic.
+    """
+    from app.utils.yaml_loader import get_scenario_ids, load_all_scenarios
     from app.orchestrator import get_orchestrator
     from app.clients.bedrock_client import BedrockAgentClient
-    
+    from app.services.scenario_validator import (
+        ScenarioValidator, report_and_maybe_exit,
+    )
+    from app.services.bedrock_schema_fetcher import BedrockSchemaFetcher
+    from app.services.azure_tool_fetcher import AzureToolFetcher
+
     scenario_ids = get_scenario_ids()
-    
+
     logger.info(
         "Demo Orchestrator started",
         extra={
@@ -98,7 +109,7 @@ async def startup_event():
             "scenario_ids": scenario_ids
         }
     )
-    
+
     # Discover Bedrock agents at startup (runtime discovery - no hardcoded IDs)
     bedrock_client = BedrockAgentClient(region=AWS_REGION)
     discovered_agents = await bedrock_client.discover_agents()
@@ -112,6 +123,63 @@ async def startup_event():
             }
         }
     )
+
+    # ------------------------------------------------------------------
+    # Workstream 18 M3 — scenario validation
+    # ------------------------------------------------------------------
+    # Build the symbolic_id -> real_bedrock_agent_id map. Scenarios reference
+    # agents by their symbolic name (sentra-mvp-customer-service-agent etc.);
+    # the schema fetcher needs the real Bedrock agent_id. discover_agents()
+    # returns a dict keyed by symbolic name with agent_id/agent_name inside.
+    symbolic_to_real: dict[str, str] = {}
+    discovered_symbolic_names: set[str] = set()
+    for symbolic_name, cfg in (discovered_agents or {}).items():
+        real_id = cfg.get("agent_id")
+        agent_name = cfg.get("agent_name")
+        if real_id:
+            # Both the symbolic name (e.g. 'secured') and the real agent_name
+            # (e.g. 'sentra-mvp-customer-service-agent') route to the same id.
+            symbolic_to_real[symbolic_name] = real_id
+            discovered_symbolic_names.add(symbolic_name)
+            if agent_name:
+                symbolic_to_real[agent_name] = real_id
+                discovered_symbolic_names.add(agent_name)
+
+    def _resolve_bedrock_id(symbolic_id: str) -> str | None:
+        return symbolic_to_real.get(symbolic_id)
+
+    schema_fetcher = BedrockSchemaFetcher(
+        region=AWS_REGION,
+        agent_id_resolver=_resolve_bedrock_id,
+    )
+    azure_tool_fetcher = AzureToolFetcher()
+
+    validator = ScenarioValidator(
+        bedrock_schema_fetcher=schema_fetcher,
+        azure_tool_fetcher=azure_tool_fetcher,
+        discovered_bedrock_agents=discovered_symbolic_names,
+    )
+
+    all_errors = []
+    try:
+        scenarios = load_all_scenarios()
+        for scenario in scenarios:
+            # Use model_dump() because Scenario is a Pydantic model
+            scenario_dict = scenario.model_dump() if hasattr(scenario, "model_dump") else scenario.dict()
+            errors = validator.validate_scenario(scenario_dict)
+            all_errors.extend(errors)
+            status = "✓" if not errors else f"✗ {len(errors)} errors"
+            logger.info(
+                "ScenarioValidator: %s — %s",
+                scenario_dict.get("scenario_id", "<unknown>"), status,
+            )
+    except Exception as exc:
+        logger.exception("ScenarioValidator: unexpected error during validation")
+        # Treat as a strict-mode failure regardless of env setting — we
+        # can't trust an orchestrator whose validator pass crashed.
+        raise SystemExit(1) from exc
+
+    report_and_maybe_exit(all_errors)
     
     # Auto-start continuous scenarios if enabled
     auto_start = os.environ.get("AUTO_START_CONTINUOUS", "false").lower() == "true"

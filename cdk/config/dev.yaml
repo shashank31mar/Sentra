@@ -86,6 +86,16 @@ storage:
     demo_customers:
       table_name: "sentra-demo-customers"
 
+    # Workstream 17 — Validation Signal Store (LLD 17 §5.2)
+    # Per-validator signal substrate. Read-hot path for the dashboard;
+    # CW audit logs kept as compliance archive (dual-write).
+    validation_signals:
+      table_name: "sentra-validation-signals"
+      ttl_days: 90
+      write_timeout_ms: 200
+      batch_max_retries: 3
+      retry_backoff_ms: [50, 200, 800]
+
   # S3 Bucket (Task 8)
   s3:
     bucket_name_prefix: "sentra-mvp-artifacts"

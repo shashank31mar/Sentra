@@ -11,6 +11,8 @@ import time
 from typing import Dict
 
 from app.api.models import ValidationRequest, ValidationResult
+from app.combiners import Source
+from app.validators._signal_stamp import stamps
 
 logger = logging.getLogger(__name__)
 
@@ -33,6 +35,7 @@ class AbuseDetector:
     def __init__(self):
         pass
 
+    @stamps(Source.SENTRA_ABUSE)
     async def check_rate_limit(
         self, session: Dict, policy: Dict
     ) -> ValidationResult:

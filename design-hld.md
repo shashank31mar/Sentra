@@ -1,10 +1,16 @@
 # Sentra MVP - High-Level Design (HLD)
 
-**Version**: 2.0
-**Date**: January 11, 2025 (Updated)
+**Version**: 2.1
+**Date**: May 19, 2026 (Updated)
 **Status**: Architecture Finalized
-**Target**: 4-week MVP for Investor Demos
+**Target**: 4-week MVP for Investor Demos → Cross-Cloud Demo extension (Phase 1 in progress)
 **Author**: Sentra Architecture Team
+
+**Changelog v2.1**:
+- ✅ Added Cross-Cloud Connector Layer — Sentra now governs agents across AWS Bedrock and Azure AI Foundry (GCP Vertex AI in Phase 2). See [LLD 15: Cross-Cloud Connectors](lld/15-cross-cloud-connectors.md), [Workstream 15](tasks/workstream-15-cross-cloud-demo.md), [ADR-020](adr.md#adr-020-azure-first-gcp-fast-follow-for-cross-cloud-demo), [ADR-021](adr.md#adr-021-connector-abstraction-with-foreign-cloud-interceptors).
+- ✅ Connector abstraction (`src/connectors/base/AgentConnector`) introduced — dashboard and demo orchestrator are now cloud-agnostic.
+- ✅ Policy model extended with `platform`, `cloud_region`, `cross_cloud_dependencies` fields — enables cross-cloud sequence validation and blast-radius containment.
+- ✅ Bedrock integration refactored behind the new abstraction with full backward compatibility (legacy `BedrockAgentCaller` retained as a shim).
 
 **Changelog v2.0**:
 - ✅ Simplified networking: Public API Gateway (no VPN complexity)

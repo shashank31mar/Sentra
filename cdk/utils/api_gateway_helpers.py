@@ -2,41 +2,64 @@
 
 This module provides reusable utility functions for API Gateway constructs
 that can be shared across multiple CDK stacks.
+
+Workstream 16 (2026-05-22): switched from ConnectionType.INTERNET (broken — see
+LLD 16 §1.2) to ConnectionType.VPC_LINK. Integrations now target the API NLB's
+DNS name (NLB → Private ALB → ECS), and every call site must pass the VPC Link
+reference. See [LLD 16: API Gateway VPC Link Networking](../../lld/16-apigw-vpc-link-networking.md)
+and [ADR-022](../../adr.md#adr-022-fix-rest-api-gateway-via-nlb--vpc-link).
 """
 from aws_cdk import aws_apigateway as apigateway
 from typing import Dict, Optional
 
 
 def create_http_integration(
-    alb_base_url: str,
+    nlb_base_url: str,
     path: str,
     http_method: str = "POST",
+    vpc_link: Optional[apigateway.IVpcLink] = None,
     pass_query_params: Optional[Dict[str, str]] = None,
-    include_api_key_header: bool = True
+    include_api_key_header: bool = True,
 ) -> apigateway.HttpIntegration:
-    """Create HTTP_PROXY integration to ALB endpoint.
+    """Create HTTP_PROXY integration via VPC Link to the API NLB.
 
-    This helper creates a standard HTTP integration with common request
-    parameters like correlation ID and API key ID headers.
+    Workstream 16: the previous implementation used `ConnectionType.INTERNET`
+    pointing at the Private ALB's internal DNS — which never worked because
+    internal DNS isn't routable from API Gateway's public edge. The fix is to
+    route via a VPC Link to an NLB that targets the Private ALB.
 
     Args:
-        alb_base_url: Base URL of the ALB (e.g., 'http://alb-123.us-east-1.elb.amazonaws.com')
-        path: API path (e.g., '/v1/validate')
-        http_method: HTTP method (POST, GET, etc.)
-        pass_query_params: Optional dict mapping query param names to method.request mappings
-                          Example: {"session_id": "method.request.querystring.session_id"}
-        include_api_key_header: Whether to include X-API-Key-ID header (default: True)
+        nlb_base_url: Base URL of the API NLB (e.g.,
+            'http://sentra-api-nlb-abcdef.elb.us-east-1.amazonaws.com').
+            The NLB's listener forwards to the Private ALB target group, which
+            then path-routes to the security-controller target group.
+        path: API path (e.g., '/v1/validate').
+        http_method: HTTP method (POST, GET, etc.).
+        vpc_link: The shared VPC Link from API Stack (`self.api_vpc_link`).
+            Required since Workstream 16; pass it from every call site.
+        pass_query_params: Optional dict mapping query param names to
+            method.request mappings — e.g., {"session_id":
+            "method.request.querystring.session_id"}.
+        include_api_key_header: Whether to include `X-API-Key-ID` header
+            (default True; should be False for public endpoints like /health).
 
     Returns:
-        HttpIntegration configured for the endpoint
+        HttpIntegration configured for the endpoint.
 
     Example:
         >>> integration = create_http_integration(
-        ...     alb_base_url="http://my-alb.amazonaws.com",
+        ...     nlb_base_url=self.nlb_base_url,
         ...     path="/v1/validate",
-        ...     http_method="POST"
+        ...     http_method="POST",
+        ...     vpc_link=self.api_vpc_link,
         ... )
     """
+    if vpc_link is None:
+        raise ValueError(
+            "vpc_link is required (Workstream 16). Pass self.api_vpc_link "
+            "from the API Stack. See LLD 16 §7.4."
+        )
+
     # Standard request parameters for all integrations
     request_params = {
         "integration.request.header.X-Correlation-ID": "context.requestId",
@@ -52,12 +75,13 @@ def create_http_integration(
             request_params[f"integration.request.querystring.{param_name}"] = mapping
 
     return apigateway.HttpIntegration(
-        f"{alb_base_url}{path}",
+        f"{nlb_base_url}{path}",
         http_method=http_method,
         options=apigateway.IntegrationOptions(
-            connection_type=apigateway.ConnectionType.INTERNET,
-            request_parameters=request_params
-        )
+            connection_type=apigateway.ConnectionType.VPC_LINK,
+            vpc_link=vpc_link,
+            request_parameters=request_params,
+        ),
     )
 
 

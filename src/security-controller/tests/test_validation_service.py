@@ -130,7 +130,15 @@ async def test_validation_pipeline_full_allow(mock_session, sample_request):
             decision="ALLOW", reason="OK", should_deny=False
         ))
         service.policy_engine.get_agent_policy = AsyncMock(return_value={"rate_limit": 100})
-        
+
+        # Workstream 12 added cross_agent_validator as step 2.5 of the pipeline.
+        # Tests that mock the full pipeline must also mock this validator or the
+        # orchestrator will hit the real (unmocked) implementation and fail.
+        service.cross_agent_validator = Mock()
+        service.cross_agent_validator.validate = AsyncMock(return_value=ValidationResult(
+            decision="ALLOW", reason="OK", should_deny=False
+        ))
+
         service.sigma_engine = Mock()
         service.sigma_engine.match_rules = AsyncMock(return_value=ValidationResult(
             decision="ALLOW", reason="OK", should_deny=False
@@ -145,7 +153,15 @@ async def test_validation_pipeline_full_allow(mock_session, sample_request):
         service.abuse_detector.check_rate_limit = AsyncMock(return_value=ValidationResult(
             decision="ALLOW", reason="OK", should_deny=False
         ))
-        
+
+        # Workstream 19 added ml_classifier as step 3.5 of the pipeline. Default
+        # production behavior is ABSTAIN (flag off) — mock that here so the
+        # orchestrator doesn't hit the real Bedrock-backed validator.
+        service.ml_classifier = Mock()
+        service.ml_classifier.validate = AsyncMock(
+            return_value=ValidationResult.abstain("ml_classifier disabled")
+        )
+
         service.audit_logger = Mock()
         service.audit_logger.log_decision = AsyncMock()
         
@@ -223,7 +239,15 @@ async def test_action_id_generation_for_write_operations(mock_session):
             decision="ALLOW", reason="OK", should_deny=False
         ))
         service.policy_engine.get_agent_policy = AsyncMock(return_value={"rate_limit": 100})
-        
+
+        # Workstream 12 added cross_agent_validator as step 2.5 of the pipeline.
+        # Tests that mock the full pipeline must also mock this validator or the
+        # orchestrator will hit the real (unmocked) implementation and fail.
+        service.cross_agent_validator = Mock()
+        service.cross_agent_validator.validate = AsyncMock(return_value=ValidationResult(
+            decision="ALLOW", reason="OK", should_deny=False
+        ))
+
         service.sigma_engine = Mock()
         service.sigma_engine.match_rules = AsyncMock(return_value=ValidationResult(
             decision="ALLOW", reason="OK", should_deny=False
@@ -238,7 +262,15 @@ async def test_action_id_generation_for_write_operations(mock_session):
         service.abuse_detector.check_rate_limit = AsyncMock(return_value=ValidationResult(
             decision="ALLOW", reason="OK", should_deny=False
         ))
-        
+
+        # Workstream 19 added ml_classifier as step 3.5 of the pipeline. Default
+        # production behavior is ABSTAIN (flag off) — mock that here so the
+        # orchestrator doesn't hit the real Bedrock-backed validator.
+        service.ml_classifier = Mock()
+        service.ml_classifier.validate = AsyncMock(
+            return_value=ValidationResult.abstain("ml_classifier disabled")
+        )
+
         service.audit_logger = Mock()
         service.audit_logger.log_decision = AsyncMock()
         
@@ -325,7 +357,15 @@ async def test_audit_and_metrics_called_on_allow(mock_session, sample_request):
             decision="ALLOW", reason="OK", should_deny=False
         ))
         service.policy_engine.get_agent_policy = AsyncMock(return_value={"rate_limit": 100})
-        
+
+        # Workstream 12 added cross_agent_validator as step 2.5 of the pipeline.
+        # Tests that mock the full pipeline must also mock this validator or the
+        # orchestrator will hit the real (unmocked) implementation and fail.
+        service.cross_agent_validator = Mock()
+        service.cross_agent_validator.validate = AsyncMock(return_value=ValidationResult(
+            decision="ALLOW", reason="OK", should_deny=False
+        ))
+
         service.sigma_engine = Mock()
         service.sigma_engine.match_rules = AsyncMock(return_value=ValidationResult(
             decision="ALLOW", reason="OK", should_deny=False
@@ -340,7 +380,15 @@ async def test_audit_and_metrics_called_on_allow(mock_session, sample_request):
         service.abuse_detector.check_rate_limit = AsyncMock(return_value=ValidationResult(
             decision="ALLOW", reason="OK", should_deny=False
         ))
-        
+
+        # Workstream 19 added ml_classifier as step 3.5 of the pipeline. Default
+        # production behavior is ABSTAIN (flag off) — mock that here so the
+        # orchestrator doesn't hit the real Bedrock-backed validator.
+        service.ml_classifier = Mock()
+        service.ml_classifier.validate = AsyncMock(
+            return_value=ValidationResult.abstain("ml_classifier disabled")
+        )
+
         service.audit_logger = Mock()
         service.audit_logger.log_decision = AsyncMock()
         
@@ -348,15 +396,17 @@ async def test_audit_and_metrics_called_on_allow(mock_session, sample_request):
         service.metrics_publisher.publish_validation_metrics = AsyncMock()
         
         await service.validate_tool_call(sample_request)
-        
-        # Verify audit log and metrics were called
+
+        # Verify audit log was called. Metrics publishing was intentionally
+        # removed from _handle_allow/_handle_deny (2025-12-02 commit, see
+        # validation_service.py:241) — metrics now publish from agents after
+        # actual tool execution, not during validation.
         service.audit_logger.log_decision.assert_called_once()
-        service.metrics_publisher.publish_validation_metrics.assert_called_once()
 
 
 @pytest.mark.asyncio
-async def test_audit_and_metrics_called_on_deny(mock_session, sample_request):
-    """Test that audit log and metrics are called on DENY"""
+async def test_audit_called_on_deny(mock_session, sample_request):
+    """Test that audit log is called on DENY (metrics removed 2025-12-02)"""
     from app.services.validation_service import ValidationService
     
     with patch.object(ValidationService, '__init__', lambda self: None):
@@ -383,7 +433,191 @@ async def test_audit_and_metrics_called_on_deny(mock_session, sample_request):
         service.metrics_publisher.publish_validation_metrics = AsyncMock()
         
         await service.validate_tool_call(sample_request)
-        
-        # Verify audit log and metrics were called
+
+        # Verify audit log was called. See note above re: metrics removal.
         service.audit_logger.log_decision.assert_called_once()
-        service.metrics_publisher.publish_validation_metrics.assert_called_once()
+
+
+# ============================================================
+# Workstream 19 / LLD 19 §12.3 — ML Classifier Pipeline Tests (T-PIPE-01..05)
+# ============================================================
+#
+# These verify the ML classifier's interaction with the pipeline + signal
+# collection. NOTE: the real pipeline is sequential with short-circuit-on-DENY
+# (not the parallel asyncio.gather the LLD §3.1 diagram shows). ML is slotted
+# AFTER sigma (validation_service STEP 3.5), so sigma DENYs short-circuit
+# before ML runs. The deny-overrides COMBINER internals are tested separately
+# in test_combiner.py; here we assert the end-to-end pipeline outcome + which
+# signals get collected.
+
+from app.combiners import Source
+
+
+def _allow(source: str) -> ValidationResult:
+    """A stamped ALLOW result for a mocked validator."""
+    r = ValidationResult(decision="ALLOW", reason="OK", should_deny=False)
+    r.source = source
+    return r
+
+
+def _deny(source: str, threat_type: str = "THREAT") -> ValidationResult:
+    r = ValidationResult(
+        decision="DENY",
+        reason=f"{source} denied",
+        should_deny=True,
+        violation_type=threat_type,
+        threat_type=threat_type,
+    )
+    r.source = source
+    return r
+
+
+def _pipeline_service(mock_session):
+    """Build a ValidationService with every validator mocked to ALLOW (and
+    properly source-stamped so to_signal() works). Individual tests override
+    sigma_engine.match_rules / ml_classifier.validate to inject behavior."""
+    from app.services.validation_service import ValidationService
+
+    with patch.object(ValidationService, "__init__", lambda self: None):
+        service = ValidationService()
+
+    service.session_manager = Mock()
+    service.session_manager.get_or_create_session = AsyncMock(return_value=mock_session)
+
+    service.trust_checker = Mock()
+    service.trust_checker.check = AsyncMock(return_value=_allow(Source.SENTRA_TRUST))
+
+    service.policy_engine = Mock()
+    service.policy_engine.validate = AsyncMock(return_value=_allow(Source.SENTRA_POLICY))
+    service.policy_engine.get_agent_policy = AsyncMock(return_value={"rate_limit": 100})
+
+    service.cross_agent_validator = Mock()
+    service.cross_agent_validator.validate = AsyncMock(return_value=_allow(Source.SENTRA_CROSS_AGENT))
+
+    service.sigma_engine = Mock()
+    service.sigma_engine.match_rules = AsyncMock(return_value=_allow(Source.SENTRA_SIGMA))
+
+    service.ml_classifier = Mock()
+    service.ml_classifier.validate = AsyncMock(
+        return_value=ValidationResult.abstain("ml_classifier disabled")
+    )
+
+    service.context_validator = Mock()
+    service.context_validator.validate_sequence = AsyncMock(return_value=_allow(Source.SENTRA_CONTEXT))
+
+    service.abuse_detector = Mock()
+    service.abuse_detector.check_rate_limit = AsyncMock(return_value=_allow(Source.SENTRA_ABUSE))
+
+    return service
+
+
+def _sources(signals) -> list:
+    return [s.source for s in signals]
+
+
+@pytest.mark.asyncio
+async def test_t_pipe_01_ml_signal_participates(mock_session, sample_request):
+    """ML emits a signal that lands in the collected signals list when it votes."""
+    service = _pipeline_service(mock_session)
+    ml_allow = _allow(Source.SENTRA_ML_CLASSIFIER)
+    ml_allow.confidence = 0.95
+    service.ml_classifier.validate = AsyncMock(return_value=ml_allow)
+
+    result, signals = await service._run_validation_pipeline(sample_request, mock_session)
+
+    assert result.decision == "ALLOW"
+    assert Source.SENTRA_ML_CLASSIFIER in _sources(signals)
+
+
+@pytest.mark.asyncio
+async def test_t_pipe_02_ml_abstain_emits_no_signal(mock_session, sample_request):
+    """ML ABSTAIN → no ml_classifier signal; pipeline still reaches ALLOW."""
+    service = _pipeline_service(mock_session)
+    # default mock already returns abstain
+    result, signals = await service._run_validation_pipeline(sample_request, mock_session)
+
+    assert result.decision == "ALLOW"
+    assert Source.SENTRA_ML_CLASSIFIER not in _sources(signals)
+    # The deterministic validators still emitted their signals.
+    assert Source.SENTRA_SIGMA in _sources(signals)
+
+
+@pytest.mark.asyncio
+async def test_t_pipe_03_ml_deny_sigma_allow_combined_deny(mock_session, sample_request):
+    """ML DENY while sigma ALLOWs → pipeline DENY, ml_classifier is the source."""
+    service = _pipeline_service(mock_session)
+    service.sigma_engine.match_rules = AsyncMock(return_value=_allow(Source.SENTRA_SIGMA))
+    service.ml_classifier.validate = AsyncMock(
+        return_value=_deny(Source.SENTRA_ML_CLASSIFIER, "PROMPT_INJECTION")
+    )
+
+    result, signals = await service._run_validation_pipeline(sample_request, mock_session)
+
+    assert result.should_deny
+    assert result.threat_type == "PROMPT_INJECTION"
+    assert Source.SENTRA_ML_CLASSIFIER in _sources(signals)
+    # Sigma ran first and ALLOWed, so its signal is present too.
+    assert Source.SENTRA_SIGMA in _sources(signals)
+
+
+@pytest.mark.asyncio
+async def test_t_pipe_04_sigma_deny_short_circuits_before_ml(mock_session, sample_request):
+    """Sigma DENY short-circuits → combined DENY (sigma); ML never invoked.
+
+    Same end-state as the LLD's "ML ALLOW + sigma DENY → DENY" deny-overrides
+    case, achieved more cheaply: the ~600ms ML call is skipped entirely when a
+    ~50ms sigma rule already caught the threat."""
+    service = _pipeline_service(mock_session)
+    service.sigma_engine.match_rules = AsyncMock(return_value=_deny(Source.SENTRA_SIGMA, "PII_EXPOSURE"))
+
+    result, signals = await service._run_validation_pipeline(sample_request, mock_session)
+
+    assert result.should_deny
+    assert result.threat_type == "PII_EXPOSURE"
+    service.ml_classifier.validate.assert_not_called()  # ML cost avoided
+    assert Source.SENTRA_ML_CLASSIFIER not in _sources(signals)
+
+
+@pytest.mark.asyncio
+async def test_t_pipe_shadow_mode_ml_deny_does_not_short_circuit(mock_session, sample_request, monkeypatch):
+    """WS19 M3 — in shadow mode, ML DENY still emits a signal but does not
+    short-circuit the pipeline. The customer-facing verdict comes from sigma +
+    policy alone, so we can measure ML's incremental accuracy without
+    impacting traffic."""
+    from app.config import settings as _settings
+    monkeypatch.setattr(_settings, "ml_classifier_shadow_mode", True)
+
+    service = _pipeline_service(mock_session)
+    service.ml_classifier.validate = AsyncMock(
+        return_value=_deny(Source.SENTRA_ML_CLASSIFIER, "PROMPT_INJECTION")
+    )
+
+    result, signals = await service._run_validation_pipeline(sample_request, mock_session)
+
+    # Shadow mode: pipeline reaches ALLOW even though ML emitted DENY
+    assert result.decision == "ALLOW"
+    # ML signal IS recorded for offline analysis
+    assert Source.SENTRA_ML_CLASSIFIER in _sources(signals)
+    ml_signal = next(s for s in signals if s.source == Source.SENTRA_ML_CLASSIFIER)
+    assert ml_signal.decision == "DENY"
+    # Downstream validators still ran (no short-circuit)
+    assert Source.SENTRA_CONTEXT in _sources(signals)
+    assert Source.SENTRA_ABUSE in _sources(signals)
+
+
+@pytest.mark.asyncio
+async def test_t_pipe_05_both_deny_sigma_is_decision(mock_session, sample_request):
+    """When both sigma and ML would DENY, sigma runs first and is the decision;
+    ML is not invoked (consistent with priority: sigma is higher-priority and
+    its deterministic reason is preferred for audit — LLD 19 §6.1)."""
+    service = _pipeline_service(mock_session)
+    service.sigma_engine.match_rules = AsyncMock(return_value=_deny(Source.SENTRA_SIGMA, "DATA_THEFT"))
+    service.ml_classifier.validate = AsyncMock(
+        return_value=_deny(Source.SENTRA_ML_CLASSIFIER, "DATA_THEFT")
+    )
+
+    result, signals = await service._run_validation_pipeline(sample_request, mock_session)
+
+    assert result.should_deny
+    assert result.source == Source.SENTRA_SIGMA
+    service.ml_classifier.validate.assert_not_called()

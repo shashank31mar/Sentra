@@ -117,6 +117,97 @@ async def get_logs(
 
 
 # ============================================================
+# Workstream 17 / LLD 17 — Validation Signal Store endpoints
+# ============================================================
+
+
+def _decisions_service():
+    """Lazy singleton — boto3 client init has nontrivial cold-start cost."""
+    from app.services.decisions_service import DecisionsService
+    global _decisions_service_instance
+    try:
+        return _decisions_service_instance
+    except NameError:
+        _decisions_service_instance = DecisionsService()
+        return _decisions_service_instance
+
+
+@router.get("/sessions/{session_id}/decisions")
+async def get_session_decisions(
+    session_id: str,
+    request_id: Optional[str] = None,
+    agent_id: Optional[str] = None,
+    limit: int = 100,
+) -> Dict:
+    """LLD 17 §8.2 — signals grouped by request_id, combiner applied per group.
+
+    Dashboard hot path. p95 target ≤100ms (single DDB partition Query).
+    """
+    return _decisions_service().get_session_decisions(
+        session_id=session_id, request_id=request_id, agent_id=agent_id, limit=limit
+    )
+
+
+@router.get("/sessions/{session_id}/signals")
+async def get_session_signals(
+    session_id: str,
+    request_id: Optional[str] = None,
+    source: Optional[str] = None,
+    agent_id: Optional[str] = None,
+    limit: int = 100,
+) -> Dict:
+    """LLD 17 §8.3 — raw signal list, no combiner applied. For debugging /
+    advanced UI drill-down."""
+    return _decisions_service().get_session_signals(
+        session_id=session_id, request_id=request_id, source=source,
+        agent_id=agent_id, limit=limit,
+    )
+
+
+@router.get("/decisions")
+async def scan_decisions(
+    since: Optional[str] = None,
+    until: Optional[str] = None,
+    agent_id: Optional[str] = None,
+    decision: Optional[str] = None,
+    threat_type: Optional[str] = None,
+    limit: int = 50,
+    cursor: Optional[str] = None,
+) -> Dict:
+    """LLD 17 §8.4 — paginated time-range scan via GSI 2.
+
+    For cross-session views. The cursor is an opaque base64 token —
+    consumers must round-trip it unchanged.
+    """
+    try:
+        return _decisions_service().scan_decisions(
+            since=since, until=until, agent_id=agent_id,
+            decision=decision, threat_type=threat_type,
+            limit=limit, cursor=cursor,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+@router.post("/sessions/{session_id}/signals", status_code=201)
+async def post_session_signal(session_id: str, signal: Dict) -> Dict:
+    """LLD 17 §8.1 — external producer signal write (Bedrock/Azure connectors).
+
+    Validates source against taxonomy (lenient — unknown sources are
+    stored with priority=0 plus a warning). Returns 400 on malformed
+    payload, 201 on success.
+    """
+    try:
+        return _decisions_service().post_signal(
+            session_id=session_id, signal_data=signal
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc))
+
+
+# ============================================================
 # Task 11: GET /v1/sessions - Query Sessions
 # ============================================================
 

@@ -411,7 +411,7 @@ class RealChatService:
                 params['status'] = 'shipped'
             elif 'delivered' in message_lower:
                 params['status'] = 'delivered'
-            return ('list_orders', params)
+            return ('query_orders', {'filters': params})
 
         # ===== FIX 2: query_orders (wrap in filters object) =====
         # Pattern: "show completed orders" or "orders for customer cust-123"

@@ -239,10 +239,13 @@ class TestCacheManagerSingleton:
         import app.utils.cache_manager as cache_module
         cache_module._cache_instance = None
         
-        # Mock settings
-        with patch('app.utils.cache_manager.settings') as mock_settings:
-            mock_settings.cache_enabled = True
-            mock_settings.max_cache_size = 1000
+        # Mock settings. cache_manager.py imports settings lazily inside
+        # get_cache_manager (`from app.config import settings`) to avoid a
+        # circular dependency, so we patch the attributes on the actual
+        # settings instance, not at the cache_manager module level.
+        from app.config import settings as _settings
+        with patch.object(_settings, 'cache_enabled', True), \
+             patch.object(_settings, 'max_cache_size', 1000):
             
             # Get instance twice
             cache1 = get_cache_manager()
@@ -259,10 +262,13 @@ class TestCacheManagerSingleton:
         import app.utils.cache_manager as cache_module
         cache_module._cache_instance = None
         
-        # Mock settings
-        with patch('app.utils.cache_manager.settings') as mock_settings:
-            mock_settings.cache_enabled = True
-            mock_settings.max_cache_size = 1000
+        # Mock settings. cache_manager.py imports settings lazily inside
+        # get_cache_manager (`from app.config import settings`) to avoid a
+        # circular dependency, so we patch the attributes on the actual
+        # settings instance, not at the cache_manager module level.
+        from app.config import settings as _settings
+        with patch.object(_settings, 'cache_enabled', True), \
+             patch.object(_settings, 'max_cache_size', 1000):
             
             # Get instance with overrides
             cache = get_cache_manager(enabled=False, max_size=500)

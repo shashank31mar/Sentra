@@ -2,17 +2,22 @@
 Context Validator - Step 4 of Validation Pipeline
 
 Validates tool call sequences to ensure required tools are called first.
-Simple MVP implementation checks presence in last 10 tools.
+Single-cloud sequence checks use config/tool_requirements.yaml; cross-cloud
+sequence checks are driven by `cross_cloud_dependencies` on the agent policy
+(Workstream 15 — see LLD 15 §4.5).
 
-Requirements: LLD 03 Section 3.4, 8.1
+Requirements: LLD 03 Section 3.4, 8.1; LLD 15 §4.5
 """
 import logging
 import os
-from typing import Dict, List
+import time
+from typing import Any, Dict, List, Optional
 
 import yaml
 
 from app.api.models import ValidationRequest, ValidationResult
+from app.combiners import Source
+from app.validators._signal_stamp import stamps
 
 logger = logging.getLogger(__name__)
 
@@ -21,20 +26,32 @@ class ContextValidator:
     """
     Validates tool call sequences.
 
-    MVP Limitations:
-    - Only checks presence (not order)
-    - Only checks last 10 tools in session history
-    - Does NOT match parameters between tools
+    Single-cloud MVP behavior:
+    - Checks presence (not order) of required tools in last 10 history entries
+    - Loaded from config/tool_requirements.yaml
 
-    Example:
-    - process_refund requires check_order to be called first
-    - reverse_refund requires process_refund to be called first
+    Cross-cloud (Workstream 15):
+    - Honors `cross_cloud_dependencies` on the agent policy.
+    - For each dep where the requested tool is in `required_before`, requires a
+      matching prior tool call by the named target_agent within max_age_seconds.
+    - DENY with violation_type=CROSS_CLOUD_SEQUENCE_VIOLATION when unmet.
+    - Requires a `policy_engine` injection to look up the policy; if absent,
+      cross-cloud checks are silently skipped (degrades to single-cloud behavior).
+
+    Example (Scenario S3 — Swiggy egg-fraud, cross-cloud):
+    - process_refund on sentra-mvp-customer-service-agent requires
+      verify_image_authenticity on azure-verification-agent within 300s.
     """
 
-    def __init__(self, config_path: str = None):
-        # Load requirements from config/tool_requirements.yaml
+    def __init__(self, config_path: str = None, policy_engine: Optional[Any] = None):
+        # Load single-cloud requirements from config/tool_requirements.yaml
         self.requirements = self._load_requirements(config_path)
-        logger.info(f"Loaded {len(self.requirements)} tool requirements")
+        # Workstream 15: optional policy_engine for cross-cloud lookups
+        self.policy_engine = policy_engine
+        logger.info(
+            f"Loaded {len(self.requirements)} tool requirements "
+            f"(cross_cloud_enabled={'yes' if policy_engine else 'no'})"
+        )
 
     def _load_requirements(self, config_path: str = None) -> Dict:
         """
@@ -72,11 +89,17 @@ class ContextValidator:
             logger.exception(f"Error loading tool requirements: {e}")
             return {}
 
+    @stamps(Source.SENTRA_CONTEXT)
     async def validate_sequence(
         self, session: Dict, request: ValidationRequest
     ) -> ValidationResult:
         """
         Validate that required tools were called before this tool.
+
+        Runs in two passes:
+          1. Single-cloud: config/tool_requirements.yaml (presence-only)
+          2. Cross-cloud (Workstream 15): policy.cross_cloud_dependencies
+             (target_agent + target_tool + max_age_seconds)
 
         Args:
             session: Session data with tool_history
@@ -87,46 +110,37 @@ class ContextValidator:
         """
         try:
             tool_name = request.tool_name
-
-            # Check if tool has requirements
-            if tool_name not in self.requirements:
-                logger.debug(f"No requirements for tool: {tool_name}")
-                return ValidationResult(
-                    decision="ALLOW",
-                    reason="No sequence requirements",
-                    should_deny=False,
-                )
-
-            # Extract called tools from session history (last 10)
             tool_history = session.get("tool_history", [])
-            called_tools = [item["tool_name"] for item in tool_history[-10:]]
+            called_tools = [item.get("tool_name") for item in tool_history[-10:]]
 
             logger.debug(
                 f"Checking sequence for {tool_name}. History (last 10): {called_tools}"
             )
 
-            # Check if ALL required tools were called
-            required_tools = self.requirements[tool_name].get("requires", [])
-            missing_tools = []
+            # ----- Pass 1: single-cloud requirements (tool_requirements.yaml) -----
+            if tool_name in self.requirements:
+                required_tools = self.requirements[tool_name].get("requires", [])
+                missing_tools = [t for t in required_tools if t not in called_tools]
+                if missing_tools:
+                    logger.warning(
+                        f"Sequence violation: {tool_name} requires {missing_tools} "
+                        f"but not found in history"
+                    )
+                    return ValidationResult(
+                        decision="DENY",
+                        reason=f"Must call '{missing_tools[0]}' before '{tool_name}'",
+                        violation_type="SEQUENCE_VIOLATION",
+                        penalty=-15,
+                        should_deny=True,
+                    )
 
-            for required in required_tools:
-                if required not in called_tools:
-                    missing_tools.append(required)
+            # ----- Pass 2: cross-cloud dependencies (Workstream 15) -----
+            cross_cloud_result = await self._check_cross_cloud_dependencies(
+                request, tool_history
+            )
+            if cross_cloud_result is not None:
+                return cross_cloud_result
 
-            if missing_tools:
-                logger.warning(
-                    f"Sequence violation: {tool_name} requires {missing_tools} "
-                    f"but not found in history"
-                )
-                return ValidationResult(
-                    decision="DENY",
-                    reason=f"Must call '{missing_tools[0]}' before '{tool_name}'",
-                    violation_type="SEQUENCE_VIOLATION",
-                    penalty=-15,
-                    should_deny=True,
-                )
-
-            # All required tools present
             logger.debug(f"Sequence validation passed for {tool_name}")
             return ValidationResult(
                 decision="ALLOW",
@@ -144,3 +158,96 @@ class ContextValidator:
                 penalty=-10,
                 should_deny=True,
             )
+
+    async def _check_cross_cloud_dependencies(
+        self, request: ValidationRequest, tool_history: List[Dict]
+    ) -> Optional[ValidationResult]:
+        """Workstream 15: enforce policy.cross_cloud_dependencies.
+
+        Returns a DENY ValidationResult if a cross-cloud prerequisite is unmet,
+        or None to continue the pipeline. Silently no-ops if no policy_engine
+        was injected (degrades gracefully to single-cloud behavior).
+        """
+        if self.policy_engine is None:
+            return None
+
+        try:
+            policy = await self.policy_engine.get_agent_policy(request.agent_id)
+        except Exception as e:
+            # If policy lookup fails here, the policy_engine validator (Step 2)
+            # will have already denied. Defensive: no-op.
+            logger.debug(f"Cross-cloud dep check: policy lookup failed: {e}")
+            return None
+
+        deps = policy.get("cross_cloud_dependencies") or []
+        if not deps:
+            return None
+
+        # Find dependencies that apply to the requested tool
+        applicable = [
+            d for d in deps
+            if request.tool_name in (d.get("required_before") or [])
+        ]
+        if not applicable:
+            return None
+
+        now_ms = int(time.time() * 1000)
+
+        for dep in applicable:
+            target_agent = dep.get("target_agent")
+            target_tool = dep.get("target_tool")
+            max_age_s = int(dep.get("max_age_seconds", 0))
+            if not (target_agent and target_tool and max_age_s > 0):
+                # Malformed dep — log and skip (don't fail-secure here; YAML
+                # validation should catch malformed deps before they land).
+                logger.warning(f"Skipping malformed cross_cloud_dependency: {dep}")
+                continue
+
+            cutoff_ms = now_ms - max_age_s * 1000
+
+            # Walk history newest-first looking for a matching entry
+            match_found = False
+            for entry in reversed(tool_history):
+                if entry.get("tool_name") != target_tool:
+                    continue
+                if entry.get("agent_id") != target_agent:
+                    # If agent_id is missing from the entry (legacy data), we
+                    # cannot verify cross-cloud provenance — skip this entry.
+                    continue
+                ts = entry.get("timestamp")
+                if ts is None:
+                    continue
+                try:
+                    ts_ms = int(ts)
+                except (TypeError, ValueError):
+                    continue
+                if ts_ms >= cutoff_ms:
+                    match_found = True
+                    age_s = (now_ms - ts_ms) / 1000.0
+                    logger.debug(
+                        f"Cross-cloud dep satisfied: {target_agent}.{target_tool} "
+                        f"observed {age_s:.1f}s ago (max {max_age_s}s)"
+                    )
+                    break
+
+            if not match_found:
+                logger.warning(
+                    f"Cross-cloud dependency NOT met: {request.agent_id} cannot call "
+                    f"'{request.tool_name}' without recent {target_agent}.{target_tool} "
+                    f"(within {max_age_s}s)"
+                )
+                return ValidationResult(
+                    decision="DENY",
+                    reason=(
+                        f"cross_cloud_dependency_not_met: "
+                        f"{target_agent}.{target_tool} required within {max_age_s}s "
+                        f"before '{request.tool_name}'"
+                    ),
+                    violation_type="CROSS_CLOUD_SEQUENCE_VIOLATION",
+                    violated_policy=f"cross_cloud_dependencies:{target_agent}.{target_tool}",
+                    penalty=-15,
+                    should_deny=True,
+                )
+
+        # All applicable cross-cloud dependencies satisfied
+        return None

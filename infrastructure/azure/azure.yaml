@@ -1,0 +1,36 @@
+# azd project descriptor for AegionAI cross-cloud demo (Workstream 15 M3).
+# Mirrors the CDK side on AWS — `azd up` provisions infra AND publishes the
+# Function source; `azd down` tears down cleanly per the demo-and-tear-down
+# strategy in WS15 M6 (best-practices.md §11 Azure).
+#
+# DO NOT add a custom deploy.sh bash wrapper. `azd up` IS the entry point.
+
+name: aegionai-cross-cloud-demo
+metadata:
+  template: aegionai-ws15-m3@0.1.0
+
+# Infra is defined under ./infra (Bicep, see main.bicep).
+infra:
+  provider: bicep
+  path: infra
+  module: main
+
+# Services declared here are deployed by `azd deploy` and bundled into `azd up`.
+# Once Task 3.2 lands the Function code, this section publishes the source to
+# the Function App provisioned by Bicep — no `func azure functionapp publish`
+# needed in the CI/demo path.
+services:
+  tool-interceptor:
+    project: ../../src/connectors/azure_foundry/azure_function/tool_interceptor
+    language: python
+    host: function
+    # The Bicep output `FUNCTION_APP_NAME` tells azd which Function App to publish to.
+
+# Post-provision hook: seed the Sentra API key into Key Vault from AWS Secrets
+# Manager so the Function MI can read it. Idempotent — safe to re-run.
+hooks:
+  postprovision:
+    shell: sh
+    run: ./scripts/seed-api-key.sh
+    continueOnError: false
+    interactive: false

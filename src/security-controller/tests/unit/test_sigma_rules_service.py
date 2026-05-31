@@ -314,14 +314,17 @@ class TestSigmaRulesServiceGetRuleContent:
         mock_table.get_item.return_value = {'Item': sample_sigma_rule}
         mock_dynamodb.return_value.Table.return_value = mock_table
         
-        # Mock S3 client
+        # Mock S3 client. The S3 get_object response is dict-like (Body is
+        # accessed via `obj['Body']`), so we need MagicMock (which supports
+        # __getitem__) rather than a plain Mock for the response object.
         with patch('app.services.sigma_rules_service.boto3.client') as mock_s3:
             s3_mock = Mock()
-            s3_obj = Mock()
-            s3_obj['Body'].read.return_value = b'title: Test Sigma Rule\ndetection:\n  condition: test'
+            body_mock = Mock()
+            body_mock.read.return_value = b'title: Test Sigma Rule\ndetection:\n  condition: test'
+            s3_obj = {'Body': body_mock}
             s3_mock.get_object.return_value = s3_obj
             mock_s3.return_value = s3_mock
-            
+
             # Create service and test
             service = SigmaRulesService()
             result = await service.get_sigma_rule_content('sigma-llm-001')

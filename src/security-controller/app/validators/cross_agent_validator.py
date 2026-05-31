@@ -14,6 +14,8 @@ import logging
 from typing import Optional
 
 from app.api.models import ValidationRequest, ValidationResult
+from app.combiners import Source
+from app.validators._signal_stamp import stamps
 
 logger = logging.getLogger(__name__)
 
@@ -36,6 +38,7 @@ class CrossAgentValidator:
         from app.validators.policy_engine import PolicyEngine
         self.policy_engine = PolicyEngine()
 
+    @stamps(Source.SENTRA_CROSS_AGENT)
     async def validate(self, request: ValidationRequest) -> ValidationResult:
         """
         Validate cross-agent call.

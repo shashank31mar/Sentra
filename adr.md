@@ -1002,18 +1002,170 @@ VPC Internal → Private ALB → Security Controller
 
 ---
 
-## Future ADRs to Consider (Post-MVP)
+## ADR-020: Azure First, GCP Fast-Follow for Cross-Cloud Demo
 
-- **ADR-020**: Migration from ECS Fargate to EKS
-- **ADR-021**: Adding CEDAR policy language support
-- **ADR-022**: ML-based anomaly detection
-- **ADR-023**: Automated rollback for low-risk actions
-- **ADR-024**: Multi-region deployment strategy
-- **ADR-025**: Integration with external SIEM systems
+**Date**: May 2026
+**Status**: Accepted
+
+### Context
+
+AegionAI's investor thesis is cross-cloud governance, but the live demo runs on AWS only. The pitch deck v4 commits to a live AWS + Azure cross-cloud demo as the Month 2 milestone gating the seed-raise narrative. We needed to choose which second cloud to add first: Azure AI Foundry, GCP Vertex AI, or OpenAI Assistants API.
+
+### Decision
+
+Add Azure AI Foundry as the second cloud in Phase 1 (Weeks 1–2). GCP Vertex AI follows in Phase 2 (Weeks 3–4) behind the same connector abstraction. OpenAI Assistants API is explicitly off the table for investor demos.
+
+### Rationale
+
+- **Matches pitch deck v4 commitment**: Investors saw the v4 deck name "AWS + Azure" as the Month 2 milestone. Shipping what was promised builds credibility.
+- **Lowest translation overhead**: Azure AI Foundry's tool-calling is OpenAI-compatible. The Azure Function interceptor mirrors the existing AWS Lambda 1:1, with different SDK clients. GCP's Gemini function-call schema requires a translation layer (more divergent).
+- **Engineering effort**: Azure is ~2 weeks end-to-end (connector + Function + Bicep + scenarios). GCP would be ~2.5–3 weeks for the same scope. Once the connector abstraction is proven, GCP becomes ~1.5 weeks.
+- **Investor narrative**: AWS + Azure = two top-2 hyperscalers, structurally competing. OpenAI Assistants is a SaaS, not a cloud — sophisticated reviewers (Travis Priest's feedback explicitly) will discount it.
+
+### Consequences
+
+- ✅ Demo aligns exactly with pitch deck v4 commitments and investor expectations.
+- ✅ Azure-first builds the connector abstraction; GCP is mostly subclassing the abstraction afterward.
+- ✅ Two-week timeline for Phase 1 fits the Month 2 milestone gate.
+- ⚠️ GCP design-partner conversations wait until Phase 2 (Week 4) — acceptable because design-partner outreach starts after the investor demo is recorded.
+- ⚠️ Bicep ramp-up required for the engineer owning the Azure stack — budgeted at 2 days inside Phase 1.
+
+### Alternatives Considered
+
+1. **GCP Vertex AI first**: Strong narrative ("two hyperscalers"), but breaks the v4 deck commitment and adds ~1 week of translation work for the Gemini function-call schema.
+2. **OpenAI Assistants API first**: Fastest (1 week), but narratively weak. Any sophisticated infrastructure-security investor will call it out within 30 seconds.
+3. **All three clouds simultaneously**: Pushes the timeline from 2 weeks to ~5 weeks — misses the Month 2 milestone and the seed-raise window.
+
+### References
+
+- **LLD 15**: Cross-Cloud Connectors
+- **Workstream 15**: Execution tracking
+- **Pitch deck v4**: §11 Month 2 milestones
+- **Investor feedback**: Travis Priest, March 2026 — "until it works on camera across AWS + Azure, you're selling a slide, not a product"
 
 ---
 
-**Document Version**: 2.1
-**Last Updated**: November 23, 2025
+## ADR-021: Connector Abstraction with Foreign-Cloud Interceptors
+
+**Date**: May 2026
+**Status**: Accepted
+
+### Context
+
+The cross-cloud demo requires Sentra to govern AI agents running on any major cloud (AWS Bedrock, Azure AI Foundry, GCP Vertex AI). The security controller's `/v1/validate` endpoint is already cloud-agnostic, but there is no existing abstraction for either (a) invoking native cloud agents from the dashboard or (b) intercepting tool calls inside foreign clouds. Need a pattern that scales to N clouds without forcing a common runtime.
+
+### Decision
+
+Use a two-layer pattern:
+
+1. **Dashboard-side `AgentConnector` ABC** (Python) — one concrete subclass per cloud. Used by the dashboard, demo orchestrator, and integration tests. Not in the security path.
+2. **Foreign-cloud interceptor** (per cloud) — Lambda for AWS, Azure Function for Azure, Cloud Run for GCP. Lives inside the foreign cloud, intercepts native tool calls, POSTs to `/v1/validate`, returns native-format ALLOW/DENY. This **is** the security path.
+
+The dashboard layer and the interceptor layer share a translation contract — foreign tool event ↔ `ValidationRequest` — but are otherwise independent.
+
+### Rationale
+
+- **Separation of concerns**: Dashboard convenience vs. security enforcement are distinct concerns deployed in different environments. Coupling them would force the dashboard to live inside each cloud (or vice versa) — neither acceptable.
+- **Per-cloud native idioms**: Each cloud has the right way to host an HTTP interceptor (Lambda handler, Azure Function binding, Flask on Cloud Run). Forcing a common runtime (e.g., all-Kubernetes) sacrifices the speed advantage of per-cloud serverless.
+- **Reference implementation already exists**: The Bedrock Action Group Lambda at [lambda/bedrock_agent_actions/index.py:61-118](../lambda/bedrock_agent_actions/index.py) is the canonical interceptor. Every new cloud's interceptor mirrors its `validate_with_sentra()` function line-for-line.
+- **Backward compatibility for Bedrock dashboard**: Existing `BedrockAgentCaller` becomes a thin shim around the new `BedrockConnector`. No changes required to `src/dashboard/tabs/agents_tab.py`.
+
+### Consequences
+
+- ✅ Adding a new cloud is two files: a new `XYZConnector(AgentConnector)` for the dashboard plus a new interceptor under `src/connectors/xyz/<runtime>/tool_interceptor/`.
+- ✅ Security controller stays single-deployment, single-URL — no per-cloud forking.
+- ✅ Validation pipeline (Trust → Policy → Sigma → Context → Abuse) sees all clouds uniformly.
+- ✅ Backward compatibility: legacy dashboard imports work unchanged via a shim.
+- ⚠️ Two layers must stay in sync via the `ValidationRequest` schema — schema changes require updating every interceptor. Mitigation: schema is small (<10 fields) and frozen for Phase 1.
+- ⚠️ Cross-cloud network latency budget: ~120ms p95 vs. 80ms single-cloud. Mitigation: paired-region deployment, controller behind regional ALB.
+
+### Alternatives Considered
+
+1. **Single all-Kubernetes deployment with cloud connectors as pods**: Forces the customer/demo to run K8s in every cloud. Defeats the "deploy as a sidecar in your existing cloud" sell.
+2. **A single SDK consumed by agents directly**: Requires agent-code changes for every customer. Defeats the "no SDK changes" sell in the pitch deck.
+3. **A managed-SaaS gateway in front of every cloud's agents**: Works for B2C, fails for regulated markets (on-prem requirement). Phase 1 demo must support both deployment models.
+
+### References
+
+- **LLD 15**: Cross-Cloud Connectors §3 and §6
+- **Workstream 15**: Milestone 1 (Tasks 1.1 and 1.2) implements this pattern
+- **Existing reference implementation**: `lambda/bedrock_agent_actions/index.py`
+- **Pitch deck v4 architectural narrative**: §6 (Kubernetes sidecar pattern), §7 (Wiz/Aqua structural incompatibility — they cannot do inline enforcement)
+
+---
+
+## ADR-022: Fix REST API Gateway via NLB + VPC Link
+
+**Date**: May 2026
+**Status**: Accepted
+
+### Context
+
+During Workstream 15 Milestone 2 smoke-testing, every `/v1/*` call to the deployed API Gateway URL (`https://iw3limi4k7.execute-api.us-east-1.amazonaws.com/prod/`) returned HTTP 500 with `Execution failed due to configuration error: Invalid endpoint address`. Root cause: [`cdk/utils/api_gateway_helpers.py:58`](cdk/utils/api_gateway_helpers.py) configures every integration with `ConnectionType.INTERNET` while the URI targets the Private ALB's `internal-*.elb.amazonaws.com` hostname — VPC-internal DNS that cannot be reached over the public internet by design. **The API Gateway has never been functional**, which means the Bedrock Action Group Lambda's calls to `/v1/validate` have been silently failing too.
+
+The cross-cloud demo (Workstream 15 M3) was designed to have the Azure Function POST to this same URL. M3 cannot proceed until the gateway works.
+
+The Public ALB has Cognito SSO as its default action; bypassing Cognito on a publicly-routable path on that ALB would be a SOC2 finding for an AI security product and is therefore not an option.
+
+### Decision
+
+Fix the existing REST API Gateway by adding the missing private-integration plumbing AWS designed for exactly this purpose:
+
+1. Add an internal **Network Load Balancer (NLB)** in private subnets, with a target group of type ALB targeting the existing Private ALB.
+2. Add a **VPC Link** from API Gateway → the NLB.
+3. Change the integration helper from `ConnectionType.INTERNET` → `ConnectionType.VPC_LINK` and update the integration URI to use the NLB's DNS name.
+
+Two entry points remain, each with the right auth model:
+- **Public ALB**: human traffic, Cognito SSO.
+- **API Gateway**: programmatic traffic, API key + Usage Plan.
+
+### Rationale
+
+- Restores the original [LLD 02](lld/02-api-gateway.md) and [design-hld.md §2.2](design-hld.md) design intent — API Gateway as the single programmatic entry point.
+- Preserves the Cognito security boundary on the Public ALB (no bypass).
+- Unblocks both Workstream 15 M3 (cross-cloud demo) and the pre-existing Bedrock Lambda silent-failure in one change.
+- Minimal CDK surface area — one new SG, one new NLB + target group, one new VPC Link, one helper function update that cascades to all 22 routes.
+- Same API Gateway URL — no downstream client changes required (Bedrock Lambda env var stays as-is).
+- Canonical AWS-documented pattern: [REST API Gateway Private Integration via VPC Link](https://docs.aws.amazon.com/apigateway/latest/developerguide/getting-started-with-private-integration.html).
+- CDK constructs all verified available in pinned `aws-cdk-lib==2.114.1`.
+
+### Consequences
+
+- ✅ Bedrock Lambda → `/v1/validate` calls work end-to-end (closes silent-failure since deploy).
+- ✅ Cross-cloud Azure Function can target the same URL — M3 unblocked.
+- ✅ Existing API Gateway URL preserved — no downstream client config changes.
+- ⚠️ NLB monthly cost: ~$18 + Load Balancer Capacity Units. Acceptable for always-on infra.
+- ⚠️ VPC Link provisioning is slow (5–10 min on first creation). One-time cost during deploy.
+- ⚠️ Brief 5xx window (~30s) during integration cutover. Acceptable; dev environment.
+
+### Alternatives Considered
+
+1. **Add `/v1/*` rule to Public ALB that bypasses Cognito** — Rejected: SOC2 finding for an AI security product; sharp investor or security review would flag a public endpoint with weaker auth than the dashboard pages it shares an ALB with.
+2. **Cognito M2M (client_credentials) flow for Azure** — Rejected: premature complexity. Cognito on Public ALB is designed for human SSO. API Gateway already has clean machine-to-machine auth (API keys).
+3. **Migrate to HTTP API Gateway (newer, supports VPC Link to ALB directly)** — Rejected: requires rewriting every route in CDK with different constructs (effort: 1–1.5 days vs ~1 day for the NLB+VPC Link fix). URL pattern would change too.
+4. **New dedicated API ALB without Cognito** — Rejected: same "public endpoint without SSO" optics on a different ALB; doesn't fix the security concern, just hides it behind a different name.
+5. **Lambda Function URL as a VPC proxy** — Rejected: adds Lambda cold-start latency on every validate call; Function URLs have weaker auth options than API Gateway Usage Plans.
+
+### References
+
+- **LLD 16**: [API Gateway VPC Link Networking](lld/16-apigw-vpc-link-networking.md) — detailed design + diagrams + stack ownership
+- **Workstream 16**: [API Gateway VPC Link Fix](tasks/workstream-16-apigw-vpc-link-networking.md) — execution tracking
+- **AWS Docs**: [REST API Gateway Private Integration with VPC Link to NLB](https://docs.aws.amazon.com/apigateway/latest/developerguide/getting-started-with-private-integration.html)
+
+---
+
+## Future ADRs to Consider (Post-MVP)
+
+- **ADR-023**: Migration from ECS Fargate to EKS
+- **ADR-024**: Adding CEDAR policy language support
+- **ADR-025**: ML-based anomaly detection layer
+- **ADR-026**: Automated rollback for low-risk actions
+- **ADR-027**: Multi-region deployment strategy
+- **ADR-028**: Integration with external SIEM systems
+
+---
+
+**Document Version**: 2.2
+**Last Updated**: May 22, 2026
 **Status**: Active - Reference during implementation
 **Next Review**: Post-MVP (after Week 4)

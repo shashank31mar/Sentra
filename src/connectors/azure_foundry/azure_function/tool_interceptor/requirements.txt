@@ -1,0 +1,4 @@
+# Only azure-functions is required — HTTP calls use stdlib urllib.request
+# instead of requests, sidestepping B1 Linux Oryx Remote Build issues with
+# external pip dependencies (lesson learned WS15 M3, 2026-05-23).
+azure-functions

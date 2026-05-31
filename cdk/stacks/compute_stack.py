@@ -17,10 +17,12 @@ from aws_cdk import (
     aws_iam as iam,
     aws_logs as logs,
     aws_elasticloadbalancingv2 as elbv2,
+    aws_elasticloadbalancingv2_targets as elbv2_targets,
     aws_servicediscovery as servicediscovery,
     aws_certificatemanager as acm,
     aws_acmpca as acmpca,
     aws_lambda as lambda_,
+    CfnResource,
 )
 from constructs import Construct
 from typing import Dict, Any
@@ -172,6 +174,15 @@ class ComputeStack(Stack):
         storage_stack.policies_metadata_table.grant_read_write_data(self.security_controller_task_role)
         storage_stack.sigma_rules_metadata_table.grant_read_data(self.security_controller_task_role)
 
+        # Validation Signal Store (Workstream 17 / LLD 17)
+        # Controller is the only writer (audit_logger dual-write) and a reader
+        # for /v1/sessions/{id}/decisions + /v1/decisions. grant_read_write_data
+        # covers PutItem/BatchWriteItem/Query on the table; GSI permissions are
+        # implicit (DDB grants apply to the table and its indexes).
+        storage_stack.validation_signal_store.table.grant_read_write_data(
+            self.security_controller_task_role
+        )
+
         # S3 permissions - read sigma_rules and policies, write debug_logs
         storage_stack.artifacts_bucket.grant_read(
             self.security_controller_task_role,
@@ -231,19 +242,61 @@ class ComputeStack(Stack):
         )
 
         # Bedrock permissions for validation and LLM-formatted DENY responses (Workstream 9)
+        # Workstream 19: explicitly include application-inference-profile/* so the
+        # ML classifier can invoke its dedicated aegionai-ml-classifier profile
+        # (LLD 19 §2.4). The trailing "*" already covered it via wildcard, but
+        # the explicit ARN makes the intent grep-able for future reviewers.
         self.security_controller_task_role.add_to_policy(
             iam.PolicyStatement(
                 actions=[
                     "bedrock:InvokeModel",
-                    "bedrock:ListFoundationModels"  # For health checks
+                    "bedrock:ListFoundationModels",  # For health checks
+                    "bedrock:GetInferenceProfile",   # WS19 — runtime sanity check of the ML profile
                 ],
                 resources=[
                     # Allow all foundation models and inference profiles
                     f"arn:aws:bedrock:*::foundation-model/*",
                     f"arn:aws:bedrock:*:{self.account}:inference-profile/*",
+                    f"arn:aws:bedrock:*:{self.account}:application-inference-profile/*",  # WS19
                     "*"  # ListFoundationModels requires wildcard resource
                 ]
             )
+        )
+
+        # ------------------------------------------------------------
+        # Workstream 19 / LLD 19 §8.4 — ML Threat Classifier Inference Profile
+        # ------------------------------------------------------------
+        # Workload-isolated routing target for the controller's ML classifier.
+        # Decouples cost / CloudWatch metrics / quota from any other Bedrock
+        # consumer (LLD 19 §2.4).
+        #
+        # CopyFrom MUST be a system inference profile ARN (the `us.` cross-
+        # region routing target), not the raw foundation-model ARN — Haiku 4.5
+        # does not support on-demand invocation, only inference-profile routing.
+        # Verified via standalone CFN probe before adoption.
+        #
+        # Raw CfnResource escape hatch because aws-cdk-lib 2.114.1 predates the
+        # typed CfnApplicationInferenceProfile construct (the aws_bedrock
+        # module doesn't exist that early). Synthesized CloudFormation is
+        # identical to what the typed construct would emit.
+        self.ml_classifier_inference_profile = CfnResource(
+            self,
+            "AegionAIMLClassifierProfile",
+            type="AWS::Bedrock::ApplicationInferenceProfile",
+            properties={
+                "InferenceProfileName": "aegionai-ml-classifier",
+                # Description regex is ([0-9a-zA-Z:.][ _-]?)+ — no parens, no em-dashes.
+                "Description": "ML threat classifier LLD 19 workload isolated",
+                "ModelSource": {
+                    "CopyFrom": f"arn:aws:bedrock:{self.region}:{self.account}:inference-profile/us.anthropic.claude-haiku-4-5-20251001-v1:0",
+                },
+                "Tags": [
+                    {"Key": "Workload", "Value": "ml-classifier"},
+                    {"Key": "Component", "Value": "security-controller"},
+                    {"Key": "CostCenter", "Value": "platform-security"},
+                    {"Key": "Workstream", "Value": "WS19"},
+                ],
+            },
         )
 
         # ------------------------------------------------------------
@@ -297,11 +350,27 @@ class ComputeStack(Stack):
                     "bedrock:InvokeAgent",
                     "bedrock:ListAgents",
                     "bedrock:GetAgent",
+                    # Workstream 18 / LLD 18 §4.2.3 — BedrockSchemaFetcher reads
+                    # the Action Group OpenAPI schema for direct-invoke type-tagging.
+                    "bedrock:ListAgentActionGroups",
+                    "bedrock:GetAgentActionGroup",
                 ],
                 resources=[
                     f"arn:aws:bedrock:{self.region}:{self.account}:agent/*",
                     f"arn:aws:bedrock:{self.region}:{self.account}:agent-alias/*",
                 ]
+            )
+        )
+
+        # Workstream 18 / LLD 18 §4.2 — direct-invoke the Action Group Lambda
+        # for deterministic Bedrock tool: steps in cross-cloud scenarios.
+        # Scoped to the one Action Group Lambda (v0.1 single-AG constraint).
+        self.dashboard_task_role.add_to_policy(
+            iam.PolicyStatement(
+                actions=["lambda:InvokeFunction"],
+                resources=[
+                    f"arn:aws:lambda:{self.region}:{self.account}:function:{prefix}-bedrock-agent-actions",
+                ],
             )
         )
 
@@ -387,13 +456,18 @@ class ComputeStack(Stack):
             description="Task role for Demo Orchestrator service",
         )
 
-        # Bedrock - Invoke Bedrock agents (secured and unsecured)
+        # Bedrock - Invoke Bedrock agents (secured and unsecured) +
+        # read action group OpenAPI schemas (Workstream 18 M3.2 — scenario
+        # validator at orchestrator startup needs these to type-check tool
+        # references in scenario YAMLs against deployed agent schemas).
         self.demo_orchestrator_task_role.add_to_policy(
             iam.PolicyStatement(
                 actions=[
                     "bedrock:InvokeAgent",
                     "bedrock:ListAgents",
-                    "bedrock:GetAgent"
+                    "bedrock:GetAgent",
+                    "bedrock:ListAgentActionGroups",  # WS18 M3.2
+                    "bedrock:GetAgentActionGroup",    # WS18 M3.2
                 ],
                 resources=["*"]
             )
@@ -524,6 +598,62 @@ class ComputeStack(Stack):
             security_group=network_stack.private_alb_sg,
             deletion_protection=False,
             idle_timeout=Duration.seconds(60)
+        )
+
+        # ============================================================
+        # API NLB (Workstream 16 — fronts API Gateway VPC Link traffic)
+        # ============================================================
+        # The NLB sits between API Gateway's VPC Link and the Private ALB.
+        # API Gateway can only target NLBs over a VPC Link (not ALBs directly,
+        # for REST APIs). NLB → ALB target type bridges the two.
+        # See LLD 16 §7.2-7.3 and ADR-022.
+
+        self.api_nlb = elbv2.NetworkLoadBalancer(
+            self,
+            "ApiNetworkLoadBalancer",
+            load_balancer_name="sentra-api-nlb",
+            vpc=network_stack.vpc,
+            internet_facing=False,  # Internal — only reachable from inside VPC (via VPC Link ENIs)
+            cross_zone_enabled=True,
+            vpc_subnets=ec2.SubnetSelection(subnet_type=ec2.SubnetType.PRIVATE_WITH_EGRESS),
+            security_groups=[network_stack.nlb_sg],
+            deletion_protection=False,
+        )
+
+        # NLB target group: target type = ALB; target = Private ALB.
+        # Available since aws-cdk-lib ≥2.30; verified in LLD 16 §3.
+        self.api_nlb_target_group = elbv2.NetworkTargetGroup(
+            self,
+            "ApiNlbTargetGroup",
+            target_group_name="sentra-api-nlb-tg",
+            vpc=network_stack.vpc,
+            port=80,
+            protocol=elbv2.Protocol.TCP,
+            target_type=elbv2.TargetType.ALB,
+            targets=[elbv2_targets.AlbTarget(self.private_alb, 80)],
+            # NOTE: deregistration_delay cannot be set on ALB-target type NLB target groups
+            # (AWS API rejects modification with InvalidRequest). The 300s default applies but
+            # only matters when removing live targets from the TG, not when `cdk destroy`-ing
+            # the whole stack. See LLD 16 §7.3 "AWS limitation".
+            health_check=elbv2.HealthCheck(
+                path="/v1/health",
+                protocol=elbv2.Protocol.HTTP,
+                # 'traffic-port' auto-tracks the target group's listener port (80 here).
+                # Avoids drift if the port is ever changed in one place but not the other.
+                port="traffic-port",
+                interval=Duration.seconds(30),
+                healthy_threshold_count=2,
+                unhealthy_threshold_count=2,
+            ),
+        )
+
+        self.api_nlb_listener = self.api_nlb.add_listener(
+            "ApiNlbListener",
+            port=80,
+            protocol=elbv2.Protocol.TCP,
+            default_action=elbv2.NetworkListenerAction.forward(
+                target_groups=[self.api_nlb_target_group]
+            ),
         )
 
         # ============================================================
@@ -771,6 +901,23 @@ class ComputeStack(Stack):
             export_name=f"{prefix}-private-alb-arn",
         )
 
+        # Workstream 16 — API NLB outputs (consumed by API Stack VPC Link)
+        CfnOutput(
+            self,
+            "ApiNlbDnsName",
+            value=self.api_nlb.load_balancer_dns_name,
+            description="API NLB DNS name (used by API Gateway integrations as base URL)",
+            export_name=f"{prefix}-api-nlb-dns-name",
+        )
+
+        CfnOutput(
+            self,
+            "ApiNlbArn",
+            value=self.api_nlb.load_balancer_arn,
+            description="API NLB ARN (referenced by API Gateway VPC Link)",
+            export_name=f"{prefix}-api-nlb-arn",
+        )
+
         CfnOutput(
             self,
             "SecurityControllerTargetGroupArn",
@@ -929,6 +1076,11 @@ def handler(event, context):
 
         self.container_log_groups = {}
 
+        # Shared between dashboard (default_azure_tool_invoker for S1 azure_attack
+        # and other azure_foundry tool: steps — LLD 15 §7.2) and demo-orchestrator
+        # (scenario validator's AzureToolFetcher — LLD 18 §4.5 / WS18 M3.3).
+        azure_function_tool_url = "https://aegionai-ws15-m3-func.azurewebsites.net/api/tool"
+
         service_configs = {
             "security-controller": {
                 "log_group_name": "/ecs/sentra/security-controller",
@@ -961,6 +1113,23 @@ def handler(event, context):
                     "POLICY_CACHE_TTL_SECONDS": "10",
                     "SIGMA_RULES_METADATA_CACHE_TTL_SECONDS": "600",
                     "MAX_CACHE_SIZE": "1000",
+                    # ML Threat Classifier (Workstream 19 / LLD 19) — ACTIVE in dev.
+                    # Flipped on 2026-05-30 per founder decision to skip the M3 shadow
+                    # phase and go straight to active. Trade accepted: ML's DENYs
+                    # influence customer verdicts without prior accuracy measurement
+                    # on real traffic. Rollback: flip back to "false" + cdk deploy.
+                    # SHADOW_MODE=true would record signals without affecting verdicts.
+                    "ML_CLASSIFIER_ENABLED": "true",
+                    "ML_CLASSIFIER_SHADOW_MODE": "false",
+                    "ML_CLASSIFIER_INFERENCE_PROFILE_ARN": self.ml_classifier_inference_profile.get_att("InferenceProfileArn").to_string(),
+                    "ML_CLASSIFIER_HOT_MODEL_ID": "anthropic.claude-haiku-4-5-20251001-v1:0",
+                    # Sonnet 4.6 only supports inference-profile invocation (not on-demand
+                    # foundation-model). Use the US cross-region system profile ID.
+                    "ML_CLASSIFIER_ESCALATION_MODEL_ID": "us.anthropic.claude-sonnet-4-6",
+                    "ML_CLASSIFIER_TIMEOUT_SECONDS": "2.0",
+                    "ML_CLASSIFIER_TOTAL_BUDGET_SECONDS": "2.5",
+                    "ML_CONFIDENCE_TRUST_THRESHOLD": "0.9",
+                    "ML_CONFIDENCE_ABSTAIN_THRESHOLD": "0.5",
                 },
                 "health_check_command": ["CMD-SHELL", "curl -f http://localhost:8080/v1/health || exit 1"],
             },
@@ -979,6 +1148,13 @@ def handler(event, context):
                     "SECURITY_CONTROLLER_URL": f"http://{self.private_alb.load_balancer_dns_name}",
                     "CUSTOMER_QUERY_AGENT_URL": f"http://{self.private_alb.load_balancer_dns_name}",
                     "PAYMENT_AGENT_URL": f"http://{self.private_alb.load_balancer_dns_name}",
+                    # Workstream 18 / LLD 18 §4.2 — direct-invoke target for Bedrock
+                    # tool: steps in cross-cloud scenarios.
+                    "BEDROCK_ACTION_GROUP_LAMBDA_ARN": f"arn:aws:lambda:{self.region}:{self.account}:function:{prefix}-bedrock-agent-actions",
+                    # LLD 15 §7.2 — default_azure_tool_invoker (cross_cloud_scenarios.py)
+                    # POSTs directly to this URL for S1 azure_attack and any other
+                    # azure_foundry tool: step.
+                    "AZURE_FUNCTION_TOOL_URL": azure_function_tool_url,
                 },
                 "health_check_command": ["CMD-SHELL", "curl -f http://localhost:8501/_stcore/health || exit 1"],
             },
@@ -994,7 +1170,20 @@ def handler(event, context):
                     "DEMO_ORDERS_TABLE": storage_stack.demo_orders_table.table_name,
                     "SECURITY_CONTROLLER_URL": f"http://{self.private_alb.load_balancer_dns_name}",
                     "PAYMENT_AGENT_URL": f"http://{self.private_alb.load_balancer_dns_name}",
-                    "BEDROCK_MODEL_ID": "us.anthropic.claude-3-5-sonnet-20241022-v2:0",  # Sonnet 3.5 v2 inference profile (faster, cheaper, no built-in guardrails)
+                    # Bedrock model: Amazon Nova Pro via Converse API. The agents
+                    # were originally pinned to Anthropic Claude Sonnet 3.5 v2,
+                    # which Bedrock retired (LEGACY → auto-disabled after 30
+                    # days of inactivity → ResourceNotFoundException at invoke).
+                    # The agents now use the provider-agnostic Converse API
+                    # (claude_processor.py) so this env var can point at any
+                    # Bedrock Converse-compatible model — Anthropic, Nova,
+                    # Mistral, etc. — without code changes. Nova Pro chosen
+                    # because the project's "unsecured" Bedrock agent
+                    # (cdk/config/bedrock_unsecured_agent_config.json) already
+                    # uses Nova Lite for the same reason: no built-in refusal
+                    # layer that would block demo prompts ("process a $100,000
+                    # refund", "ignore previous instructions", etc.).
+                    "BEDROCK_MODEL_ID": "us.amazon.nova-pro-v1:0",
                     "AWS_REGION": self.region,
                     "LOG_LEVEL": "INFO",
                 },
@@ -1010,7 +1199,9 @@ def handler(event, context):
                     "SERVICE_NAME": "payment-agent",
                     "DEMO_ORDERS_TABLE": storage_stack.demo_orders_table.table_name,
                     "SECURITY_CONTROLLER_URL": f"http://{self.private_alb.load_balancer_dns_name}",
-                    "BEDROCK_MODEL_ID": "us.anthropic.claude-3-5-sonnet-20241022-v2:0",  # Sonnet 3.5 v2 inference profile (faster, cheaper, no built-in guardrails)
+                    # See customer-query-agent block above for the full
+                    # rationale (Converse API + Nova Pro).
+                    "BEDROCK_MODEL_ID": "us.amazon.nova-pro-v1:0",
                     "AWS_REGION": self.region,
                     "LOG_LEVEL": "INFO",
                 },
@@ -1031,9 +1222,20 @@ def handler(event, context):
                     "AWS_REGION": self.region,
                     "LOG_LEVEL": "INFO",
                     "SCENARIOS_DIR": "/app/scenarios",
-                    "AUTO_START_CONTINUOUS": "true",  # Auto-start continuous scenarios on boot
+                    # Default OFF: continuous loops were firing scenarios at agents
+                    # whose Bedrock model was EOL, cascading into orchestrator health-check
+                    # failures + ECS replacement (~3 min into task lifetime). Manual
+                    # S1-S4 firing from the dashboard via /scenarios/{id}/trigger does
+                    # NOT depend on this flag and remains the demo path. Re-enable only
+                    # after agents are stable on a live model.
+                    "AUTO_START_CONTINUOUS": "false",
                     # Bedrock agent IDs discovered at runtime via ListAgents API
                     # No hardcoded IDs needed - eliminates CDK/Bedrock cyclic dependency
+                    # WS18 M3.3 — scenario validator's AzureToolFetcher queries
+                    # the Function App's /api/health to enumerate registered tools.
+                    "AZURE_FUNCTION_TOOL_URL": azure_function_tool_url,
+                    # SCENARIO_VALIDATION_STRICT NOT set here — default ("true") applies
+                    # per LLD 18 §4.5. Broken scenarios must never serve traffic.
                 },
                 "health_check_command": ["CMD-SHELL", "curl -f http://localhost:8080/health || exit 1"],
             },
@@ -1096,7 +1298,14 @@ def handler(event, context):
                     interval=Duration.seconds(30),
                     timeout=Duration.seconds(5),
                     retries=3,
-                    start_period=Duration.seconds(60),
+                    # 300s container-level grace. Generous, but cold start
+                    # for some services (notably demo-orchestrator: scenario
+                    # YAML load + Bedrock agent discovery + Azure tool
+                    # fetcher init) can exceed the default 60s. Aligned with
+                    # service-level health_check_grace_period below so the
+                    # ALB doesn't fail a target before the container's own
+                    # health check is even valid.
+                    start_period=Duration.seconds(300),
                 ),
             )
 
@@ -1139,7 +1348,7 @@ def handler(event, context):
                 vpc_subnets=ec2.SubnetSelection(subnet_type=ec2.SubnetType.PRIVATE_WITH_EGRESS),
                 security_groups=[security_group_map[service_name]],
                 circuit_breaker=ecs.DeploymentCircuitBreaker(rollback=True),  # Enable auto-rollback
-                health_check_grace_period=Duration.seconds(120),  # Give containers 120s to start before health checks
+                health_check_grace_period=Duration.seconds(300),  # Match container start_period (300s) — keeps ALB and Docker health-check windows aligned
                 enable_execute_command=True,  # Allow debugging via ECS Exec
                 # Enable Cloud Map service discovery using Network Stack's Service Discovery namespace
                 cloud_map_options=ecs.CloudMapOptions(

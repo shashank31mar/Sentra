@@ -18,7 +18,10 @@ class ValidationRequest(BaseModel):
     """
     Request schema for POST /validate endpoint.
 
-    All fields are required for proper validation.
+    Core fields are required for proper validation. Cross-cloud fields
+    (platform, cloud_region) are optional — when present, the controller
+    will use them as hints for the audit log and may override values
+    derived from the policy.
     """
     request_id: str = Field(..., description="Unique request identifier for tracing")
     session_id: str = Field(..., description="Session identifier")
@@ -29,6 +32,10 @@ class ValidationRequest(BaseModel):
     timestamp: str = Field(..., description="Request timestamp (ISO 8601)")
     operation_type: str = Field(..., description="Operation type: READ or WRITE")
     context: Optional[Dict[str, Any]] = Field(default_factory=dict, description="Additional context (user_id, ip_address, authorization_level, etc.)")
+    # Cross-cloud fields (Workstream 15) — interceptor-supplied hints.
+    # When absent, the controller resolves platform/cloud_region from the agent's policy.
+    platform: Optional[str] = Field(None, description="bedrock | azure_foundry | vertex_ai (optional; resolved from policy if absent)")
+    cloud_region: Optional[str] = Field(None, description="Native cloud region (optional; resolved from policy if absent)")
     
     class Config:
         json_schema_extra = {
@@ -55,6 +62,9 @@ class ValidationResponse(BaseModel):
     session_id: str = Field(..., description="Session identifier")
     latency_ms: float = Field(..., description="Validation latency in milliseconds")
     action_id: Optional[str] = Field(None, description="Action ID for reversible actions")
+    # Cross-cloud fields (Workstream 15)
+    platform: Optional[str] = Field(None, description="Cloud platform governing this agent (from policy)")
+    cloud_region: Optional[str] = Field(None, description="Cloud region of the agent (from policy)")
     
     class Config:
         json_schema_extra = {
@@ -82,6 +92,9 @@ class ValidationDenyResponse(BaseModel):
     session_id: str = Field(..., description="Session identifier")
     latency_ms: float = Field(..., description="Validation latency in milliseconds")
     violation_type: Optional[str] = Field(None, description="Type of violation")
+    # Cross-cloud fields (Workstream 15)
+    platform: Optional[str] = Field(None, description="Cloud platform governing this agent (from policy)")
+    cloud_region: Optional[str] = Field(None, description="Cloud region of the agent (from policy)")
     
     class Config:
         json_schema_extra = {
@@ -103,7 +116,11 @@ class ValidationResult(BaseModel):
     """
     Internal validation result from validators.
     """
-    decision: str  # ALLOW or DENY
+    # decision: "ALLOW", "DENY", or None for ABSTAIN (LLD 17 §4 + LLD 19 §5).
+    # ABSTAIN means "this validator declines to vote on this request" — the
+    # combiner treats absence-of-signal per LLD 17 §4. Used by the ML classifier
+    # when Bedrock is unavailable or confidence is too low to trust either tier.
+    decision: Optional[str] = None
     reason: str
     violation_type: Optional[str] = None
     threat_type: Optional[str] = None
@@ -111,6 +128,91 @@ class ValidationResult(BaseModel):
     severity: Optional[str] = None
     penalty: int = 0  # Trust score penalty (negative)
     should_deny: bool = False
+    # Cross-cloud fields (Workstream 15) — populated by policy_engine from the
+    # loaded policy; propagated through the pipeline so the orchestrator can
+    # surface them in the response and audit log.
+    platform: Optional[str] = None
+    cloud_region: Optional[str] = None
+    # violated_policy: optional reference to a policy-engine rule that triggered DENY
+    violated_policy: Optional[str] = None
+    # Signal source — Workstream 17 / LLD 17 §4. Every validator stamps its
+    # ValidationResult with the source taxonomy string (e.g. "sentra.sigma").
+    # ValidationService converts each result to a Signal via to_signal() and
+    # forwards the list to the audit logger + combiner. Defaults to None for
+    # backward compatibility — pre-W17 callers and synthetic results still work.
+    source: Optional[str] = None
+    # Optional ML-style confidence score (0.0-1.0). Combiner uses this as a
+    # secondary tie-break when priorities are equal.
+    confidence: Optional[float] = None
+    # Free-form metadata bag — validator-specific extras (e.g. ML classifier's
+    # model_used, model_id). Propagated to Signal.metadata for the audit log
+    # and dashboard expander.
+    metadata: Optional[Dict[str, Any]] = None
+
+    @classmethod
+    def abstain(cls, reason: str) -> "ValidationResult":
+        """Validator declines to vote on this request (LLD 17 §4, LLD 19 §5.2).
+
+        ABSTAIN means "this producer wasn't consulted" — the combiner treats it
+        as absence of signal, not as ALLOW. Used by the ML classifier on Bedrock
+        outage, low-confidence escalation failure, or feature-flag-disabled.
+
+        to_signal() returns None for an abstain result; validation_service's
+        _capture must check is_abstain() before appending to the signals list.
+        """
+        return cls(
+            decision=None,
+            reason=reason,
+            should_deny=False,
+            penalty=0,
+            metadata={"abstain": True},
+        )
+
+    @property
+    def is_abstain(self) -> bool:
+        """True if the validator declined to vote (decision=None)."""
+        return self.decision is None
+
+    def to_signal(self):
+        """Convert this result into a combiners.Signal — LLD 17 §6.
+
+        Imported lazily so models.py stays free of combiner imports during
+        Pydantic class construction (avoids a circular import path).
+
+        Returns None for abstain results (LLD 17 §4 absence semantics) — the
+        caller is responsible for skipping signal emission when this happens.
+        """
+        if self.is_abstain:
+            return None
+
+        from app.combiners import Signal, default_priority
+
+        if self.source is None:
+            raise ValueError(
+                "ValidationResult.to_signal: source is unset — validator "
+                "must stamp a Source.* taxonomy string before emission"
+            )
+        # Merge validator-specific extras into the metadata bag the audit log
+        # and dashboard expander surface. violation_type / violated_policy stay
+        # at the top level for back-compat with consumers that read them there.
+        signal_metadata: Dict[str, Any] = {
+            "violation_type": self.violation_type,
+            "violated_policy": self.violated_policy,
+        }
+        if self.metadata:
+            signal_metadata.update(self.metadata)
+
+        return Signal(
+            source=self.source,
+            decision=self.decision,
+            reason=self.reason if self.decision == "DENY" else None,
+            priority=default_priority(self.source),
+            confidence=self.confidence,
+            threat_type=self.threat_type,
+            matched_rule=self.matched_rule,
+            severity=self.severity,
+            metadata=signal_metadata,
+        )
 
 
 # ============================================================
@@ -138,6 +240,9 @@ class LogEntry(BaseModel):
     action_id: Optional[str] = None
     reversible: Optional[bool] = None
     rollback_status: Optional[str] = None
+    # Cross-cloud fields (Workstream 15) — enable per-cloud filtering of audit logs
+    platform: Optional[str] = None
+    cloud_region: Optional[str] = None
 
 
 class LogsResponse(BaseModel):

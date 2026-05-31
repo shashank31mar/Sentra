@@ -25,12 +25,17 @@ def aws_credentials(monkeypatch):
 
 @pytest.fixture
 def s3_bucket(aws_credentials):
-    """Create mock S3 bucket with Sigma rules"""
+    """Create mock S3 bucket + DDB metadata table for the hybrid sigma store.
+
+    The SigmaEngine queries `sentra-sigma-rules-metadata` (via the status-index
+    GSI for status='stable'), then downloads the YAML from S3 at the metadata's
+    s3_key. Tests must populate both layers.
+    """
     with mock_aws():
+        # ---- S3: rule YAML content ----
         s3 = boto3.client("s3", region_name=settings.aws_region)
         s3.create_bucket(Bucket=settings.s3_bucket)
 
-        # Upload sample Sigma rule
         rule_content = """
 title: Basic Prompt Injection Detection
 id: sigma-llm-001
@@ -51,11 +56,44 @@ detection:
 response:
   action: DENY
 """
+        s3_key = "sigma_rules/llm/prompt_injection_basic.yaml"
         s3.put_object(
             Bucket=settings.s3_bucket,
-            Key="sigma_rules/llm/prompt_injection_basic.yaml",
+            Key=s3_key,
             Body=rule_content.encode("utf-8"),
         )
+
+        # ---- DDB: metadata pointing at the S3 object ----
+        ddb = boto3.resource("dynamodb", region_name=settings.aws_region)
+        table = ddb.create_table(
+            TableName=settings.dynamodb_sigma_rules_metadata_table,
+            KeySchema=[
+                {"AttributeName": "rule_id", "KeyType": "HASH"},
+            ],
+            AttributeDefinitions=[
+                {"AttributeName": "rule_id", "AttributeType": "S"},
+                {"AttributeName": "status", "AttributeType": "S"},
+            ],
+            GlobalSecondaryIndexes=[
+                {
+                    "IndexName": "status-index",
+                    "KeySchema": [
+                        {"AttributeName": "status", "KeyType": "HASH"},
+                    ],
+                    "Projection": {"ProjectionType": "ALL"},
+                },
+            ],
+            BillingMode="PAY_PER_REQUEST",
+        )
+        table.put_item(Item={
+            "rule_id": "sigma-llm-001",
+            "title": "Basic Prompt Injection Detection",
+            "level": "high",
+            "status": "stable",
+            "s3_bucket": settings.s3_bucket,
+            "s3_key": s3_key,
+            "tags": ["llm.prompt_injection"],
+        })
 
         yield s3
 

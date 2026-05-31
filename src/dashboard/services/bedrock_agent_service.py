@@ -15,9 +15,16 @@ import time
 
 logger = logging.getLogger(__name__)
 
-# Agent name patterns for discovery (same as demo-orchestrator)
+# Agent name patterns for discovery (same as demo-orchestrator).
+# Three flavors of the customer-service agent:
+#   *-customer-service-agent            -> secured (Claude + guardrail + Sentra-calling Lambda)
+#   *-customer-service-agent-unsecured  -> unsecured (Nova Lite + direct Lambda, NO Sentra)
+#   *-customer-service-agent-naive      -> naive (Nova Lite + Sentra-calling Lambda, no guardrail)
+# Naive demonstrates the "Sentra protects even a misconfigured agent" story
+# (Workstream 15 M5 defense-in-depth narrative).
 SECURED_AGENT_PATTERN = "customer-service-agent"
 UNSECURED_AGENT_SUFFIX = "-unsecured"
+NAIVE_AGENT_SUFFIX = "-naive"
 
 
 class BedrockAgentService:
@@ -66,11 +73,14 @@ class BedrockAgentService:
                     security_type = None
                     display_name = agent_name
                     
-                    # Check for unsecured first (more specific pattern)
+                    # Check most-specific suffix first; bare pattern is the default.
                     if SECURED_AGENT_PATTERN in agent_name:
                         if agent_name.endswith(UNSECURED_AGENT_SUFFIX):
                             security_type = "unsecured"
                             display_name = "Bedrock Unsecured Agent"
+                        elif agent_name.endswith(NAIVE_AGENT_SUFFIX):
+                            security_type = "naive"
+                            display_name = "Bedrock Naive Agent (Sentra-protected)"
                         else:
                             security_type = "secured"
                             display_name = "Bedrock Secured Agent"

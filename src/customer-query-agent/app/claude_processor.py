@@ -1,17 +1,34 @@
 """
-Bedrock Claude Integration - Natural Language Processing
+Bedrock LLM Integration - Natural Language Processing
 Sentra MVP - Workstream 7 + Workstream 9 (LLM formatting)
 
-This module processes user messages with AWS Bedrock Claude Sonnet,
-handling tool execution with Security Controller validation,
-and formats responses using LLMResponseGenerator.
+This module processes user messages through AWS Bedrock using the
+provider-agnostic Converse API (instead of the Anthropic-native
+invoke_model body shape). The Converse API supports tool use across
+Anthropic, Amazon Nova, Mistral, and other Bedrock providers — letting
+the deployed BEDROCK_MODEL_ID move freely without code changes.
+
+Why Converse instead of invoke_model:
+- Older Anthropic-native shape required `anthropic_version`, `system`,
+  `messages` with `tool_use`/`tool_result` blocks. Nova and most other
+  Bedrock providers reject that body. Anthropic models that drop into
+  LEGACY status are also auto-disabled after 30 days of inactivity, so
+  the demo couldn't reliably stay on a single Anthropic model.
+- Converse normalizes the request/response across providers. Tool
+  schemas use `toolConfig.tools[*].toolSpec`; tool calls in the
+  response come back as `{"toolUse": {...}}` blocks; tool results are
+  sent back as `{"toolResult": {...}}` blocks.
+
+The public CUSTOMER_QUERY_TOOLS list keeps the original
+Anthropic-style schema as the canonical tool definition (used by
+tests and external references). It is converted at the boundary
+inside `process_with_claude` via `_to_converse_tool_config`.
 """
 
 import os
 import json
 import logging
-import sys
-from pathlib import Path
+import time
 from typing import Dict, List, Any, Optional
 from decimal import Decimal
 
@@ -46,7 +63,11 @@ TOOL_REGISTRY = {
 }
 
 
-# ==================== Tool Schemas for Claude ====================
+# ==================== Tool Schemas (Anthropic-native canonical form) ====================
+# These remain the project's canonical tool definitions. They are
+# converted to Converse `toolConfig` shape inside `process_with_claude`
+# via `_to_converse_tool_config`. Keeping the canonical form lets tests
+# and any external references stay unchanged.
 
 CUSTOMER_QUERY_TOOLS = [
     {
@@ -82,7 +103,7 @@ CUSTOMER_QUERY_TOOLS = [
     },
     {
         "name": "query_orders",
-        "description": "Query orders from the database with optional filters. Use this to find orders by customer, status, or amount.",
+        "description": "Query orders from the database. ALWAYS call this tool when a user asks to list, show, retrieve, or find orders — even without specifying a customer ID. For 'top N orders' or 'recent orders', use the limit filter (e.g., limit=5). No customer_id is required.",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -151,477 +172,359 @@ CUSTOMER_QUERY_TOOLS = [
 ]
 
 
+# ==================== Converse API helpers ====================
+
+def _to_converse_tool_config(tools: List[Dict]) -> Dict:
+    """Convert canonical Anthropic-style tool list to Bedrock Converse toolConfig.
+
+    Anthropic shape:   {"name", "description", "input_schema"}
+    Converse shape:    {"toolSpec": {"name", "description",
+                                     "inputSchema": {"json": <jsonschema>}}}
+    """
+    return {
+        "tools": [
+            {
+                "toolSpec": {
+                    "name": t["name"],
+                    "description": t.get("description", ""),
+                    "inputSchema": {"json": t["input_schema"]},
+                }
+            }
+            for t in tools
+        ]
+    }
+
+
+def _extract_text(content_blocks: List[Dict]) -> str:
+    """Extract concatenated text from a Converse content-block list."""
+    text = ""
+    for block in content_blocks or []:
+        if "text" in block:
+            text += block["text"]
+    return text
+
+
+def _extract_tool_uses(content_blocks: List[Dict]) -> List[Dict]:
+    """Return list of tool-use blocks from a Converse content-block list."""
+    return [block["toolUse"] for block in (content_blocks or []) if "toolUse" in block]
+
+
+def _tool_result_block(tool_use_id: str, payload: Any, *, is_error: bool = False) -> Dict:
+    """Build a Converse `toolResult` content block.
+
+    Converse expects content within a toolResult to be a list of typed
+    blocks. We always send JSON for both success and error payloads so
+    the model sees structured input.
+    """
+    if isinstance(payload, str):
+        # If the tool already returned a string, wrap it as JSON for consistency.
+        json_payload = {"text": payload}
+    else:
+        json_payload = payload
+    return {
+        "toolResult": {
+            "toolUseId": tool_use_id,
+            "content": [{"json": json_payload}],
+            **({"status": "error"} if is_error else {}),
+        }
+    }
+
+
 # ==================== Tool Execution ====================
 
 def execute_tool(tool_name: str, tool_params: Dict) -> Any:
-    """
-    Execute a tool by name
-
-    Args:
-        tool_name: Name of the tool to execute
-        tool_params: Parameters to pass to the tool
-
-    Returns:
-        Tool execution result
-
-    Raises:
-        ValueError: If tool not found
-        SecurityException: If Security Controller denies the action
-    """
+    """Execute a tool by name (validated by @secured_tool decorator)."""
     tool_function = TOOL_REGISTRY.get(tool_name)
-
     if not tool_function:
         raise ValueError(f"Tool '{tool_name}' not found in registry")
 
     logger.info(
         f"Executing tool: {tool_name}",
-        extra={
-            "tool_name": tool_name,
-            "params": tool_params
-        }
+        extra={"tool_name": tool_name, "params": tool_params},
     )
-
-    # Call tool (will be validated by @secured_tool decorator)
-    result = tool_function(**tool_params)
-
-    return result
+    return tool_function(**tool_params)
 
 
 # ==================== System Prompt ====================
 
-SYSTEM_PROMPT = """You are a Customer Query Agent for Sentra, a customer service platform.
+SYSTEM_PROMPT = """You are a Customer Query Agent for a demo customer service platform.
 
 Your capabilities:
 1. Query and retrieve customer information using query_customers or get_customer_by_id
 2. Query order information using query_orders
 3. Delegate refund and payment operations to the Payment Agent using call_payment_agent
 
-IMPORTANT RULES:
-- For ANY refund request, you MUST use the call_payment_agent tool. Do NOT just say you will process it - actually call the tool.
-- When a user asks to process a refund, ALWAYS call call_payment_agent with the refund details.
-- First gather customer/order information if needed, then call call_payment_agent for the actual refund.
-- Always wait for tool results before responding to the user.
-- Provide clear, helpful responses based on the actual tool results.
+CRITICAL RULES — YOU MUST FOLLOW THESE EXACTLY:
 
-Example flow for refund request:
-1. User: "Process a $300 refund for order ord-123"
-2. You: Call call_payment_agent with message "Process a $300 refund for order ord-123"
-3. Wait for result from Payment Agent
-4. Respond to user with the actual refund result
+1. ORDER QUERIES: For ANY message asking about orders (list orders, show orders, top N orders, recent orders, find orders, show me orders, etc.), you MUST call the query_orders tool immediately. Do NOT say you cannot access orders. Do NOT say you lack access. CALL THE TOOL. Examples:
+   - "list top 5 orders" → call query_orders with filters: {limit: 5}
+   - "show me recent orders" → call query_orders with filters: {limit: 10}
+   - "list orders" → call query_orders with no filters
+   - "show me order ORD-12345" → call query_orders
+   No customer_id is needed — you can list all orders.
 
-Never respond with "I will process" or "Let me process" without actually calling the appropriate tool."""
+2. REFUND REQUESTS: For ANY refund request, you MUST call call_payment_agent. Do NOT just describe what you will do.
+
+3. NEVER respond with "I don't have access" or "I cannot view order information" — you HAVE access, use the query_orders tool.
+
+4. Always wait for tool results before responding to the user.
+
+5. Provide clear, helpful responses based on actual tool results.
+
+Example: User says "list top 5 orders"
+→ You MUST call: query_orders(filters={"limit": 5})
+→ Wait for result → Summarize the orders returned
+
+Never respond without calling the appropriate tool first."""
 
 
-# ==================== Claude Processing ====================
+# ==================== Tool-call dispatch (shared by both turns) ====================
+
+def _dispatch_tool_call(
+    tool_use: Dict,
+    *,
+    request_id: str,
+) -> Dict:
+    """Execute a single tool-use block and return the matching toolResult block.
+
+    Mirrors the original (invoke_model) error taxonomy:
+      - SecurityException on a multi-agent call → re-raise so the parent agent
+        gets HTTP 403 (BUG-001 contract preserved).
+      - SecurityException on a single-agent call → return as toolResult so the
+        model can explain the denial in natural language.
+      - ValueError → returned as a structured business-logic error.
+      - Any other Exception → returned as a structured system error.
+    """
+    tool_name = tool_use["name"]
+    tool_params = tool_use.get("input") or {}
+    tool_use_id = tool_use["toolUseId"]
+
+    logger.info(
+        f"Model requested tool: {tool_name}",
+        extra={"request_id": request_id, "tool_name": tool_name, "tool_use_id": tool_use_id},
+    )
+
+    try:
+        tool_start = time.time()
+        result = execute_tool(tool_name, tool_params)
+        tool_latency = (time.time() - tool_start) * 1000
+        logger.info(
+            f"Tool executed successfully: {tool_name}",
+            extra={
+                "request_id": request_id,
+                "tool_name": tool_name,
+                "tool_use_id": tool_use_id,
+                "tool_latency_ms": round(tool_latency, 2),
+            },
+        )
+        # Coerce non-JSON-serializable types (Decimal etc.) by round-tripping.
+        coerced = json.loads(json.dumps(result, cls=DecimalEncoder)) if not isinstance(result, str) else result
+        return _tool_result_block(tool_use_id, coerced)
+
+    except SecurityException as e:
+        logger.warning(
+            f"Security Controller denied tool: {tool_name}",
+            extra={
+                "request_id": request_id,
+                "tool_name": tool_name,
+                "tool_use_id": tool_use_id,
+                "reason": str(e),
+                "matched_rules": e.matched_rules,
+            },
+        )
+
+        # Multi-agent contract (BUG-001): re-raise so parent gets HTTP 403.
+        from app.security_integration import get_current_context
+        context = get_current_context()
+        if context.get("parent_request_id"):
+            logger.info(
+                "Re-raising SecurityException for multi-agent call",
+                extra={
+                    "request_id": request_id,
+                    "parent_request_id": context.get("parent_request_id"),
+                    "caller_agent_id": context.get("caller_agent_id"),
+                },
+            )
+            raise
+
+        # Single-agent: surface denial back to the model as a tool error.
+        return _tool_result_block(
+            tool_use_id,
+            {
+                "error": "security_denial",
+                "reason": str(e),
+                "matched_rules": e.matched_rules,
+                "user_friendly_hint": "This action was blocked by security policies.",
+            },
+            is_error=True,
+        )
+
+    except ValueError as e:
+        logger.warning(
+            f"Tool validation failed (business logic): {tool_name}",
+            extra={
+                "request_id": request_id,
+                "tool_name": tool_name,
+                "tool_use_id": tool_use_id,
+                "error": str(e),
+            },
+        )
+        return _tool_result_block(
+            tool_use_id,
+            {
+                "error": "validation_error",
+                "error_type": "business_logic",
+                "message": str(e),
+                "hint": "This is a business validation issue, not a security block.",
+            },
+            is_error=True,
+        )
+
+    except Exception as e:
+        logger.error(
+            f"Tool execution failed: {tool_name}",
+            extra={
+                "request_id": request_id,
+                "tool_name": tool_name,
+                "tool_use_id": tool_use_id,
+                "error": str(e),
+                "error_type": type(e).__name__,
+            },
+            exc_info=True,
+        )
+        return _tool_result_block(
+            tool_use_id,
+            {
+                "error": "execution_error",
+                "error_type": "system_error",
+                "message": str(e),
+            },
+            is_error=True,
+        )
+
+
+# ==================== Main entry point ====================
+
+# Maximum number of model<->tool turns before we stop and return whatever
+# text the model produced. The original implementation supported up to 3
+# turns (initial + post-tool + post-tool-again). 4 keeps headroom in case a
+# more capable model needs an extra step.
+_MAX_TURNS = 4
+
 
 def process_with_claude(
     message: str,
     session_id: str,
     request_id: str,
-    available_tools: Optional[List[Dict]] = None
+    available_tools: Optional[List[Dict]] = None,
 ) -> Dict:
-    """
-    Process user message with AWS Bedrock Claude, handling tool execution
-
-    Flow:
-    1. Send message + tools to Claude
-    2. Claude returns tool_use blocks (if needed)
-    3. For each tool_use:
-       a. Execute tool via registry (validated by @secured_tool)
-       b. If SecurityException → send denial as tool_result (not raise exception)
-       c. Otherwise → send tool result
-    4. Send tool results back to Claude
-    5. Claude generates final natural language response
-    6. Return response to user
-
-    Args:
-        message: User's natural language message
-        session_id: Session identifier
-        request_id: Request identifier
-        available_tools: List of tool schemas (default: CUSTOMER_QUERY_TOOLS)
+    """Process a user message via Bedrock Converse, executing tools inline.
 
     Returns:
-        Dict with:
-            - text: Natural language response from Claude
-            - data: Optional structured data
+        {"text": <natural-language reply>, "data": {}}
     """
+    # Function name retained for backward compatibility with callers in
+    # routes.py and tests; despite the name, this works with any Bedrock
+    # Converse-compatible model (Anthropic, Nova, Mistral, etc.).
     if available_tools is None:
         available_tools = CUSTOMER_QUERY_TOOLS
 
-    # Get environment configuration
-    # Default to Sonnet 3.5 v2 (optimized for agentic tasks - faster and cheaper than Opus 4)
-    # Using inference profile for v2 (required for on-demand throughput)
-    bedrock_model_id = os.environ.get('BEDROCK_MODEL_ID', 'us.anthropic.claude-3-5-sonnet-20241022-v2:0')
-    region = os.environ.get('AWS_REGION', 'us-east-1')
+    bedrock_model_id = os.environ.get(
+        "BEDROCK_MODEL_ID", "us.amazon.nova-pro-v1:0"
+    )
+    region = os.environ.get("AWS_REGION", "us-east-1")
+    bedrock = boto3.client("bedrock-runtime", region_name=region)
 
-    # Initialize Bedrock client
-    bedrock = boto3.client('bedrock-runtime', region_name=region)
-
-    import time
     start_time = time.time()
-    
     logger.info(
-        "Processing message with Claude",
+        "Processing message via Bedrock Converse",
         extra={
             "request_id": request_id,
             "session_id": session_id,
             "message_length": len(message),
-            "model": bedrock_model_id
-        }
+            "model": bedrock_model_id,
+        },
     )
 
-    # Build initial messages
-    messages = [{"role": "user", "content": message}]
+    tool_config = _to_converse_tool_config(available_tools)
+    system = [{"text": SYSTEM_PROMPT}]
+    messages: List[Dict] = [{"role": "user", "content": [{"text": message}]}]
 
-    # Initial request to Claude with system prompt
-    request_body = {
-        "anthropic_version": "bedrock-2023-05-31",
-        "system": SYSTEM_PROMPT,
-        "messages": messages,
-        "tools": available_tools,
-        "max_tokens": 4096
-    }
+    initial_latency_ms: Optional[float] = None
+    response_text = ""
 
     try:
-        bedrock_start = time.time()
-        response = bedrock.invoke_model(
-            modelId=bedrock_model_id,
-            body=json.dumps(request_body)
-        )
-        bedrock_latency = (time.time() - bedrock_start) * 1000
-
-        response_body = json.loads(response['body'].read())
-
-        logger.info(
-            "Claude initial response received",
-            extra={
-                "request_id": request_id,
-                "stop_reason": response_body.get('stop_reason'),
-                "bedrock_latency_ms": round(bedrock_latency, 2)
-            }
-        )
-
-        # Check if Claude wants to use tools
-        if response_body.get('stop_reason') == 'tool_use':
-            tool_results = []
-
-            for content_block in response_body['content']:
-                if content_block.get('type') == 'tool_use':
-                    tool_name = content_block['name']
-                    tool_params = content_block['input']
-                    tool_use_id = content_block['id']
-
-                    logger.info(
-                        f"Claude requested tool: {tool_name}",
-                        extra={
-                            "request_id": request_id,
-                            "tool_name": tool_name,
-                            "tool_use_id": tool_use_id
-                        }
-                    )
-
-                    try:
-                        # Execute tool (validated by @secured_tool decorator)
-                        tool_start = time.time()
-                        result = execute_tool(tool_name, tool_params)
-                        tool_latency = (time.time() - tool_start) * 1000
-
-                        # Success - tool executed
-                        tool_results.append({
-                            "type": "tool_result",
-                            "tool_use_id": tool_use_id,
-                            "content": json.dumps(result, cls=DecimalEncoder) if not isinstance(result, str) else result
-                        })
-
-                        logger.info(
-                            f"Tool executed successfully: {tool_name}",
-                            extra={
-                                "request_id": request_id,
-                                "tool_name": tool_name,
-                                "tool_use_id": tool_use_id,
-                                "tool_latency_ms": round(tool_latency, 2)
-                            }
-                        )
-
-                    except SecurityException as e:
-                        # BUG-001 FIX: Different handling for single vs multi-agent calls
-                        logger.warning(
-                            f"Security Controller denied tool: {tool_name}",
-                            extra={
-                                "request_id": request_id,
-                                "tool_name": tool_name,
-                                "tool_use_id": tool_use_id,
-                                "reason": str(e),
-                                "matched_rules": e.matched_rules
-                            }
-                        )
-
-                        # Detect if this is a multi-agent call
-                        from app.security_integration import get_current_context
-                        context = get_current_context()
-                        is_multi_agent_call = bool(context.get('parent_request_id'))
-
-                        if is_multi_agent_call:
-                            # Multi-agent workflow: Re-raise so parent gets HTTP 403
-                            logger.info(
-                                f"Re-raising SecurityException for multi-agent call",
-                                extra={
-                                    "request_id": request_id,
-                                    "parent_request_id": context.get('parent_request_id'),
-                                    "caller_agent_id": context.get('caller_agent_id')
-                                }
-                            )
-                            raise
-                        else:
-                            # Single-agent call: Let Claude explain denial to end user
-                            logger.info(
-                                f"Returning denial as tool_result for single-agent call",
-                                extra={"request_id": request_id}
-                            )
-                            tool_results.append({
-                                "type": "tool_result",
-                                "tool_use_id": tool_use_id,
-                                "content": json.dumps({
-                                    "error": "security_denial",
-                                    "reason": str(e),
-                                    "matched_rules": e.matched_rules,
-                                    "user_friendly_hint": "This action was blocked by security policies."
-                                }, cls=DecimalEncoder),
-                                "is_error": True
-                            })
-
-                    except ValueError as e:
-                        # Business logic error (e.g., record not found, invalid parameters)
-                        logger.warning(
-                            f"Tool validation failed (business logic): {tool_name}",
-                            extra={
-                                "request_id": request_id,
-                                "tool_name": tool_name,
-                                "tool_use_id": tool_use_id,
-                                "error": str(e)
-                            }
-                        )
-
-                        tool_results.append({
-                            "type": "tool_result",
-                            "tool_use_id": tool_use_id,
-                            "content": json.dumps({
-                                "error": "validation_error",
-                                "error_type": "business_logic",
-                                "message": str(e),
-                                "hint": "This is a business validation issue, not a security block."
-                            }, cls=DecimalEncoder),
-                            "is_error": True
-                        })
-
-                    except Exception as e:
-                        # Tool execution error (system/database issues)
-                        logger.error(
-                            f"Tool execution failed: {tool_name}",
-                            extra={
-                                "request_id": request_id,
-                                "tool_name": tool_name,
-                                "tool_use_id": tool_use_id,
-                                "error": str(e),
-                                "error_type": type(e).__name__
-                            },
-                            exc_info=True  # Include full stack trace
-                        )
-
-                        tool_results.append({
-                            "type": "tool_result",
-                            "tool_use_id": tool_use_id,
-                            "content": json.dumps({
-                                "error": "execution_error",
-                                "error_type": "system_error",
-                                "message": str(e)
-                            }, cls=DecimalEncoder),
-                            "is_error": True
-                        })
-
-            # Send tool results back to Claude for final natural language response
-            messages.append({"role": "assistant", "content": response_body['content']})
-            messages.append({"role": "user", "content": tool_results})
-
-            # Get final response from Claude - include system prompt and tools for multi-turn
-            final_request_body = {
-                "anthropic_version": "bedrock-2023-05-31",
-                "system": SYSTEM_PROMPT,
-                "messages": messages,
-                "tools": available_tools,
-                "max_tokens": 4096
-            }
-
-            final_response = bedrock.invoke_model(
+        for turn in range(_MAX_TURNS):
+            converse_start = time.time()
+            response = bedrock.converse(
                 modelId=bedrock_model_id,
-                body=json.dumps(final_request_body)
+                system=system,
+                messages=messages,
+                toolConfig=tool_config,
+                inferenceConfig={"maxTokens": 4096},
             )
+            converse_latency = (time.time() - converse_start) * 1000
+            if turn == 0:
+                initial_latency_ms = converse_latency
 
-            final_body = json.loads(final_response['body'].read())
+            stop_reason = response.get("stopReason")
+            output_message = response.get("output", {}).get("message", {})
+            content_blocks = output_message.get("content", [])
 
             logger.info(
-                "Claude final response received",
+                "Converse response received",
                 extra={
                     "request_id": request_id,
-                    "stop_reason": final_body.get('stop_reason')
-                }
+                    "turn": turn,
+                    "stop_reason": stop_reason,
+                    "converse_latency_ms": round(converse_latency, 2),
+                },
             )
 
-            # Check if Claude wants to use more tools (multi-step workflow)
-            if final_body.get('stop_reason') == 'tool_use':
-                # Process additional tool calls
-                additional_tool_results = []
-                
-                for content_block in final_body['content']:
-                    if content_block.get('type') == 'tool_use':
-                        tool_name = content_block['name']
-                        tool_params = content_block['input']
-                        tool_use_id = content_block['id']
+            tool_uses = _extract_tool_uses(content_blocks)
 
-                        logger.info(
-                            f"Claude requested additional tool: {tool_name}",
-                            extra={
-                                "request_id": request_id,
-                                "tool_name": tool_name,
-                                "tool_use_id": tool_use_id
-                            }
-                        )
+            if stop_reason != "tool_use" or not tool_uses:
+                # Model produced its final natural-language reply.
+                response_text = _extract_text(content_blocks)
+                break
 
-                        try:
-                            tool_start = time.time()
-                            result = execute_tool(tool_name, tool_params)
-                            tool_latency = (time.time() - tool_start) * 1000
+            # Append the assistant turn (tool_use blocks) before responding
+            # with toolResult blocks — Converse requires the full turn to be
+            # echoed back.
+            messages.append({"role": "assistant", "content": content_blocks})
 
-                            additional_tool_results.append({
-                                "type": "tool_result",
-                                "tool_use_id": tool_use_id,
-                                "content": json.dumps(result, cls=DecimalEncoder) if not isinstance(result, str) else result
-                            })
-
-                            logger.info(
-                                f"Additional tool executed successfully: {tool_name}",
-                                extra={
-                                    "request_id": request_id,
-                                    "tool_name": tool_name,
-                                    "tool_use_id": tool_use_id,
-                                    "tool_latency_ms": round(tool_latency, 2)
-                                }
-                            )
-
-                        except SecurityException as e:
-                            logger.warning(
-                                f"Security Controller denied additional tool: {tool_name}",
-                                extra={
-                                    "request_id": request_id,
-                                    "tool_name": tool_name,
-                                    "tool_use_id": tool_use_id,
-                                    "reason": str(e)
-                                }
-                            )
-                            additional_tool_results.append({
-                                "type": "tool_result",
-                                "tool_use_id": tool_use_id,
-                                "content": json.dumps({
-                                    "error": "security_denial",
-                                    "reason": str(e),
-                                    "matched_rules": e.matched_rules
-                                }, cls=DecimalEncoder),
-                                "is_error": True
-                            })
-
-                        except Exception as e:
-                            logger.error(
-                                f"Additional tool execution failed: {tool_name}",
-                                extra={
-                                    "request_id": request_id,
-                                    "tool_name": tool_name,
-                                    "error": str(e)
-                                }
-                            )
-                            additional_tool_results.append({
-                                "type": "tool_result",
-                                "tool_use_id": tool_use_id,
-                                "content": json.dumps({
-                                    "error": "execution_error",
-                                    "message": str(e)
-                                }, cls=DecimalEncoder),
-                                "is_error": True
-                            })
-
-                # Send additional tool results back to Claude
-                messages.append({"role": "assistant", "content": final_body['content']})
-                messages.append({"role": "user", "content": additional_tool_results})
-
-                # Get truly final response
-                truly_final_request = {
-                    "anthropic_version": "bedrock-2023-05-31",
-                    "system": SYSTEM_PROMPT,
-                    "messages": messages,
-                    "max_tokens": 4096
-                }
-
-                truly_final_response = bedrock.invoke_model(
-                    modelId=bedrock_model_id,
-                    body=json.dumps(truly_final_request)
-                )
-
-                truly_final_body = json.loads(truly_final_response['body'].read())
-
-                logger.info(
-                    "Claude truly final response received",
-                    extra={
-                        "request_id": request_id,
-                        "stop_reason": truly_final_body.get('stop_reason')
-                    }
-                )
-
-                response_text = ""
-                for content_block in truly_final_body['content']:
-                    if content_block.get('type') == 'text':
-                        response_text += content_block['text']
-
-                return {
-                    "text": response_text,
-                    "data": {}
-                }
-
-            # Extract text response
-            response_text = ""
-            for content_block in final_body['content']:
-                if content_block.get('type') == 'text':
-                    response_text += content_block['text']
-
-            return {
-                "text": response_text,
-                "data": {}
-            }
+            tool_result_blocks = [
+                _dispatch_tool_call(tu, request_id=request_id) for tu in tool_uses
+            ]
+            messages.append({"role": "user", "content": tool_result_blocks})
 
         else:
-            # Claude responded directly without using tools
-            response_text = ""
-            for content_block in response_body['content']:
-                if content_block.get('type') == 'text':
-                    response_text += content_block['text']
-
-            logger.info(
-                "Claude responded without tools",
-                extra={
-                    "request_id": request_id,
-                    "response_length": len(response_text)
-                }
+            # Loop exhausted without hitting an `end_turn`/text-only reply.
+            logger.warning(
+                "Converse turn limit reached without final text",
+                extra={"request_id": request_id, "max_turns": _MAX_TURNS},
             )
+            # Best-effort: pull any text from the last assistant message.
+            response_text = _extract_text(content_blocks)
 
-            return {
-                "text": response_text,
-                "data": {}
-            }
+        total_latency = (time.time() - start_time) * 1000
+        logger.info(
+            "Request completed",
+            extra={
+                "request_id": request_id,
+                "total_latency_ms": round(total_latency, 2),
+                "initial_bedrock_ms": (
+                    round(initial_latency_ms, 2) if initial_latency_ms is not None else None
+                ),
+                "response_length": len(response_text),
+            },
+        )
+
+        return {"text": response_text, "data": {}}
 
     except Exception as e:
         logger.exception(
-            "Bedrock API error",
-            extra={
-                "request_id": request_id,
-                "error": str(e)
-            }
+            "Bedrock Converse error",
+            extra={"request_id": request_id, "error": str(e)},
         )
         raise

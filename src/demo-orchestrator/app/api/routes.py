@@ -90,14 +90,15 @@ def _get_agent_category(agent_id: str) -> str:
 @router.get("/scenarios")
 async def list_scenarios():
     """
-    List all available scenarios with metadata and status
-    
-    Returns:
-        List of scenarios with id, name, mode, interval, prompt count, status
+    List all available scenarios with metadata and status.
+
+    Workstream 15 M5: `azure_foundry` agents and the full `cross_cloud` block
+    are now included so the dashboard can route cross-cloud scenarios into
+    their dedicated card section in one round-trip (no per-scenario fetch).
     """
     scenarios = load_all_scenarios()
     orchestrator = get_orchestrator()
-    
+
     return {
         "scenarios": [
             {
@@ -109,9 +110,13 @@ async def list_scenarios():
                 "prompt_count": len(s.prompts),
                 "agents": {
                     "self_hosted": s.agents.self_hosted,
-                    "bedrock": s.agents.bedrock
+                    "bedrock": s.agents.bedrock,
+                    "azure_foundry": s.agents.azure_foundry,
                 },
-                "status": orchestrator.get_status(s.scenario_id)
+                # `cross_cloud` is None on AWS-only scenarios — the dashboard
+                # filters on truthiness to decide which UI section to render.
+                "cross_cloud": s.cross_cloud.model_dump() if s.cross_cloud else None,
+                "status": orchestrator.get_status(s.scenario_id),
             }
             for s in scenarios
         ],

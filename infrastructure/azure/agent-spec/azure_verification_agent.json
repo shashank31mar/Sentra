@@ -1,0 +1,70 @@
+{
+  "agent_id": "azure-verification-agent",
+  "display_name": "Azure Verification Agent",
+  "description": "Cross-cloud verification agent running on Azure AI Foundry (gpt-4o-mini). Tool calls are routed through the Sentra Azure Function tool_interceptor for security validation before execution. Mirrors the Bedrock-side customer-service agent on AWS — Workstream 15 cross-cloud demo.",
+  "model": {
+    "deployment_name": "gpt-4o-mini",
+    "provider": "azure_openai",
+    "platform": "azure_foundry",
+    "temperature": 0.2,
+    "max_tokens": 1024
+  },
+  "system_prompt": "You are the Azure Verification Agent — a cross-cloud verification service for the Sentra demo. Your job is to verify image authenticity and check fraud scores when asked. You have two tools: verify_image_authenticity and check_fraud_score. When you need to verify a photo (e.g., a refund-claim image), call verify_image_authenticity. When you need to assess fraud risk on a transaction, call check_fraud_score. Always call exactly one tool per turn. Return concise results.",
+  "tools": [
+    {
+      "type": "function",
+      "function": {
+        "name": "verify_image_authenticity",
+        "description": "Check whether an image shows what it claims to show (e.g., a refund claim photo of damaged goods). Returns authenticity confidence.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "image_url": {
+              "type": "string",
+              "description": "Publicly-resolvable URL of the image to verify."
+            },
+            "expected_subject": {
+              "type": "string",
+              "description": "What the image is claimed to depict (e.g., 'cracked_eggs', 'damaged_package')."
+            }
+          },
+          "required": ["image_url", "expected_subject"]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "check_fraud_score",
+        "description": "Look up the fraud-risk score for a transaction. Returns 0-100 score plus contributing factors.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "transaction_id": {
+              "type": "string",
+              "description": "Internal transaction identifier (e.g., 'TX-92831')."
+            }
+          },
+          "required": ["transaction_id"]
+        }
+      }
+    }
+  ],
+  "tool_endpoint": {
+    "description": "All tool calls from this agent are POSTed to the Sentra Azure Function tool_interceptor. The interceptor validates with the AWS-side Sentra Security Controller before executing the tool. URL pattern: <function_app>/api/tool/{tool_name}",
+    "url_template": "https://aegionai-ws15-m3-func.azurewebsites.net/api/tool/{tool_name}",
+    "method": "POST",
+    "body_schema": {
+      "params": "tool-call arguments from the model",
+      "session_id": "session identifier for Sentra audit",
+      "user_input": "original user prompt for context"
+    }
+  },
+  "sentra_policy_reference": {
+    "policy_file": "config/agent_policies.yaml",
+    "agent_id": "azure-verification-agent",
+    "platform": "azure_foundry",
+    "cloud_region": "centralus",
+    "allowed_tools": ["verify_image_authenticity", "check_fraud_score"]
+  }
+}

@@ -7,3 +7,6 @@ requests==2.31.0
 python-dateutil==2.8.2
 pyyaml==6.0.1
 openpyxl==3.1.2
+# Workstream 15 M5: cross-cloud scenario runner uses Pydantic to validate
+# scenario YAMLs (CrossCloudStep, CrossCloudPlan, Scenario models).
+pydantic>=2.0,<3.0

@@ -15,7 +15,9 @@ import yaml
 from botocore.exceptions import ClientError
 
 from app.api.models import ValidationRequest, ValidationResult
+from app.combiners import Source
 from app.config import settings
+from app.validators._signal_stamp import stamps
 
 logger = logging.getLogger(__name__)
 
@@ -253,6 +255,7 @@ class SigmaEngine:
                 return tag.replace("llm.", "").upper()
         return "UNKNOWN_THREAT"
 
+    @stamps(Source.SENTRA_SIGMA)
     async def match_rules(self, user_input: str) -> ValidationResult:
         """
         Match user input against all Sigma rules.

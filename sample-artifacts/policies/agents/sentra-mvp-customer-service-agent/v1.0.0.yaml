@@ -1,0 +1,115 @@
+schema_version: "1.1"
+policy_id: sentra-mvp-customer-service-agent-policy-v1
+agent_id: sentra-mvp-customer-service-agent
+name: Bedrock Customer Service Agent Policy (Cross-Cloud)
+version: "1.0.0"
+status: active
+created_at: "2026-05-20T00:00:00Z"
+created_by: system
+
+# Cross-cloud governance (Workstream 15 — see LLD 15)
+platform: bedrock
+cloud_region: us-east-1
+
+# Cross-cloud sequence preconditions. Scenario S3 — Swiggy egg-fraud, cross-cloud:
+# refund cannot proceed unless the Azure verification agent has confirmed image
+# authenticity within the last 5 minutes for the same session.
+cross_cloud_dependencies:
+  - target_agent: azure-verification-agent
+    target_tool: verify_image_authenticity
+    required_before:
+      - process_refund
+    max_age_seconds: 300
+
+description: |
+  Security policy for sentra-mvp-customer-service-agent — the AWS Bedrock secured
+  agent that participates in cross-cloud scenarios with the Azure verification
+  sub-agent. Enforces cross-cloud sequence validation: verification on Azure must
+  complete before a refund is approved on AWS.
+
+# Allowed tools for this agent
+allowed_tools:
+  - query_customers
+  - get_order_details
+  - process_refund
+  # Cross-cloud invocation surface — calls azure-verification-agent
+  - invoke_agent
+
+# Allowed cross-cloud sub-agents (controller enforces via policy_engine)
+allowed_agents:
+  - azure-verification-agent
+
+# Policy rules (re-uses the established schema from customer-query-agent)
+policies:
+  # Rule 1: Refund amount limit
+  - policy_id: pol-001
+    name: Refund Amount Limit
+    description: Enforce maximum refund amount to prevent large fraud
+    priority: 1
+    conditions:
+      - field: tool_name
+        operator: equals
+        value: process_refund
+      - field: parameters.amount
+        operator: greater_than
+        value: 5000
+    decision: DENY
+    reason: "Refund amount ${parameters.amount} exceeds maximum allowed (5000)"
+    severity: high
+    metadata:
+      threat_type: FINANCIAL_FRAUD
+      risk_score: 8
+
+  # Rule 2: Block quarantined sessions
+  - policy_id: pol-002
+    name: Block Quarantined Sessions
+    description: Prevent any action from quarantined sessions
+    priority: 2
+    conditions:
+      - field: session.quarantine_status
+        operator: equals
+        value: quarantined
+    decision: DENY
+    reason: "Session is quarantined — all actions disabled"
+    severity: critical
+    metadata:
+      threat_type: SESSION_COMPROMISED
+      risk_score: 10
+
+  # Rule 3: PII access logging
+  - policy_id: pol-003
+    name: PII Access Audit
+    description: Log all access to PII fields
+    priority: 3
+    conditions:
+      - field: tool_name
+        operator: in
+        value: ["query_customers", "get_order_details"]
+    decision: ALLOW
+    reason: "PII access logged for audit"
+    severity: low
+    metadata:
+      audit_required: true
+      pii_access: true
+      risk_score: 3
+
+# Policy metadata
+policy_metadata:
+  category: cross_cloud_governance
+  compliance:
+    - GDPR
+    - CCPA
+    - SOC2
+  audit_required: true
+  encryption_at_rest: true
+  retention_period_days: 90
+
+# Change log
+changelog:
+  - version: "1.0.0"
+    date: "2026-05-20"
+    author: workstream-15
+    changes:
+      - Initial policy for the Bedrock cross-cloud customer-service agent
+      - Added cross_cloud_dependencies requiring Azure verification before refund
+      - Inter-agent invocation surface for azure-verification-agent

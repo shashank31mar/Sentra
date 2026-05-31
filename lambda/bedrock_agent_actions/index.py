@@ -58,7 +58,10 @@ def get_sentra_api_key():
     return _api_key_cache
 
 
-def validate_with_sentra(tool_name, tool_params, user_input, session_id):
+_DEFAULT_AGENT_ID = "sentra-mvp-customer-service-agent"
+
+
+def validate_with_sentra(tool_name, tool_params, user_input, session_id, agent_id=None, supplied_request_id=None):
     """
     Validate action with Sentra Security Controller.
 
@@ -67,16 +70,33 @@ def validate_with_sentra(tool_name, tool_params, user_input, session_id):
         tool_params: Parameters for the tool
         user_input: Original user input text
         session_id: Session ID for tracking
+        agent_id: Bedrock agent name (extracted from the action group event by
+            handler()). When None, falls back to the legacy default. This is
+            critical for cross-cloud demos that use multiple Bedrock agents
+            (secured / unsecured / naive) sharing the same Lambda — without
+            this every invocation would report under the same agent_id and the
+            audit log would lose the distinction (Workstream 15 M5 fix).
+        supplied_request_id: Caller-originated request_id (Workstream 17 /
+            LLD 17 §9.1). When the runner generates a request_id and threads
+            it via Bedrock sessionAttributes, the Lambda echoes it back here
+            so every Sentra signal + connector edge signal correlates to one
+            logical invocation. None → Lambda generates a UUID (legacy path).
 
     Returns:
         dict: {'decision': 'ALLOW'/'DENY', 'reason': str, ...}
     """
     try:
-        # Build payload matching Sentra ValidationRequest schema
+        # Build payload matching Sentra ValidationRequest schema.
+        # request_id: prefer the runner-threaded value from sessionAttributes
+        # (Workstream 17 / LLD 17 §9.1) so every signal emitted by Sentra +
+        # connectors correlates to one logical agent invocation. Falls back to
+        # a Lambda-generated UUID for callers that don't thread it yet
+        # (e.g. the demo orchestrator's `prompts:` block).
+        request_id = supplied_request_id or f"bedrock-{uuid.uuid4().hex[:12]}"
         payload = {
-            "request_id": f"bedrock-{uuid.uuid4().hex[:12]}",
+            "request_id": request_id,
             "session_id": session_id,
-            "agent_id": "sentra-mvp-customer-service-agent",  # Bedrock secured agent
+            "agent_id": agent_id or _DEFAULT_AGENT_ID,
             "tool_name": tool_name,
             "tool_params": tool_params,
             "user_input": user_input,
@@ -94,7 +114,15 @@ def validate_with_sentra(tool_name, tool_params, user_input, session_id):
             os.environ['SENTRA_API_ENDPOINT'],
             body=json.dumps(payload).encode('utf-8'),
             headers=headers,
-            timeout=5.0
+            # Cold-start tolerance (WS18 follow-up 2026-05-30): 5s was tight
+            # — first invoke of the day paid container init + Secrets Manager
+            # fetch + first HTTPS connection in series, regularly exceeding 5s
+            # and forcing fail-secure DENY on legitimate baseline probes.
+            # 15s comfortably covers cold-start; warm calls still return in
+            # <1s so end-user latency is unchanged. SnapStart (Python 3.12+)
+            # will reduce cold-start to ~200ms — tracked as a follow-up
+            # workstream so we can ship behind a versioned alias model.
+            timeout=15.0
         )
 
         if response.status == 200:
@@ -198,6 +226,26 @@ def handler(event, context):
     session_id = event.get('sessionId', 'unknown')
     input_text = event.get('inputText', '')
     action_group = event.get('actionGroup', 'unknown')
+    # Pull the invoking Bedrock agent's name from the event. Bedrock passes
+    # `agent: {"name": "<agent-name>", "id": "...", ...}` for every action
+    # group invocation. Forwarding the real name to Sentra means the audit
+    # log distinguishes secured/naive/etc. — critical when one Lambda backs
+    # multiple agents (WS15 M5 naive-agent demo).
+    agent_block = event.get('agent') or {}
+    invoking_agent_id = agent_block.get('name') or _DEFAULT_AGENT_ID
+
+    # Workstream 17 / LLD 17 §9.1.3 — pull the runner-threaded request_id from
+    # sessionAttributes. Bedrock Agent forwards sessionAttributes to every
+    # Action Group invocation in the session. Without this, every tool call
+    # within an invocation would get a Lambda-generated UUID and the
+    # connector's bedrock_guardrail signal would have no matching row to
+    # group with — the multi-signal substrate would be useless.
+    session_attrs = event.get('sessionAttributes') or {}
+    supplied_request_id = session_attrs.get('sentra_request_id')
+    print(
+        f"request_id source: "
+        f"{'sessionAttributes' if supplied_request_id else 'generated'}"
+    )
 
     # Extract parameters from requestBody (preferred) or parameters array
     params = {}
@@ -223,7 +271,9 @@ def handler(event, context):
         tool_name=tool_name,
         tool_params=params,
         user_input=input_text,
-        session_id=session_id
+        session_id=session_id,
+        agent_id=invoking_agent_id,
+        supplied_request_id=supplied_request_id,
     )
 
     print(f"Validation decision: {validation_result.get('decision')}")

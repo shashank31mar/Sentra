@@ -11,6 +11,8 @@ import logging
 from typing import Dict
 
 from app.api.models import ValidationRequest, ValidationResult
+from app.combiners import Source
+from app.validators._signal_stamp import stamps
 
 logger = logging.getLogger(__name__)
 
@@ -32,6 +34,7 @@ class TrustChecker:
         self.QUARANTINE_THRESHOLD = 40.0
         self.WARNING_THRESHOLD = 70.0
     
+    @stamps(Source.SENTRA_TRUST)
     async def check(self, session: Dict, request: ValidationRequest) -> ValidationResult:
         """
         Check trust score and quarantine status.

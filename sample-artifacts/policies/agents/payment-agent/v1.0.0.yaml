@@ -1,4 +1,4 @@
-schema_version: "1.0"
+schema_version: "1.1"
 policy_id: payment-agent-policy-v1
 agent_id: payment-agent
 name: Payment Agent Policy
@@ -6,6 +6,11 @@ version: "1.0.0"
 status: active
 created_at: "2025-11-21T00:00:00Z"
 created_by: system
+
+# Cross-cloud governance (Workstream 15 — see LLD 15)
+platform: bedrock              # which connector governs this agent
+cloud_region: us-east-1        # native cloud region
+cross_cloud_dependencies: []   # no cross-cloud sequence preconditions
 
 description: |
   Security policy for payment-agent (WRITE-capable agent).

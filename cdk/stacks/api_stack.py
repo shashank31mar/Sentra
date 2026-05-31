@@ -192,12 +192,29 @@ class ApiStack(Stack):
         self.usage_plan.add_api_stage(stage=self.api.deployment_stage)
 
         # ============================================================
-        # HTTP_PROXY Integration to Public ALB (No VPC Link needed)
+        # VPC Link (Workstream 16 — ADR-022)
         # ============================================================
-        # ADR-003 v2: Simplified MVP with public ALB
-        # Direct integration to Private ALB (API services)
-        # Note: Using simple HTTP integration without path proxy for individual endpoints
-        self.alb_base_url = f"http://{compute_stack.private_alb.load_balancer_dns_name}"
+        # The original CDK pointed API Gateway integrations at the Private ALB's
+        # internal DNS with ConnectionType.INTERNET — which can never work
+        # (internal DNS isn't routable from API Gateway's public edge). The fix:
+        # an NLB (in compute_stack.api_nlb) fronts the Private ALB, and this
+        # VPC Link connects API Gateway → NLB.
+        # See LLD 16 §7.4.
+        self.api_vpc_link = apigateway.VpcLink(
+            self,
+            "SentraApiVpcLink",
+            description="API Gateway -> Sentra Private ALB (via NLB) - Workstream 16",
+            targets=[compute_stack.api_nlb],
+        )
+
+        # ============================================================
+        # HTTP_PROXY Integration via VPC Link → NLB → Private ALB
+        # ============================================================
+        # Integrations target the NLB's DNS name (not the Private ALB's). VPC
+        # Link carries the request from API Gateway to the NLB; NLB target
+        # group forwards to the Private ALB; Private ALB does path-routing to
+        # the security-controller target group.
+        self.nlb_base_url = f"http://{compute_stack.api_nlb.load_balancer_dns_name}"
 
         # Store API root resource for use in other stacks
         self.root_resource = self.api.root
@@ -300,7 +317,7 @@ class ApiStack(Stack):
             parent_resource=v1_resource,
             path="validate",
             http_method="POST",
-            integration=create_http_integration(self.alb_base_url, "/v1/validate", "POST"),
+            integration=create_http_integration(self.nlb_base_url, "/v1/validate", "POST", vpc_link=self.api_vpc_link),
             rate_limit=self.config.get_endpoint_rate_limit("validate"),
             burst_limit=self.config.get_endpoint_burst_limit("validate"),
             api_key_required=True,
@@ -316,7 +333,7 @@ class ApiStack(Stack):
             parent_resource=v1_resource,
             path="health",
             http_method="GET",
-            integration=create_http_integration(self.alb_base_url, "/v1/health", "GET", include_api_key_header=False),
+            integration=create_http_integration(self.nlb_base_url, "/v1/health", "GET", vpc_link=self.api_vpc_link, include_api_key_header=False),
             rate_limit=self.config.get_endpoint_rate_limit("health"),
             burst_limit=self.config.get_endpoint_burst_limit("health"),
             api_key_required=False,  # Public endpoint
@@ -333,7 +350,8 @@ class ApiStack(Stack):
             path="logs",
             http_method="GET",
             integration=create_http_integration(
-                self.alb_base_url, "/v1/logs", "GET",
+                self.nlb_base_url, "/v1/logs", "GET",
+                vpc_link=self.api_vpc_link,
                 pass_query_params={
                     "session_id": "method.request.querystring.session_id",
                     "start_time": "method.request.querystring.start_time",
@@ -359,7 +377,7 @@ class ApiStack(Stack):
             parent_resource=v1_resource,
             path="rollback",
             http_method="POST",
-            integration=create_http_integration(self.alb_base_url, "/v1/rollback", "POST"),
+            integration=create_http_integration(self.nlb_base_url, "/v1/rollback", "POST", vpc_link=self.api_vpc_link),
             rate_limit=self.config.get_endpoint_rate_limit("rollback"),
             burst_limit=self.config.get_endpoint_burst_limit("rollback"),
             api_key_required=True,
@@ -389,7 +407,7 @@ class ApiStack(Stack):
             parent_resource=customer_query_resource,
             path="query",
             http_method="POST",
-            integration=create_http_integration(self.alb_base_url, "/v1/agents/customer-query/query", "POST"),
+            integration=create_http_integration(self.nlb_base_url, "/v1/agents/customer-query/query", "POST", vpc_link=self.api_vpc_link),
             rate_limit=self.config.get_endpoint_rate_limit("agent_query"),
             burst_limit=self.config.get_endpoint_burst_limit("agent_query"),
             api_key_required=True,
@@ -404,7 +422,7 @@ class ApiStack(Stack):
             parent_resource=customer_query_resource,
             path="action",
             http_method="POST",
-            integration=create_http_integration(self.alb_base_url, "/v1/agents/customer-query/action", "POST"),
+            integration=create_http_integration(self.nlb_base_url, "/v1/agents/customer-query/action", "POST", vpc_link=self.api_vpc_link),
             rate_limit=self.config.get_endpoint_rate_limit("agent_action"),
             burst_limit=self.config.get_endpoint_burst_limit("agent_action"),
             api_key_required=True,
@@ -422,7 +440,7 @@ class ApiStack(Stack):
             parent_resource=payment_resource,
             path="query",
             http_method="POST",
-            integration=create_http_integration(self.alb_base_url, "/v1/agents/payment/query", "POST"),
+            integration=create_http_integration(self.nlb_base_url, "/v1/agents/payment/query", "POST", vpc_link=self.api_vpc_link),
             rate_limit=self.config.get_endpoint_rate_limit("agent_query"),
             burst_limit=self.config.get_endpoint_burst_limit("agent_query"),
             api_key_required=True,
@@ -437,7 +455,7 @@ class ApiStack(Stack):
             parent_resource=payment_resource,
             path="action",
             http_method="POST",
-            integration=create_http_integration(self.alb_base_url, "/v1/agents/payment/action", "POST"),
+            integration=create_http_integration(self.nlb_base_url, "/v1/agents/payment/action", "POST", vpc_link=self.api_vpc_link),
             rate_limit=self.config.get_endpoint_rate_limit("agent_action"),
             burst_limit=self.config.get_endpoint_burst_limit("agent_action"),
             api_key_required=True,
@@ -456,7 +474,8 @@ class ApiStack(Stack):
         policies_resource.add_method(
             "GET",
             integration=create_http_integration(
-                self.alb_base_url, "/v1/policies", "GET",
+                self.nlb_base_url, "/v1/policies", "GET",
+                vpc_link=self.api_vpc_link,
                 pass_query_params={
                     "agent_id": "method.request.querystring.agent_id",
                     "status": "method.request.querystring.status",
@@ -474,7 +493,7 @@ class ApiStack(Stack):
         # POST /v1/policies - Create policy
         policies_resource.add_method(
             "POST",
-            integration=create_http_integration(self.alb_base_url, "/v1/policies", "POST"),
+            integration=create_http_integration(self.nlb_base_url, "/v1/policies", "POST", vpc_link=self.api_vpc_link),
             api_key_required=True,
             request_validator=body_validator
         )
@@ -486,7 +505,8 @@ class ApiStack(Stack):
         policy_id_resource.add_method(
             "GET",
             integration=create_http_integration(
-                self.alb_base_url, "/v1/policies/{policy_id}", "GET",
+                self.nlb_base_url, "/v1/policies/{policy_id}", "GET",
+                vpc_link=self.api_vpc_link,
                 pass_query_params={"include_content": "method.request.querystring.include_content"}
             ),
             api_key_required=True,
@@ -500,7 +520,8 @@ class ApiStack(Stack):
         policy_id_resource.add_method(
             "PUT",
             integration=create_http_integration(
-                self.alb_base_url, "/v1/policies/{policy_id}", "PUT"
+                self.nlb_base_url, "/v1/policies/{policy_id}", "PUT",
+                vpc_link=self.api_vpc_link,
             ),
             api_key_required=True,
             request_validator=body_validator,
@@ -511,7 +532,8 @@ class ApiStack(Stack):
         policy_id_resource.add_method(
             "DELETE",
             integration=create_http_integration(
-                self.alb_base_url, "/v1/policies/{policy_id}", "DELETE"
+                self.nlb_base_url, "/v1/policies/{policy_id}", "DELETE",
+                vpc_link=self.api_vpc_link,
             ),
             api_key_required=True,
             request_parameters={"method.request.path.policy_id": True}
@@ -528,7 +550,8 @@ class ApiStack(Stack):
         sigma_rules_resource.add_method(
             "GET",
             integration=create_http_integration(
-                self.alb_base_url, "/v1/sigma-rules", "GET",
+                self.nlb_base_url, "/v1/sigma-rules", "GET",
+                vpc_link=self.api_vpc_link,
                 pass_query_params={
                     "category": "method.request.querystring.category",
                     "severity": "method.request.querystring.severity",
@@ -552,7 +575,8 @@ class ApiStack(Stack):
         sigma_rule_id_resource.add_method(
             "PATCH",
             integration=create_http_integration(
-                self.alb_base_url, "/v1/sigma-rules/{rule_id}", "PATCH"
+                self.nlb_base_url, "/v1/sigma-rules/{rule_id}", "PATCH",
+                vpc_link=self.api_vpc_link,
             ),
             api_key_required=True,
             request_validator=body_validator,

@@ -1,0 +1,85 @@
+scenario_id: s2_cross_cloud_policy_propagation
+name: "S2 — Cross-Cloud Policy Propagation"
+description: "Update one policy. Both clouds enforce it within 10 seconds. No deploy, no cloud-by-cloud reconfig."
+mode: manual
+
+agents:
+  bedrock:
+    - bedrock-secured
+  azure_foundry:
+    - azure-verification-agent
+
+prompts:
+  - id: probe_pre_policy
+    text: "Look up customer C0001 — should be allowed before the policy is tightened."
+    expected_decision: ALLOW
+    expected_threat: none
+
+cross_cloud:
+  story: "Update one policy. Both clouds enforce it in under 10 seconds."
+  outcome_template: "Policy propagated to {cloud_count} clouds in {elapsed_ms}ms"
+  # All four probes use the direct-invoke path (tool:, not prompt:) per
+  # LLD 18 §4.2. The claim S2 makes is about Sentra's policy ENFORCEMENT,
+  # not about an LLM picking the right tool. Going through an LLM here would
+  # be non-deterministic (S2 debugging spiral 2026-05-26/27) — the LLM may
+  # answer from memory, hit a sigma rule on a directive prompt, or just
+  # ignore the instruction. Direct-invoke makes every probe land at the
+  # enforcement layer (Action Group Lambda for Bedrock, Function App for
+  # Azure), which deterministically calls /v1/validate.
+  #
+  # intent: enforcement on every step — see LLD 18 §4.4. The scenario YAML
+  # validator (M3) hard-errors on intent: enforcement + prompt: without
+  # allow_llm_path: true, so future authors cannot regress this scenario
+  # back to LLM-driven probes by accident.
+  steps:
+    - id: probe_bedrock_before
+      cloud: bedrock
+      agent_id: sentra-mvp-customer-service-agent
+      intent: enforcement
+      tool: query_customers
+      tool_params:
+        state: CA
+      user_input: "S2 baseline probe — query customers in CA before policy tightening"
+      expected_decision: ALLOW
+      description: "Baseline: with the loose policy, Bedrock side allows the query_customers call."
+
+    - id: probe_azure_before
+      cloud: azure_foundry
+      agent_id: azure-verification-agent
+      intent: enforcement
+      tool: check_fraud_score
+      tool_params:
+        transaction_id: tx-baseline-001
+      expected_decision: ALLOW
+      description: "Baseline: with the loose policy, Azure side allows the fraud-score check."
+
+    # The dashboard runner inserts a control-plane policy update between
+    # the baseline probes and the post-update probes by calling
+    # scripts/apply_policy.py (see Workstream 15 M5 Task 5.2). The S2 hook
+    # in cross_cloud_scenarios.SCENARIO_HOOKS removes `query_customers` from
+    # sentra-mvp-customer-service-agent AND `check_fraud_score` from
+    # azure-verification-agent in one pass — that's the cross-cloud claim:
+    # one control plane, two cloud-native agents enforcing in lockstep.
+
+    - id: probe_bedrock_after
+      cloud: bedrock
+      agent_id: sentra-mvp-customer-service-agent
+      intent: enforcement
+      tool: query_customers
+      tool_params:
+        state: CA
+      user_input: "S2 post-update probe — query customers in CA after query_customers is removed from policy"
+      expected_decision: DENY
+      expected_reason_contains: not authorized
+      description: "After policy update: Bedrock side denies — query_customers removed by control plane."
+
+    - id: probe_azure_after
+      cloud: azure_foundry
+      agent_id: azure-verification-agent
+      intent: enforcement
+      tool: check_fraud_score
+      tool_params:
+        transaction_id: tx-post-update-002
+      expected_decision: DENY
+      expected_reason_contains: not authorized
+      description: "After policy update: Azure side denies — check_fraud_score removed by the same control plane in one shot."

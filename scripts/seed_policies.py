@@ -81,34 +81,85 @@ class PolicySeeder:
             print(f"❌ Error loading policies: {e}")
             sys.exit(1)
     
+    # Valid platform values (Workstream 15 — see LLD 15 §3 and Platform enum
+    # in src/connectors/base/models.py). 'unknown' is the default for legacy
+    # YAML entries that pre-date the cross-cloud schema extension.
+    VALID_PLATFORMS = {'bedrock', 'azure_foundry', 'vertex_ai', 'unknown'}
+
     def validate_policy(self, agent_id: str, policy: Dict) -> bool:
-        """Validate policy structure"""
+        """Validate policy structure.
+
+        Required fields (unchanged): allowed_tools, allowed_agents, max_calls_per_minute.
+        Optional cross-cloud fields (Workstream 15): platform, cloud_region,
+        cross_cloud_dependencies. Missing optional fields produce a warning but
+        do not fail validation — supports gradual migration of legacy entries.
+        """
         required_fields = ['allowed_tools', 'allowed_agents', 'max_calls_per_minute']
-        
+
         for field in required_fields:
             if field not in policy:
                 print(f"❌ Policy for '{agent_id}' missing required field: {field}")
                 return False
-        
-        # Validate types
+
+        # Validate required-field types
         if not isinstance(policy['allowed_tools'], list):
             print(f"❌ Policy for '{agent_id}': allowed_tools must be a list")
             return False
-        
+
         if not isinstance(policy['allowed_agents'], list):
             print(f"❌ Policy for '{agent_id}': allowed_agents must be a list")
             return False
-        
+
         if not isinstance(policy['max_calls_per_minute'], int):
             print(f"❌ Policy for '{agent_id}': max_calls_per_minute must be an integer")
             return False
-        
+
+        # Validate optional cross-cloud fields when present.
+        platform = policy.get('platform')
+        if platform is not None and platform not in self.VALID_PLATFORMS:
+            print(f"❌ Policy for '{agent_id}': platform '{platform}' not in "
+                  f"{sorted(self.VALID_PLATFORMS)}")
+            return False
+        if platform is None:
+            print(f"⚠️  Policy for '{agent_id}' has no 'platform' field — defaulting to 'unknown'")
+
+        deps = policy.get('cross_cloud_dependencies')
+        if deps is not None:
+            if not isinstance(deps, list):
+                print(f"❌ Policy for '{agent_id}': cross_cloud_dependencies must be a list")
+                return False
+            for i, dep in enumerate(deps):
+                required_dep_fields = ['target_agent', 'target_tool', 'required_before', 'max_age_seconds']
+                for f in required_dep_fields:
+                    if f not in dep:
+                        print(f"❌ Policy for '{agent_id}' cross_cloud_dependencies[{i}] missing '{f}'")
+                        return False
+                # Issue #8 (WS15 M2 review): also validate target_agent and target_tool are
+                # non-empty strings. Empty strings would seed cleanly but cause a silent skip
+                # in ContextValidator._check_cross_cloud_dependencies, masking a misconfigured
+                # cross-cloud dependency as a no-op DENY.
+                for f in ('target_agent', 'target_tool'):
+                    if not isinstance(dep[f], str) or not dep[f].strip():
+                        print(f"❌ Policy for '{agent_id}' cross_cloud_dependencies[{i}].{f} must be a non-empty string")
+                        return False
+                if not isinstance(dep['required_before'], list):
+                    print(f"❌ Policy for '{agent_id}' cross_cloud_dependencies[{i}].required_before must be a list")
+                    return False
+                if not isinstance(dep['max_age_seconds'], int) or dep['max_age_seconds'] <= 0:
+                    print(f"❌ Policy for '{agent_id}' cross_cloud_dependencies[{i}].max_age_seconds must be a positive int")
+                    return False
+
         return True
-    
+
     def transform_to_dynamodb_item(self, agent_id: str, policy: Dict) -> Dict:
-        """Transform YAML policy to DynamoDB item format"""
+        """Transform YAML policy to DynamoDB item format.
+
+        Cross-cloud fields (platform, cloud_region, cross_cloud_dependencies)
+        are added unconditionally so every entry in DDB has a consistent shape
+        after migration. Missing fields default to 'unknown'/None/[].
+        """
         timestamp = datetime.utcnow().isoformat() + 'Z'
-        
+
         return {
             'policy_id': f"pol-{agent_id}-001",
             'agent_id': agent_id,
@@ -117,8 +168,12 @@ class PolicySeeder:
             'allowed_tools': policy['allowed_tools'],
             'allowed_agents': policy['allowed_agents'],
             'max_calls_per_minute': policy['max_calls_per_minute'],
+            # Cross-cloud fields (Workstream 15)
+            'platform': policy.get('platform', 'unknown'),
+            'cloud_region': policy.get('cloud_region', 'unknown'),
+            'cross_cloud_dependencies': policy.get('cross_cloud_dependencies', []),
             'created_at': timestamp,
-            'updated_at': timestamp
+            'updated_at': timestamp,
         }
     
     def check_existing_policy(self, agent_id: str) -> bool:

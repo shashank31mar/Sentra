@@ -1929,6 +1929,7 @@ Trust Score Range | Required Consecutive Allows | Increment Amount
 - **Other LLDs**:
   - [01-cdk-infrastructure.md](./01-cdk-infrastructure.md) - DynamoDB, ECS, S3
   - [02-api-gateway.md](./02-api-gateway.md) - API Gateway integration
+  - [17-validation-signal-store.md](./17-validation-signal-store.md) - Multi-signal substrate that augments the audit logger (Workstream 17). Validators now emit a `Signal` alongside their existing `ValidationResult`; `audit_logger.log_signals` dual-writes to DDB (fast read) + CloudWatch (compliance archive). See LLD 17 §3.2 for the end-to-end flow.
 - **Flows**: [flow.md](../flow.md) - Validation flow diagrams
 
 ### 10.2 API Dependencies
@@ -1945,8 +1946,9 @@ Trust Score Range | Required Consecutive Allows | Increment Amount
 |---------|--------------|---------|
 | DynamoDB | `sentra-session-context` | Session state, trust scores |
 | DynamoDB | `sentra-policies` | Agent policies (simple) |
+| DynamoDB | `sentra-validation-signals` | Per-validator signal rows for fast read (Workstream 17 / LLD 17) — TTL 90 days; backs `/v1/sessions/{id}/decisions` |
 | S3 | `sigma_rules/llm/` | Threat detection rules |
-| CloudWatch Logs | `/sentra/audit-logs` | Audit trail |
+| CloudWatch Logs | `/sentra/audit-logs` | Audit trail (compliance archive — kept as source of truth even after Workstream 17) |
 
 ---
 

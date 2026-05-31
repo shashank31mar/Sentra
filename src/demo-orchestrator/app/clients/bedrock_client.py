@@ -17,6 +17,11 @@ logger = logging.getLogger(__name__)
 # Agent name patterns for discovery
 SECURED_AGENT_PATTERN = "customer-service-agent"
 UNSECURED_AGENT_SUFFIX = "-unsecured"
+# Workstream 18 M3 fix: NAIVE variant also matches the SECURED_AGENT_PATTERN.
+# Without explicit exclusion, the naive agent gets picked up under the SECURED
+# slot (whichever appears last wins). Scenarios referencing the real secured
+# agent_name then fail discovery and the validator HARD-ERRORs.
+NAIVE_AGENT_SUFFIX = "-naive"
 
 
 class BedrockAgentClient:
@@ -58,9 +63,10 @@ class BedrockAgentClient:
         try:
             # List all agents in the account
             paginator = self.bedrock_agent.get_paginator('list_agents')
-            
+
             secured_agent = None
             unsecured_agent = None
+            naive_agent = None
             
             for page in paginator.paginate():
                 for agent in page.get('agentSummaries', []):
@@ -81,8 +87,23 @@ class BedrockAgentClient:
                             "agent_name": agent_name
                         }
                         logger.info(f"Discovered UNSECURED agent: {agent_name} ({agent_id})")
-                    
-                    # Check for secured agent (has pattern but NOT unsecured suffix)
+
+                    # NAIVE variant — captured as its own third agent (WS18 M3,
+                    # fixed 2026-05-30). S1.aws_attack scenario uses the naive
+                    # agent_id explicitly (Nova Lite + permissive prompt → reliably
+                    # invokes a tool with PII payload, so Sentra's sigma engine
+                    # gets called via the Action Group Lambda). Without this
+                    # branch the naive agent fell through to the SECURED slot,
+                    # overwriting the real secured agent (or vice versa).
+                    elif SECURED_AGENT_PATTERN in agent_name and agent_name.endswith(NAIVE_AGENT_SUFFIX):
+                        naive_agent = {
+                            "agent_id": agent_id,
+                            "alias_id": "TSTALIASID",
+                            "agent_name": agent_name
+                        }
+                        logger.info(f"Discovered NAIVE agent: {agent_name} ({agent_id})")
+
+                    # Check for secured agent (has pattern, NOT unsecured suffix, NOT naive suffix)
                     elif SECURED_AGENT_PATTERN in agent_name and not agent_name.endswith(UNSECURED_AGENT_SUFFIX):
                         secured_agent = {
                             "agent_id": agent_id,
@@ -101,7 +122,12 @@ class BedrockAgentClient:
                 self._agents["bedrock-unsecured"] = unsecured_agent
             else:
                 logger.warning(f"No unsecured Bedrock agent found matching pattern '*{SECURED_AGENT_PATTERN}{UNSECURED_AGENT_SUFFIX}'")
-            
+
+            if naive_agent:
+                self._agents["bedrock-naive"] = naive_agent
+            else:
+                logger.warning(f"No naive Bedrock agent found matching pattern '*{SECURED_AGENT_PATTERN}{NAIVE_AGENT_SUFFIX}'")
+
             self._discovery_complete = True
             logger.info(f"Agent discovery complete. Found {len(self._agents)} agents: {list(self._agents.keys())}")
             

@@ -1,6 +1,7 @@
 """
 Demo Tab - Scenario management and comparison visualization
 Sentra MVP - Workstream 14
+Workstream 15 M5: Cross-Cloud Scenarios section (S1-S4) added at the top.
 
 Best Practices Applied:
 - @st.cache_data for API calls with TTL
@@ -13,6 +14,7 @@ import streamlit as st
 import logging
 import requests
 from services.demo_orchestrator_client import get_demo_client
+from components.cross_cloud_demo import render_cross_cloud_demo_section
 
 logger = logging.getLogger(__name__)
 
@@ -21,7 +23,7 @@ def render():
     """Render Demo Scenarios tab"""
     st.header("🎯 Demo Scenarios")
     st.caption("Control and monitor demo scenarios that test security across different agent types")
-    
+
     # Manual refresh button - namespaced key
     col1, col2 = st.columns([4, 1])
     with col2:
@@ -35,18 +37,34 @@ def render():
             except Exception:
                 pass  # Ignore errors, local cache is cleared anyway
             st.rerun()
-    
+
     # Fetch scenarios with loading indicator
     with st.spinner("Loading scenarios..."):
         scenarios = _fetch_scenarios_cached()
-    
+
+    # Workstream 15 M5: cross-cloud scenarios (S1-S4) get their own section
+    # at the top with story-mode cards + live event stream. Everything else
+    # continues to render as before.
+    cross_cloud_scenarios = [s for s in scenarios if s.get("cross_cloud")]
+    other_scenarios = [s for s in scenarios if not s.get("cross_cloud")]
+    if cross_cloud_scenarios:
+        render_cross_cloud_demo_section(cross_cloud_scenarios)
+        st.markdown("---")
+
     if not scenarios:
         st.info("📭 No scenarios available. Check demo orchestrator connection.")
-    else:
-        st.caption(f"Showing {len(scenarios)} scenario(s)")
-        for scenario in scenarios:
+    elif other_scenarios:
+        # Note (Streamlit constraint): each `_render_scenario_card` already
+        # opens its own `st.expander`, and Streamlit forbids nested expanders
+        # ("Expanders may not be nested inside other expanders"). So we render
+        # the other-scenarios list with just a header + caption — letting each
+        # card handle its own collapse. See .claude/skills/streamlit-dashboard.md
+        # §9.2 (nested layouts).
+        st.markdown(f"#### Other scenarios ({len(other_scenarios)})")
+        st.caption("AWS-only smoke / continuous scenarios — for cross-cloud investor demos, use the section above.")
+        for scenario in other_scenarios:
             _render_scenario_card(scenario)
-        
+
         st.markdown("---")
         _render_global_controls()
     
@@ -160,13 +178,16 @@ def _show_scenario_details(scenario_id: str):
             prompts = scenario.get("prompts", [])
             st.write(f"**Prompts:** {len(prompts)}")
         
-        # Target agents
+        # Target agents — deduplicated display
         agents = scenario.get("agents", {})
         st.write("**Target Agents:**")
-        for agent in agents.get("self_hosted", []):
-            st.write(f"- {agent} (Self-Hosted)")
-        for agent in agents.get("bedrock", []):
-            st.write(f"- {agent} (Bedrock)")
+        seen = set()
+        for agent in agents.get("self_hosted", []) + agents.get("bedrock", []):
+            base = agent.replace("-unsecured", "").replace("-unsecure", "").strip("-")
+            label = f"{base} (Unsecure, without Sentra security)" if ("unsecured" in agent or "unsecure" in agent) else f"{base} (Secure)"
+            if label not in seen:
+                st.write(f"- {label}")
+                seen.add(label)
         
         # Prompts
         st.write("**Test Prompts:**")
@@ -318,24 +339,38 @@ def _render_comparison_results():
             platform = agent["platform"].title()
             security_type = agent["security_type"].title()
 
-            # Clean up agent name
-            agent_name = (agent["agent_id"]
-                         .replace("sentra-mvp-", "")
-                         .replace("-agent", "")
-                         .replace("-unsecured", "")
-                         .replace("-", " ")
-                         .title())
-
-            # Determine icon and caption based on metadata
-            if agent["platform"] == "sentra":
+            # Display name mapping
+            if agent["agent_id"] == "customer-query-agent":
+                agent_name = "Customer Query Sentra Secured"
                 icon = "🔒"
-                caption_text = f"{icon} {platform} ({security_type})"
-            elif agent["security_type"] == "secured":
-                icon = "✅"
-                caption_text = f"{icon} {platform} ({security_type})"
+                caption_text = f"{icon} Sentra (Secured)"
             else:
-                icon = "⚠️"
-                caption_text = f"{icon} {platform} ({security_type})"
+                # Display name overrides
+                _display_name_overrides = {
+                    "sentra-mvp-customer-service-agent": "Customer Query (Without Sentra Security)",
+                    "sentra-mvp-customer-service-agent-unsecured": "Customer Query (Without Sentra Security)",
+                }
+                agent_name = _display_name_overrides.get(
+                    agent["agent_id"],
+                    (agent["agent_id"]
+                     .replace("sentra-mvp-", "")
+                     .replace("-agent", "")
+                     .replace("-unsecured", "")
+                     .replace("-", " ")
+                     .title())
+                )
+                if agent["agent_id"] in ("sentra-mvp-customer-service-agent", "sentra-mvp-customer-service-agent-unsecured"):
+                    icon = "⚠️"
+                    caption_text = f"{icon} No Security Layer"
+                elif agent["platform"] == "sentra":
+                    icon = "🔒"
+                    caption_text = f"{icon} {platform} ({security_type})"
+                elif agent["security_type"] == "secured":
+                    icon = "✅"
+                    caption_text = f"{icon} {platform} ({security_type})"
+                else:
+                    icon = "⚠️"
+                    caption_text = f"{icon} {platform} ({security_type})"
 
             st.markdown(f"**{agent_name}**")
             st.caption(caption_text)
@@ -395,11 +430,3 @@ def _render_agent_metrics(metrics: dict, is_unsecured: bool = False):
             delta_color="inverse"
         )
     
-    # Security score (100 - allowed_pct)
-    score = 100 - allowed_pct
-    if score > 80:
-        st.success(f"Security Score: {score:.1f}%")
-    elif score > 50:
-        st.warning(f"Security Score: {score:.1f}%")
-    else:
-        st.error(f"Security Score: {score:.1f}%")

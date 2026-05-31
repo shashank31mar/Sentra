@@ -1,0 +1,100 @@
+schema_version: "1.1"
+policy_id: azure-verification-agent-policy-v1
+agent_id: azure-verification-agent
+name: Azure Verification Agent Policy
+version: "1.0.0"
+status: active
+created_at: "2026-05-20T00:00:00Z"
+created_by: system
+
+# Cross-cloud governance (Workstream 15 — see LLD 15)
+platform: azure_foundry
+cloud_region: eastus2
+cross_cloud_dependencies: []   # leaf agent — has no upstream cross-cloud dependencies
+
+description: |
+  Security policy for azure-verification-agent — the Azure AI Foundry sub-agent
+  that performs image authenticity and fraud-score verification. Invoked by
+  sentra-mvp-customer-service-agent as a cross-cloud precondition for refund
+  approvals (Scenario S3).
+
+# Allowed tools for this agent
+allowed_tools:
+  - verify_image_authenticity
+  - check_fraud_score
+
+# Leaf agent — cannot invoke other agents
+allowed_agents: []
+
+# Policy rules
+policies:
+  # Rule 1: Verification operation must include an image URL
+  - policy_id: pol-001
+    name: Verification Input Required
+    description: verify_image_authenticity requires a non-empty image_url parameter
+    priority: 1
+    conditions:
+      - field: tool_name
+        operator: equals
+        value: verify_image_authenticity
+      - field: parameters.image_url
+        operator: empty_or_missing
+        value: ["image_url"]
+    decision: DENY
+    reason: "verify_image_authenticity requires image_url parameter"
+    severity: medium
+    metadata:
+      threat_type: MALFORMED_REQUEST
+      risk_score: 4
+
+  # Rule 2: Block quarantined sessions
+  - policy_id: pol-002
+    name: Block Quarantined Sessions
+    description: Prevent verification from quarantined sessions
+    priority: 2
+    conditions:
+      - field: session.quarantine_status
+        operator: equals
+        value: quarantined
+    decision: DENY
+    reason: "Session is quarantined — verification disabled"
+    severity: critical
+    metadata:
+      threat_type: SESSION_COMPROMISED
+      risk_score: 10
+
+  # Rule 3: Audit log every verification call
+  - policy_id: pol-003
+    name: Verification Audit
+    description: Log all verification calls for cross-cloud forensic replay
+    priority: 3
+    conditions:
+      - field: tool_name
+        operator: in
+        value: ["verify_image_authenticity", "check_fraud_score"]
+    decision: ALLOW
+    reason: "Verification call recorded for cross-cloud audit"
+    severity: low
+    metadata:
+      audit_required: true
+      cross_cloud_audit: true
+      risk_score: 2
+
+# Policy metadata
+policy_metadata:
+  category: cross_cloud_verification
+  compliance:
+    - GDPR
+    - SOC2
+  audit_required: true
+  encryption_at_rest: true
+  retention_period_days: 90
+
+# Change log
+changelog:
+  - version: "1.0.0"
+    date: "2026-05-20"
+    author: workstream-15
+    changes:
+      - Initial policy for the Azure cross-cloud verification agent
+      - Defines verify_image_authenticity and check_fraud_score tools

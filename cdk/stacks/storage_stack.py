@@ -20,6 +20,8 @@ from aws_cdk import (
 from constructs import Construct
 from typing import Dict, Any
 
+from cdk_constructs.signal_store_table_construct import ValidationSignalStoreTable
+
 
 class StorageStack(Stack):
     """
@@ -706,6 +708,41 @@ class StorageStack(Stack):
         )
 
         # ============================================================
+        # DynamoDB Table: sentra-validation-signals (Workstream 17)
+        # ============================================================
+        # Purpose: Multi-signal substrate — one row per validator's
+        # contribution to a /v1/validate decision. Replaces CloudWatch
+        # Logs Insights on the dashboard's hot-read path; CW kept as
+        # compliance archive (dual-write).
+        # See LLD 17 §5.2 for full schema rationale.
+
+        signal_store_config = dynamodb_config.get("validation_signals", {})
+
+        self.validation_signal_store = ValidationSignalStoreTable(
+            self,
+            "ValidationSignalStore",
+            table_name=signal_store_config.get(
+                "table_name", "sentra-validation-signals"
+            ),
+        )
+
+        CfnOutput(
+            self,
+            "ValidationSignalStoreTableName",
+            value=self.validation_signal_store.table_name,
+            description="DynamoDB table name for validation signal store (LLD 17)",
+            export_name=f"{naming_config.get('prefix', 'sentra-mvp')}-validation-signals-table-name",
+        )
+
+        CfnOutput(
+            self,
+            "ValidationSignalStoreTableArn",
+            value=self.validation_signal_store.table_arn,
+            description="DynamoDB table ARN for validation signal store",
+            export_name=f"{naming_config.get('prefix', 'sentra-mvp')}-validation-signals-table-arn",
+        )
+
+        # ============================================================
         # ECR Repositories (Task 9 - moved from Compute Stack)
         # ============================================================
         ecr_config = config.get("compute", {}).get("ecr", {})
@@ -836,3 +873,12 @@ class StorageStack(Stack):
     def sigma_rules_metadata_table_arn(self) -> str:
         """Return Sigma rules metadata table ARN for IAM permissions"""
         return self.sigma_rules_metadata_table.table_arn
+
+    # Validation Signal Store Properties (Workstream 17)
+    @property
+    def validation_signal_store_table_name(self) -> str:
+        return self.validation_signal_store.table_name
+
+    @property
+    def validation_signal_store_table_arn(self) -> str:
+        return self.validation_signal_store.table_arn

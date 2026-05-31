@@ -42,7 +42,13 @@ class SecurityControllerClient:
     
     def __init__(self):
         self.base_url = settings.security_controller_url
+        # Default timeout for fast endpoints (/v1/health, /v1/agents simple list).
         self.timeout = 5  # seconds
+        # /v1/logs queries CloudWatch Logs Insights which can take 5-15s under
+        # cold-start conditions. The cross-cloud demo runner's audit-lookup
+        # uses this — too aggressive a timeout means the runner misses the
+        # controller's authoritative decision and shows the stale invoker view.
+        self.logs_timeout = 30  # seconds
     
     def get_health(self, agent_id: Optional[str] = None) -> Dict:
         """
@@ -120,9 +126,11 @@ class SecurityControllerClient:
                 params["decision"] = decision
             if threat_type:
                 params["threat_type"] = threat_type
-            
-            response = requests.get(url, params=params, timeout=self.timeout)
-            
+
+            # /v1/logs is slow (CloudWatch Logs Insights). Use logs_timeout
+            # not the default self.timeout — see __init__ rationale.
+            response = requests.get(url, params=params, timeout=self.logs_timeout)
+
             # Check status code
             if response.status_code == 200:
                 data = response.json()
@@ -151,6 +159,67 @@ class SecurityControllerClient:
                 "error": str(e),
             }
     
+    def get_session_decisions(
+        self,
+        session_id: str,
+        request_id: Optional[str] = None,
+        agent_id: Optional[str] = None,
+        limit: int = 100,
+    ) -> Dict:
+        """Get combined-decision rows for a session — Workstream 17 / LLD 17 §8.2.
+
+        Returns the same shape as GET /v1/sessions/{id}/decisions:
+            { "session_id": "...", "decisions": [...], "total": N }
+
+        Used by the cross-cloud runner's decisions_lookup_fn. Sub-100ms p95
+        (single DDB partition Query) — much faster than the legacy
+        /v1/logs path (CloudWatch Insights, 60s+ indexing lag).
+        """
+        try:
+            url = f"{self.base_url}/v1/sessions/{session_id}/decisions"
+            params: Dict[str, object] = {"limit": limit}
+            if request_id:
+                params["request_id"] = request_id
+            if agent_id:
+                params["agent_id"] = agent_id
+            # Decisions endpoint is fast — DDB-backed, ~100ms p95 — so the
+            # standard timeout is plenty. No need for logs_timeout.
+            response = requests.get(url, params=params, timeout=self.timeout)
+            if response.status_code == 200:
+                return response.json()
+            logger.error(
+                "get_session_decisions: status=%s body=%s",
+                response.status_code, response.text[:200],
+            )
+            return {"session_id": session_id, "decisions": [], "total": 0}
+        except requests.exceptions.RequestException as e:
+            logger.error(f"Error fetching session decisions: {e}")
+            return {"session_id": session_id, "decisions": [], "total": 0}
+
+    def post_session_signal(
+        self,
+        session_id: str,
+        signal: Dict,
+    ) -> Dict:
+        """POST an externally-produced signal — Workstream 17 / LLD 17 §8.1.
+
+        Used by connectors to emit edge signals (bedrock_guardrail,
+        azure_content_filter). Returns the controller's response on 201,
+        or an error dict otherwise. Never raises into the caller.
+        """
+        try:
+            url = f"{self.base_url}/v1/sessions/{session_id}/signals"
+            response = requests.post(
+                url, json=signal, timeout=self.timeout,
+                headers={"Content-Type": "application/json"},
+            )
+            if response.status_code in (200, 201):
+                return response.json()
+            return {"error": f"HTTP {response.status_code}: {response.text[:200]}"}
+        except requests.exceptions.RequestException as e:
+            logger.error(f"Error posting signal: {e}")
+            return {"error": str(e)}
+
     def get_sessions(
         self,
         status: Optional[str] = None,

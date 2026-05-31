@@ -146,7 +146,8 @@ def get_policy_metadata_items(
     timestamp = get_timestamp()
     metadata_items = []
 
-    # Define policy files to process
+    # Define policy files to process.
+    # Workstream 15 added the bottom two entries for cross-cloud demo scenarios.
     policy_files = [
         {
             "agent_id": "customer-query-agent",
@@ -155,6 +156,14 @@ def get_policy_metadata_items(
         {
             "agent_id": "payment-agent",
             "s3_key": "policies/agents/payment-agent/v1.0.0.yaml",
+        },
+        {
+            "agent_id": "sentra-mvp-customer-service-agent",
+            "s3_key": "policies/agents/sentra-mvp-customer-service-agent/v1.0.0.yaml",
+        },
+        {
+            "agent_id": "azure-verification-agent",
+            "s3_key": "policies/agents/azure-verification-agent/v1.0.0.yaml",
         },
     ]
 
@@ -172,7 +181,11 @@ def get_policy_metadata_items(
         s3_version_id = get_s3_version_id(s3_client, bucket_name, s3_key)
         severity_breakdown = count_policies_by_severity(policy)
 
-        # Build metadata item
+        # Build metadata item.
+        # Cross-cloud fields (Workstream 15): platform, cloud_region, and a
+        # boolean flag for whether this policy has any cross_cloud_dependencies
+        # rules — surfaced for dashboard rendering without re-downloading YAML.
+        cross_cloud_deps = policy.get("cross_cloud_dependencies", []) or []
         metadata_item = {
             "policy_id": policy.get("policy_id"),
             "agent_id": agent_id,
@@ -186,6 +199,10 @@ def get_policy_metadata_items(
             "severity_breakdown": severity_breakdown,
             "content_hash": content_hash,
             "schema_version": policy.get("schema_version", "1.0"),
+            "platform": policy.get("platform", "unknown"),
+            "cloud_region": policy.get("cloud_region", "unknown"),
+            "has_cross_cloud_deps": len(cross_cloud_deps) > 0,
+            "cross_cloud_deps_count": len(cross_cloud_deps),
             "created_at": timestamp,
             "created_by": policy.get("created_by", "system"),
         }
@@ -348,7 +365,8 @@ def verify_policies_metadata() -> bool:
         # Scan table to get count
         response = table.scan(Select="COUNT")
         actual_count = response["Count"]
-        expected_count = 2  # customer-query-agent + payment-agent
+        # Workstream 15: 2 legacy agents + 2 cross-cloud agents = 4
+        expected_count = 4  # customer-query-agent, payment-agent, sentra-mvp-customer-service-agent, azure-verification-agent
 
         print(f"\nPolicy metadata count:")
         print(f"  Expected: {expected_count} items")

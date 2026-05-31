@@ -15,6 +15,7 @@ import time
 from typing import Dict, List, Optional
 
 import boto3
+from boto3.dynamodb.types import Decimal as DDBDecimal  # boto3.dynamodb is NOT auto-loaded; must import explicitly
 import yaml
 from botocore.exceptions import ClientError
 
@@ -294,7 +295,7 @@ class SigmaRulesService:
                 ExpressionAttributeValues={
                     ':zero': 0,
                     ':inc': increment,
-                    ':timestamp': boto3.dynamodb.types.Decimal(str(int(time.time())))
+                    ':timestamp': DDBDecimal(str(int(time.time())))
                 }
             )
             

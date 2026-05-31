@@ -20,7 +20,8 @@ def client():
 @pytest.fixture
 def mock_agent_service():
     """Mock AgentService"""
-    with patch('app.api.routes.AgentService') as mock:
+    # Patch at source (lazy import inside route function). See routes.py:211.
+    with patch('app.services.agent_service.AgentService') as mock:
         service = Mock()
         service.list_agents = AsyncMock(return_value={
             'agents': [
@@ -54,7 +55,8 @@ def mock_agent_service():
 @pytest.fixture
 def mock_policy_service():
     """Mock PolicyService"""
-    with patch('app.api.routes.PolicyService') as mock:
+    # Patch at source (lazy import inside route function). See routes.py:323.
+    with patch('app.services.policy_service.PolicyService') as mock:
         service = Mock()
         service.query_policies = AsyncMock(return_value={
             'policies': [
@@ -74,7 +76,8 @@ def mock_policy_service():
 @pytest.fixture
 def mock_sigma_rules_service():
     """Mock SigmaRulesService"""
-    with patch('app.api.routes.SigmaRulesService') as mock:
+    # Patch at source (lazy import inside route function). See routes.py:574.
+    with patch('app.services.sigma_rules_service.SigmaRulesService') as mock:
         service = Mock()
         service.list_sigma_rules = AsyncMock(return_value={
             'rules': [
@@ -375,14 +378,18 @@ class TestEndpointErrorHandling:
     """Tests for error handling across all endpoints"""
     
     def test_agents_endpoint_service_error(self, client, mock_agent_service):
-        """Test agents endpoint handles service errors gracefully"""
+        """Test agents endpoint propagates service errors.
+
+        Note (2026-05-22): httpx-based TestClient re-raises server exceptions by
+        default rather than converting them to HTTP 500. This test now asserts
+        the exception propagates — which is the modern Starlette/FastAPI test
+        behavior. Production code still returns 500 via FastAPI's exception
+        handlers when accessed over real HTTP.
+        """
         mock_agent_service.list_agents.side_effect = Exception("Service error")
-        
-        # Should not raise, but return error response
-        response = client.get("/v1/agents")
-        
-        # Depending on implementation, might return 500 or empty result
-        assert response.status_code in [200, 500]
+
+        with pytest.raises(Exception, match="Service error"):
+            client.get("/v1/agents")
     
     def test_policies_endpoint_with_all_filters(self, client, mock_policy_service):
         """Test policies endpoint with all filters combined"""

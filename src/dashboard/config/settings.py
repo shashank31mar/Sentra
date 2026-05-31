@@ -34,7 +34,7 @@ class Settings:
         self.log_level = os.getenv("LOG_LEVEL", "INFO")
         
         # Dashboard Settings
-        self.page_title = "Sentra MVP - AI Agent Security Platform"
+        self.page_title = "AegionAI Prototype - AI Agent Security Platform"
         self.page_icon = "🛡️"
         self.auto_refresh_interval = 1  # seconds for Overview tab
         self.slow_refresh_interval = 5  # seconds for other tabs

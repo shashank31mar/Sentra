@@ -1,8 +1,8 @@
 # Best Practices - Sentra MVP
 
 **Project**: Sentra MVP - AI Agent Security Platform  
-**Version**: 2.1  
-**Last Updated**: November 20, 2025
+**Version**: 2.2  
+**Last Updated**: 2026-05-20
 
 ---
 
@@ -18,6 +18,7 @@
 8. [Token Optimization](#8-token-optimization)
 9. [File Size Management](#9-file-size-management)
 10. [Documentation Standards](#10-documentation-standards)
+11. [Cloud Account Reference](#11-cloud-account-reference)
 
 ---
 
@@ -603,6 +604,207 @@ touch DEPLOYMENT-NOTES.md
 Example – good (`workstream-4-dashboard.md`):
 
 ```markdown
+## 11. Cloud Account Reference
+
+### Principle
+
+Cloud account identifiers (AWS Account ID, Azure Subscription ID, GCP Project ID) are **not secrets** — they are identifiers, like email addresses. They are safe to commit to the repo. Credentials (access keys, service principal secrets, JSON keyfiles) **must never** be committed; those live in cloud-native secret stores (AWS Secrets Manager, Azure Key Vault, GCP Secret Manager) and are referenced by name only.
+
+This section is the single source of truth for "which cloud account is which environment." Update here whenever a new account is provisioned.
+
+### AWS
+
+| Field | Value |
+|---|---|
+| Account ID | `531109575379` |
+| Default Profile | `sentra` (configured in `~/.aws/credentials`) |
+| Default Region | `us-east-1` (Northern Virginia) |
+| Environment | Dev / Demo (production not yet provisioned) |
+| IaC | AWS CDK — see [Sentra/cdk/](cdk/) |
+
+```bash
+# Standard env setup
+export AWS_PROFILE=sentra
+export AWS_REGION=us-east-1
+export CDK_DEFAULT_ACCOUNT=531109575379
+export CDK_DEFAULT_REGION=us-east-1
+```
+
+**Credential refresh** (Isengard / federated, short-lived session tokens):
+
+```bash
+# Refresh credentials for the sentra profile (run when aws sts fails with
+# InvalidClientTokenId or TokenExpired). Uses Amazon-internal `ada` tool.
+ada cred update --once --profile sentra
+
+# Verify
+aws sts get-caller-identity --profile sentra
+```
+
+Session tokens typically last ~12 hours. The `ASIA…` access-key prefix in `~/.aws/credentials` indicates a temporary session credential (not a long-lived access key). When any AWS CLI command returns `InvalidClientTokenId`, `ExpiredToken`, or `TokenExpired`, re-run the `ada` refresh above.
+
+### Azure
+
+| Field | Value |
+|---|---|
+| Subscription ID | `cb2512df-2001-45e1-aea6-88e80fc00299` |
+| Subscription Type | Free Trial ($200 credit / 30 days from creation) |
+| Default Region | `centralus` (switched 2026-05-23 from `eastus2`) — see [region history](#azure-region-history) below |
+| Environment | Dev / Demo only — torn down post-recording per [Workstream 15 Task 6.4](tasks/workstream-15-cross-cloud-demo.md) |
+| IaC | Bicep — see [Sentra/infrastructure/azure/bicep/](infrastructure/azure/bicep/) (to be created in Workstream 15 Milestone 3) |
+
+```bash
+# Standard env setup
+az login
+az account set --subscription "cb2512df-2001-45e1-aea6-88e80fc00299"
+
+# DO NOT set a default RG via `az configure --defaults group=...` — multiple
+# RGs exist (one per azd env: aegionai-ws15-m3-rg, future demo RGs) and stale
+# defaults silently break unrelated `az` commands. Always pass `-g <rg>` explicitly.
+# Default location is fine since it's just a UX shortcut for `--location`.
+az configure --defaults location=centralus
+```
+
+### Azure region history
+
+Two-step migration, captured here so the next person doesn't repeat the mistakes:
+
+1. **2026-05-19 — picked `eastus2`**: gpt-4o-mini quota present (200 RPM on Free Trial); `eastus` had zero. Region pairing to AWS `us-east-1` gave ~10-20ms cross-cloud latency.
+2. **2026-05-23 — moved to `centralus`**: even after upgrading Free Trial → PAYG, the App Service Plan Y1 (Linux Consumption) quota in eastus2 was still 0 — PAYG quota propagation for Y1 in eastus2 has documented lag (hours). centralus had the quota immediately. Cross-cloud latency to `us-east-1` is ~35ms — still well inside the LLD 15 §12 `p95 ≤120ms` budget. gpt-4o-mini is also available in centralus (verified via `az cognitiveservices model list -l centralus`).
+
+If a future Azure rollout hits the same "Total VMs: 0" error in eastus2, the right move is to **switch region** (centralus, canadacentral, northcentralus all work), not wait for propagation — Microsoft does not commit a propagation SLA for this quota allocation.
+
+### Azure Functions deploy hard-won rules (lessons learned WS15 M3, 2026-05-23)
+
+These apply specifically to Python Function Apps on Linux App Service Plans, deployed via `azd`. Skip these and lose hours.
+
+**1. Use B1 Basic, not Y1 Consumption, on new PAYG subscriptions.** Y1 in `eastus2` had 0 worker quota (PAYG propagation lag). Y1 in `centralus` had a different bug: workers never scaled past 0 even with traffic (scale-controller deadlock; only diagnosable via Portal "Diagnose and solve problems" → "Function App Down" → "Functions that are not triggering" detector). **B1 Basic Linux (~$13/mo flat, always-on) just works**, and `azd down` between demos still zeros the bill.
+
+**2. Storage account must have `allowSharedKeyAccess: true`.** Microsoft defaulted it to false in late 2024. Function host uses shared-key auth for `AzureWebJobsStorage` → silently rejected if false → host can't start → 503 with zero App Insights traces. Set explicitly in storage Bicep:
+```bicep
+properties: {
+  allowSharedKeyAccess: true
+}
+```
+
+**3. Python v2 model needs `AzureWebJobsFeatureFlags=EnableWorkerIndexing`.** Without it, host indexes 0 functions, every route returns 404. Set in Function App `appSettings`.
+
+**4. `azd deploy` does NOT trigger Oryx Remote Build on B1 Linux**, even with `SCM_DO_BUILD_DURING_DEPLOYMENT=1` and `ENABLE_ORYX_BUILD=true`. azd uses OneDeploy which bypasses Oryx. This means **`pip install` of `requirements.txt` does not run server-side**. Two workarounds:
+   - ✅ **Preferred for this project**: use Python stdlib (`urllib.request` instead of `requests`, etc.) so `requirements.txt` only needs `azure-functions` (which is built into the runtime).
+   - 🔲 **If you must use external deps**: add a `prepackage` hook in `azure.yaml` to pre-install before zip:
+     ```yaml
+     services:
+       <service-name>:
+         hooks:
+           prepackage:
+             shell: sh
+             run: pip install --target=.python_packages/lib/site-packages -r requirements.txt
+     ```
+
+**5. `Microsoft.CognitiveServices` regional SKUs vary.** `gpt-4o-mini 2024-07-18` does NOT support `Standard` SKU in `centralus`; use `GlobalStandard` (same pricing, cross-region pool). Source of truth: `az cognitiveservices model list -l <region>` filtered by `model.name=='gpt-4o-mini'`.
+
+**6. Don't set `az configure --defaults group=...`** to a specific RG. Multiple RGs may exist (per azd env), and a stale default silently breaks unrelated `az` commands. Always pass `-g <rg>` explicitly.
+
+### Azure production-hardening backlog (deferred — demo-and-tear-down is fine; revisit before any customer pilot)
+
+These are knowingly accepted trade-offs for the seed-raise demo. Promote each to a P0 before a real customer deploys against this stack.
+
+1. **Function App storage auth — move to Managed Identity (keyless).** Today `function_app.bicep` injects `storageAccount.listKeys()` directly into `AzureWebJobsStorage`, which means the storage key shows up in plaintext in the Function App's Configuration blade. The Linux-Functions recommended pattern is `AzureWebJobsStorage__accountName` + Managed Identity (no key in env at all). Will let us drop `allowSharedKeyAccess: true` on the storage account as well. (Kiro M4 review Issue #2)
+2. **Sentra API key rotation must restart the Function App.** `_sentra_api_key` is captured at module import, so rotating the Key Vault secret without a restart leaves the Function using the old value. When we switch to `@Microsoft.KeyVault(...)` connectionString references (recommended alongside #1 above), the Function App auto-restarts on secret-version change. Today's plaintext-in-appSettings doesn't. (Kiro M4 review Issue #8)
+3. **Function App `x-functions-key` or MI inbound auth.** Today `/api/tool/*` is `AuthLevel.ANONYMOUS`. Acceptable behind the demo's API-Gateway + Usage-Plan boundary, but a real customer deployment must gate the Function so no internet caller can burn budget or pollute the audit log. (Tracked in `azure_connector.py` Issue #17 TODO.)
+
+**Operational notes:**
+
+- ~~Free Trial credit expires 30 days after subscription creation. After expiry, subscription becomes inactive unless explicitly upgraded to Pay-As-You-Go.~~ Resolved 2026-05-23: subscription upgraded to PAYG (MicrosoftCustomerAgreement). The original Free Trial credit carries over until depleted; subsequent usage bills monthly to the PAYG account. Budget alert set at $50/month via Azure Portal.
+- Strategy is **demo-and-tear-down**: provision resources via Bicep + `azd up` / `azd down`, record investor demo, then tear down. Bicep IaC in git is the durable provisioning source.
+- **IaC tooling**: prefer **`azd` (Azure Developer CLI)** over a custom bash deploy script. `azd up` provisions, `azd down` tears down, `azd env new <name>` supports multiple environments. Install via `brew install azd`. Built on Bicep so our IaC stays declarative.
+- Required resource providers must be registered (one-time setup per subscription). **Missing any of these causes confusing failures** — e.g., `Microsoft.Compute` not registered makes `az vm list-usage` return zero entries, which looks like "Free Trial has zero VM quota" but is actually "the provider is just not registered" (lesson learned 2026-05-23):
+  ```bash
+  az provider register --namespace Microsoft.CognitiveServices --wait
+  az provider register --namespace Microsoft.MachineLearningServices --wait
+  az provider register --namespace Microsoft.Web --wait
+  az provider register --namespace Microsoft.KeyVault --wait
+  az provider register --namespace Microsoft.Storage --wait
+  az provider register --namespace Microsoft.Compute --wait    # required for Function App Y1 plan (App Service Plan consumes VM quota)
+  az provider register --namespace Microsoft.Insights --wait   # required for Application Insights
+  az provider register --namespace Microsoft.OperationalInsights --wait  # required by Application Insights backend (Log Analytics)
+  ```
+  Verify all are `Registered` before any `azd up`:
+  ```bash
+  for ns in Microsoft.CognitiveServices Microsoft.MachineLearningServices Microsoft.Web Microsoft.KeyVault Microsoft.Storage Microsoft.Compute Microsoft.Insights Microsoft.OperationalInsights; do
+    echo "$ns: $(az provider show --namespace $ns --query 'registrationState' -o tsv)"
+  done
+  ```
+
+### GCP
+
+| Field | Value |
+|---|---|
+| Project ID | _To be provisioned in Workstream 15 Phase 2 (Vertex AI fast-follow)_ |
+| Region | TBD (likely `us-central1`) |
+| IaC | Terraform (no GCP-native CDK/Bicep equivalent) |
+
+---
+
+## 12. Validation Signal Store (Workstream 17 / LLD 17)
+
+### Principle
+
+Per-validator decisions go to **DynamoDB** for fast read; CloudWatch Logs remains the **compliance archive**. Reads inside the 90-day retention window come from DDB (single-digit-ms p95). Reads outside that window — or any cross-cutting compliance query — come from CloudWatch via `/v1/logs`.
+
+### Resources
+
+| Field | Value |
+|---|---|
+| DDB table | `sentra-validation-signals` |
+| PK | `session_id` (S) |
+| SK | `request_id#timestamp_ms#source` (S) |
+| GSI 1 | `agent-timestamp-index` — PK=`agent_id` (S), SK=`timestamp_ms` (N) |
+| GSI 2 | `decision-date-timestamp-index` — PK=`decision_date` (S, `YYYY-MM-DD`), SK=`timestamp_ms` (N). `decision_date` is a real stored attribute, writer-populated. |
+| TTL attribute | `expires_at` (epoch seconds, 90 days from write) |
+| Removal policy | `RETAIN` |
+| Region | `us-east-1` |
+
+CDK construct: `cdk/cdk_constructs/signal_store_table_construct.py`. Instantiated inline in `storage_stack.py` (search for `ValidationSignalStore`). IAM grants on the controller task role live in `compute_stack.py`.
+
+### When to use which read path
+
+| Use case | Path |
+|---|---|
+| Dashboard's per-step "By" column / signal expander (recent — within minutes) | `GET /v1/sessions/{id}/decisions` (DDB) |
+| Per-session timeline within 90 days | `GET /v1/sessions/{id}/decisions` or `/signals` (DDB) |
+| Cross-session paginated scan (last 24h, last week) | `GET /v1/decisions` (DDB GSI 2) |
+| Compliance audit ("all DENYs in May 2026") | `GET /v1/logs` (CloudWatch Insights) — slow, but the source of truth |
+| Session older than 90 days (past DDB TTL) | `GET /v1/logs` (CloudWatch) — the only place that still has it |
+
+The 60s+ CloudWatch Insights indexing lag (LLD 17 §2) is why the dashboard's runner uses `/v1/sessions/{id}/decisions`, NOT `/v1/logs`. Any new dashboard panel showing audit data within 5 minutes of a validation MUST use the DDB endpoint or it'll race the indexing pipeline.
+
+### DDB-vs-CloudWatch reconciliation rule
+
+Within 5 min of the validation: trust DDB. Beyond 5 min but ≤ 90 days: DDB and CloudWatch must agree; if they don't, log a discrepancy (`controller.discrepancy` group) and investigate. Beyond 90 days: CloudWatch is the only record.
+
+If a regulator query hits a window where DDB shows data but CloudWatch doesn't (rare — "DDB succeeded, CloudWatch failed"), CloudWatch is canonical for compliance — escalate.
+
+### Cost model
+
+DDB on-demand at ~1000 validations/day × 6 signals × 90 days ≈ 540k items + 2 GSIs. Monthly cost ≈ $1.16. Even at 10× MVP traffic the line item is rounding error. The case for DDB over CloudWatch Insights isn't cost — it's read latency.
+
+### Operational gotchas
+
+1. **Timestamp format is locked**: `YYYY-MM-DDTHH:MM:SS.sssZ` (ISO 8601 with milliseconds, always Z). The writer asserts canonical format; any drift breaks SK lexical sort. Use `_isoformat_ms_z()` helper in `signal_store_writer.py` for any new writer.
+2. **`decision_date` is stored, not derived**: GSI 2 projects from a real attribute. The writer computes `timestamp_iso[:10]` at write time — missing it silently drops the row from the GSI.
+3. **request_id correlation**: connectors generate it, thread it through (Bedrock `sessionAttributes`, Azure HTTP body), Lambda + Function App echo it into `/v1/validate`. Any new connector must follow the same pattern or its edge signals won't group with Sentra's signals on read.
+4. **200ms write timeout**: budgeted to protect `/v1/validate` tail latency. From inside AWS the warm path is ~5-15ms; the timeout is a safety net for DDB regional issues.
+5. **CloudWatch dual-write is NOT optional**: removing it would break compliance audits and the >90d query path. The `cloudwatch_dual_write: true` config is meant for tests only.
+
+### Don't
+
+- Don't query `/v1/logs` for the dashboard's hot path. It's slow (CloudWatch Insights) and may not return fresh writes for 60s.
+- Don't write to DDB directly from outside the controller — go through `POST /v1/sessions/{id}/signals` so the taxonomy validation and shared-attr propagation are applied uniformly.
+- Don't add new validators without stamping a `Source.*` taxonomy entry and a default priority. See LLD 17 §4 + `app/combiners/sources.py`.
+
+---
+
 ## Milestone 3: Overview Tab API Integration ✅ COMPLETE
 **Status:** ✅ Complete (November 20, 2025)
 
@@ -729,3 +931,61 @@ Using the IDE diff view instead of dumping full diffs into the chat typically sa
 - **500–4000 tokens per edit** for CDK stack files
 - **200–800 tokens per edit** for Python modules
 - **1,000–10,000 tokens** per session on multi-step tasks
+
+---
+
+## 14. ML Threat Classifier (Workstream 19 / LLD 19)
+
+### Principle
+
+The ML threat classifier is **layered defense, not replacement**. Sigma and the policy engine remain the deterministic backstop; ML adds semantic-threat detection on top. When in doubt about an operational change, default to *flag off* — sigma + policy alone are the v0.1 contract.
+
+### Resources
+
+| Field | Value |
+|---|---|
+| Validator class | `MLClassifierValidator` in [src/security-controller/app/validators/ml_classifier.py](src/security-controller/app/validators/ml_classifier.py) |
+| Pipeline slot | STEP 3.5 (after sigma, before context) in [validation_service.py](src/security-controller/app/services/validation_service.py) |
+| Source taxonomy | `Source.SENTRA_ML_CLASSIFIER = "sentra.ml_classifier"` (LLD 17 §4, priority 70) |
+| Inference profile | `aegionai-ml-classifier` Application Inference Profile (LLD 19 §2.4); ARN piped via `ML_CLASSIFIER_INFERENCE_PROFILE_ARN` env var |
+| Hot model | Haiku 4.5 (`anthropic.claude-haiku-4-5-20251001-v1:0`) |
+| Escalation model | Sonnet 4.6 (`anthropic.claude-sonnet-4-6-v1:0`) — borderline confidence band only |
+| Tests | `tests/test_ml_classifier.py` (unit, mocked Bedrock), `tests/test_ml_classifier_bedrock.py` (integration, gated on `RUN_INTEGRATION=1`) |
+| User docs | [docs/sentra-ml-classifier.md](docs/sentra-ml-classifier.md) |
+
+### Operational gotchas
+
+1. **`ML_CLASSIFIER_INFERENCE_PROFILE_ARN` MUST point at the dedicated profile** (default in `compute_stack.py` does this correctly). Routing the validator through any other profile or directly at a foundation model defeats the workload-isolation lever from LLD 19 §2.4 and merges its quota / cost / CloudWatch metrics with whatever other workload shares that target.
+
+2. **Haiku 4.5, not Haiku 3.5.** The codebase's fallback LLM response generator ([src/common/llm_response_generator.py](src/common/llm_response_generator.py)) uses Haiku 3.5. The ML classifier must NOT share that quota bucket; IAM in `compute_stack.py` explicitly scopes the validator to haiku-4-5 ARNs only. If a future change broadens that grant, the isolation guarantee weakens.
+
+3. **Sequential pipeline, NOT parallel.** LLD 19 v0.3 §3.2 corrected the earlier parallel-gather claim. The validator runs sequentially after sigma; sigma DENYs short-circuit before ML pays its ~600ms Bedrock RTT. A true parallel-gather refactor is tracked as a separate cross-cutting workstream; do NOT add `asyncio.gather` to `_run_validation_pipeline` in a WS19 PR.
+
+4. **ABSTAIN ≠ ALLOW.** `ValidationResult.abstain(reason)` returns `decision=None`. `_capture` filters None signals out of the audit log (LLD 17 §4 absence semantics). Any new validator emitting ABSTAIN MUST also set `should_deny=False` and let `to_signal()` return None — never raise.
+
+5. **Shadow mode is a separate flag.** `ML_CLASSIFIER_ENABLED=true` runs the validator and lets it influence the verdict. `ML_CLASSIFIER_ENABLED=true + ML_CLASSIFIER_SHADOW_MODE=true` runs it and records the signal but DOES NOT short-circuit on its DENY. Always pass through shadow mode for ≥50 novel inputs before flipping shadow off.
+
+6. **`asyncio.to_thread` is required for the Bedrock call.** The validator's `_invoke` wraps the sync boto3 client in `asyncio.to_thread` so the ~600ms RTT doesn't block the event loop. Without it, the controller can only run one validation in flight at a time. The threads themselves are not interruptible — the `botocore.Config(read_timeout=...)` is what actually aborts the HTTP socket when `asyncio.wait_for` cancels.
+
+7. **`CfnApplicationInferenceProfile` is NOT in aws-cdk-lib 2.114.1.** The pinned CDK version predates the typed Bedrock construct. `compute_stack.py` uses the `CfnResource` escape hatch with `type="AWS::Bedrock::ApplicationInferenceProfile"`. When aws-cdk-lib is upgraded (>=2.150), this can become the typed construct; the synthesized CloudFormation is identical.
+
+8. **`ModelSource.CopyFrom` MUST be a system inference profile ARN, not a foundation-model ARN.** Haiku 4.5 does not support on-demand invocation. If `CopyFrom` is `arn:aws:bedrock:REGION::foundation-model/anthropic.claude-haiku-4-5-...`, both the direct Bedrock API and the CFN resource provider return `"The provided foundation model does not support On Demand inference"`. CDK surfaces this as a generic `AWS::EarlyValidation::PropertyValidation` failure that points at the AIP resource without naming the underlying cause. Use `arn:aws:bedrock:REGION:ACCOUNT:inference-profile/us.anthropic.claude-haiku-4-5-...` (the cross-region system profile ARN).
+
+9. **CFN `PropertyValidation` failures don't tell you which property is wrong.** When `cdk deploy` returns `The following hook(s)/validation failed: [AWS::EarlyValidation::PropertyValidation]`, the message is generic. To isolate: extract the offending resource from the synthesized template, create a minimal standalone CFN stack with just that resource, and `aws cloudformation create-stack` it. The standalone stack's events will surface the real error. This is faster than guessing.
+
+### Eval harness + CI gate
+
+[scripts/eval_ml_classifier.py](scripts/eval_ml_classifier.py) runs a labeled dataset through the validator and reports precision / recall / F1 / latency / cost. Thresholds in [scripts/eval_thresholds.yaml](scripts/eval_thresholds.yaml). The GitHub workflow [.github/workflows/eval-ml-classifier.yml](.github/workflows/eval-ml-classifier.yml) runs the eval on every PR that touches `ml_classifier.py` / `ml_classifier_prompts.py` / `ml_classifier_schema.py` and blocks merge if thresholds fail.
+
+Dataset construction is in two scripts:
+
+- [scripts/extract_ml_eval_dataset.py](scripts/extract_ml_eval_dataset.py) — labels from the audit log (sigma DENY → positive with that `threat_type`; trusted ALLOW → negative). Held-out split by `session_id`, NOT by row.
+- [scripts/generate_adversarial_dataset.py](scripts/generate_adversarial_dataset.py) — synthetic adversarial examples generated by Opus, ~60 per category. Output includes a `*.review.csv` the founder fills before the dataset becomes ground truth — model-generated labels are NOT trustworthy on their own.
+
+### Don't
+
+- Don't enable `ML_CLASSIFIER_ENABLED=true` in customer prod without first passing through shadow mode + observing ≥50 novel inputs (per [compare_shadow_verdicts.py](scripts/compare_shadow_verdicts.py)'s M3 exit gate).
+- Don't reuse Haiku 3.5 as the hot model. The isolation contract relies on the version split.
+- Don't add a Bedrock Guardrail to the validator's inference profile. The validator IS the threat detector; wrapping it in a guardrail is circular and adds 50-100ms.
+- Don't tune `ML_CONFIDENCE_*` thresholds without re-running the eval harness — those defaults are intuitive, not measured.
+- Don't bypass `_capture` when adding a new validator that can ABSTAIN — that's where `is_abstain` filtering happens, and a None signal in the audit log will choke `BatchWriteItem` downstream.

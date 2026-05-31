@@ -64,9 +64,16 @@ class CacheManager:
         self._max_size = max_size
         self._default_ttl = default_ttl
         
-        # Cache storage: {key: (value, expiry_timestamp, last_access_timestamp)}
-        self._cache: Dict[str, Tuple[Any, float, float]] = {}
-        
+        # Cache storage: {key: (value, expiry_timestamp, access_seq)}
+        # The 3rd element is a strictly-monotonic access sequence number, NOT a
+        # wall-clock timestamp. LRU eviction picks min(access_seq); a counter
+        # guarantees a total order so two entries touched within the same
+        # time.time() tick can never tie (which would make eviction fall back to
+        # dict-insertion order and evict the wrong key under fast execution).
+        self._cache: Dict[str, Tuple[Any, float, int]] = {}
+        # Monotonic access counter — bumped on every get-hit and set.
+        self._access_seq = 0
+
         # Thread lock for thread-safe operations
         self._lock = Lock()
         
@@ -110,8 +117,9 @@ class CacheManager:
                 logger.debug(f"Cache expired: {key}")
                 return None
             
-            # Update last access time (for LRU)
-            self._cache[key] = (value, expiry, current_time)
+            # Bump the access sequence so this key becomes most-recently-used.
+            self._access_seq += 1
+            self._cache[key] = (value, expiry, self._access_seq)
             self._hits += 1
             logger.debug(f"Cache hit: {key}")
             return value
@@ -137,8 +145,10 @@ class CacheManager:
             if key not in self._cache and len(self._cache) >= self._max_size:
                 # Evict least recently used (LRU)
                 self._evict_lru()
-            
-            self._cache[key] = (value, expiry, current_time)
+
+            # Bump the access sequence so a freshly-set key is most-recently-used.
+            self._access_seq += 1
+            self._cache[key] = (value, expiry, self._access_seq)
             logger.debug(f"Cache set: {key} (ttl={ttl}s)")
     
     def invalidate(self, key: str) -> bool:
@@ -179,10 +189,11 @@ class CacheManager:
         if not self._cache:
             return
         
-        # Find entry with oldest last_access_timestamp
+        # Find entry with the lowest access_seq (least recently used). The
+        # counter gives a strict total order, so no two entries can tie.
         lru_key = min(
             self._cache.keys(),
-            key=lambda k: self._cache[k][2]  # last_access_timestamp
+            key=lambda k: self._cache[k][2]  # access_seq
         )
         
         del self._cache[lru_key]

@@ -15,7 +15,7 @@ from config.settings import settings
 logger = logging.getLogger(__name__)
 
 # Timeouts by operation type
-REQUEST_TIMEOUT_FAST = 15  # seconds - for simple operations
+REQUEST_TIMEOUT_FAST = 30  # seconds - for simple operations
 REQUEST_TIMEOUT_SLOW = 60  # seconds - for comparison/aggregation queries (includes CloudWatch Insights)
 
 

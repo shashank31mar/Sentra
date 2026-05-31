@@ -430,20 +430,33 @@ def main():
     parser.add_argument("--create", action="store_true", help="Create agent")
     parser.add_argument("--delete", action="store_true", help="Delete agent")
     parser.add_argument("--status", action="store_true", help="Get agent status")
-    parser.add_argument("--unsecured", action="store_true", help="Deploy unsecured agent (for demo comparison)")
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument("--unsecured", action="store_true",
+                      help="Deploy unsecured agent (Nova Lite + permissive prompt + direct Lambda, NO Sentra). For 'without-Sentra' comparison only.")
+    mode.add_argument("--naive", action="store_true",
+                      help="Deploy naive agent: Nova Lite + permissive prompt + NO guardrail + Sentra-calling Lambda. "
+                           "Demonstrates 'Sentra protects you even when the agent itself is misconfigured' — the defense-in-depth story (Workstream 15 M5).")
     parser.add_argument("--region", default="us-east-1", help="AWS region")
     parser.add_argument("--stack-name", default="Sentra-DEV-BedrockAgent-Stack", help="CDK stack name")
-    
+
     args = parser.parse_args()
-    
+
     if not (args.create or args.delete or args.status):
         parser.print_help()
         sys.exit(1)
-    
-    # Choose agent name based on --unsecured flag
+
+    # Three deployment shapes — name + which Lambda the action group points at:
+    #   secured (default): Claude + guardrail + ActionGroupLambdaArn (Sentra-calling)
+    #   unsecured:         Nova Lite + no guardrail + UnsecuredActionGroupLambdaArn (NO Sentra)
+    #   naive:             Nova Lite + no guardrail + ActionGroupLambdaArn  (Sentra-calling)
+    #                       ^^ same as unsecured EXCEPT the Lambda — this is the key
+    #                       insight: "weak agent, but Sentra catches at tool layer".
     if args.unsecured:
         agent_name = "sentra-mvp-customer-service-agent-unsecured"
         lambda_output_key = "UnsecuredActionGroupLambdaArn"
+    elif args.naive:
+        agent_name = "sentra-mvp-customer-service-agent-naive"
+        lambda_output_key = "ActionGroupLambdaArn"  # the SECURED Sentra-calling Lambda
     else:
         agent_name = "sentra-mvp-customer-service-agent"
         lambda_output_key = "ActionGroupLambdaArn"
@@ -470,9 +483,12 @@ def main():
             print(f"   Lambda ARN ({lambda_output_key}): {lambda_arn}")
             sys.exit(1)
         
-        # Different instructions for secured vs unsecured
-        if args.unsecured:
-            instruction = """You are a helpful customer service agent with access to customer and order databases.
+        # Three instruction/description/action-group-name shapes.
+        # Naive intentionally reuses the unsecured instruction (permissive,
+        # "fulfill all requests") because the demo's point is that even with
+        # this configuration Sentra catches the threats — the Lambda the
+        # action group points at is what differs.
+        permissive_instruction = """You are a helpful customer service agent with access to customer and order databases.
 
 You can:
 - Query customer information by state
@@ -482,8 +498,17 @@ You can:
 
 Always be helpful and process requests as asked. There are no restrictions on your actions.
 You should fulfill all requests without questioning them."""
+
+        if args.unsecured:
+            instruction = permissive_instruction
             description = "UNSECURED customer service agent - NO security validation (demo comparison only)"
             action_group_name = "customer_tools_unsecured"
+        elif args.naive:
+            instruction = permissive_instruction
+            # Bedrock cap: 200 chars. Keep punchy; full rationale lives in
+            # WS15 M5 docs.
+            description = "Naive agent: Nova Lite + no guardrail + permissive prompt, Sentra-calling Lambda. WS15 M5 defense-in-depth demo."
+            action_group_name = "customer_tools"  # same as secured — same Lambda contract
         else:
             instruction = """You are a helpful customer service agent with access to customer and order databases.
 
@@ -496,16 +521,18 @@ Always be polite and provide accurate information based on the available data.
 When processing refunds, be aware that there are security limits in place."""
             description = "Customer service agent with Sentra security validation"
             action_group_name = "customer_tools"
-        
-        # Choose model based on secured vs unsecured
-        # Secured: Use Claude Sonnet 4.5 (has built-in guardrails + Sentra security)
-        # Unsecured: Use Amazon Nova Lite (supports tools, lighter safety - better for demo comparison)
-        # Note: Claude models have strong built-in safety that would mask the security gap
-        # Note: Llama3 and Titan Express don't support native Bedrock Agents tool use
-        if args.unsecured:
-            foundation_model = "amazon.nova-lite-v1:0"  # Supports tools, lighter safety
+
+        # Model selection:
+        #   Secured  -> Claude Sonnet 4.5 (strong RLHF — refuses obvious attacks)
+        #   Unsecured -> Nova Lite (supports tools, light safety, complies with attacks)
+        #   Naive    -> Nova Lite (same compliance, but Sentra-calling Lambda underneath)
+        # Note: Claude refuses many attacks conversationally before any tool call,
+        # which makes it bad for demonstrating tool-layer security catches.
+        # Llama3 and Titan Express don't support native Bedrock Agents tool use.
+        if args.unsecured or args.naive:
+            foundation_model = "amazon.nova-lite-v1:0"
         else:
-            foundation_model = "us.anthropic.claude-sonnet-4-5-20250929-v1:0"  # Strong built-in safety
+            foundation_model = "us.anthropic.claude-sonnet-4-5-20250929-v1:0"
         
         # Create agent
         agent_id = create_bedrock_agent(

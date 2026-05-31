@@ -38,6 +38,15 @@ class Settings(BaseSettings):
         default="sentra-sigma-rules-metadata",
         validation_alias="SIGMA_RULES_METADATA_TABLE"
     )
+
+    # Validation Signal Store (Workstream 17 / LLD 17)
+    dynamodb_validation_signals_table: str = Field(
+        default="sentra-validation-signals",
+        validation_alias="VALIDATION_SIGNALS_TABLE"
+    )
+    signal_store_ttl_days: int = Field(default=90, validation_alias="SIGNAL_STORE_TTL_DAYS")
+    signal_store_write_timeout_ms: int = Field(default=200, validation_alias="SIGNAL_STORE_WRITE_TIMEOUT_MS")
+    signal_store_batch_max_retries: int = Field(default=3, validation_alias="SIGNAL_STORE_BATCH_MAX_RETRIES")
     
     # Validation Configuration
     validation_timeout_seconds: int = 5
@@ -52,6 +61,63 @@ class Settings(BaseSettings):
     sigma_rules_s3_prefix: str = "sigma_rules/llm/"
     sigma_rules_cache_ttl_seconds: int = 300  # 5 minutes
     
+    # ML Threat Classifier (Workstream 19 / LLD 19)
+    # Disabled by default until WS19 M2 eval harness signs off on precision/recall.
+    ml_classifier_enabled: bool = Field(default=False, validation_alias="ML_CLASSIFIER_ENABLED")
+    # M3 shadow mode: when true AND ml_classifier_enabled is also true, the
+    # validator runs and emits its Signal to the audit log + signal store, but
+    # its DENY does NOT influence the live customer verdict. Lets us measure
+    # ML's real-world accuracy on production-shaped traffic before flipping it
+    # into the combiner. Default off; flip on in shadow phase, then off for active.
+    ml_classifier_shadow_mode: bool = Field(default=False, validation_alias="ML_CLASSIFIER_SHADOW_MODE")
+    # Workload isolation lever (LLD 19 §2.4): the validator's invocations route
+    # through this Application Inference Profile, separating its quota / cost /
+    # CloudWatch metrics from any other Bedrock consumer on the same model family.
+    # If unset, the validator falls back to invoking the hot model ID directly
+    # (acceptable during early dev; production should have the profile provisioned).
+    ml_classifier_inference_profile_arn: str = Field(
+        default="",
+        validation_alias="ML_CLASSIFIER_INFERENCE_PROFILE_ARN",
+    )
+    # Hot path: Haiku 4.5 — newer than the 3.5 used by the existing fallback
+    # LLM generator, gives a separate Bedrock quota bucket (LLD 19 §2.4).
+    ml_classifier_hot_model_id: str = Field(
+        default="anthropic.claude-haiku-4-5-20251001-v1:0",
+        validation_alias="ML_CLASSIFIER_HOT_MODEL_ID",
+    )
+    # Escalation: Sonnet 4.6 via US cross-region system inference profile.
+    # Sonnet 4.6 (like Haiku 4.5) does NOT support on-demand foundation-model
+    # invocation — only inference-profile routing. The bare ID
+    # `anthropic.claude-sonnet-4-6-v1:0` returns "The provided model identifier
+    # is invalid" from Bedrock. No co-tenancy concern with the agent (no other
+    # high-volume inline Sonnet consumer in the account).
+    ml_classifier_escalation_model_id: str = Field(
+        default="us.anthropic.claude-sonnet-4-6",
+        validation_alias="ML_CLASSIFIER_ESCALATION_MODEL_ID",
+    )
+    # Per-call timeout (each tier independently).
+    ml_classifier_timeout_seconds: float = Field(
+        default=2.0,
+        validation_alias="ML_CLASSIFIER_TIMEOUT_SECONDS",
+    )
+    # Aggregate ceiling across hot+escalation (LLD 19 §3.2.1). Bounds /v1/validate
+    # p99 — without this, worst-case hot+esc = 4s, which blows the latency budget.
+    ml_classifier_total_budget_seconds: float = Field(
+        default=2.5,
+        validation_alias="ML_CLASSIFIER_TOTAL_BUDGET_SECONDS",
+    )
+    # Above this confidence, trust Haiku and skip escalation.
+    ml_confidence_trust_threshold: float = Field(
+        default=0.9,
+        validation_alias="ML_CONFIDENCE_TRUST_THRESHOLD",
+    )
+    # Below this confidence, escalate AND fall back to ABSTAIN if escalation
+    # also lacks confidence.
+    ml_confidence_abstain_threshold: float = Field(
+        default=0.5,
+        validation_alias="ML_CONFIDENCE_ABSTAIN_THRESHOLD",
+    )
+
     # Cache Configuration (Workstream 5, Task 1)
     cache_enabled: bool = Field(default=True, validation_alias="CACHE_ENABLED")
     agent_metadata_cache_ttl_seconds: int = Field(default=60, validation_alias="AGENT_METADATA_CACHE_TTL_SECONDS")

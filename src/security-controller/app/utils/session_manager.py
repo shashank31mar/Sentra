@@ -238,24 +238,36 @@ class SessionManager:
     async def update_trust_score_allow(
         self,
         session_id: str,
-        tool_name: str
+        tool_name: str,
+        agent_id: Optional[str] = None,
     ) -> Dict:
         """
         Update trust score after ALLOW decision (asymmetric recovery).
-        
+
         Increments consecutive_allows counter. When threshold reached,
         increments trust_score and resets counter.
-        
+
         Args:
             session_id: Session to update
             tool_name: Tool that was allowed
-            
+            agent_id: Agent that invoked the tool. Recorded in tool_history so
+                the context validator can enforce cross_cloud_dependencies
+                (Workstream 15). Optional for backward compatibility; entries
+                without an agent_id are treated as cross-cloud-unverifiable.
+
         Returns:
             Updated session dictionary
         """
         try:
             current_time = int(time.time() * 1000)
-            
+
+            # Build the tool_history entry. Workstream 15: include agent_id when
+            # provided so cross-cloud dependency rules can identify which agent
+            # invoked each prerequisite tool.
+            history_entry: Dict[str, Any] = {'tool_name': tool_name, 'timestamp': current_time}
+            if agent_id is not None:
+                history_entry['agent_id'] = agent_id
+
             # First, increment consecutive_allows and add to tool_history
             response = self.table.update_item(
                 Key={'session_id': session_id},
@@ -271,7 +283,7 @@ class SessionManager:
                     ':one': 1,
                     ':timestamp': current_time,
                     ':empty_list': [],
-                    ':new_tool': [{'tool_name': tool_name, 'timestamp': current_time}]
+                    ':new_tool': [history_entry]
                 },
                 ReturnValues='ALL_NEW'
             )
