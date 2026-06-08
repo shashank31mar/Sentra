@@ -253,7 +253,16 @@ def update_policy_metadata(
         severity = policy.get('severity', 'medium')
         if severity in severity_breakdown:
             severity_breakdown[severity] += 1
-    
+
+    # Cross-cloud metadata (Workstream 15) — keep this writer in sync with
+    # seed_policies_metadata.py so the dashboard inventory and any metadata-only
+    # consumers see platform / region / cross-cloud-dependency flags without
+    # re-downloading the S3 YAML. Generic: derived from the policy doc, so any
+    # agent (single- or cross-cloud) gets correct values.
+    cross_cloud_deps = policy_data.get('cross_cloud_dependencies') or []
+    platform = policy_data.get('platform', 'unknown')
+    cloud_region = policy_data.get('cloud_region', 'unknown')
+
     print(f"\n📝 Updating DynamoDB:")
     print(f"   Table: {POLICIES_METADATA_TABLE}")
     print(f"   Policy ID: {policy_id}")
@@ -290,11 +299,16 @@ def update_policy_metadata(
                         version = :version,
                         agent_id = :agent_id,
                         #name = :name,
+                        #platform = :platform,
+                        cloud_region = :cloud_region,
+                        has_cross_cloud_deps = :has_ccd,
+                        cross_cloud_deps_count = :ccd_count,
                         updated_at = :updated_at
                 ''',
                 ExpressionAttributeNames={
                     '#status': 'status',
-                    '#name': 'name'
+                    '#name': 'name',
+                    '#platform': 'platform'
                 },
                 ExpressionAttributeValues={
                     ':tools_count': allowed_tools_count,
@@ -308,6 +322,10 @@ def update_policy_metadata(
                     ':version': policy_data['version'],
                     ':agent_id': policy_data['agent_id'],
                     ':name': policy_data['name'],
+                    ':platform': platform,
+                    ':cloud_region': cloud_region,
+                    ':has_ccd': len(cross_cloud_deps) > 0,
+                    ':ccd_count': len(cross_cloud_deps),
                     ':updated_at': datetime.now(timezone.utc).isoformat()
                 }
             )
@@ -329,6 +347,10 @@ def update_policy_metadata(
                     's3_bucket': s3_bucket,
                     's3_key': s3_key,
                     's3_version_id': s3_version_id,
+                    'platform': platform,
+                    'cloud_region': cloud_region,
+                    'has_cross_cloud_deps': len(cross_cloud_deps) > 0,
+                    'cross_cloud_deps_count': len(cross_cloud_deps),
                     'created_at': policy_data.get('created_at', datetime.now(timezone.utc).isoformat()),
                     'created_by': policy_data.get('created_by', 'admin'),
                     'updated_at': datetime.now(timezone.utc).isoformat()

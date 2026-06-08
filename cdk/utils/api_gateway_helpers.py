@@ -9,6 +9,8 @@ DNS name (NLB → Private ALB → ECS), and every call site must pass the VPC Li
 reference. See [LLD 16: API Gateway VPC Link Networking](../../lld/16-apigw-vpc-link-networking.md)
 and [ADR-022](../../adr.md#adr-022-fix-rest-api-gateway-via-nlb--vpc-link).
 """
+import re
+
 from aws_cdk import aws_apigateway as apigateway
 from typing import Dict, Optional
 
@@ -73,6 +75,15 @@ def create_http_integration(
     if pass_query_params:
         for param_name, mapping in pass_query_params.items():
             request_params[f"integration.request.querystring.{param_name}"] = mapping
+
+    # Map any path parameters in the URI template (e.g. /v1/agents/{agent_id}).
+    # WITHOUT this, API Gateway cannot substitute the {param} in the backend URI
+    # and returns 500 for EVERY path-parameter endpoint (pre-existing bug — it hit
+    # /v1/policies/{id}, /v1/sigma-rules/{id} and all the new WS-21 {param} routes).
+    for path_param in re.findall(r"\{([^}]+)\}", path):
+        request_params[f"integration.request.path.{path_param}"] = (
+            f"method.request.path.{path_param}"
+        )
 
     return apigateway.HttpIntegration(
         f"{nlb_base_url}{path}",

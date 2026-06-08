@@ -331,6 +331,22 @@ class ValidationService:
         if validation_result.severity:
             response["severity"] = validation_result.severity
 
+        # WS-21 T01: emit DECISION metrics at validation time. This consciously
+        # reverses the 2025-12-02 WS-9 M4 removal: that decision was about
+        # *execution* metrics (did the agent's action succeed?), which belong
+        # post-execution. These are *decision* metrics — what the controller
+        # decided — which are correctly measured here. No post-execution emitter
+        # exists, so there is no double-count. Fire-and-forget (publisher swallows
+        # its own errors; never blocks validation).
+        await self.metrics_publisher.publish_validation_metrics(
+            decision="DENY",
+            latency_ms=latency_ms,
+            agent_id=request.agent_id,
+            trust_score=float(updated_session['trust_score']),
+            threat_type=validation_result.threat_type,
+            severity=validation_result.severity,
+        )
+
         # Workstream 15: surface cross-cloud fields. Prefer the policy-derived
         # values stashed on validation_result; fall back to interceptor-supplied
         # request hints. If neither is present (e.g., early trust_checker DENY
@@ -359,10 +375,6 @@ class ValidationService:
                 validation_result=validation_result.model_dump(),
                 latency_ms=latency_ms,
             )
-
-        # NOTE (2025-12-02): Metrics publishing removed from here.
-        # Metrics should be published by agents AFTER actual execution,
-        # not during validation. See Milestone 4 in workstream-9.
 
         return response
     
@@ -418,9 +430,14 @@ class ValidationService:
                 latency_ms=latency_ms,
             )
 
-        # NOTE (2025-12-02): Metrics publishing removed from here.
-        # Metrics should be published by agents AFTER actual execution,
-        # not during validation. See Milestone 4 in workstream-9.
+        # WS-21 T01: emit DECISION metrics at validation time (see _handle_deny
+        # for the WS-9 M4 reversal rationale — decision vs execution metrics).
+        await self.metrics_publisher.publish_validation_metrics(
+            decision="ALLOW",
+            latency_ms=latency_ms,
+            agent_id=request.agent_id,
+            trust_score=float(updated_session['trust_score']),
+        )
 
         response = {
             "decision": "ALLOW",

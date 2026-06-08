@@ -87,6 +87,7 @@ def get_agent_data() -> List[Dict[str, Any]]:
             "status": "active",
             "version": "1.0.0",
             "platform": "sentra",
+            "cloud_provider": "aws",  # WS-21 T04: hosting cloud (sentra=ECS on AWS)
             "security_type": "secured",
             "visibility": "external",
             "ecs_config": {
@@ -115,6 +116,7 @@ def get_agent_data() -> List[Dict[str, Any]]:
             "status": "active",
             "version": "1.0.0",
             "platform": "sentra",
+            "cloud_provider": "aws",  # WS-21 T04: hosting cloud (sentra=ECS on AWS)
             "security_type": "secured",
             "visibility": "external",
             "ecs_config": {
@@ -136,35 +138,12 @@ def get_agent_data() -> List[Dict[str, Any]]:
             "created_by": "system",
             "tags": ["write-capable", "payment", "refund", "high-risk", "self-hosted"]
         },
-        {
-            "agent_id": "security-controller",
-            "name": "Security Controller",
-            "description": "Orchestration agent that manages security policies, monitors agent behavior, and enforces access controls. Central security hub for the Sentra platform.",
-            "type": "orchestrator",
-            "status": "active",
-            "version": "1.0.0",
-            "platform": "sentra",
-            "security_type": "secured",
-            "visibility": "internal",
-            "ecs_config": {
-                "service_name": "sentra-security-controller",
-                "container_port": 8080,
-                "desired_count": 1,
-                "cpu": 4096,
-                "memory": 8192
-            },
-            "runtime_config": {
-                "max_sessions": 1000,
-                "session_timeout_minutes": 60,
-                "default_trust_score": Decimal("1.0"),
-                "policy_evaluation_timeout_ms": 500,
-                "sigma_rule_evaluation_timeout_ms": 1000,
-                "audit_log_retention_days": 90
-            },
-            "created_at": timestamp,
-            "created_by": "system",
-            "tags": ["orchestrator", "security", "policy-engine", "audit", "self-hosted", "internal"]
-        },
+        # NOTE (WS-21 T07): the security-controller is Sentra's own control-plane
+        # service, NOT a governed customer agent — it is intentionally NOT seeded
+        # into the agent registry. (Previously it was, with visibility=internal,
+        # and hidden by a list filter; the cleaner fix is to never register it.)
+        # The visibility=internal filter in agent_service.list_agents remains as a
+        # defense-in-depth safety net for any other internal infra.
         # ============================================================
         # Bedrock Agents (AWS Bedrock Platform)
         # ============================================================
@@ -176,6 +155,7 @@ def get_agent_data() -> List[Dict[str, Any]]:
             "status": "active",
             "version": "1.0.0",
             "platform": "bedrock",
+            "cloud_provider": "aws",  # WS-21 T04: hosting cloud (Bedrock = AWS)
             "security_type": "secured",
             "visibility": "external",
             "runtime_config": {
@@ -197,6 +177,7 @@ def get_agent_data() -> List[Dict[str, Any]]:
             "status": "active",
             "version": "1.0.0",
             "platform": "bedrock",
+            "cloud_provider": "aws",  # WS-21 T04: hosting cloud (Bedrock = AWS)
             "security_type": "unsecured",
             "visibility": "external",
             "runtime_config": {

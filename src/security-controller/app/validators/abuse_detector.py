@@ -58,8 +58,10 @@ class AbuseDetector:
             calls_this_minute = abuse_counters.get("calls_this_minute", 0)
             last_minute_reset = abuse_counters.get("last_minute_reset", 0)
 
-            # Get rate limit from policy
-            max_calls_per_minute = policy.get("max_calls_per_minute", 100)
+            # Get rate limit from policy. Use `or 100` (not just a .get default)
+            # so a present-but-null value also falls back — the CRUD path can
+            # store max_calls_per_minute: null, and `int > None` would raise.
+            max_calls_per_minute = (policy or {}).get("max_calls_per_minute") or 100
 
             logger.debug(
                 f"Rate limit check: session={session.get('session_id')}, "

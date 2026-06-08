@@ -56,37 +56,39 @@ async def test_suspended_session_denies_all_operations(trust_checker, sample_req
 
 
 @pytest.mark.asyncio
-async def test_quarantined_session_allows_read(trust_checker, sample_request):
-    """Test: Quarantined session (trust_score 10-39) allows READ operations"""
+async def test_quarantined_session_denies_read(trust_checker, sample_request):
+    """Test: Quarantined session (10-40) now DENIES READ too (LLD 03 §6.2 update)"""
     session = {
         'session_id': 'sess-test-789',
         'trust_score': 30.0,
         'quarantine_status': 'quarantined'
     }
-    
+
     sample_request.operation_type = "READ"
     result = await trust_checker.check(session, sample_request)
-    
-    assert result.decision == "ALLOW"
-    assert result.should_deny is False
+
+    assert result.decision == "DENY"
+    assert result.should_deny is True
+    assert result.violation_type == "QUARANTINE_BLOCKED"
+    assert "quarantined" in result.reason.lower()
 
 
 @pytest.mark.asyncio
 async def test_quarantined_session_denies_write(trust_checker, sample_request):
-    """Test: Quarantined session (trust_score 10-39) denies WRITE operations"""
+    """Test: Quarantined session (10-40) denies WRITE operations"""
     session = {
         'session_id': 'sess-test-789',
         'trust_score': 30.0,
         'quarantine_status': 'quarantined'
     }
-    
+
     sample_request.operation_type = "WRITE"
     result = await trust_checker.check(session, sample_request)
-    
+
     assert result.decision == "DENY"
     assert result.should_deny is True
-    assert result.violation_type == "QUARANTINE_WRITE_BLOCKED"
-    assert "write operations blocked" in result.reason.lower()
+    assert result.violation_type == "QUARANTINE_BLOCKED"
+    assert "quarantined" in result.reason.lower()
 
 
 @pytest.mark.asyncio
@@ -135,19 +137,19 @@ async def test_active_session_allows_all(trust_checker, sample_request):
 
 @pytest.mark.asyncio
 async def test_edge_case_trust_score_10(trust_checker, sample_request):
-    """Test: Trust score exactly 10 (boundary between suspended and quarantined)"""
+    """Test: Trust score exactly 10 (quarantined) — DENIES both READ and WRITE"""
     session = {
         'session_id': 'sess-test-789',
         'trust_score': 10.0,
         'quarantine_status': 'quarantined'
     }
-    
-    # Should allow READ
+
+    # Quarantined now blocks READ
     sample_request.operation_type = "READ"
     result = await trust_checker.check(session, sample_request)
-    assert result.decision == "ALLOW"
-    
-    # Should deny WRITE
+    assert result.decision == "DENY"
+
+    # ...and WRITE
     sample_request.operation_type = "WRITE"
     result = await trust_checker.check(session, sample_request)
     assert result.decision == "DENY"
@@ -155,21 +157,21 @@ async def test_edge_case_trust_score_10(trust_checker, sample_request):
 
 @pytest.mark.asyncio
 async def test_edge_case_trust_score_40(trust_checker, sample_request):
-    """Test: Trust score exactly 40 (boundary between quarantined and warning)"""
+    """Test: Trust score 40 now falls into the QUARANTINED band (boundary is >40
+    for warning) and DENIES all operations (LLD 03 §6.2 update / S4)."""
     session = {
         'session_id': 'sess-test-789',
         'trust_score': 40.0,
-        'quarantine_status': 'warning'
+        'quarantine_status': 'quarantined'  # 40 is quarantined now (was warning)
     }
-    
-    # Should allow both READ and WRITE
+
     sample_request.operation_type = "READ"
     result = await trust_checker.check(session, sample_request)
-    assert result.decision == "ALLOW"
-    
+    assert result.decision == "DENY"
+
     sample_request.operation_type = "WRITE"
     result = await trust_checker.check(session, sample_request)
-    assert result.decision == "ALLOW"
+    assert result.decision == "DENY"
 
 
 @pytest.mark.asyncio

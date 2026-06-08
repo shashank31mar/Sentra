@@ -169,6 +169,16 @@ class ContextValidator:
         was injected (degrades gracefully to single-cloud behavior).
         """
         if self.policy_engine is None:
+            # Misconfiguration: cross-cloud enforcement is globally disabled.
+            # In prod the policy_engine IS injected (validation_service.py), so
+            # this should never fire — warn once instead of silently allowing.
+            if not getattr(self, "_warned_no_policy_engine", False):
+                logger.warning(
+                    "Cross-cloud dependency checks DISABLED: no policy_engine "
+                    "injected into ContextValidator. cross_cloud_dependencies "
+                    "rules will NOT be enforced (LLD 15 §4.5)."
+                )
+                self._warned_no_policy_engine = True
             return None
 
         try:
@@ -191,6 +201,10 @@ class ContextValidator:
         if not applicable:
             return None
 
+        logger.info(
+            "Evaluating %d cross-cloud dependency rule(s) for %s.%s",
+            len(applicable), request.agent_id, request.tool_name,
+        )
         now_ms = int(time.time() * 1000)
 
         for dep in applicable:

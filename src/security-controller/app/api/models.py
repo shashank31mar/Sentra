@@ -303,6 +303,21 @@ class PolicyCreateRequest(BaseModel):
     allowed_tools: List[str] = Field(..., min_items=1, description="List of allowed tool IDs")
     policies: List[PolicyRule] = Field(..., min_items=1, description="List of policy rules")
 
+    # Workstream 15 (cross-cloud) — optional fields that MUST round-trip through
+    # the CRUD path so the context validator can enforce cross_cloud_dependencies.
+    # Before this, PolicyCreate/UpdateRequest didn't declare them, so request.dict()
+    # in routes.py silently dropped them on every POST/PUT — the active S3 policy
+    # lost the cross-cloud rule and S3's attack-path enforcement failed open
+    # (see LLD 15 §4.5). Optional so existing single-cloud policies are unaffected.
+    platform: Optional[str] = Field(None, description="bedrock | azure_foundry | vertex_ai")
+    cloud_region: Optional[str] = Field(None, description="Native cloud region identifier")
+    allowed_agents: Optional[List[str]] = Field(None, description="Agents this agent may invoke")
+    cross_cloud_dependencies: Optional[List[Dict[str, Any]]] = Field(
+        None,
+        description="Cross-cloud tool-sequence preconditions (LLD 15 §4.5)",
+    )
+    max_calls_per_minute: Optional[int] = Field(None, description="Per-agent rate limit")
+
     @validator('allowed_tools')
     def validate_tool_ids(cls, v):
         """Validate tool ID format."""

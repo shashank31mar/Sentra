@@ -216,6 +216,27 @@ async def test_missing_max_calls_per_minute_uses_default(abuse_detector):
 
 
 @pytest.mark.asyncio
+async def test_null_max_calls_per_minute_uses_default(abuse_detector):
+    """Regression (WS15): a present-but-null max_calls_per_minute must fall back
+    to the default, not crash with `int > None`. The CRUD path could store
+    max_calls_per_minute: null, which broke the rate check and S3's honor path."""
+    policy_null_limit = {
+        "policy_id": "pol-null",
+        "agent_id": "test-agent",
+        "max_calls_per_minute": None,
+    }
+    current_minute = int(time.time()) // 60
+    session = {
+        "session_id": "sess-test-null",
+        "abuse_counters": {"calls_this_minute": 5, "last_minute_reset": current_minute},
+    }
+
+    result = await abuse_detector.check_rate_limit(session, policy_null_limit)
+    assert result.decision == "ALLOW"
+    assert result.violation_type != "SYSTEM_ERROR"
+
+
+@pytest.mark.asyncio
 async def test_error_handling_returns_deny(abuse_detector, sample_policy):
     """Test: Error handling returns DENY on exceptions (fail-secure)"""
     # Pass invalid session (None) to trigger exception

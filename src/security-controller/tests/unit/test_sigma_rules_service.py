@@ -80,7 +80,7 @@ class TestSigmaRulesServiceListRules:
         assert result['total'] == 1
         assert len(result['rules']) == 1
         assert result['rules'][0]['rule_id'] == 'sigma-llm-001'
-        assert result['has_more'] == False
+        assert result['next_token'] is None
         
         # Verify scan was called
         mock_table.scan.assert_called_once()
@@ -185,17 +185,21 @@ class TestSigmaRulesServiceListRules:
         ]
         
         mock_table = Mock()
-        mock_table.scan.return_value = {'Items': rules}
+        # DDB returns a LastEvaluatedKey when more results exist — drives next_token.
+        mock_table.scan.return_value = {
+            'Items': rules,
+            'LastEvaluatedKey': {'rule_id': 'rule-4'},
+        }
         mock_dynamodb.return_value.Table.return_value = mock_table
-        
+
         # Create service and test with limit=5
         service = SigmaRulesService()
         result = await service.list_sigma_rules(limit=5)
-        
+
         # Assertions
         assert len(result['rules']) == 5
         assert result['total'] == 10
-        assert result['has_more'] == True
+        assert result['next_token'] is not None  # more pages available
     
     @pytest.mark.asyncio
     async def test_list_sigma_rules_limit_capped_at_200(self, mock_dynamodb, mock_cache_manager, sample_sigma_rule):
@@ -220,7 +224,7 @@ class TestSigmaRulesServiceListRules:
         cached_data = {
             'rules': [{'rule_id': 'cached-rule'}],
             'total': 1,
-            'has_more': False
+            'next_token': None
         }
         mock_cache_manager.get.return_value = cached_data
         
@@ -248,7 +252,7 @@ class TestSigmaRulesServiceListRules:
         # Assertions - should return empty array, not raise
         assert result['rules'] == []
         assert result['total'] == 0
-        assert result['has_more'] == False
+        assert result['next_token'] is None
         assert 'error' in result
 
 

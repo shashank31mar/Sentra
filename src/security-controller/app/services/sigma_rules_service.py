@@ -21,6 +21,7 @@ from botocore.exceptions import ClientError
 
 from app.config import settings
 from app.utils.cache_manager import get_cache_manager
+from app.utils.pagination import decode_cursor, next_token_from_response
 
 logger = logging.getLogger(__name__)
 
@@ -68,7 +69,8 @@ class SigmaRulesService:
         self,
         status: Optional[str] = None,
         level: Optional[str] = None,
-        limit: int = 50
+        limit: int = 50,
+        cursor: Optional[str] = None
     ) -> Dict:
         """
         List Sigma rules from DynamoDB metadata table with filters.
@@ -88,8 +90,9 @@ class SigmaRulesService:
         cache_hit = False
         
         try:
-            # Build cache key
-            cache_key = f"sigma_rules:status={status}:level={level}:limit={limit}"
+            # Build cache key (cursor included so pages don't collide)
+            cache_key = f"sigma_rules:status={status}:level={level}:limit={limit}:cursor={cursor}"
+            start_key = decode_cursor(cursor) if cursor else None
             cached_data = self.cache.get(cache_key)
             if cached_data:
                 logger.debug(f"Returning cached Sigma rules for {cache_key}")
@@ -111,7 +114,8 @@ class SigmaRulesService:
                     KeyConditionExpression='#status = :status',
                     ExpressionAttributeNames={'#status': 'status'},
                     ExpressionAttributeValues={':status': status},
-                    Limit=limit
+                    Limit=limit,
+                    **({"ExclusiveStartKey": start_key} if start_key else {})
                 )
                 rules = response.get('Items', [])
                 
@@ -123,14 +127,18 @@ class SigmaRulesService:
                     KeyConditionExpression='#level = :level',
                     ExpressionAttributeNames={'#level': 'level'},
                     ExpressionAttributeValues={':level': level},
-                    Limit=limit
+                    Limit=limit,
+                    **({"ExclusiveStartKey": start_key} if start_key else {})
                 )
                 rules = response.get('Items', [])
                 
             else:
                 # Scan all rules (no filters)
                 logger.info("Scanning all Sigma rules")
-                response = self.sigma_rules_metadata_table.scan(Limit=limit)
+                response = self.sigma_rules_metadata_table.scan(
+                    Limit=limit,
+                    **({"ExclusiveStartKey": start_key} if start_key else {})
+                )
                 rules = response.get('Items', [])
             
             # Apply additional filters if both status and level provided
@@ -147,7 +155,7 @@ class SigmaRulesService:
             result = {
                 "rules": rules[:limit],
                 "total": len(rules),
-                "has_more": len(rules) > limit
+                "next_token": next_token_from_response(response),
             }
             
             # Cache result
@@ -161,7 +169,7 @@ class SigmaRulesService:
         except Exception as e:
             logger.exception("Error listing Sigma rules")
             # Return empty array on error (fail-safe for Dashboard)
-            return {"rules": [], "total": 0, "has_more": False, "error": str(e)}
+            return {"rules": [], "total": 0, "next_token": None, "error": str(e)}
     
     async def get_sigma_rule(self, rule_id: str) -> Optional[Dict]:
         """

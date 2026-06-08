@@ -152,3 +152,16 @@ cdk.out/
 # ===================================
 *.bak
 *.backup
+
+# ===================================
+# Frontend build / deploy artifacts
+# (app-level .gitignore covers node_modules/dist/.env; these are extras)
+# ===================================
+dist/
+*.zip
+frontend/aegionai-godaddy/
+
+# ===================================
+# Kombai design-tool working data (canvas + backups) — like .claude/, not source
+# ===================================
+.kombai/

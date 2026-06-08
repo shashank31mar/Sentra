@@ -1,0 +1,70 @@
+/* Fonts must be imported before the tailwind import (CSS @import ordering rule). */
+@import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&family=Space+Grotesk:wght@500;600;700&display=swap');
+@import "tailwindcss";
+
+/* ---- Aegion SOC design tokens (from canvas aegion-soc) ---- */
+@theme {
+  /* Surfaces */
+  --color-bg: #010B13;
+  --color-surface: #06101A;
+  --color-surface-2: #0B141C;
+  --color-line: rgba(255, 255, 255, 0.06);
+
+  /* Accents / status */
+  --color-cyan: #0FFFFF;
+  --color-pink: #FF0080;
+  --color-green: #22E58B;
+  --color-amber: #FFB020;
+
+  /* Text */
+  --color-ink: #FFFFFF;
+  --color-secondary: #8DA2AE;
+  --color-label: #7C909E;
+  --color-muted: #51636E;
+  --color-faint: #3D4D58;
+
+  /* Typography */
+  --font-display: 'Space Grotesk', system-ui, sans-serif;
+  --font-sans: 'IBM Plex Sans', system-ui, sans-serif;
+  --font-mono: 'IBM Plex Mono', ui-monospace, monospace;
+
+  /* Radius */
+  --radius-xl: 0.75rem;
+  --radius-2xl: 1rem;
+}
+
+@layer base {
+  * {
+    box-sizing: border-box;
+  }
+
+  html,
+  body,
+  #root {
+    height: 100%;
+  }
+
+  body {
+    margin: 0;
+    background: var(--color-bg);
+    color: var(--color-ink);
+    font-family: var(--font-sans);
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+  }
+
+  ::selection {
+    background: rgba(15, 255, 255, 0.3);
+  }
+}
+
+@utility scrollbar-thin {
+  &::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+  }
+  &::-webkit-scrollbar-thumb {
+    background: rgba(255, 255, 255, 0.1);
+    border-radius: 9999px;
+  }
+}

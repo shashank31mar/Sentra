@@ -420,6 +420,15 @@ class StorageStack(Stack):
             projection_type=dynamodb.ProjectionType.ALL,
         )
 
+        # NOTE (WS-21 T04, Kiro review): a `cloud-provider-index` GSI was
+        # considered for the Cloud-Provider Distribution, but at MVP scale the
+        # distribution is computed with a small table Scan (get_cloud_provider_
+        # distribution). Provisioning an unused GSI only adds write-amplification
+        # + storage for zero read benefit, so it is intentionally NOT created
+        # here. Re-add it in P1 (with per-provider Select=COUNT queries) once the
+        # fleet is large enough that the Scan cost matters. The `cloud_provider`
+        # attribute itself IS stored (seeded) and used by the Scan-based grouping.
+
         # ============================================================
         # CloudFormation Outputs - Agent Registry Table (Workstream 6, Task 1)
         # ============================================================
@@ -748,7 +757,7 @@ class StorageStack(Stack):
         ecr_config = config.get("compute", {}).get("ecr", {})
         prefix = naming_config.get("prefix", "sentra-mvp")
 
-        repository_names = ["security-controller", "dashboard", "customer-query-agent", "payment-agent", "demo-orchestrator"]
+        repository_names = ["security-controller", "dashboard", "customer-query-agent", "payment-agent", "demo-orchestrator", "console"]
         self.ecr_repositories = {}
 
         for repo_name in repository_names:

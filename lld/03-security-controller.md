@@ -175,7 +175,7 @@ POST /v1/validate {agent_id, session_id, tool_name, tool_params, user_input}
     ↓
 1. Trust Score Check (DynamoDB)
    → trust_score < 10? DENY (suspended)
-   → quarantined + write operation? DENY
+   → quarantined (10-40)? DENY (all operations — read + write)
     ↓
 2. Policy Engine (DynamoDB)
    → tool not in allowed_tools? DENY
@@ -1192,9 +1192,13 @@ class TrustScorer:
 | Trust Score | Status | Behavior |
 |-------------|--------|----------|
 | 70-100 | **Active** | ✅ All operations allowed |
-| 40-69 | **Warning** | ⚠️ All operations allowed + alerts |
-| 10-39 | **Quarantined** | ❌ WRITE operations denied<br>✅ READ operations allowed |
+| 41-69 | **Warning** | ⚠️ All operations allowed + alerts |
+| 10-40 | **Quarantined** | ❌ **ALL operations denied (read + write)** |
 | 0-9 | **Suspended** | ❌ All operations denied<br>🔴 Admin review required |
+
+> **Updated 2026-06-04**: a quarantined session now blocks **read and write** (previously WRITE-only). A quarantined session is treated as compromised, so every path is contained — this is what makes cross-cloud blast-radius containment work (a quarantined session cannot pivot to another tool/agent/cloud; see [LLD 15 §9 S4](15-cross-cloud-connectors.md)). The warning/quarantine boundary is `> 40` for warning, so a score of exactly **40 is quarantined**.
+>
+> **Recovery implication**: because quarantined sessions can no longer perform READs, auto-recovery via consecutive ALLOWs (§6.3) does not apply once quarantined — recovery requires operator action (manual un-quarantine via `POST /v1/quarantine/{id}` semantics or a new session). The §6.3 examples below describe the trust-arithmetic only.
 
 ### 6.3 Recovery Examples
 

@@ -263,7 +263,7 @@ BEST PRACTICES:
     parser.add_argument(
         "--service",
         required=True,
-        choices=["security-controller", "dashboard", "customer-query-agent", "payment-agent", "demo-orchestrator"],
+        choices=["security-controller", "dashboard", "customer-query-agent", "payment-agent", "demo-orchestrator", "console"],
         help="Service name to build"
     )
     

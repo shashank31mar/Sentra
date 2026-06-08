@@ -516,16 +516,20 @@ Each scenario is a YAML file in `src/demo-orchestrator/scenarios/` and executes 
 
 **Asserts**: `validation_result.reason` contains `cross_cloud_dependency_not_met`; dashboard renders both clouds in one timeline showing the missing verification step.
 
-### S4 — Cross-Cloud Blast Radius Containment (`s4_cross_cloud_blast_radius.yaml`)
+### S4 — Session-Scoped Cross-Cloud Containment (`s4_cross_cloud_blast_radius.yaml`)
 
-**Setup**: Bedrock agent is prompt-injected to instruct the Azure agent to exfiltrate data.
+**What this is (and is not)**: containment is tracked per **session** (`session_id`), not per agent, and S4 does **not** perform a real agent-to-agent invocation. All steps share one `session_id`; once that session is quarantined by the Bedrock-side injections, the subsequent Azure call in the *same session* is denied. There is no Bedrock→Azure `invoke_agent`. A genuine cross-agent invocation (one agent calling another, denied at the boundary) is **S5** (§9 S5).
+
+**Setup**: A single attack session issues repeated prompt injections at the Bedrock agent.
 
 **Demo flow**:
-- Compromised Bedrock agent emits a tool call to invoke `azure-verification-agent` with crafted instructions.
-- AegionAI's trust checker reduces the Bedrock agent's trust score below threshold based on injection signature.
-- When the Azure-side `/v1/validate` call arrives, the agent is already quarantined → DENY.
+- The compromised Bedrock agent receives repeated prompt-injection inputs. Each is denied by the sigma engine and drops the **session** trust score by 20 (`PROMPT_INJECTION` penalty). **Three** such denials drive trust 100 → 80 → 60 → **40**, which falls into the **Quarantined** band (LLD 03 §6.2; the warning boundary is `> 40`).
+- A quarantined session is treated as compromised and is blocked from **all** operations — read and write (LLD 03 §6.2, updated 2026-06-04). This is the containment lever: the session cannot pivot to another agent/cloud.
+- When the Azure-side `/v1/validate` call (`check_fraud_score`, a READ) arrives in that same session, the trust checker sees `quarantine_status=quarantined` and returns DENY before the Azure tool runs.
 
-**Asserts**: The Azure-side call returns DENY referencing the source agent's quarantine state; the Azure tool never executes.
+**Asserts**: The Azure-side call returns DENY with `violation_type=QUARANTINE_BLOCKED` and `quarantine` in the reason; the Azure tool never executes.
+
+> **Note (2026-06-04)**: an earlier version of this scenario assumed *two* injections quarantined the agent and that quarantine blocked the Azure call. Neither held: `PROMPT_INJECTION` is −20 so two denials only reach trust 60 (Warning), and quarantine previously blocked WRITE only (the Azure probe is a READ). Fixed by (a) a third compromise step to reach 40, and (b) quarantine now blocking all operations. See [Workstream 15 Task 5.4](../tasks/workstream-15-cross-cloud-demo.md).
 
 ---
 

@@ -12,7 +12,7 @@ Task 10: CloudWatch Metrics and Alarms
 """
 import logging
 import time
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 from datetime import datetime, timedelta
 
 import boto3
@@ -24,6 +24,31 @@ from app.utils.cache_manager import get_cache_manager
 from app.utils.session_manager import SessionManager
 
 logger = logging.getLogger(__name__)
+
+
+# Human-readable labels for the cloud-provider distribution widget (WS-21 T21).
+_PROVIDER_LABELS = {"aws": "AWS", "gcp": "GCP", "azure": "Azure", "unknown": "Unknown"}
+
+
+def _compute_provider_breakdown(counts: Dict[str, int], total: int) -> List[Dict[str, Any]]:
+    """Build [{cloud_provider, label, count, pct}] with integer pcts summing to 100.
+
+    Largest bucket absorbs the rounding remainder so the pie always totals 100%.
+    """
+    if total <= 0:
+        return []
+    rows = []
+    for provider, count in sorted(counts.items(), key=lambda kv: kv[1], reverse=True):
+        rows.append({
+            "cloud_provider": provider,
+            "label": _PROVIDER_LABELS.get(provider, provider.upper()),
+            "count": count,
+            "pct": int(count * 100 // total),  # floor first; fix remainder below
+        })
+    remainder = 100 - sum(r["pct"] for r in rows)
+    if remainder and rows:
+        rows[0]["pct"] += remainder  # largest bucket (rows sorted desc) takes it
+    return rows
 
 
 class AgentServiceError(Exception):
@@ -120,13 +145,19 @@ class AgentService:
             
             logger.debug(f"Loaded {len(agents)} agents from DynamoDB")
 
-            # Filter to only external agents (visibility != 'internal')
+            # WS-21 D1/T05: show agents from ALL cloud providers (no platform/
+            # bedrock exclusion). Only hide internal control-plane infra
+            # (visibility == 'internal'), kept as a defense-in-depth safety net
+            # alongside not registering the security-controller as an agent (T07).
             agents = [agent for agent in agents if agent.get('visibility', 'external') != 'internal']
-            logger.debug(f"Filtered to {len(agents)} external agents")
+            logger.debug(f"Filtered to {len(agents)} customer-facing agents (excluded visibility=internal)")
 
-            # Filter out Bedrock agents (platform == 'bedrock') - they have separate UI
-            agents = [agent for agent in agents if agent.get('platform', 'sentra') != 'bedrock']
-            logger.debug(f"Filtered to {len(agents)} self-hosted agents (excluded bedrock)")
+            # Ensure every returned agent has a resolved cloud_provider (derive
+            # from platform if the attribute is missing) so the API never emits a
+            # value outside the documented enum (Kombai crash fix).
+            from app.utils.cloud import resolve_cloud_provider
+            for agent in agents:
+                agent['cloud_provider'] = resolve_cloud_provider(agent)
 
             # Enrich if requested (default behavior for backward compatibility)
             if enrich:
@@ -166,6 +197,69 @@ class AgentService:
             # Return empty array on error (fail-safe for Dashboard)
             return {"agents": [], "total": 0, "error": str(e)}
     
+    async def get_cloud_provider_distribution(self) -> Dict[str, Any]:
+        """WS-21 T21: group active agents by hosting cloud_provider.
+
+        Backs GET /v1/metrics/platform-distribution and the overview
+        active_agents/clouds KPIs. Reuses list_agents (so the visibility=internal
+        filter and registry source are applied consistently); counts only
+        status=active agents.
+        """
+        listed = await self.list_agents(enrich=False)
+        agents = [a for a in listed.get('agents', []) if a.get('status') == 'active']
+
+        counts: Dict[str, int] = {}
+        for agent in agents:
+            provider = agent.get('cloud_provider') or 'unknown'
+            counts[provider] = counts.get(provider, 0) + 1
+
+        total = sum(counts.values())
+        return {
+            "total_nodes": total,
+            "clouds": len(counts),
+            "providers": _compute_provider_breakdown(counts, total),
+        }
+
+    async def attach_policy(self, agent_id: str, policy_id: str) -> Dict[str, Any]:
+        """WS-21 T33: attach a policy to an agent (stored as attached_policy_ids SS).
+
+        Raises KeyError (→404) if agent or policy is missing, ValueError (→409)
+        if already attached.
+        """
+        agent = self.agent_registry_table.get_item(Key={'agent_id': agent_id}).get('Item')
+        if not agent:
+            raise KeyError(f"agent {agent_id} not found")
+        policy = self.policies_metadata_table.get_item(Key={'policy_id': policy_id}).get('Item')
+        if not policy:
+            raise KeyError(f"policy {policy_id} not found")
+        if policy_id in set(agent.get('attached_policy_ids') or []):
+            raise ValueError(f"policy {policy_id} already attached to {agent_id}")
+
+        attached_at = datetime.utcnow().isoformat() + 'Z'
+        self.agent_registry_table.update_item(
+            Key={'agent_id': agent_id},
+            UpdateExpression="SET updated_at = :u ADD attached_policy_ids :p",
+            ExpressionAttributeValues={':u': attached_at, ':p': {policy_id}},
+        )
+        return {"agent_id": agent_id, "policy_id": policy_id,
+                "status": "attached", "attached_at": attached_at}
+
+    async def detach_policy(self, agent_id: str, policy_id: str) -> Dict[str, Any]:
+        """WS-21 T33: detach a policy from an agent. KeyError (→404) if the agent
+        is missing or the policy is not currently attached."""
+        agent = self.agent_registry_table.get_item(Key={'agent_id': agent_id}).get('Item')
+        if not agent:
+            raise KeyError(f"agent {agent_id} not found")
+        if policy_id not in set(agent.get('attached_policy_ids') or []):
+            raise KeyError(f"policy {policy_id} not attached to {agent_id}")
+
+        self.agent_registry_table.update_item(
+            Key={'agent_id': agent_id},
+            UpdateExpression="SET updated_at = :u DELETE attached_policy_ids :p",
+            ExpressionAttributeValues={':u': datetime.utcnow().isoformat() + 'Z', ':p': {policy_id}},
+        )
+        return {"agent_id": agent_id, "policy_id": policy_id, "status": "detached"}
+
     async def get_agent(self, agent_id: str) -> Optional[Dict]:
         """
         Get detailed information about a specific agent.

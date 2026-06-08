@@ -22,6 +22,7 @@ from aws_cdk import (
     aws_certificatemanager as acm,
     aws_acmpca as acmpca,
     aws_lambda as lambda_,
+    aws_secretsmanager as secretsmanager,
     CfnResource,
 )
 from constructs import Construct
@@ -168,11 +169,16 @@ class ComputeStack(Stack):
         storage_stack.policies_table.grant_read_data(self.security_controller_task_role)
         
         # DynamoDB permissions (Data Model v2 tables - Workstream 6, Task 1.5)
-        storage_stack.agent_registry_table.grant_read_data(self.security_controller_task_role)
+        # WS-21: read + write — attach/detach policy (update_item) and discovery
+        # import (put_item) mutate the registry, in addition to all the reads.
+        storage_stack.agent_registry_table.grant_read_write_data(self.security_controller_task_role)
         storage_stack.tool_registry_table.grant_read_data(self.security_controller_task_role)
         # Policies metadata: read + write for CRUD operations (Workstream 11)
         storage_stack.policies_metadata_table.grant_read_write_data(self.security_controller_task_role)
-        storage_stack.sigma_rules_metadata_table.grant_read_data(self.security_controller_task_role)
+        # read + write: PATCH /v1/sigma-rules/{id} enables/disables rules (update_item).
+        storage_stack.sigma_rules_metadata_table.grant_read_write_data(self.security_controller_task_role)
+        # Demo orders: RollbackCoordinator reverses refunds/writes here for /v1/rollback.
+        storage_stack.demo_orders_table.grant_read_write_data(self.security_controller_task_role)
 
         # Validation Signal Store (Workstream 17 / LLD 17)
         # Controller is the only writer (audit_logger dual-write) and a reader
@@ -222,7 +228,14 @@ class ComputeStack(Stack):
         # CloudWatch Metrics - custom metrics for metrics publisher
         self.security_controller_task_role.add_to_policy(
             iam.PolicyStatement(
-                actions=["cloudwatch:PutMetricData"],
+                # PutMetricData: emit validation/session metrics (MetricsPublisher).
+                # GetMetricData/ListMetrics: WS-21 dashboard reads (MetricsQueryService
+                # — /v1/metrics/overview + decisions-timeseries + attack_categories).
+                actions=[
+                    "cloudwatch:PutMetricData",
+                    "cloudwatch:GetMetricData",
+                    "cloudwatch:ListMetrics",
+                ],
                 resources=["*"],  # CloudWatch metrics don't support resource-level permissions
             )
         )
@@ -564,10 +577,15 @@ class ComputeStack(Stack):
         # Valid for: 365 days
         # Note: Browsers will show security warning (expected for self-signed certs)
         
+        # WS-22: real *.aegionai.ai ACM cert (replaces the prior self-signed cert).
+        # Covers console.aegionai.ai + dashboard.aegionai.ai. Overridable via config.
         self.alb_certificate = acm.Certificate.from_certificate_arn(
             self,
             "ALBCertificate",
-            certificate_arn="arn:aws:acm:us-east-1:531109575379:certificate/70506764-c759-4737-b8aa-8498924d4c85"
+            certificate_arn=alb_config.get(
+                "certificate_arn",
+                "arn:aws:acm:us-east-1:531109575379:certificate/522142fe-acef-4a68-8c59-847fc28b9470",
+            ),
         )
 
         # ============================================================
@@ -681,6 +699,26 @@ class ComputeStack(Stack):
             deregistration_delay=Duration.seconds(30)
         )
 
+        # SOC Console Target Group (Public ALB, host-based routing) — WS-22.
+        # L2 TG so the service loop's attach_to_application_target_group() binds it.
+        self.console_tg = elbv2.ApplicationTargetGroup(
+            self,
+            "ConsoleTargetGroup",
+            target_group_name="sentra-console-tg",
+            vpc=network_stack.vpc,
+            port=80,
+            protocol=elbv2.ApplicationProtocol.HTTP,
+            target_type=elbv2.TargetType.IP,
+            health_check=elbv2.HealthCheck(
+                path="/",
+                interval=Duration.seconds(60),
+                timeout=Duration.seconds(10),
+                healthy_threshold_count=2,
+                unhealthy_threshold_count=3,
+            ),
+            deregistration_delay=Duration.seconds(30),
+        )
+
         # Security Controller Target Group (Private ALB)
         self.security_controller_tg = elbv2.ApplicationTargetGroup(
             self,
@@ -786,6 +824,57 @@ class ComputeStack(Stack):
             ]
         )
 
+        # ------------------------------------------------------------
+        # WS-22: SOC Console — host-based rule on the SAME Public HTTPS
+        # listener. It carries its OWN authenticate-cognito action (order 1)
+        # so the console is gated exactly like the dashboard. The listener's
+        # default_actions (dashboard) are left UNTOUCHED — host-based routing
+        # = lowest regression risk on the working auth.
+        # ------------------------------------------------------------
+        console_host = alb_config.get("console_host", "console.aegionai.ai")
+        self.console_listener_rule = elbv2.CfnListenerRule(
+            self,
+            "ConsoleListenerRule",
+            listener_arn=self.public_https_listener.ref,
+            priority=10,
+            conditions=[
+                elbv2.CfnListenerRule.RuleConditionProperty(
+                    field="host-header",
+                    host_header_config=elbv2.CfnListenerRule.HostHeaderConfigProperty(
+                        values=[console_host]
+                    ),
+                )
+            ],
+            actions=[
+                elbv2.CfnListenerRule.ActionProperty(
+                    type="authenticate-cognito",
+                    order=1,
+                    authenticate_cognito_config=elbv2.CfnListenerRule.AuthenticateCognitoConfigProperty(
+                        user_pool_arn=cognito_stack.user_pool.user_pool_arn,
+                        user_pool_client_id=cognito_stack.user_pool_client.user_pool_client_id,
+                        # Fully-qualified to match the default_actions block (else login redirect fails).
+                        user_pool_domain=f"{cognito_stack.user_pool_domain.domain_name}.auth.{self.region}.amazoncognito.com",
+                        scope="openid email profile",
+                        session_timeout=3600,  # CfnListenerRule expects int (CfnListener took str)
+                        on_unauthenticated_request="authenticate",
+                    ),
+                ),
+                elbv2.CfnListenerRule.ActionProperty(
+                    type="forward",
+                    order=2,
+                    target_group_arn=self.console_tg.target_group_arn,
+                ),
+            ],
+        )
+
+        CfnOutput(
+            self,
+            "ConsoleUrl",
+            value=f"https://{console_host}",
+            description="SOC Console URL (host-based routing on Public ALB)",
+            export_name=f"{prefix}-console-url",
+        )
+
         # ============================================================
         # Private ALB Listener (API Services with Path-Based Routing)
         # ============================================================
@@ -828,6 +917,25 @@ class ComputeStack(Stack):
                     "/v1/agents*",
                     "/v1/policies*",
                     "/v1/sigma-rules*"
+                ])
+            ],
+            action=elbv2.ListenerAction.forward(
+                target_groups=[self.security_controller_tg]
+            )
+        )
+
+        # Priority 5: WS-21 SOC console endpoints. Separate rule because the
+        # ALB caps path-pattern values at 5 per rule (priority 1 is already full).
+        # Without these the gateway-registered routes 404 at the ALB.
+        self.private_http_listener.add_action(
+            "SecurityControllerRoutingConsole",
+            priority=5,
+            conditions=[
+                elbv2.ListenerCondition.path_patterns([
+                    "/v1/decisions*",
+                    "/v1/discovery*",
+                    "/v1/quarantine*",
+                    "/v1/rollback*"  # Tier A; had no ALB rule → was 404'ing too
                 ])
             ],
             action=elbv2.ListenerAction.forward(
@@ -979,9 +1087,11 @@ def handler(event, context):
             user_pool_id = event['ResourceProperties']['UserPoolId']
             client_id = event['ResourceProperties']['ClientId']
             alb_dns_name = event['ResourceProperties']['AlbDnsName']
+            extra_hosts = [h for h in event['ResourceProperties'].get('ExtraHosts', '').split(',') if h]
+            hosts = [alb_dns_name] + extra_hosts
 
-            callback_urls = [f"https://{alb_dns_name}/oauth2/idpresponse"]
-            logout_urls = [f"https://{alb_dns_name}/"]
+            callback_urls = [f"https://{h}/oauth2/idpresponse" for h in hosts]
+            logout_urls = [f"https://{h}/" for h in hosts]
 
             print(f"Updating User Pool Client {client_id}")
             print(f"Callback URLs: {callback_urls}")
@@ -1053,6 +1163,8 @@ def handler(event, context):
                 "UserPoolId": cognito_stack.user_pool.user_pool_id,
                 "ClientId": cognito_stack.user_pool_client.user_pool_client_id,
                 "AlbDnsName": self.public_alb.load_balancer_dns_name,
+                # WS-22: add real hostnames so console/dashboard logins via aegionai.ai are accepted.
+                "ExtraHosts": alb_config.get("console_host", "console.aegionai.ai") + ",dashboard.aegionai.ai",
             },
         )
 
@@ -1080,6 +1192,34 @@ def handler(event, context):
         # and other azure_foundry tool: steps — LLD 15 §7.2) and demo-orchestrator
         # (scenario validator's AzureToolFetcher — LLD 18 §4.5 / WS18 M3.3).
         azure_function_tool_url = "https://aegionai-ws15-m3-func.azurewebsites.net/api/tool"
+
+        # ------------------------------------------------------------
+        # WS-22: SOC Console — Secrets Manager secret for the Usage-Plan API key.
+        # nginx injects it as x-api-key on the /v1 proxy hop (never in the
+        # browser). Created with a random placeholder; the REAL key value is
+        # populated post-deploy (WS-22 Task 22.19 / M7) from the existing
+        # Usage-Plan key, then the console service is redeployed.
+        # ------------------------------------------------------------
+        self.console_api_secret = secretsmanager.Secret(
+            self,
+            "ConsoleApiKeySecret",
+            secret_name=f"{prefix}-console-api-key",
+            description="Usage-Plan API key injected by the console nginx proxy as x-api-key",
+            generate_secret_string=secretsmanager.SecretStringGenerator(
+                exclude_punctuation=True,
+                password_length=40,
+            ),
+        )
+        # Execution role pulls the secret to inject it as an ECS `secrets` env var.
+        self.console_api_secret.grant_read(self.task_execution_role)
+
+        # Minimal task role — nginx needs no AWS API access at runtime.
+        console_task_role = iam.Role(
+            self,
+            "ConsoleTaskRole",
+            assumed_by=iam.ServicePrincipal("ecs-tasks.amazonaws.com"),
+            description="Task role for the SOC Console nginx container - no AWS API access needed",
+        )
 
         service_configs = {
             "security-controller": {
@@ -1239,6 +1379,24 @@ def handler(event, context):
                 },
                 "health_check_command": ["CMD-SHELL", "curl -f http://localhost:8080/health || exit 1"],
             },
+            "console": {
+                "log_group_name": "/ecs/sentra/console",
+                "port": 80,
+                "task_role": console_task_role,
+                "target_group": self.console_tg,
+                "environment": {
+                    "SERVICE_NAME": "console",
+                    # API base MUST include the /prod stage (nginx appends /v1/ → /prod/v1/).
+                    "SENTRA_API_BASE": "https://iw3limi4k7.execute-api.us-east-1.amazonaws.com/prod",
+                    "SENTRA_API_HOST": "iw3limi4k7.execute-api.us-east-1.amazonaws.com",
+                    "NGINX_ENVSUBST_FILTER": "SENTRA_",
+                },
+                # x-api-key injected server-side from Secrets Manager (never in the browser).
+                "secrets": {
+                    "SENTRA_API_KEY": ecs.Secret.from_secrets_manager(self.console_api_secret),
+                },
+                "health_check_command": ["CMD-SHELL", "wget -q -O /dev/null http://localhost:80/ || exit 1"],
+            },
         }
 
         # Create log groups
@@ -1287,6 +1445,7 @@ def handler(event, context):
                     log_group=self.container_log_groups[service_name],
                 ),
                 environment=config["environment"],
+                secrets=config.get("secrets"),
                 port_mappings=[
                     ecs.PortMapping(
                         container_port=config["port"],
@@ -1329,6 +1488,7 @@ def handler(event, context):
                 "customer-query-agent": network_stack.customer_query_agent_sg,
                 "payment-agent": network_stack.payment_agent_sg,
                 "demo-orchestrator": network_stack.security_controller_sg,  # Reuse SC security group for internal service
+                "console": network_stack.console_sg,
             }
 
             # Create ECS service with Cloud Map service discovery
@@ -1366,7 +1526,7 @@ def handler(event, context):
                 service.attach_to_application_target_group(config["target_group"])
                 
                 # Add explicit dependency on ALB listeners to ensure target groups are attached first
-                if service_name == "dashboard":
+                if service_name in ("dashboard", "console"):
                     service.node.add_dependency(self.public_https_listener)
                 else:
                     service.node.add_dependency(self.private_http_listener)

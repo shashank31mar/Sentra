@@ -177,6 +177,13 @@ async def test_validation_pipeline_full_allow(mock_session, sample_request):
         assert result["session_id"] == "sess-123"
         assert "latency_ms" in result
 
+        # WS-21 T01: decision metrics emitted at validation time (correct kwargs)
+        service.metrics_publisher.publish_validation_metrics.assert_awaited_once()
+        kwargs = service.metrics_publisher.publish_validation_metrics.await_args.kwargs
+        assert kwargs["decision"] == "ALLOW"
+        assert kwargs["trust_score"] == 76.0
+        assert kwargs["agent_id"] == sample_request.agent_id
+
 
 @pytest.mark.asyncio
 async def test_validation_pipeline_deny_at_trust_checker(mock_session, sample_request):
@@ -213,6 +220,12 @@ async def test_validation_pipeline_deny_at_trust_checker(mock_session, sample_re
         assert result["reason"] == "Trust score too low"
         assert result["trust_score"] == 60.0
         assert result["violation_type"] == "LOW_TRUST"
+
+        # WS-21 T01: DENY decision metric emitted at validation time
+        service.metrics_publisher.publish_validation_metrics.assert_awaited_once()
+        dkwargs = service.metrics_publisher.publish_validation_metrics.await_args.kwargs
+        assert dkwargs["decision"] == "DENY"
+        assert dkwargs["trust_score"] == 60.0
 
 
 @pytest.mark.asyncio

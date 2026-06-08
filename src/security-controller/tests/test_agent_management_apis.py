@@ -67,7 +67,7 @@ def mock_policy_service():
                 }
             ],
             'total': 1,
-            'has_more': False
+            'next_token': None
         })
         mock.return_value = service
         yield service
@@ -89,7 +89,7 @@ def mock_sigma_rules_service():
                 }
             ],
             'total': 1,
-            'has_more': False
+            'next_token': None
         })
         mock.return_value = service
         yield service
@@ -211,13 +211,14 @@ class TestGetPoliciesEndpoint:
         data = response.json()
         assert 'policies' in data
         assert 'total' in data
-        assert 'has_more' in data
+        assert 'next_token' in data
         
         # Verify service was called with defaults
         mock_policy_service.query_policies.assert_called_once_with(
             agent_id=None,
             status=None,
-            limit=50
+            limit=50,
+            cursor=None
         )
     
     def test_get_policies_with_agent_id_filter(self, client, mock_policy_service):
@@ -230,7 +231,8 @@ class TestGetPoliciesEndpoint:
         mock_policy_service.query_policies.assert_called_once_with(
             agent_id='test-agent',
             status=None,
-            limit=50
+            limit=50,
+            cursor=None
         )
     
     def test_get_policies_with_status_filter(self, client, mock_policy_service):
@@ -243,7 +245,8 @@ class TestGetPoliciesEndpoint:
         mock_policy_service.query_policies.assert_called_once_with(
             agent_id=None,
             status='active',
-            limit=50
+            limit=50,
+            cursor=None
         )
     
     def test_get_policies_with_limit(self, client, mock_policy_service):
@@ -256,7 +259,8 @@ class TestGetPoliciesEndpoint:
         mock_policy_service.query_policies.assert_called_once_with(
             agent_id=None,
             status=None,
-            limit=10
+            limit=10,
+            cursor=None
         )
     
     def test_get_policies_invalid_status(self, client, mock_policy_service):
@@ -295,13 +299,14 @@ class TestGetSigmaRulesEndpoint:
         data = response.json()
         assert 'rules' in data
         assert 'total' in data
-        assert 'has_more' in data
+        assert 'next_token' in data
         
         # Verify service was called with defaults
         mock_sigma_rules_service.list_sigma_rules.assert_called_once_with(
             status=None,
             level=None,
-            limit=50
+            limit=50,
+            cursor=None
         )
     
     def test_get_sigma_rules_with_status_filter(self, client, mock_sigma_rules_service):
@@ -314,7 +319,8 @@ class TestGetSigmaRulesEndpoint:
         mock_sigma_rules_service.list_sigma_rules.assert_called_once_with(
             status='stable',
             level=None,
-            limit=50
+            limit=50,
+            cursor=None
         )
     
     def test_get_sigma_rules_with_level_filter(self, client, mock_sigma_rules_service):
@@ -327,7 +333,8 @@ class TestGetSigmaRulesEndpoint:
         mock_sigma_rules_service.list_sigma_rules.assert_called_once_with(
             status=None,
             level='high',
-            limit=50
+            limit=50,
+            cursor=None
         )
     
     def test_get_sigma_rules_with_limit(self, client, mock_sigma_rules_service):
@@ -340,7 +347,8 @@ class TestGetSigmaRulesEndpoint:
         mock_sigma_rules_service.list_sigma_rules.assert_called_once_with(
             status=None,
             level=None,
-            limit=10
+            limit=10,
+            cursor=None
         )
     
     def test_get_sigma_rules_invalid_status(self, client, mock_sigma_rules_service):
@@ -401,7 +409,8 @@ class TestEndpointErrorHandling:
         mock_policy_service.query_policies.assert_called_once_with(
             agent_id='test-agent',
             status='active',
-            limit=10
+            limit=10,
+            cursor=None
         )
     
     def test_sigma_rules_endpoint_with_all_filters(self, client, mock_sigma_rules_service):
@@ -414,5 +423,6 @@ class TestEndpointErrorHandling:
         mock_sigma_rules_service.list_sigma_rules.assert_called_once_with(
             status='stable',
             level='high',
-            limit=10
+            limit=10,
+            cursor=None
         )

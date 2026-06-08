@@ -198,6 +198,8 @@ The agent stays on its current Haiku 3.5 + its own guardrail. The validator runs
                   └──────────────────────────────────────────────────┘
 ```
 
+> **Diagram caveat:** the boxes above depict **signal flow into the combiner**, not concurrent execution. Validators run **sequentially** with short-circuit-on-DENY (§3.2); ml_classifier executes at STEP 3.5, after sigma. Read this as a data-flow diagram, not a parallel-execution diagram.
+
 The new validator is a peer of the existing ones. Same input contract (`ValidationRequest`), same output contract (`Signal`). The combiner doesn't need to change. The audit logger doesn't need to change.
 
 ### 3.2 Execution model — sequential with short-circuit on DENY
@@ -208,6 +210,8 @@ The new validator is a peer of the existing ones. Same input contract (`Validati
 2. **ML DENYs still short-circuit context+abuse.** Same trade as every other validator in the chain; consistent with how sigma DENY already short-circuits later steps today.
 
 The combiner's deny-overrides + priority semantics (LLD 17 §4, §10.1) still run over the collected `signals[]` for the audit log and the dashboard's `winning_source`, but the live customer verdict is "first denier wins" rather than "highest-priority denier wins." For the per-validator priority table to actually drive customer-facing decisions, the pipeline would need to be refactored to true parallel-gather. That's a cross-cutting change (affects all validators + scenarios S1-S4) tracked separately; v0.1 of this LLD does NOT make that refactor a prerequisite for shipping ML.
+
+> **Decision point (added 2026-06-05):** that refactor is now specified and owned by **[LLD 20 §3.4](20-defense-in-depth-layers.md) — the cost-annotated parallel DAG (workstream WS20.0)**. LLD 20 makes it a *prerequisite* (seven additional defense layers would otherwise sum latency), so the deferral above is resolved there. ML's STEP 3.5 placement and the sigma-short-circuit optimization are preserved under the DAG's cheap-deterministic-frontier-first schedule.
 
 #### Latency math under the sequential model
 
@@ -438,30 +442,46 @@ class MLClassifierValidator:
 
 ### 5.3 Integration with `_run_validation_pipeline`
 
-In `ValidationService._run_validation_pipeline`, the new validator is added to the parallel-gather block exactly like the existing ones:
+> **Implementation reality (v0.3):** the pipeline is **sequential with short-circuit-on-DENY**, NOT `asyncio.gather`. The ML classifier is slotted as **STEP 3.5** — after `sigma_engine`, before `context_validator` — so a sigma DENY returns before the ML tax is ever paid (§3.2). An earlier draft of this section showed a parallel-gather block; that was never the shipped shape. See [validation_service.py `_run_validation_pipeline`](../src/security-controller/app/services/validation_service.py).
+
+In `ValidationService._run_validation_pipeline`, the new validator is awaited in sequence and its DENY short-circuits the rest of the chain (unless shadow mode is on):
 
 ```python
-# (existing pipeline shape — comment-only diff)
-results = await asyncio.gather(
-    trust_validator.validate(request),
-    policy_engine.validate(request),
-    sigma_engine.validate(request),
-    cross_agent_validator.validate(request),
-    context_validator.validate(request),
-    ml_classifier.validate(request),  # ← NEW
-    return_exceptions=True,
-)
+# STEP 3: Sigma Rule Engine
+sigma_result = _capture(await self.sigma_engine.match_rules(request.user_input))
+if sigma_result.should_deny:
+    return _stamp(sigma_result), signals      # ML never runs — no Bedrock cost
+
+# STEP 3.5: ML Threat Classifier (Workstream 19 / LLD 19)
+ml_result = _capture(await self.ml_classifier.validate(request))
+# Shadow mode (WS19 M3): the validator runs and its Signal is captured into
+# signals[] either way, but in shadow mode its DENY MUST NOT short-circuit —
+# the customer-facing verdict falls back to sigma + policy so we can measure
+# ML's incremental value before letting it influence decisions.
+if ml_result.should_deny and not settings.ml_classifier_shadow_mode:
+    return _stamp(ml_result), signals
+
+# STEP 4: Context Validator ...
 ```
 
-The `@stamps(Source.SENTRA_ML_CLASSIFIER)` decorator on `validate()` already takes care of converting the `ValidationResult` to a `Signal` and emitting it to the signal store (LLD 17 §4 plumbing).
+Two consequences of the sequential model that reviewers must keep in mind:
 
-### 5.4 What gets parallelized vs sequential
+1. **`_capture` collects signals; the return value is the verdict.** The combiner (LLD 17 §6) still runs deny-overrides + priority over the *collected* `signals[]` for the audit log and the dashboard's `winning_source` — but the **live customer verdict is "first denier wins" (pipeline order)**, not "highest-priority denier wins." Because sigma (STEP 3) precedes ML (STEP 3.5), a sigma DENY means ML produces no signal at all; the §6 "sigma DENY + ML ALLOW → combined DENY" example therefore can't occur (ML never voted).
+2. **ABSTAIN emits no signal.** `_capture` checks `result.is_abstain` and appends nothing (LLD 17 §4 absence semantics, §7.4 here). Used by the ML validator on Bedrock outage / disabled / very-low confidence so the chain falls back to sigma + policy cleanly.
 
-**Parallel within the validator chain**: yes, ml_classifier runs in parallel with sigma + policy + others. The pipeline's `asyncio.gather()` handles this.
+The `@stamps(Source.SENTRA_ML_CLASSIFIER)` decorator on `validate()` converts the `ValidationResult` to a `Signal` for the signal store (LLD 17 §4 plumbing); `_capture` is what filters ABSTAINs out of that store.
 
-**Sequential within the classifier itself**: hot_path → escalation is sequential (we don't know whether to escalate until Haiku returns). Both are sequential inside the validator's `validate()` method but the pipeline doesn't wait on validators internally — it waits on the gather.
+### 5.4 Execution model — sequential, two levels
 
-Net effect: pipeline p99 = max(other validators ~80ms, ml_classifier p99 ~800ms for hot + escalation when needed).
+**Across the validator chain**: **sequential**, not parallel. `_run_validation_pipeline` awaits each validator in order (trust → policy → cross-agent → sigma → **ml_classifier** → context → abuse) and returns on the first `should_deny=True`. There is no `asyncio.gather` over validators. Slotting ML after sigma means sigma's ~50ms deterministic pass short-circuits known attacks before the ~600ms ML call is made (§3.2).
+
+**Within the classifier itself**: hot_path → escalation is also sequential — we don't know whether to escalate until Haiku returns — and bounded by `ML_CLASSIFIER_TOTAL_BUDGET_SECONDS` (§8.1).
+
+Net effect on latency:
+- **sigma DENY** → pipeline returns at ~180ms; ML never runs (no Bedrock cost). 
+- **sigma ALLOW** → pipeline pays the ML tax: p99 ≈ 850ms hot, bounded ≈ 2.5s with escalation (§3.2.1).
+
+A true parallel-gather refactor (so the §6.1 priority table drives the *live* verdict rather than just the audit `winning_source`) is a cross-cutting change tracked separately; v0.1 does not require it.
 
 ---
 
@@ -1053,14 +1073,14 @@ Every ML invocation appends to the audit log: request_id, model_id, model_used (
 
 ---
 
-## Appendix A: Why not run ML in front of sigma instead of in parallel?
+## Appendix A: Ordering — why sigma runs before ML
 
-Considered: serial pipeline where ML decides first; sigma only runs if ML ABSTAINs.
+The shipped pipeline is **sequential**, and ML is deliberately ordered **after** sigma (STEP 3.5, §3.2). Two orderings were considered and rejected:
 
-Rejected because:
-- Sigma latency is ~50ms vs ML's 600ms — running them sequentially with ML first would always pay the ML cost even when sigma alone would catch a known pattern.
-- Parallel + deny-overrides gives us the same effective security with no extra latency.
-- Sigma's deterministic explanation is preferred for audit; ML supplements it.
+- **ML first, sigma only on ML-ABSTAIN** — rejected: sigma is ~50ms deterministic vs ML's ~600ms, so leading with ML always pays the ML cost even when a cheap regex would have caught the known pattern.
+- **Pure parallel `asyncio.gather` + deny-overrides** — appealing on paper (the §6.1 priority table would drive the live verdict), but it forces every sigma-catchable attack to also pay the ~600ms ML call, and the refactor touches all validators + scenarios S1–S4. Deferred as a separate cross-cutting workstream — **now owned by [LLD 20 §3.4](20-defense-in-depth-layers.md) / WS20.0**, which resolves the "pure parallel pays ML on every call" objection by gating the cheap deterministic frontier (incl. sigma) *first*, then parallelizing only the expensive-model nodes.
+
+The chosen order — **sigma first, ML on sigma-ALLOW** — spends the ML latency only on traffic sigma can't already explain, which is exactly where ML's incremental value is. Sigma's deterministic reason stays the headline for audit; ML supplements it via the collected `signals[]` (§5.3).
 
 ## Appendix B: Why a hosted LLM, not Llama Guard / DistilBERT / Lakera?
 

@@ -315,7 +315,7 @@ payment_action.add_method(
 **Benefits**:
 1. **Consistent API**: Same interface pattern for all agents
 2. **Different rate limits**: Stricter limits on writes (actions) vs reads (queries)
-3. **Security policies**: Can apply different rules (e.g., quarantined agents can only query, not act)
+3. **Security policies**: Can apply different rules (e.g., quarantined sessions are blocked from all operations — see LLD 03 §6.2)
 4. **Scalability**: Easy to add new agents without API changes
 
 **Usage Examples**:

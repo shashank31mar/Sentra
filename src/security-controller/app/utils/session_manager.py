@@ -437,13 +437,17 @@ class SessionManager:
         
         Thresholds:
         - 70-100: active (all operations allowed)
-        - 40-69: warning (all operations allowed + alerts)
-        - 10-39: quarantined (WRITE blocked, READ allowed)
+        - 41-69: warning (all operations allowed + alerts)
+        - 10-40: quarantined (ALL operations blocked — read + write)
         - 0-9: suspended (all operations blocked)
+
+        Note: 40 falls into the quarantined band (boundary is `> 40` for
+        warning) so that a session driven down to exactly 40 is contained —
+        see LLD 03 §6.2 and the S4 blast-radius scenario (LLD 15 §9).
         """
         if trust_score >= 70:
             return 'active'
-        elif trust_score >= 40:
+        elif trust_score > 40:
             return 'warning'
         elif trust_score >= 10:
             return 'quarantined'
@@ -600,6 +604,57 @@ class SessionManager:
     # ============================================================
     # Analytics Methods (for Agent Management APIs)
     # ============================================================
+
+    async def count_sessions_by_status(self, status: str) -> int:
+        """WS-21 T20: count sessions in a given quarantine_status (fleet-wide).
+
+        Used for the overview 'quarantined' KPI. Uses Select=COUNT so DDB does
+        the counting server-side.
+        """
+        try:
+            from boto3.dynamodb.conditions import Attr
+
+            count = 0
+            scan_kwargs = {
+                'Select': 'COUNT',
+                'FilterExpression': Attr('quarantine_status').eq(status),
+            }
+            while True:
+                response = self.table.scan(**scan_kwargs)
+                count += response.get('Count', 0)
+                lek = response.get('LastEvaluatedKey')
+                if not lek:
+                    break
+                scan_kwargs['ExclusiveStartKey'] = lek
+            return count
+        except ClientError:
+            logger.exception(f"Failed to count sessions with status={status}")
+            return 0
+
+    async def count_agents_below_trust(self, threshold: float = 70.0) -> int:
+        """WS-21 T20: count distinct agents whose average session trust < threshold.
+
+        Backs the overview 'agents_below_threshold' KPI. Best-effort full scan
+        (acceptable at MVP scale); aggregates per-agent average in memory.
+        """
+        try:
+            scores: Dict[str, list] = {}
+            scan_kwargs = {'ProjectionExpression': 'agent_id, trust_score'}
+            while True:
+                response = self.table.scan(**scan_kwargs)
+                for item in response.get('Items', []):
+                    agent_id = item.get('agent_id')
+                    if not agent_id:
+                        continue
+                    scores.setdefault(agent_id, []).append(float(item.get('trust_score', 100)))
+                lek = response.get('LastEvaluatedKey')
+                if not lek:
+                    break
+                scan_kwargs['ExclusiveStartKey'] = lek
+            return sum(1 for s in scores.values() if (sum(s) / len(s)) < threshold)
+        except ClientError:
+            logger.exception("Failed to count agents below trust threshold")
+            return 0
 
     async def get_active_sessions_count(self, agent_id: str) -> int:
         """

@@ -73,7 +73,7 @@ class TestPolicyServiceQueryPolicies:
         assert len(result['policies']) == 1
         assert result['policies'][0]['policy_id'] == 'test-policy-001'
         assert result['policies'][0]['match_count_24h'] == 0
-        assert result['has_more'] == False
+        assert result['next_token'] is None
         
         # Verify scan was called
         mock_table.scan.assert_called_once()
@@ -155,17 +155,22 @@ class TestPolicyServiceQueryPolicies:
         ]
         
         mock_table = Mock()
-        mock_table.scan.return_value = {'Items': policies}
+        # DDB returns a page plus a LastEvaluatedKey when more results exist —
+        # that continuation key is what now drives next_token (canonical pagination).
+        mock_table.scan.return_value = {
+            'Items': policies,
+            'LastEvaluatedKey': {'policy_id': 'policy-4'},
+        }
         mock_dynamodb.return_value.Table.return_value = mock_table
-        
+
         # Create service and test with limit=5
         service = PolicyService()
         result = await service.query_policies(limit=5)
-        
+
         # Assertions
         assert len(result['policies']) == 5
         assert result['total'] == 10
-        assert result['has_more'] == True
+        assert result['next_token'] is not None  # more pages available
     
     @pytest.mark.asyncio
     async def test_query_policies_limit_capped_at_200(self, mock_dynamodb, mock_cache_manager, sample_policy):
@@ -184,13 +189,30 @@ class TestPolicyServiceQueryPolicies:
         assert call_args[1]['Limit'] == 200
     
     @pytest.mark.asyncio
+    async def test_query_policies_cursor_threads_exclusive_start_key(
+        self, mock_dynamodb, mock_cache_manager, sample_policy
+    ):
+        """WS-21 T06: an opaque cursor decodes to a DDB ExclusiveStartKey."""
+        from app.utils.pagination import encode_cursor
+
+        mock_table = Mock()
+        mock_table.scan.return_value = {'Items': [sample_policy]}
+        mock_dynamodb.return_value.Table.return_value = mock_table
+
+        cursor = encode_cursor({'policy_id': 'p-prev'})
+        service = PolicyService()
+        await service.query_policies(cursor=cursor)
+
+        assert mock_table.scan.call_args.kwargs['ExclusiveStartKey'] == {'policy_id': 'p-prev'}
+
+    @pytest.mark.asyncio
     async def test_query_policies_cache_hit(self, mock_dynamodb, mock_cache_manager):
         """Test cache hit scenario"""
         # Setup cache to return data
         cached_data = {
             'policies': [{'policy_id': 'cached-policy'}],
             'total': 1,
-            'has_more': False
+            'next_token': None
         }
         mock_cache_manager.get.return_value = cached_data
         
@@ -218,7 +240,7 @@ class TestPolicyServiceQueryPolicies:
         # Assertions - should return empty array, not raise
         assert result['policies'] == []
         assert result['total'] == 0
-        assert result['has_more'] == False
+        assert result['next_token'] is None
         assert 'error' in result
 
 

@@ -343,7 +343,7 @@ class ApiStack(Stack):
         )
 
         # /v1/logs - GET (with query parameters)
-        StandardApiEndpoint(
+        logs_endpoint = StandardApiEndpoint(
             self, "LogsEndpoint",
             api=self.api,
             parent_resource=v1_resource,
@@ -352,21 +352,31 @@ class ApiStack(Stack):
             integration=create_http_integration(
                 self.nlb_base_url, "/v1/logs", "GET",
                 vpc_link=self.api_vpc_link,
+                # WS-21 T03/C3: map the REAL route params. Previously this passed
+                # start_time/end_time (the route expects since/until) and dropped
+                # agent_id/decision/threat_type — so time filters silently no-op'd
+                # and the Threats/Audit filters never reached the service.
                 pass_query_params={
-                    "session_id": "method.request.querystring.session_id",
-                    "start_time": "method.request.querystring.start_time",
-                    "end_time": "method.request.querystring.end_time",
+                    "since": "method.request.querystring.since",
+                    "until": "method.request.querystring.until",
                     "limit": "method.request.querystring.limit",
+                    "session_id": "method.request.querystring.session_id",
+                    "agent_id": "method.request.querystring.agent_id",
+                    "decision": "method.request.querystring.decision",
+                    "threat_type": "method.request.querystring.threat_type",
                 }
             ),
             rate_limit=self.config.get_endpoint_rate_limit("logs"),
             burst_limit=self.config.get_endpoint_burst_limit("logs"),
             api_key_required=True,
             request_parameters={
-                "method.request.querystring.session_id": False,
-                "method.request.querystring.start_time": False,
-                "method.request.querystring.end_time": False,
+                "method.request.querystring.since": False,
+                "method.request.querystring.until": False,
                 "method.request.querystring.limit": False,
+                "method.request.querystring.session_id": False,
+                "method.request.querystring.agent_id": False,
+                "method.request.querystring.decision": False,
+                "method.request.querystring.threat_type": False,
             }
         )
 
@@ -581,6 +591,284 @@ class ApiStack(Stack):
             api_key_required=True,
             request_validator=body_validator,
             request_parameters={"method.request.path.rule_id": True}
+        )
+
+        # ============================================================
+        # Workstream 21: SOC Console Tier B endpoints (LLD 21 §3 / T10-T17)
+        # These routes already exist in security-controller; this wires them
+        # through API Gateway (HTTP_PROXY via VPC Link), mirroring the policies
+        # pattern above. Query/path params declared twice: in pass_query_params
+        # (integration mapping) and request_parameters (method).
+        # ============================================================
+
+        # T10: GET /v1/agents (list; ?enrich=)
+        agents_resource.add_method(
+            "GET",
+            integration=create_http_integration(
+                self.nlb_base_url, "/v1/agents", "GET", vpc_link=self.api_vpc_link,
+                pass_query_params={"enrich": "method.request.querystring.enrich"},
+            ),
+            api_key_required=True,
+            request_parameters={"method.request.querystring.enrich": False},
+        )
+
+        # T11/T12: GET /v1/agents/{agent_id} and /v1/agents/{agent_id}/tools
+        # NOTE: {agent_id} is a sibling of the static customer-query/payment
+        # resources; API Gateway routes static path parts first, so this is safe.
+        agent_id_resource = agents_resource.add_resource("{agent_id}")
+        agent_id_resource.add_method(
+            "GET",
+            integration=create_http_integration(
+                self.nlb_base_url, "/v1/agents/{agent_id}", "GET", vpc_link=self.api_vpc_link,
+            ),
+            api_key_required=True,
+            request_parameters={"method.request.path.agent_id": True},
+        )
+        agent_tools_resource = agent_id_resource.add_resource("tools")
+        agent_tools_resource.add_method(
+            "GET",
+            integration=create_http_integration(
+                self.nlb_base_url, "/v1/agents/{agent_id}/tools", "GET", vpc_link=self.api_vpc_link,
+            ),
+            api_key_required=True,
+            request_parameters={"method.request.path.agent_id": True},
+        )
+
+        # T13/T14: GET /v1/sessions and /v1/sessions/{session_id}/decisions
+        sessions_resource = v1_resource.add_resource("sessions")
+        sessions_resource.add_method(
+            "GET",
+            integration=create_http_integration(
+                self.nlb_base_url, "/v1/sessions", "GET", vpc_link=self.api_vpc_link,
+                pass_query_params={
+                    "status": "method.request.querystring.status",
+                    "agent_id": "method.request.querystring.agent_id",
+                    "limit": "method.request.querystring.limit",
+                },
+            ),
+            api_key_required=True,
+            request_parameters={
+                "method.request.querystring.status": False,
+                "method.request.querystring.agent_id": False,
+                "method.request.querystring.limit": False,
+            },
+        )
+        session_id_resource = sessions_resource.add_resource("{session_id}")
+        session_decisions_resource = session_id_resource.add_resource("decisions")
+        session_decisions_resource.add_method(
+            "GET",
+            integration=create_http_integration(
+                self.nlb_base_url, "/v1/sessions/{session_id}/decisions", "GET",
+                vpc_link=self.api_vpc_link,
+                pass_query_params={
+                    "request_id": "method.request.querystring.request_id",
+                    "agent_id": "method.request.querystring.agent_id",
+                    "limit": "method.request.querystring.limit",
+                },
+            ),
+            api_key_required=True,
+            request_parameters={
+                "method.request.path.session_id": True,
+                "method.request.querystring.request_id": False,
+                "method.request.querystring.agent_id": False,
+                "method.request.querystring.limit": False,
+            },
+        )
+
+        # T15: GET /v1/decisions (cross-session GSI-2 feed; Threats + timeseries)
+        decisions_resource = v1_resource.add_resource("decisions")
+        decisions_resource.add_method(
+            "GET",
+            integration=create_http_integration(
+                self.nlb_base_url, "/v1/decisions", "GET", vpc_link=self.api_vpc_link,
+                pass_query_params={
+                    "since": "method.request.querystring.since",
+                    "until": "method.request.querystring.until",
+                    "agent_id": "method.request.querystring.agent_id",
+                    "decision": "method.request.querystring.decision",
+                    "threat_type": "method.request.querystring.threat_type",
+                    "limit": "method.request.querystring.limit",
+                    "cursor": "method.request.querystring.cursor",
+                },
+            ),
+            api_key_required=True,
+            request_parameters={
+                "method.request.querystring.since": False,
+                "method.request.querystring.until": False,
+                "method.request.querystring.agent_id": False,
+                "method.request.querystring.decision": False,
+                "method.request.querystring.threat_type": False,
+                "method.request.querystring.limit": False,
+                "method.request.querystring.cursor": False,
+            },
+        )
+
+        # T16: GET /v1/logs/conversation/{conversation_id} (audit trace)
+        conversation_resource = logs_endpoint.resource.add_resource("conversation").add_resource("{conversation_id}")
+        conversation_resource.add_method(
+            "GET",
+            integration=create_http_integration(
+                self.nlb_base_url, "/v1/logs/conversation/{conversation_id}", "GET",
+                vpc_link=self.api_vpc_link,
+            ),
+            api_key_required=True,
+            request_parameters={"method.request.path.conversation_id": True},
+        )
+
+        # T17: POST /v1/quarantine/{session_id} (operator action)
+        quarantine_resource = v1_resource.add_resource("quarantine")
+        quarantine_session_resource = quarantine_resource.add_resource("{session_id}")
+        quarantine_session_resource.add_method(
+            "POST",
+            integration=create_http_integration(
+                self.nlb_base_url, "/v1/quarantine/{session_id}", "POST",
+                vpc_link=self.api_vpc_link,
+            ),
+            api_key_required=True,
+            request_validator=body_validator,
+            request_parameters={"method.request.path.session_id": True},
+        )
+
+        # ============================================================
+        # Workstream 21 Phase 2: dashboard metrics endpoints (T20-T22)
+        # ============================================================
+        metrics_resource = v1_resource.add_resource("metrics")
+
+        # T20: GET /v1/metrics/overview
+        metrics_overview_resource = metrics_resource.add_resource("overview")
+        metrics_overview_resource.add_method(
+            "GET",
+            integration=create_http_integration(
+                self.nlb_base_url, "/v1/metrics/overview", "GET", vpc_link=self.api_vpc_link,
+                pass_query_params={"range": "method.request.querystring.range"},
+            ),
+            api_key_required=True,
+            request_parameters={"method.request.querystring.range": False},
+        )
+
+        # T21: GET /v1/metrics/platform-distribution
+        metrics_dist_resource = metrics_resource.add_resource("platform-distribution")
+        metrics_dist_resource.add_method(
+            "GET",
+            integration=create_http_integration(
+                self.nlb_base_url, "/v1/metrics/platform-distribution", "GET",
+                vpc_link=self.api_vpc_link,
+            ),
+            api_key_required=True,
+        )
+
+        # T22: GET /v1/metrics/decisions-timeseries
+        metrics_ts_resource = metrics_resource.add_resource("decisions-timeseries")
+        metrics_ts_resource.add_method(
+            "GET",
+            integration=create_http_integration(
+                self.nlb_base_url, "/v1/metrics/decisions-timeseries", "GET",
+                vpc_link=self.api_vpc_link,
+                pass_query_params={
+                    "range": "method.request.querystring.range",
+                    "bucket": "method.request.querystring.bucket",
+                },
+            ),
+            api_key_required=True,
+            request_parameters={
+                "method.request.querystring.range": False,
+                "method.request.querystring.bucket": False,
+            },
+        )
+
+        # ============================================================
+        # Workstream 21 Phase 3: discovery, attach, verdict (T30-T34)
+        # ============================================================
+        discovery_resource = v1_resource.add_resource("discovery")
+
+        # GET /v1/discovery/agents (filters)
+        discovery_resource.add_resource("agents").add_method(
+            "GET",
+            integration=create_http_integration(
+                self.nlb_base_url, "/v1/discovery/agents", "GET", vpc_link=self.api_vpc_link,
+                pass_query_params={
+                    "cloud_provider": "method.request.querystring.cloud_provider",
+                    "framework": "method.request.querystring.framework",
+                    "risk": "method.request.querystring.risk",
+                    "status": "method.request.querystring.status",
+                    "limit": "method.request.querystring.limit",
+                    "cursor": "method.request.querystring.cursor",
+                },
+            ),
+            api_key_required=True,
+            request_parameters={
+                "method.request.querystring.cloud_provider": False,
+                "method.request.querystring.framework": False,
+                "method.request.querystring.risk": False,
+                "method.request.querystring.status": False,
+                "method.request.querystring.limit": False,
+                "method.request.querystring.cursor": False,
+            },
+        )
+
+        # GET /v1/discovery/summary, GET /v1/discovery/platforms
+        discovery_resource.add_resource("summary").add_method(
+            "GET",
+            integration=create_http_integration(
+                self.nlb_base_url, "/v1/discovery/summary", "GET", vpc_link=self.api_vpc_link,
+            ),
+            api_key_required=True,
+        )
+        discovery_resource.add_resource("platforms").add_method(
+            "GET",
+            integration=create_http_integration(
+                self.nlb_base_url, "/v1/discovery/platforms", "GET", vpc_link=self.api_vpc_link,
+            ),
+            api_key_required=True,
+        )
+
+        # POST /v1/discovery/import
+        discovery_resource.add_resource("import").add_method(
+            "POST",
+            integration=create_http_integration(
+                self.nlb_base_url, "/v1/discovery/import", "POST", vpc_link=self.api_vpc_link,
+            ),
+            api_key_required=True,
+            request_validator=body_validator,
+        )
+
+        # T33: POST /v1/agents/{agent_id}/policies, DELETE .../policies/{policy_id}
+        agent_policies_resource = agent_id_resource.add_resource("policies")
+        agent_policies_resource.add_method(
+            "POST",
+            integration=create_http_integration(
+                self.nlb_base_url, "/v1/agents/{agent_id}/policies", "POST",
+                vpc_link=self.api_vpc_link,
+            ),
+            api_key_required=True,
+            request_validator=body_validator,
+            request_parameters={"method.request.path.agent_id": True},
+        )
+        agent_policy_id_resource = agent_policies_resource.add_resource("{policy_id}")
+        agent_policy_id_resource.add_method(
+            "DELETE",
+            integration=create_http_integration(
+                self.nlb_base_url, "/v1/agents/{agent_id}/policies/{policy_id}", "DELETE",
+                vpc_link=self.api_vpc_link,
+            ),
+            api_key_required=True,
+            request_parameters={
+                "method.request.path.agent_id": True,
+                "method.request.path.policy_id": True,
+            },
+        )
+
+        # T34: POST /v1/decisions/{decision_id}/verdict
+        decision_id_resource = decisions_resource.add_resource("{decision_id}")
+        decision_id_resource.add_resource("verdict").add_method(
+            "POST",
+            integration=create_http_integration(
+                self.nlb_base_url, "/v1/decisions/{decision_id}/verdict", "POST",
+                vpc_link=self.api_vpc_link,
+            ),
+            api_key_required=True,
+            request_validator=body_validator,
+            request_parameters={"method.request.path.decision_id": True},
         )
 
         # ============================================================

@@ -222,14 +222,15 @@ def test_19_paginated_scan_decisions():
 
     svc = _fresh_service()
     page1 = svc.scan_decisions(limit=2)
-    # Cursor may or may not be present depending on what else is in the
-    # decision_date partition for today. The contract is: if cursor is
-    # present, has_more is True.
-    if page1.get("next_cursor"):
-        page2 = svc.scan_decisions(limit=2, cursor=page1["next_cursor"])
+    # Canonical pagination (LLD 21 §11.1): response carries next_token only
+    # (null = last page). If a token is present, it round-trips as the cursor.
+    assert "next_token" in page1
+    if page1.get("next_token"):
+        page2 = svc.scan_decisions(limit=2, cursor=page1["next_token"])
         # Just need a clean response — content can vary based on the day's
         # accumulated signals.
         assert "decisions" in page2
+        assert "next_token" in page2
 
     # Invalid cursor → ValueError
     with pytest.raises(ValueError):

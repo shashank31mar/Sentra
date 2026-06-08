@@ -267,6 +267,200 @@ async def get_metrics(
 
 
 # ============================================================
+# Workstream 21: SOC Console dashboard metrics (T20-T22)
+# Served from CloudWatch Metrics (GetMetricData) + DDB joins. See LLD 21 §10.6.
+# ============================================================
+
+_VALID_METRIC_RANGES = {"1h", "24h", "7d", "30d"}
+
+
+def _trust_status(score: Optional[float]) -> str:
+    """Map a 0-100 trust score to a status band (LLD 21 §11.2)."""
+    if score is None:
+        return "unknown"
+    if score >= 80:
+        return "healthy"
+    if score >= 50:
+        return "degraded"
+    return "critical"
+
+
+@router.get("/metrics/overview")
+async def get_metrics_overview(range: str = "24h") -> Dict:
+    """WS-21 T20: single call backing the dashboard KPI cards.
+
+    CloudWatch (GetMetricData) for counts/latency/deny/trust + DDB for
+    agent/provider/session counts. P0: delta% and false_positive_pct are null.
+    """
+    if range not in _VALID_METRIC_RANGES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"range must be one of {sorted(_VALID_METRIC_RANGES)}",
+        )
+    from app.services.metrics_query_service import MetricsQueryService
+    from app.services.agent_service import AgentService
+    from app.utils.session_manager import SessionManager
+
+    mq = MetricsQueryService()
+    cw = mq.overview(range)
+    distribution = await AgentService().get_cloud_provider_distribution()
+    session_manager = SessionManager()
+    quarantined = await session_manager.count_sessions_by_status("quarantined")
+    suspended = await session_manager.count_sessions_by_status("suspended")
+    below_threshold = await session_manager.count_agents_below_trust(70.0)
+
+    # WS-21 T01: keep the CloudWatch session gauges (QuarantinedSessions /
+    # SuspendedSessions) fresh. The controller has no scheduler, so we emit the
+    # fleet gauge on dashboard reads (cadence = dashboard load). Fire-and-forget;
+    # the console itself reads the counts above straight from DDB.
+    from app.utils.metrics_publisher import MetricsPublisher
+    await MetricsPublisher().publish_session_metrics(quarantined, suspended)
+
+    return {
+        "range": range,
+        "threats_blocked": cw["threats_blocked"],
+        "threats_blocked_delta_pct": None,  # P0: prior-window compare not wired
+        "attack_categories": mq.attack_category_count(),
+        "active_agents": distribution["total_nodes"],
+        "clouds": distribution["clouds"],
+        "trust_score": cw["trust_score"],
+        "trust_status": _trust_status(cw["trust_score"]),
+        "agents_below_threshold": below_threshold,
+        "requests_total": cw["requests_total"],
+        "avg_latency_ms": cw["avg_latency_ms"],
+        "quarantined": quarantined,
+        "false_positive_pct": None,  # P0: captured silently via verdict (T34), not shown
+    }
+
+
+@router.get("/metrics/platform-distribution")
+async def get_platform_distribution() -> Dict:
+    """WS-21 T21: agent counts grouped by hosting cloud_provider."""
+    from app.services.agent_service import AgentService
+
+    distribution = await AgentService().get_cloud_provider_distribution()
+    return {
+        "total_nodes": distribution["total_nodes"],
+        "providers": distribution["providers"],
+    }
+
+
+@router.get("/metrics/decisions-timeseries")
+async def get_decisions_timeseries(range: str = "24h", bucket: str = "1h") -> Dict:
+    """WS-21 T22: allowed-vs-blocked dense time-series (Chart.js area chart)."""
+    if range not in _VALID_METRIC_RANGES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"range must be one of {sorted(_VALID_METRIC_RANGES)}",
+        )
+    from app.services.metrics_query_service import MetricsQueryService
+
+    try:
+        return MetricsQueryService().decisions_timeseries(range, bucket)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+# ============================================================
+# Workstream 21 Phase 3: Discovery (read-model), attach, verdict (T30-T34)
+# ============================================================
+
+@router.get("/discovery/agents")
+async def discovery_agents(
+    cloud_provider: Optional[str] = None,
+    framework: Optional[str] = None,
+    risk: Optional[str] = None,
+    status: Optional[str] = None,
+    limit: int = 50,
+    cursor: Optional[str] = None,
+) -> Dict:
+    """WS-21 T32: detected-agents table (static, policy-derived read-model)."""
+    from app.services.discovery_service import DiscoveryService
+    try:
+        return await DiscoveryService().list_discovered(
+            cloud_provider=cloud_provider, framework=framework, risk=risk,
+            status=status, limit=limit, cursor=cursor,
+        )
+    except ValueError as exc:  # malformed cursor
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+@router.get("/discovery/summary")
+async def discovery_summary() -> Dict:
+    """WS-21 T32: discovery KPI cards."""
+    from app.services.discovery_service import DiscoveryService
+    return await DiscoveryService().summary()
+
+
+@router.get("/discovery/platforms")
+async def discovery_platforms() -> Dict:
+    """WS-21 T32: per-cloud-provider detected counts (status idle in P0)."""
+    from app.services.discovery_service import DiscoveryService
+    return await DiscoveryService().platforms()
+
+
+@router.post("/discovery/import", status_code=201)
+async def discovery_import(request: Dict) -> Dict:
+    """WS-21 T32: promote discovered agents to managed (D2 contract)."""
+    from app.services.discovery_service import DiscoveryService
+    agent_ids = request.get("agent_ids")
+    enforcement_mode = request.get("enforcement_mode", "monitor")
+    try:
+        return await DiscoveryService().import_agents(agent_ids or [], enforcement_mode)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except LookupError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+
+
+@router.post("/agents/{agent_id}/policies")
+async def attach_agent_policy(agent_id: str, request: Dict) -> Dict:
+    """WS-21 T33: attach a policy to an agent."""
+    policy_id = request.get("policy_id")
+    if not policy_id:
+        raise HTTPException(status_code=400, detail="policy_id is required")
+    from app.services.agent_service import AgentService
+    try:
+        return await AgentService().attach_policy(agent_id, policy_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+
+
+@router.delete("/agents/{agent_id}/policies/{policy_id}")
+async def detach_agent_policy(agent_id: str, policy_id: str) -> Dict:
+    """WS-21 T33: detach a policy from an agent."""
+    from app.services.agent_service import AgentService
+    try:
+        return await AgentService().detach_policy(agent_id, policy_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+
+
+@router.post("/decisions/{decision_id}/verdict")
+async def post_decision_verdict(decision_id: str, request: Dict) -> Dict:
+    """WS-21 T34: capture an operator FP/FN verdict (silent in P0). decision_id
+    = '<session_id>:<request_id>'."""
+    valid = {"false_positive", "confirmed_threat", "false_negative", "confirmed_safe"}
+    verdict = request.get("verdict")
+    reason = request.get("reason")
+    operator_id = request.get("operator_id")
+    if verdict not in valid:
+        raise HTTPException(status_code=400, detail=f"verdict must be one of {sorted(valid)}")
+    if not reason or not operator_id:
+        raise HTTPException(status_code=400, detail="reason and operator_id are required")
+    try:
+        return _decisions_service().record_verdict(decision_id, verdict, reason, operator_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    except RuntimeError as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+
+
+# ============================================================
 # Task 5: GET /v1/agents - Agent Management APIs
 # ============================================================
 
@@ -381,7 +575,8 @@ async def get_agent_tools(agent_id: str) -> Dict:
 async def get_policies(
     agent_id: Optional[str] = None,
     status: Optional[str] = None,
-    limit: int = 50
+    limit: int = 50,
+    cursor: Optional[str] = None
 ) -> Dict:
     """
     Query agent policies with optional filters.
@@ -429,11 +624,15 @@ async def get_policies(
         )
     
     policy_service = PolicyService()
-    return await policy_service.query_policies(
-        agent_id=agent_id,
-        status=status,
-        limit=limit
-    )
+    try:
+        return await policy_service.query_policies(
+            agent_id=agent_id,
+            status=status,
+            limit=limit,
+            cursor=cursor
+        )
+    except ValueError as exc:  # malformed cursor
+        raise HTTPException(status_code=400, detail=str(exc))
 
 
 # ============================================================
@@ -522,7 +721,11 @@ async def create_policy(
     try:
         policy_service = PolicyService()
         return await policy_service.create_policy(
-            policy_data=request.dict(),
+            # exclude_none: don't write optional fields the caller omitted
+            # (platform, cloud_region, allowed_agents, cross_cloud_dependencies,
+            # max_calls_per_minute) to S3 as explicit nulls. A null
+            # max_calls_per_minute crashed the abuse detector (int > None). WS15.
+            policy_data=request.dict(exclude_none=True),
             operator_email=operator_email or "unknown"
         )
     except ValidationException as e:
@@ -571,7 +774,11 @@ async def update_policy(
         policy_service = PolicyService()
         return await policy_service.update_policy(
             policy_id=policy_id,
-            policy_data=request.dict(),
+            # exclude_none: don't write optional fields the caller omitted
+            # (platform, cloud_region, allowed_agents, cross_cloud_dependencies,
+            # max_calls_per_minute) to S3 as explicit nulls. A null
+            # max_calls_per_minute crashed the abuse detector (int > None). WS15.
+            policy_data=request.dict(exclude_none=True),
             operator_email=operator_email or "unknown"
         )
     except ValidationException as e:
@@ -628,7 +835,8 @@ async def delete_policy(
 async def get_sigma_rules(
     status: Optional[str] = None,
     level: Optional[str] = None,
-    limit: int = 50
+    limit: int = 50,
+    cursor: Optional[str] = None
 ) -> Dict:
     """
     List Sigma rules with match counts.
@@ -688,11 +896,15 @@ async def get_sigma_rules(
         )
     
     sigma_rules_service = SigmaRulesService()
-    return await sigma_rules_service.list_sigma_rules(
-        status=status,
-        level=level,
-        limit=limit
-    )
+    try:
+        return await sigma_rules_service.list_sigma_rules(
+            status=status,
+            level=level,
+            limit=limit,
+            cursor=cursor
+        )
+    except ValueError as exc:  # malformed cursor
+        raise HTTPException(status_code=400, detail=str(exc))
 
 
 @router.patch("/sigma-rules/{rule_id}")

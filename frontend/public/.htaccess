@@ -1,0 +1,19 @@
+# AegionAI — static SPA routing for GoDaddy (Apache)
+RewriteEngine On
+RewriteBase /
+
+# Serve existing files/folders directly
+RewriteCond %{REQUEST_FILENAME} -f [OR]
+RewriteCond %{REQUEST_FILENAME} -d
+RewriteRule ^ - [L]
+
+# Fallback everything else to index.html
+RewriteRule ^ index.html [L]
+
+# Cache static assets (hashed filenames = safe to cache long)
+<IfModule mod_expires.c>
+  ExpiresActive On
+  ExpiresByType text/css "access plus 1 year"
+  ExpiresByType application/javascript "access plus 1 year"
+  ExpiresByType image/svg+xml "access plus 1 month"
+</IfModule>

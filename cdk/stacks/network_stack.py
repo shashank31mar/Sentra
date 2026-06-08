@@ -168,6 +168,15 @@ class NetworkStack(Stack):
             allow_all_outbound=True,  # Needs to call Security Controller and AWS Bedrock
         )
 
+        # 4b. Console SG - Port 80 (nginx serving the SOC console SPA + /v1 proxy)
+        self.console_sg = ec2.SecurityGroup(
+            self,
+            "ConsoleSG",
+            vpc=self.vpc,
+            description="Security group for SOC Console (nginx SPA and API proxy on port 80)",
+            allow_all_outbound=True,  # Proxies /v1 to the public API Gateway and pulls image via NAT
+        )
+
         # 5. Public ALB SG - Port 80 (Dashboard only)
         self.public_alb_sg = ec2.SecurityGroup(
             self,
@@ -235,6 +244,13 @@ class NetworkStack(Stack):
             description="Allow Public ALB to forward requests to Dashboard UI",
         )
 
+        # Console: Allow TCP 80 from Public ALB
+        self.console_sg.add_ingress_rule(
+            peer=self.public_alb_sg,
+            connection=ec2.Port.tcp(80),
+            description="Allow Public ALB to forward requests to SOC Console",
+        )
+
         # Customer Query Agent: Allow TCP 8080 from Private ALB
         self.customer_query_agent_sg.add_ingress_rule(
             peer=self.private_alb_sg,
@@ -272,6 +288,13 @@ class NetworkStack(Stack):
             peer=self.dashboard_sg,
             connection=ec2.Port.tcp(8501),
             description="Allow to Dashboard",
+        )
+
+        # Public ALB: Egress to SOC Console
+        self.public_alb_sg.add_egress_rule(
+            peer=self.console_sg,
+            connection=ec2.Port.tcp(80),
+            description="Allow to SOC Console",
         )
 
         # Public ALB: Egress to internet for Cognito authentication

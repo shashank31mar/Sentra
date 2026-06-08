@@ -2,7 +2,7 @@ schema_version: "1.1"
 policy_id: sentra-mvp-customer-service-agent-policy-v1
 agent_id: sentra-mvp-customer-service-agent
 name: Bedrock Customer Service Agent Policy (Cross-Cloud)
-version: "1.0.0"
+version: "1.0.28"
 status: active
 created_at: "2026-05-20T00:00:00Z"
 created_by: system
@@ -38,6 +38,10 @@ allowed_tools:
 # Allowed cross-cloud sub-agents (controller enforces via policy_engine)
 allowed_agents:
   - azure-verification-agent
+
+# Rate limit (abuse_detector, Step 5). Must be a real int — absent/null crashes
+# the rate check (int > None). Present here so CRUD round-trips preserve it.
+max_calls_per_minute: 30
 
 # Policy rules (re-uses the established schema from customer-query-agent)
 policies:
@@ -113,3 +117,9 @@ changelog:
       - Initial policy for the Bedrock cross-cloud customer-service agent
       - Added cross_cloud_dependencies requiring Azure verification before refund
       - Inter-agent invocation surface for azure-verification-agent
+  - version: "1.0.23"
+    date: "2026-06-04"
+    author: workstream-15
+    changes:
+      - "Restore cross_cloud_dependencies into the ACTIVE S3 policy. The live policy had drifted to v1.0.22 via apply_policy.py CRUD PUTs (S2 hook), which silently stripped cross-cloud fields, so S3 (refund precondition) failed open. Bumped above 1.0.22 to supersede monotonically."
+      - "Root fix - PolicyCreate/UpdateRequest now models these fields and apply_policy.build_update_body preserves them (LLD 15 section 4.5)."

@@ -99,6 +99,7 @@ class DecisionsService:
             "session_id": session_id,
             "signals": items,
             "total": len(items),
+            "next_token": None,  # single-partition Query; not paged in MVP (LLD 21 §11.1)
         }
 
     def get_session_decisions(
@@ -169,6 +170,7 @@ class DecisionsService:
             "session_id": session_id,
             "decisions": decisions,
             "total": len(decisions),
+            "next_token": None,  # single-partition Query; not paged in MVP (LLD 21 §11.1)
         }
 
     def scan_decisions(
@@ -237,7 +239,7 @@ class DecisionsService:
             resp = self._ddb().scan(**kwargs)
         except ClientError as exc:
             logger.exception("scan_decisions failed: %s", exc)
-            return {"decisions": [], "next_cursor": None, "has_more": False, "error": str(exc)}
+            return {"decisions": [], "next_token": None, "total": 0, "error": str(exc)}
 
         items = [self._deserialize_item(it) for it in resp.get("Items", [])]
 
@@ -273,15 +275,15 @@ class DecisionsService:
                 "signals": [s.to_dict() for s in signals_obj],
             })
 
-        next_cursor = (
+        # Canonical pagination (LLD 21 §11.1): next_token only, null = last page.
+        next_token = (
             _encode_cursor(resp["LastEvaluatedKey"])
             if "LastEvaluatedKey" in resp
             else None
         )
         return {
             "decisions": decisions,
-            "next_cursor": next_cursor,
-            "has_more": next_cursor is not None,
+            "next_token": next_token,
             "total": len(decisions),
         }
 
@@ -356,6 +358,91 @@ class DecisionsService:
             "signal_sk": f"{signal_data['request_id']}#{timestamp_ms}#{source}",
             "stored_at": _isoformat_ms_z(now),
         }
+
+    # -----------------------------------------------------------------------
+    # Operator verdict (WS-21 T34 — FP/FN feedback capture, silent in P0)
+    # -----------------------------------------------------------------------
+
+    _VERDICT_METRIC = {
+        "false_positive": "FalsePositiveOverturns",
+        "false_negative": "FalseNegativeReports",
+    }
+
+    def record_verdict(
+        self, decision_id: str, verdict: str, reason: str, operator_id: str
+    ) -> dict[str, Any]:
+        """Attach an operator verdict to a decision's signal rows.
+
+        decision_id = '<session_id>:<request_id>'. Writes operator_verdict /
+        verdict_reason / verdict_by / verdict_at onto every signal row of that
+        request, and (for FP/FN) emits a CloudWatch count. P0: stored silently —
+        false_positive_pct stays null (LLD 21 §12).
+
+        Raises ValueError (→400) on malformed id, LookupError (→404) when the
+        decision has no rows, RuntimeError (→409) if already verdicted.
+
+        NOTE (atomicity, Kiro review): the per-row updates below are sequential
+        and NOT transactional. If a write fails mid-loop, some rows carry the
+        verdict and some don't; a retry would then hit the `any(...)` 409 guard
+        and leave the partial state stuck. At P0 volume (a handful of rows per
+        request) this is very unlikely. The hardening is to use a single
+        `TransactWriteItems` (≤100 rows) so all rows commit or none do — tracked
+        for when verdict volume justifies it.
+        """
+        if ":" not in decision_id:
+            raise ValueError("decision_id must be '<session_id>:<request_id>'")
+        session_id, request_id = decision_id.split(":", 1)
+
+        rows = self.get_session_signals(
+            session_id=session_id, request_id=request_id
+        ).get("signals", [])
+        if not rows:
+            raise LookupError(f"no decision found for {decision_id}")
+        if any(r.get("operator_verdict") for r in rows):
+            raise RuntimeError(f"decision {decision_id} already has a verdict")
+
+        from datetime import datetime, timezone
+        verdict_at = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+        agent_id = next((r.get("agent_id") for r in rows if r.get("agent_id")), None)
+
+        for row in rows:
+            sk = row.get("sk")
+            if not sk:
+                continue
+            self._ddb().update_item(
+                TableName=self.table_name,
+                Key={"session_id": {"S": session_id}, "sk": {"S": sk}},
+                UpdateExpression=(
+                    "SET operator_verdict = :v, verdict_reason = :r, "
+                    "verdict_by = :o, verdict_at = :t"
+                ),
+                ExpressionAttributeValues={
+                    ":v": {"S": verdict},
+                    ":r": {"S": reason},
+                    ":o": {"S": operator_id},
+                    ":t": {"S": verdict_at},
+                },
+            )
+
+        self._emit_verdict_metric(verdict, agent_id)
+        return {"decision_id": decision_id, "verdict": verdict, "verdict_at": verdict_at}
+
+    def _emit_verdict_metric(self, verdict: str, agent_id: Optional[str]) -> None:
+        """Emit FalsePositiveOverturns / FalseNegativeReports (fire-and-forget)."""
+        metric_name = self._VERDICT_METRIC.get(verdict)
+        if not metric_name:
+            return
+        try:
+            dims = [{"Name": "AgentId", "Value": agent_id}] if agent_id else []
+            boto3.client("cloudwatch", region_name=self.region).put_metric_data(
+                Namespace="Sentra/SecurityController",
+                MetricData=[{
+                    "MetricName": metric_name, "Value": 1, "Unit": "Count",
+                    "Dimensions": dims,
+                }],
+            )
+        except Exception as exc:  # noqa: BLE001 - metrics must not block the verdict
+            logger.warning("verdict metric emit failed (non-blocking): %s", exc)
 
     # -----------------------------------------------------------------------
     # Internals

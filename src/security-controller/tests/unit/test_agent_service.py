@@ -168,6 +168,82 @@ class TestAgentServiceListAgents:
         assert result['total'] == 2
         assert len(result['agents']) == 2
         assert mock_table.scan.call_count == 2
+
+    @pytest.mark.asyncio
+    async def test_list_agents_shows_all_clouds_hides_internal(
+        self, mock_dynamodb, mock_cache_manager, mock_session_manager
+    ):
+        """WS-21 T05/D1/D4: all cloud providers are shown (bedrock no longer
+        filtered); only visibility=internal control-plane infra is hidden."""
+        agents = [
+            {'agent_id': 'sentra-ext', 'name': 'A', 'status': 'active',
+             'platform': 'sentra', 'cloud_provider': 'aws', 'visibility': 'external'},
+            {'agent_id': 'bedrock-ext', 'name': 'B', 'status': 'active',
+             'platform': 'bedrock', 'cloud_provider': 'aws', 'visibility': 'external'},
+            {'agent_id': 'internal-infra', 'name': 'C', 'status': 'active',
+             'platform': 'sentra', 'cloud_provider': 'aws', 'visibility': 'internal'},
+        ]
+        mock_table = Mock()
+        mock_table.scan.return_value = {'Items': agents, 'LastEvaluatedKey': None}
+        mock_dynamodb.return_value.Table.return_value = mock_table
+
+        service = AgentService()
+        result = await service.list_agents(enrich=False)
+
+        ids = {a['agent_id'] for a in result['agents']}
+        assert 'bedrock-ext' in ids        # bedrock no longer excluded (D1)
+        assert 'sentra-ext' in ids
+        assert 'internal-infra' not in ids  # visibility=internal still hidden (D4)
+        assert result['total'] == 2
+
+    @pytest.mark.asyncio
+    async def test_list_agents_derives_cloud_provider_when_missing(
+        self, mock_dynamodb, mock_cache_manager, mock_session_manager
+    ):
+        """Kombai crash fix: agents registered without cloud_provider get it
+        derived from platform, so the API never emits an unmapped value."""
+        agents = [
+            # no cloud_provider attribute → derive from platform
+            {'agent_id': 'a-bedrock', 'name': 'A', 'status': 'active',
+             'platform': 'bedrock', 'visibility': 'external'},
+            {'agent_id': 'a-azure', 'name': 'B', 'status': 'active',
+             'platform': 'azure_foundry', 'visibility': 'external'},
+        ]
+        mock_table = Mock()
+        mock_table.scan.return_value = {'Items': agents, 'LastEvaluatedKey': None}
+        mock_dynamodb.return_value.Table.return_value = mock_table
+
+        service = AgentService()
+        result = await service.list_agents(enrich=False)
+        by_id = {a['agent_id']: a for a in result['agents']}
+        assert by_id['a-bedrock']['cloud_provider'] == 'aws'
+        assert by_id['a-azure']['cloud_provider'] == 'azure'
+
+    @pytest.mark.asyncio
+    async def test_get_cloud_provider_distribution(
+        self, mock_dynamodb, mock_cache_manager, mock_session_manager
+    ):
+        """WS-21 T21: active agents grouped by cloud_provider; pct sums to 100."""
+        agents = [
+            {'agent_id': 'a1', 'status': 'active', 'cloud_provider': 'aws', 'visibility': 'external'},
+            {'agent_id': 'a2', 'status': 'active', 'cloud_provider': 'aws', 'visibility': 'external'},
+            {'agent_id': 'a3', 'status': 'active', 'cloud_provider': 'azure', 'visibility': 'external'},
+            {'agent_id': 'a4', 'status': 'inactive', 'cloud_provider': 'gcp', 'visibility': 'external'},  # not active
+            {'agent_id': 'a5', 'status': 'active', 'cloud_provider': 'aws', 'visibility': 'internal'},     # internal
+        ]
+        mock_table = Mock()
+        mock_table.scan.return_value = {'Items': agents, 'LastEvaluatedKey': None}
+        mock_dynamodb.return_value.Table.return_value = mock_table
+
+        service = AgentService()
+        dist = await service.get_cloud_provider_distribution()
+
+        assert dist['total_nodes'] == 3   # a1,a2,a3 (a4 inactive, a5 internal excluded)
+        assert dist['clouds'] == 2        # aws, azure
+        providers = {p['cloud_provider']: p for p in dist['providers']}
+        assert providers['aws']['count'] == 2
+        assert providers['azure']['count'] == 1
+        assert sum(p['pct'] for p in dist['providers']) == 100  # remainder absorbed
     
     @pytest.mark.asyncio
     async def test_list_agents_cache_hit(self, mock_dynamodb, mock_cache_manager, mock_session_manager):
@@ -489,3 +565,68 @@ class TestAgentServiceHelpers:
         assert 'total' in result
         assert 'allowed' in result
         assert 'denied' in result
+
+
+class TestAgentServicePolicyAttach:
+    """WS-21 T33: attach/detach policy to an agent (attached_policy_ids SS)."""
+
+    @pytest.mark.asyncio
+    async def test_attach_policy_success(self, mock_dynamodb, mock_cache_manager, mock_session_manager):
+        mock_table = Mock()
+        mock_table.get_item.side_effect = [
+            {'Item': {'agent_id': 'a1'}},      # agent exists
+            {'Item': {'policy_id': 'p1'}},     # policy exists
+        ]
+        mock_dynamodb.return_value.Table.return_value = mock_table
+
+        service = AgentService()
+        out = await service.attach_policy('a1', 'p1')
+
+        assert out['status'] == 'attached'
+        assert out['agent_id'] == 'a1' and out['policy_id'] == 'p1'
+        mock_table.update_item.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_attach_policy_agent_not_found(self, mock_dynamodb, mock_cache_manager, mock_session_manager):
+        mock_table = Mock()
+        mock_table.get_item.side_effect = [{}]  # no agent Item
+        mock_dynamodb.return_value.Table.return_value = mock_table
+
+        service = AgentService()
+        with pytest.raises(KeyError):
+            await service.attach_policy('missing', 'p1')
+
+    @pytest.mark.asyncio
+    async def test_attach_policy_already_attached(self, mock_dynamodb, mock_cache_manager, mock_session_manager):
+        mock_table = Mock()
+        mock_table.get_item.side_effect = [
+            {'Item': {'agent_id': 'a1', 'attached_policy_ids': {'p1'}}},
+            {'Item': {'policy_id': 'p1'}},
+        ]
+        mock_dynamodb.return_value.Table.return_value = mock_table
+
+        service = AgentService()
+        with pytest.raises(ValueError):
+            await service.attach_policy('a1', 'p1')
+
+    @pytest.mark.asyncio
+    async def test_detach_policy_success(self, mock_dynamodb, mock_cache_manager, mock_session_manager):
+        mock_table = Mock()
+        mock_table.get_item.return_value = {'Item': {'agent_id': 'a1', 'attached_policy_ids': {'p1'}}}
+        mock_dynamodb.return_value.Table.return_value = mock_table
+
+        service = AgentService()
+        out = await service.detach_policy('a1', 'p1')
+
+        assert out['status'] == 'detached'
+        mock_table.update_item.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_detach_policy_not_attached(self, mock_dynamodb, mock_cache_manager, mock_session_manager):
+        mock_table = Mock()
+        mock_table.get_item.return_value = {'Item': {'agent_id': 'a1'}}  # no attached set
+        mock_dynamodb.return_value.Table.return_value = mock_table
+
+        service = AgentService()
+        with pytest.raises(KeyError):
+            await service.detach_policy('a1', 'p1')

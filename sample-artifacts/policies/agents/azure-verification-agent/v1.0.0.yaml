@@ -2,15 +2,16 @@ schema_version: "1.1"
 policy_id: azure-verification-agent-policy-v1
 agent_id: azure-verification-agent
 name: Azure Verification Agent Policy
-version: "1.0.0"
+version: "1.0.25"
 status: active
 created_at: "2026-05-20T00:00:00Z"
 created_by: system
 
 # Cross-cloud governance (Workstream 15 — see LLD 15)
 platform: azure_foundry
-cloud_region: eastus2
+cloud_region: centralus
 cross_cloud_dependencies: []   # leaf agent — has no upstream cross-cloud dependencies
+max_calls_per_minute: 30       # required by abuse_detector (Step 5); absent/null crashes the rate check
 
 description: |
   Security policy for azure-verification-agent — the Azure AI Foundry sub-agent
@@ -98,3 +99,9 @@ changelog:
     changes:
       - Initial policy for the Azure cross-cloud verification agent
       - Defines verify_image_authenticity and check_fraud_score tools
+  - version: "1.0.25"
+    date: "2026-06-04"
+    author: workstream-15
+    changes:
+      - "Add max_calls_per_minute: 30. The live policy had drifted to v1.0.24 with max_calls_per_minute=null (CRUD PUT injected the model default), which crashed abuse_detector (int > None) and broke S3 honor path. Bumped above 1.0.24 to supersede."
+      - "Fix cloud_region eastus2 -> centralus (matches the deployed Azure region)."

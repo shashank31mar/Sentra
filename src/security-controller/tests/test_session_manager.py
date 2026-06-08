@@ -457,13 +457,14 @@ class TestQuarantineStatusLogic:
         assert session_manager._get_quarantine_status(85.5) == 'active'
     
     def test_get_quarantine_status_warning(self, session_manager):
-        """Test warning status (40-69)"""
+        """Test warning status (41-69) — boundary is >40 now"""
         assert session_manager._get_quarantine_status(69.9) == 'warning'
-        assert session_manager._get_quarantine_status(40.0) == 'warning'
+        assert session_manager._get_quarantine_status(40.1) == 'warning'
         assert session_manager._get_quarantine_status(55.0) == 'warning'
-    
+
     def test_get_quarantine_status_quarantined(self, session_manager):
-        """Test quarantined status (10-39)"""
+        """Test quarantined status (10-40) — 40 now falls into quarantine (LLD 03 §6.2 / S4)"""
+        assert session_manager._get_quarantine_status(40.0) == 'quarantined'
         assert session_manager._get_quarantine_status(39.9) == 'quarantined'
         assert session_manager._get_quarantine_status(10.0) == 'quarantined'
         assert session_manager._get_quarantine_status(25.0) == 'quarantined'

@@ -23,9 +23,13 @@ class TrustChecker:
     
     Rules:
     - Suspended (trust_score < 10): DENY all operations
-    - Quarantined (10 <= trust_score < 40): DENY WRITE, ALLOW READ
-    - Warning (40 <= trust_score < 70): ALLOW all + alerts
+    - Quarantined (10 <= trust_score <= 40): DENY all operations (read + write)
+    - Warning (40 < trust_score < 70): ALLOW all + alerts
     - Active (trust_score >= 70): ALLOW all
+
+    A quarantined session is treated as compromised: every path is blocked,
+    not just writes. This is the blast-radius containment behavior (LLD 15 S4)
+    and the updated quarantine semantics in LLD 03 §6.2.
     """
     
     def __init__(self):
@@ -70,16 +74,20 @@ class TrustChecker:
                     should_deny=True
                 )
             
-            # Check 2: Quarantined sessions (10 <= trust_score < 40) - DENY WRITE only
-            if quarantine_status == "quarantined" and request.operation_type == "WRITE":
+            # Check 2: Quarantined sessions - DENY ALL operations (read + write).
+            # A quarantined session is compromised; every path is blocked, not
+            # just writes. This contains blast radius across agents/clouds — a
+            # quarantined session cannot pivot to another tool or agent
+            # regardless of operation type (LLD 03 §6.2, LLD 15 S4).
+            if quarantine_status == "quarantined":
                 logger.warning(
                     f"Session {session.get('session_id')} is QUARANTINED - "
-                    f"blocking WRITE operation (trust_score={trust_score})"
+                    f"blocking {request.operation_type} operation (trust_score={trust_score})"
                 )
                 return ValidationResult(
                     decision="DENY",
-                    reason=f"Write operations blocked while quarantined (trust_score={trust_score:.1f})",
-                    violation_type="QUARANTINE_WRITE_BLOCKED",
+                    reason=f"All operations blocked while quarantined (trust_score={trust_score:.1f})",
+                    violation_type="QUARANTINE_BLOCKED",
                     penalty=0,  # Don't penalize further
                     should_deny=True
                 )

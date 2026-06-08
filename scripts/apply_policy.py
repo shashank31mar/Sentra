@@ -185,15 +185,17 @@ def build_update_body(current: dict, *, remove_tool: Optional[str], add_tool: Op
     if not allowed:
         raise SystemExit("Refusing to push a policy with empty allowed_tools.")
 
-    return {
-        "schema_version": content.get("schema_version", "v1"),
-        "agent_id": content["agent_id"],
-        "name": content["name"],
-        "version": _increment_patch(content["version"]),
-        "description": content.get("description"),
-        "allowed_tools": allowed,
-        "policies": content["policies"],
-    }
+    # Read-modify-write: preserve every field we read back and only override the
+    # two we're changing. The previous whitelist silently dropped cross-cloud
+    # governance fields (cross_cloud_dependencies, platform, cloud_region,
+    # allowed_agents) on every PUT — which is how the active S3 policy lost the
+    # S3-scenario rule and the refund precondition started failing open
+    # (see LLD 15 §4.5). Server-managed/metadata keys not modeled by
+    # PolicyUpdateRequest are harmlessly ignored by FastAPI on parse.
+    body = dict(content)
+    body["version"] = _increment_patch(content["version"])
+    body["allowed_tools"] = allowed
+    return body
 
 
 def main(argv: Optional[list[str]] = None) -> int:

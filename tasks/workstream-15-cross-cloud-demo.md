@@ -403,8 +403,10 @@ The rev 2 design emerged from a series of live-demo iterations that uncovered st
 - `src/demo-orchestrator/scenarios/s4_cross_cloud_blast_radius.yaml` (new)
 
 **Acceptance:**
-- ✅ `compromise_bedrock` + `compromise_bedrock_retry` steps drop trust score below threshold.
-- ✅ Final `azure_blocked_by_trust` step expects DENY with quarantine/trust in the reason.
+- ✅ **Three** compromise steps (`compromise_bedrock`, `compromise_bedrock_retry`, `compromise_bedrock_3`) each trip the sigma `PROMPT_INJECTION` rule (−20 each), driving session trust 100 → 80 → 60 → **40** = Quarantined (LLD 03 §6.2; warning boundary is `> 40`).
+- ✅ Final `azure_blocked_by_trust` step (`check_fraud_score`, a READ) returns DENY with `QUARANTINE_BLOCKED` / `quarantine` in the reason — quarantine now blocks all operations, not just WRITE.
+
+> **Fixed 2026-06-04 (was failing — false ALLOW on the Azure step):** the original 2-step compromise only reached trust 60 (Warning, not Quarantined), and quarantine used to block WRITE-only while the Azure probe is a READ. Resolution: added a 3rd compromise step + quarantine now blocks read+write (LLD 03 §6.2 update + `trust_checker.py`). Controller redeployed as `milestone-39`.
 
 ### Task 5.5: Dashboard runner + Demo tab section ✅ (added scope)
 

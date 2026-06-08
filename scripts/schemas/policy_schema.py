@@ -64,7 +64,18 @@ class AgentPolicyDocument(BaseModel):
     
     allowed_tools: List[str] = Field(..., description="List of allowed tool IDs")
     policies: List[PolicyRule] = Field(..., description="List of policy rules")
-    
+
+    # Workstream 15 (cross-cloud) — optional governance fields honored by the
+    # context validator (LLD 15 §4.5). Declared here so the validation schema
+    # recognizes them and they survive any future extra='forbid' tightening.
+    platform: Optional[str] = Field(None, description="bedrock | azure_foundry | vertex_ai")
+    cloud_region: Optional[str] = Field(None, description="Native cloud region identifier")
+    allowed_agents: Optional[List[str]] = Field(None, description="Agents this agent may invoke")
+    cross_cloud_dependencies: Optional[List[Dict]] = Field(
+        None, description="Cross-cloud tool-sequence preconditions (LLD 15 §4.5)"
+    )
+    max_calls_per_minute: Optional[int] = Field(None, description="Per-agent rate limit")
+
     # Optional metadata sections
     policy_metadata: Optional[Dict] = Field(None, description="Policy metadata")
     notifications: Optional[Dict] = Field(None, description="Notification configuration")

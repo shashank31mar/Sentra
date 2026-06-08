@@ -120,6 +120,9 @@ compute:
     name: "sentra-alb"  # Load balancer name
     internet_facing: false  # Private ALB
     enable_deletion_protection: false  # Allow deletion for dev
+    # WS-22: real *.aegionai.ai cert (replaces self-signed) + console host for routing
+    certificate_arn: "arn:aws:acm:us-east-1:531109575379:certificate/522142fe-acef-4a68-8c59-847fc28b9470"
+    console_host: "console.aegionai.ai"
 
 # API Gateway Configuration (Task 13)
 api_gateway:

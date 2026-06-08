@@ -51,7 +51,7 @@ class LogsService:
             threat_type: Filter by threat type
             
         Returns:
-            Dict with logs, total, has_more, next_token
+            Dict with logs, total, next_token (canonical pagination, LLD 21 §11.1)
         """
         try:
             # Parse time range
@@ -69,11 +69,13 @@ class LogsService:
             # Execute query
             logs = await self._execute_query(query, start_time, end_time)
             
+            # Canonical pagination (LLD 21 §11.1): next_token only (null = last
+            # page). CloudWatch Logs Insights paging is not wired in MVP, so the
+            # token is always null here.
             return {
                 "logs": logs,
                 "total": len(logs),
-                "has_more": len(logs) >= limit,
-                "next_token": None  # MVP: No pagination token
+                "next_token": None
             }
             
         except Exception as e:

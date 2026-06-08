@@ -22,6 +22,7 @@ from botocore.exceptions import ClientError
 
 from app.config import settings
 from app.utils.cache_manager import get_cache_manager
+from app.utils.pagination import decode_cursor, next_token_from_response
 from app.exceptions import (
     ValidationException,
     NotFoundException,
@@ -73,25 +74,29 @@ class PolicyService:
         self,
         agent_id: Optional[str] = None,
         status: Optional[str] = None,
-        limit: int = 50
+        limit: int = 50,
+        cursor: Optional[str] = None
     ) -> Dict:
         """
         Query policies from DynamoDB metadata table with filters.
-        
+
         Args:
             agent_id: Filter by agent ID (optional)
             status: Filter by status (active/inactive/deprecated) (optional)
             limit: Max results (default: 50, max: 200)
-            
+            cursor: Opaque pagination token from a prior call (optional)
+
         Returns:
-            Dictionary with policies array, total, and has_more flag
+            Dict with policies, total, next_token (canonical pagination, LLD 21 §11.1)
         """
         start_time = time.time()
         cache_hit = False
-        
+
         try:
-            # Build cache key
-            cache_key = f"policies:agent={agent_id}:status={status}:limit={limit}"
+            # Build cache key (cursor included so pages don't collide)
+            cache_key = f"policies:agent={agent_id}:status={status}:limit={limit}:cursor={cursor}"
+            # Decode the opaque cursor into a DDB ExclusiveStartKey (ValueError → 400 upstream).
+            start_key = decode_cursor(cursor) if cursor else None
             cached_data = self.cache.get(cache_key)
             if cached_data:
                 logger.debug(f"Returning cached policies for {cache_key}")
@@ -112,7 +117,8 @@ class PolicyService:
                     IndexName='agent-index',
                     KeyConditionExpression='agent_id = :agent_id',
                     ExpressionAttributeValues={':agent_id': agent_id},
-                    Limit=limit
+                    Limit=limit,
+                    **({"ExclusiveStartKey": start_key} if start_key else {})
                 )
                 policies = response.get('Items', [])
                 
@@ -124,14 +130,18 @@ class PolicyService:
                     KeyConditionExpression='#status = :status',
                     ExpressionAttributeNames={'#status': 'status'},
                     ExpressionAttributeValues={':status': status},
-                    Limit=limit
+                    Limit=limit,
+                    **({"ExclusiveStartKey": start_key} if start_key else {})
                 )
                 policies = response.get('Items', [])
                 
             else:
                 # Scan all policies (no filters)
                 logger.info("Scanning all policies")
-                response = self.policies_metadata_table.scan(Limit=limit)
+                response = self.policies_metadata_table.scan(
+                    Limit=limit,
+                    **({"ExclusiveStartKey": start_key} if start_key else {})
+                )
                 policies = response.get('Items', [])
             
             # Apply additional filters if both agent_id and status provided
@@ -147,7 +157,7 @@ class PolicyService:
             result = {
                 "policies": policies[:limit],
                 "total": len(policies),
-                "has_more": len(policies) > limit
+                "next_token": next_token_from_response(response),
             }
             
             # Cache result
@@ -161,7 +171,7 @@ class PolicyService:
         except Exception as e:
             logger.exception("Error querying policies")
             # Return empty array on error (fail-safe for Dashboard)
-            return {"policies": [], "total": 0, "has_more": False, "error": str(e)}
+            return {"policies": [], "total": 0, "next_token": None, "error": str(e)}
     
     async def get_policy(self, policy_id: str) -> Optional[Dict]:
         """
