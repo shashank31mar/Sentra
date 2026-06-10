@@ -38,6 +38,7 @@ def build_zip() -> bytes:
         z.write(ROOT / "lambda_handler.py", "lambda_handler.py")
         z.write(ROOT / "generator.py", "generator.py")
         z.write(ROOT / "attack_prompts" / "injection.txt", "attack_prompts/injection.txt")
+        z.write(ROOT / "attack_prompts" / "ml_injection.txt", "attack_prompts/ml_injection.txt")
     data = buf.getvalue()
     print(f"  ✓ packaged traffic Lambda ({len(data) // 1024} KB)")
     return data

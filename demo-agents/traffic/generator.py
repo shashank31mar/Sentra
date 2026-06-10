@@ -27,15 +27,22 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 Invoker = Callable[[str, str, Dict[str, Any], str, str, Optional[str]], Tuple[int, Dict[str, Any]]]
 
 _ATTACKS_FILE = pathlib.Path(__file__).resolve().parent / "attack_prompts" / "injection.txt"
+_ML_ATTACKS_FILE = pathlib.Path(__file__).resolve().parent / "attack_prompts" / "ml_injection.txt"
+
+
+def _read_prompts(path: pathlib.Path) -> List[str]:
+    if not path.exists():
+        return []
+    return [ln.strip() for ln in path.read_text().splitlines() if ln.strip() and not ln.startswith("#")]
 
 
 def load_attacks() -> List[str]:
-    lines = []
-    for ln in _ATTACKS_FILE.read_text().splitlines():
-        ln = ln.strip()
-        if ln and not ln.startswith("#"):
-            lines.append(ln)
-    return lines
+    return _read_prompts(_ATTACKS_FILE)
+
+
+def load_ml_attacks() -> List[str]:
+    """Semantic injections the ML classifier catches but sigma misses (winning_source=ml_classifier)."""
+    return _read_prompts(_ML_ATTACKS_FILE)
 
 
 # Prompts the live sigma ruleset reliably DENYs (mirror of prompt_injection_basic.yaml selections +
@@ -90,6 +97,7 @@ def build_sequences(seed: int = 0, n_accounts: int = 200) -> List[Sequence]:
     rng = random.Random(seed)
     account_ids = [f"acct-{1000 + i}" for i in range(n_accounts)]
     attacks = caught_attacks()
+    ml_attacks = load_ml_attacks()
 
     def acct() -> str:
         return rng.choice(account_ids)
@@ -188,6 +196,22 @@ def build_sequences(seed: int = 0, n_accounts: int = 200) -> List[Sequence]:
         Step("azure", "acme-identity-agent", "verify_identity", {"subject_id": hf}, "verify this customer", "DENY"),
         Step("aws", "acme-payments-agent", "process_refund", {"account_id": hf, "amount": 200.0}, "refund my order", "DENY"),
     ]))
+
+    # 13. ML-classifier blocks: SEMANTIC injections (roleplay jailbreaks, system-prompt extraction)
+    # that sigma's keyword rules do NOT match — the ML threat classifier flags them
+    # (winning_source=sentra.ml_classifier). Routed through all three agents so the demo shows the ML
+    # layer working across the fleet, not just sigma keyword hits. ML is non-deterministic, so the
+    # occasional ALLOW is expected (recall < 100% by design) and honesty-checked against reality.
+    if ml_attacks:
+        seqs.append(Sequence("ml_injection_payments", [
+            Step("aws", "acme-payments-agent", "get_transactions", {"account_id": acct()}, rng.choice(ml_attacks), "DENY"),
+        ]))
+        seqs.append(Sequence("ml_injection_identity", [
+            Step("azure", "acme-identity-agent", "check_fraud_score", {"key": f"txn-{rng.randint(0, 9999)}"}, rng.choice(ml_attacks), "DENY"),
+        ]))
+        seqs.append(Sequence("ml_injection_telecom", [
+            Step("azure", "acme-telecom-agent", "lookup_subscriber", {"msisdn": linked()[0]}, rng.choice(ml_attacks), "DENY"),
+        ]))
 
     # 13+. Extra LEGIT volume so the live feed looks like a real SOC stream — mostly allowed traffic
     # with occasional attacks — instead of being deny-dominated (the bursts/attacks above are

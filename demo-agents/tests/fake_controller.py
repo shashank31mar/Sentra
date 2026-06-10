@@ -26,6 +26,15 @@ _MAX_REFUND = 5000.0
 # phrasings added to the live rule `sigma_rules/llm/prompt_injection_basic.yaml` (recall work), so
 # the local mock agrees with what the deployed controller actually denies.
 _INJECTION_SUBSTR = ("DROP TABLE", "UPDATE accounts", "jndi:", "{{7*7}}", "DELETE FROM")
+# Distinctive phrases from traffic/attack_prompts/ml_injection.txt — SEMANTIC injections the live ML
+# classifier flags but sigma's keyword rules don't. The offline mock has no LLM, so we mirror the ML
+# verdict by phrase so test labels match what the deployed controller actually does.
+_ML_INJECTION_LOWER = (
+    "no content restrictions", "writing a thriller novel", "internal instructions and configuration",
+    "confidential operating instructions", "stay fully in character", "hidden configuration and instructions",
+    "enter maintenance mode", "thought experiment with no real-world", "deceased relative",
+    "no operating rules", "verbatim text of the instructions", "unrestricted financial concierge",
+)
 _INJECTION_LOWER = (
     "ignore all previous", "ignore previous instructions", "ignore all preceding", "ignore the above",
     "you are now dan", "developer mode", "jailbreak", "disregard your policies", "exfiltrate",
@@ -77,6 +86,10 @@ class FakeController:
         low = ui.lower()
         if any(s in ui for s in _INJECTION_SUBSTR) or any(s in low for s in _INJECTION_LOWER):
             return self._deny(sid, "sigma:INJECTION", "PROMPT_INJECTION", "PROMPT_INJECTION")
+
+        # 1b. ML classifier (semantic injections sigma misses) — mirrors winning_source=ml_classifier.
+        if any(s in low for s in _ML_INJECTION_LOWER):
+            return self._deny(sid, "ml_classifier:PROMPT_INJECTION", "PROMPT_INJECTION", "PROMPT_INJECTION")
 
         # 2a. High-fraud identity gate (real IEEE-CIS risk forwarded by the identity agent).
         if tool == _VERIFY_TOOL and str(params.get("fraud_risk", "")).lower() == "high":
