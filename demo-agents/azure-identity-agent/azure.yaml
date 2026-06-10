@@ -1,0 +1,24 @@
+# azd descriptor for the Acme Identity agent (Azure Function tool interceptor).
+# `azd up` provisions infra (infra/main.bicep) AND publishes the Function in one command.
+name: acme-identity-agent
+metadata:
+  template: aegionai-demo-identity@1.0
+services:
+  identity:
+    project: ./tools
+    language: python
+    host: function
+    hooks:
+      # Vendor the stdlib-only SDK + common/ into the package before zipping (no Oryx build).
+      # Vendored copies are git-ignored (see .gitignore); they exist only at package time.
+      prepackage:
+        shell: sh
+        run: |
+          rm -rf ./aegion_guard ./common
+          cp -r ../../sdk/aegion-guard-python/src/aegion_guard ./aegion_guard
+          mkdir -p ./common/data && cp ../../common/*.py ./common/
+          cp ../../common/data/*.json ./common/data/ 2>/dev/null || true
+      # The Python v2 host sometimes fails to index routes until restarted post-deploy (404 otherwise).
+      postdeploy:
+        shell: sh
+        run: az functionapp restart -g "$AZURE_RESOURCE_GROUP" -n acme-identity-func

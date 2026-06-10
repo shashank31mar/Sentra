@@ -1,0 +1,99 @@
+{
+  "openapi": "3.0.0",
+  "info": {
+    "title": "Acme Payments Tools",
+    "version": "1.0.0",
+    "description": "Account servicing tools for the AcmeBank payments agent. Each operation is validated by AegionAI/Sentra before execution."
+  },
+  "paths": {
+    "/lookup_account": {
+      "post": {
+        "operationId": "lookup_account",
+        "description": "Fetch an account's profile and current balance.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["account_id"],
+                "properties": {
+                  "account_id": { "type": "string", "description": "Account identifier, e.g. acct-1007" }
+                }
+              }
+            }
+          }
+        },
+        "responses": { "200": { "description": "Account profile" } }
+      }
+    },
+    "/get_transactions": {
+      "post": {
+        "operationId": "get_transactions",
+        "description": "List recent transactions for an account, newest first.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["account_id"],
+                "properties": {
+                  "account_id": { "type": "string", "description": "Account identifier" },
+                  "limit": { "type": "integer", "description": "Max rows (default 10, max 100)" }
+                }
+              }
+            }
+          }
+        },
+        "responses": { "200": { "description": "Transactions" } }
+      }
+    },
+    "/process_refund": {
+      "post": {
+        "operationId": "process_refund",
+        "description": "Credit a refund to an account.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["account_id", "amount"],
+                "properties": {
+                  "account_id": { "type": "string", "description": "Account to credit" },
+                  "amount": { "type": "number", "description": "Refund amount in USD" },
+                  "txn_id": { "type": "string", "description": "Original transaction id (optional)" }
+                }
+              }
+            }
+          }
+        },
+        "responses": { "200": { "description": "Refund result" } }
+      }
+    },
+    "/transfer_funds": {
+      "post": {
+        "operationId": "transfer_funds",
+        "description": "Transfer funds from one account to another.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["from_account", "to_account", "amount"],
+                "properties": {
+                  "from_account": { "type": "string", "description": "Source account" },
+                  "to_account": { "type": "string", "description": "Destination account" },
+                  "amount": { "type": "number", "description": "Transfer amount in USD" }
+                }
+              }
+            }
+          }
+        },
+        "responses": { "200": { "description": "Transfer result" } }
+      }
+    }
+  }
+}

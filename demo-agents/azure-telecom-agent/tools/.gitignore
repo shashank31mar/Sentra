@@ -1,0 +1,5 @@
+# Vendored at package time by the azd prepackage hook (azure.yaml) — never committed.
+/aegion_guard/
+/common/
+.python_packages/
+__pycache__/

@@ -1,0 +1,49 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "aegion-guard"
+version = "0.1.0"
+description = "Aegion Guard — drop-in security validation for AI agent tool calls (routes every tool call through the AegionAI security controller before execution)."
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "Proprietary" }
+authors = [{ name = "AegionAI" }]
+keywords = ["ai", "agent", "security", "guardrail", "tool-validation", "llm"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Intended Audience :: Developers",
+    "Topic :: Security",
+]
+# Runtime deps: stdlib ONLY. This is deliberate (LLD 23 §2): the same code must
+# vendor unchanged into an AWS Lambda zip AND an Azure Function package (whose
+# Oryx remote build does not reliably install pip deps). Do not add runtime deps.
+dependencies = []
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.4",
+    "pytest-cov>=4.1",
+    "pytest-asyncio>=0.23",
+]
+
+[project.urls]
+Homepage = "https://aegionai.ai"
+Documentation = "https://aegionai.ai/docs/sdk"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+addopts = "-q"
+
+[tool.coverage.run]
+source = ["aegion_guard"]
+branch = true

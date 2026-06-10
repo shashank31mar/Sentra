@@ -1,0 +1,3 @@
+# Azure Function runtime deps. ONLY azure-functions — aegion-guard + common/ are vendored into the
+# package at deploy time (stdlib-only, so no Oryx remote build is needed; best-practices §11).
+azure-functions

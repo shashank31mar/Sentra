@@ -1,0 +1,65 @@
+# Demo agent registry items (LLD 22 §10.3).
+# Written to the `sentra-agent-registry` DDB table by seed_demo.py — same envelope as
+# scripts/seed_agents.py (NOT imported/modified). `created_at` is stamped at write time.
+# `cloud_provider` aws/azure drives the console Clouds KPI = 2.
+
+agents:
+  - agent_id: acme-payments-agent
+    name: Acme Payments Agent
+    description: >-
+      AcmeBank payments agent on AWS Bedrock (Nova Lite, no guardrail). Account lookups,
+      transactions, refunds, transfers — every tool call validated by AegionAI/Sentra.
+    type: action
+    platform: bedrock
+    cloud_provider: aws
+    status: active
+    security_type: secured
+    visibility: external
+    version: "1.0.0"
+    tags: [demo, payments, aws, bedrock, ws-23]
+    runtime_config:
+      max_sessions: 100
+      session_timeout_minutes: 15
+      default_trust_score: 0.7
+      allowed_tool_types: [READ, WRITE]
+    allowed_tools: [lookup_account, get_transactions, process_refund, transfer_funds]
+
+  - agent_id: acme-identity-agent
+    name: Acme Identity Agent
+    description: >-
+      Identity & fraud-verification agent on Azure OpenAI (gpt-4o-mini). Supplies the
+      cross-cloud verify precondition for the payments and telecom agents.
+    type: query
+    platform: azure_foundry
+    cloud_provider: azure
+    status: active
+    security_type: secured
+    visibility: external
+    version: "1.0.0"
+    tags: [demo, identity, fraud, azure, ws-23]
+    runtime_config:
+      max_sessions: 100
+      session_timeout_minutes: 15
+      default_trust_score: 0.8
+      allowed_tool_types: [READ]
+    allowed_tools: [verify_identity, check_fraud_score]
+
+  - agent_id: acme-telecom-agent
+    name: Acme Telecom Agent
+    description: >-
+      Telecom support agent on Azure OpenAI (gpt-4o-mini). Plan changes, SIM resets, number
+      port-outs — SIM-swap/port-out gated by the cross-cloud verify precondition.
+    type: action
+    platform: azure_foundry
+    cloud_provider: azure
+    status: active
+    security_type: secured
+    visibility: external
+    version: "1.0.0"
+    tags: [demo, telecom, sim-swap, azure, ws-23]
+    runtime_config:
+      max_sessions: 100
+      session_timeout_minutes: 15
+      default_trust_score: 0.7
+      allowed_tool_types: [READ, WRITE]
+    allowed_tools: [lookup_subscriber, change_plan, reset_sim, port_out_number]

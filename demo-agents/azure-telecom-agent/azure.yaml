@@ -1,0 +1,21 @@
+# azd descriptor for the Acme Telecom agent (Azure Function tool interceptor).
+name: acme-telecom-agent
+metadata:
+  template: aegionai-demo-telecom@1.0
+services:
+  telecom:
+    project: ./tools
+    language: python
+    host: function
+    hooks:
+      prepackage:
+        shell: sh
+        run: |
+          rm -rf ./aegion_guard ./common
+          cp -r ../../sdk/aegion-guard-python/src/aegion_guard ./aegion_guard
+          mkdir -p ./common/data && cp ../../common/*.py ./common/
+          cp ../../common/data/*.json ./common/data/ 2>/dev/null || true
+      # The Python v2 host sometimes fails to index routes until restarted post-deploy (404 otherwise).
+      postdeploy:
+        shell: sh
+        run: az functionapp restart -g "$AZURE_RESOURCE_GROUP" -n acme-telecom-func

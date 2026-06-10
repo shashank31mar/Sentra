@@ -1,0 +1,74 @@
+# Demo agent policies (LLD 22 §10.4) — POSTed to /v1/policies as PolicyCreateRequest by seed_demo.py.
+#
+# IMPORTANT (LLD 22 §6.5, Kiro-verified): the policy engine does NOT evaluate rule strings — it is
+# tool-name-hardcoded. So these policies carry only what core actually honors:
+#   * allowed_tools
+#   * cross_cloud_dependencies (the marquee enforcement — fully works)
+#   * one INERT padding rule (PolicyCreateRequest requires policies[] min_items=1)
+# The refund limit is the hardcoded $5000 engine default (NOT set here, NOT configurable via API).
+# transfer_funds has no amount limit in core. Real DENYs come from sigma/injection, refund>$5000,
+# and the cross-cloud preconditions below.
+
+policies:
+  - agent_id: acme-payments-agent
+    schema_version: v1
+    name: Acme Payments Agent Policy
+    version: "1.0.0"
+    platform: bedrock
+    cloud_region: us-east-1
+    allowed_tools: [lookup_account, get_transactions, process_refund, transfer_funds]
+    policies:
+      - policy_id: pay-baseline
+        name: Baseline
+        description: Inert padding rule — the engine does not evaluate rule strings (LLD 22 §6.5).
+        rule: "true"
+        action: ALLOW
+        severity: low
+        enabled: true
+    cross_cloud_dependencies:
+      # Scenario A: a refund/transfer requires a prior Azure identity-verify in-session.
+      - target_agent: acme-identity-agent
+        target_tool: verify_identity
+        required_before: [process_refund, transfer_funds]
+        max_age_seconds: 300
+    max_calls_per_minute: 30
+
+  - agent_id: acme-identity-agent
+    schema_version: v1
+    name: Acme Identity Agent Policy
+    version: "1.0.0"
+    platform: azure_foundry
+    cloud_region: centralus
+    allowed_tools: [verify_identity, check_fraud_score]
+    policies:
+      - policy_id: id-baseline
+        name: Baseline
+        description: Inert padding rule (LLD 22 §6.5).
+        rule: "true"
+        action: ALLOW
+        severity: low
+        enabled: true
+    max_calls_per_minute: 30
+
+  - agent_id: acme-telecom-agent
+    schema_version: v1
+    name: Acme Telecom Agent Policy
+    version: "1.0.0"
+    platform: azure_foundry
+    cloud_region: centralus
+    allowed_tools: [lookup_subscriber, change_plan, reset_sim, port_out_number]
+    policies:
+      - policy_id: tel-baseline
+        name: Baseline
+        description: Inert padding rule (LLD 22 §6.5).
+        rule: "true"
+        action: ALLOW
+        severity: low
+        enabled: true
+    cross_cloud_dependencies:
+      # Scenario B1: an unauthenticated SIM-swap / port-out is blocked.
+      - target_agent: acme-identity-agent
+        target_tool: verify_identity
+        required_before: [reset_sim, port_out_number]
+        max_age_seconds: 300
+    max_calls_per_minute: 30

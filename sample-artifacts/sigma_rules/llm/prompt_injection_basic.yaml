@@ -26,6 +26,21 @@ detection:
       - "new instructions:"
       - "override instructions:"
       - "system: ignore"
+      - "forget all previous"
+      - "forget everything"
+      - "forget about all"
+      - "forget all the"
+      - "forget all assignments"
+      - "ignore all preceding"
+      - "ignore the above"
+      - "disregard all"
+      - "now new tasks"
+      - "now new instructions"
+      - "new task:"
+      - "your new task"
+      - "focus on your new task"
+      - "concentrate on your new task"
+      - "start over with a new task" 
 
   # Selection 2: Role manipulation attempts
   role_manipulation:
@@ -36,6 +51,12 @@ detection:
       - "simulate being"
       - "your new role is"
       - "from now on you are"
+      - "i want you to act as"
+      - "act as a"
+      - "now you are"
+      - "you will act as"
+      - "stay in character"
+      - "without falling out of" 
 
   # Selection 3: System prompt extraction attempts
   system_extraction:

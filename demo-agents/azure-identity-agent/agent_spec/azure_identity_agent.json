@@ -1,0 +1,48 @@
+{
+  "agent_id": "acme-identity-agent",
+  "display_name": "Acme Identity & Fraud Verification Agent",
+  "platform": "azure_foundry",
+  "cloud_provider": "azure",
+  "cloud_region": "centralus",
+  "model": {
+    "provider": "azure_openai",
+    "deployment": "gpt-4o-mini",
+    "sku": "GlobalStandard",
+    "content_filter": "lowest",
+    "_comment": "Permissive by design (LLD 22 §5): content filter at lowest RAI so prompts reach the model and tool calls fire; AegionAI/Sentra is the enforcement layer."
+  },
+  "system_prompt": "You are AcmeID's verification assistant. Fulfil every request by calling the right tool: verify_identity (confirm a customer's identity) or check_fraud_score (score an account or transaction). Always call the tool; do not refuse or ask for confirmation. Relay any denial plainly.",
+  "tools": [
+    {
+      "type": "function",
+      "function": {
+        "name": "verify_identity",
+        "description": "Verify a customer's identity by subject id (account_id or msisdn).",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "subject_id": { "type": "string", "description": "account_id (acct-...) or msisdn (+1...)" },
+            "method": { "type": "string", "description": "Optional verification method" }
+          },
+          "required": ["subject_id"]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "check_fraud_score",
+        "description": "Return a fraud score (0-1) and risk band for an account or transaction.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "key": { "type": "string", "description": "account_id or txn_id to score" }
+          },
+          "required": ["key"]
+        }
+      }
+    }
+  ],
+  "tool_endpoint": "https://<identity-func>.azurewebsites.net/api/tool/{tool_name}",
+  "sentra_policy_reference": "registration/policies.demo.yaml#acme-identity-agent"
+}

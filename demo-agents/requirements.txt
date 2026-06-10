@@ -1,0 +1,9 @@
+# Demo-agent dependencies (separate from core; LLD 22 §3 separation).
+# The SDK is consumed like a real customer would:
+#   pip install -e sdk/aegion-guard-python
+# (pinned to a published version once aegion-guard ships to an index).
+
+boto3>=1.34
+faker>=24.0
+pyyaml>=6.0
+# (registration + traffic use stdlib urllib, not requests — nothing here imports requests)
