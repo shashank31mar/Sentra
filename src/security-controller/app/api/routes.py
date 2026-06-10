@@ -226,26 +226,29 @@ async def post_session_signal(session_id: str, signal: Dict) -> Dict:
 async def get_sessions(
     status: Optional[str] = None,
     agent_id: Optional[str] = None,
-    limit: int = 50
+    limit: int = 50,
+    cursor: Optional[str] = None,
 ) -> Dict:
     """
-    Query active sessions from DynamoDB.
-    
+    Query active sessions from DynamoDB — cursor-paginated.
+
     Query Parameters:
         status: Filter by quarantine status (active/quarantined/suspended)
         agent_id: Filter by agent ID
-        limit: Max results (default: 50, max: 200)
-    
+        limit: Max results per page (default: 50, max: 200)
+        cursor: Opaque pagination token from a prior response's next_token
+
     Returns:
-        SessionsResponse with sessions array and total count
+        SessionsResponse with sessions array, total count, and next_token
     """
     from app.utils.session_manager import SessionManager
-    
+
     session_manager = SessionManager()
     return await session_manager.query_sessions(
         status=status,
         agent_id=agent_id,
-        limit=limit
+        limit=limit,
+        cursor=cursor,
     )
 
 

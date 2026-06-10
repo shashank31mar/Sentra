@@ -202,16 +202,25 @@ class DecisionsService:
         on-demand low traffic we accept a Scan with FilterExpression on the
         GSI. Cursor round-trips as opaque base64 LastEvaluatedKey.
         """
-        # Default window: last 24h.
+        # Window: a `cursor` (opaque base64 of a timestamp_ms) advances `until` backward through
+        # history so the threat feed can page through ALL decisions, not just the first page. Without
+        # a cursor, default to the last 30 days (signal-store TTL is 90d) so there's real history to
+        # page through. Explicit since/until still win.
         from datetime import datetime, timedelta, timezone
         if until:
             until_dt = datetime.fromisoformat(until.replace("Z", "+00:00"))
         else:
             until_dt = datetime.now(timezone.utc)
+        if cursor:
+            try:
+                cur_ms = int(base64.b64decode(cursor.encode()).decode())
+                until_dt = datetime.fromtimestamp(cur_ms / 1000.0, tz=timezone.utc)
+            except Exception:
+                logger.warning("ignoring malformed decisions cursor: %r", cursor)
         if since:
             since_dt = datetime.fromisoformat(since.replace("Z", "+00:00"))
         else:
-            since_dt = until_dt - timedelta(hours=24)
+            since_dt = until_dt - timedelta(days=30)
 
         # Optional filters (agent/decision/threat) become a FilterExpression; the time window is the
         # GSI SORT key (timestamp_ms), expressed in the KeyConditionExpression below — NOT a filter.
@@ -306,7 +315,9 @@ class DecisionsService:
             deny_sig = next((s for s in signals_obj if s.decision == "DENY"), None)
             platform = rep.get("platform")
             timestamp = next((it.get("timestamp_iso") for it in group if it.get("timestamp_iso")), None)
+            ts_ms = max((int(it.get("timestamp_ms") or 0) for it in group), default=0)
             decisions.append({
+                "_ts_ms": ts_ms,  # internal: ordering + pagination cursor; popped before responding
                 # Flat fields the SOC console renders (DecisionItem, LLD 21 §11.2):
                 # agent / tool / decision / threat / trust / cloud at the row level.
                 "decision_id": f"{sid}:{rid}",
@@ -332,13 +343,26 @@ class DecisionsService:
                 "signals": [s.to_dict() for s in signals_obj],
             })
 
-        # Newest-first, then cap to the requested number of DECISIONS.
-        decisions.sort(key=lambda d: d.get("timestamp") or "", reverse=True)
+        # Newest-first by timestamp_ms, then cap to the requested number of DECISIONS.
+        reached_budget = len(items) >= signal_budget
+        decisions.sort(key=lambda d: d.get("_ts_ms") or 0, reverse=True)
+        more = reached_budget or len(decisions) > decisions_target
         decisions = decisions[:decisions_target]
-        # Cross-day cursor pagination is a follow-up; Live Activity reads the most-recent page.
+
+        # next_token: an opaque base64 of the oldest returned decision's timestamp_ms MINUS 1, so the
+        # next page resumes strictly older (no overlap). Emitted only when more rows likely exist
+        # (we hit the fetch budget, or grouped more decisions than the page size). Decisions are
+        # seconds apart, so the ms-exclusive boundary won't skip a distinct decision.
+        next_token = None
+        if more and decisions:
+            oldest_ms = int(decisions[-1].get("_ts_ms") or 0)
+            if oldest_ms > 0:
+                next_token = base64.b64encode(str(oldest_ms - 1).encode()).decode()
+        for d in decisions:
+            d.pop("_ts_ms", None)
         return {
             "decisions": decisions,
-            "next_token": None,
+            "next_token": next_token,
             "total": len(decisions),
         }
 

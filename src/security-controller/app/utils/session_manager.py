@@ -7,6 +7,8 @@ to prevent race conditions.
 MVP: Uses atomic increment/decrement (UpdateExpression)
 Phase 2: Will migrate to optimistic locking with version field
 """
+import base64
+import json
 import time
 import logging
 from typing import Dict, Optional, List, Any
@@ -533,18 +535,20 @@ class SessionManager:
         self,
         status: Optional[str] = None,
         agent_id: Optional[str] = None,
-        limit: int = 50
+        limit: int = 50,
+        cursor: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
-        Query sessions with filters for API endpoint.
-        
+        Query sessions with filters for API endpoint — cursor-paginated.
+
         Args:
             status: Filter by quarantine status (active/quarantined/suspended)
             agent_id: Filter by agent ID
-            limit: Max results (default 50, max 200)
-            
+            limit: Max results per page (default 50, max 200)
+            cursor: Opaque base64 of the DynamoDB LastEvaluatedKey (round-trip unchanged)
+
         Returns:
-            Dict with sessions and total count
+            Dict with `sessions`, `total` (this page), and `next_token` (null on last page)
         """
         try:
             from boto3.dynamodb.conditions import Attr
@@ -564,26 +568,36 @@ class SessionManager:
                 for expr in filter_expressions[1:]:
                     filter_expr = filter_expr & expr
                 scan_kwargs['FilterExpression'] = filter_expr
+            if cursor:
+                try:
+                    scan_kwargs['ExclusiveStartKey'] = json.loads(base64.b64decode(cursor).decode())
+                except Exception:
+                    logger.warning("ignoring malformed sessions cursor: %r", cursor)
 
             # IMPORTANT: DynamoDB applies `Limit` to items SCANNED, not items MATCHED — so a single
             # scan with Limit+FilterExpression silently returns 0 quarantined sessions when they sit
-            # beyond the first page of (mostly active) sessions. Paginate until we have `cap` matches
-            # or the table is exhausted (mirrors count_sessions_by_status).
+            # beyond the first page of (mostly active) sessions. Accumulate full scan pages until we
+            # have >= cap matches or the table is exhausted; the cursor resumes at the PAGE boundary
+            # (LastEvaluatedKey), so paging is gap-free and overlap-free.
             sessions: List[Dict[str, Any]] = []
+            last_key: Optional[Dict[str, Any]] = None
             while True:
                 response = self.table.scan(**scan_kwargs)
                 for item in response.get('Items', []):
                     sessions.append(self._format_session_for_api(item))
-                    if len(sessions) >= cap:
-                        break
-                lek = response.get('LastEvaluatedKey')
-                if len(sessions) >= cap or not lek:
+                last_key = response.get('LastEvaluatedKey')
+                if len(sessions) >= cap or not last_key:
                     break
-                scan_kwargs['ExclusiveStartKey'] = lek
+                scan_kwargs['ExclusiveStartKey'] = last_key
+
+            next_token = None
+            if last_key and len(sessions) >= cap:
+                next_token = base64.b64encode(json.dumps(last_key).encode()).decode()
 
             return {
                 "sessions": sessions,
-                "total": len(sessions)
+                "total": len(sessions),
+                "next_token": next_token,
             }
 
         except ClientError as e:
