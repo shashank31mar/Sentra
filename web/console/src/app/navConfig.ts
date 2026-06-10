@@ -4,10 +4,11 @@ import {
   IconAlertTriangle,
   IconRocket,
   IconRobot,
-  IconRadar2,
+  IconSitemap,
   IconCloudDownload,
   IconCloudUpload,
   IconShieldLock,
+  IconLockExclamation,
   IconListSearch,
 } from '@tabler/icons-react'
 import { ROUTES } from './routes'
@@ -37,7 +38,7 @@ export const NAV_GROUPS: NavGroup[] = [
     title: 'Assets',
     items: [
       { label: 'Agent Inventory', to: ROUTES.agents, icon: IconRobot },
-      { label: 'Discovery', to: ROUTES.discovery, icon: IconRadar2 },
+      { label: 'Topology', to: ROUTES.topology, icon: IconSitemap },
     ],
   },
   {
@@ -51,6 +52,7 @@ export const NAV_GROUPS: NavGroup[] = [
     title: 'Govern',
     items: [
       { label: 'Policies', to: ROUTES.policies, icon: IconShieldLock },
+      { label: 'Quarantine', to: ROUTES.quarantine, icon: IconLockExclamation },
       { label: 'Audit Trail', to: ROUTES.audit, icon: IconListSearch },
     ],
   },

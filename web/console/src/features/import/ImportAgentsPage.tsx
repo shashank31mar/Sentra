@@ -24,7 +24,12 @@ function KpiCard({ label, value, accent }: { label: string; value: string; accen
   )
 }
 
-export function DiscoveryPage() {
+/**
+ * Onboarding surface: detect unmanaged agents (from governing policy artifacts)
+ * and bring the selected ones under governance. Previously lived under
+ * "Discovery"; that slot is now the fleet Topology view.
+ */
+export function ImportAgentsPage() {
   const summary = useDiscoverySummary()
   const platforms = useDiscoveryPlatforms()
   const agentsQuery = useDiscoveredAgents()
@@ -55,8 +60,8 @@ export function DiscoveryPage() {
   return (
     <div className="p-4 sm:p-6 lg:p-8">
       <PageHeader
-        title="Discovery"
-        subtitle="Agents detected from governing policy artifacts."
+        title="Import Agents"
+        subtitle="Detect unmanaged agents from governing policy artifacts and bring them under governance."
         actions={
           <>
             {/* POST /discovery/scan is descoped in P0 — disabled with tooltip */}

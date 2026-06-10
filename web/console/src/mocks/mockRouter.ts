@@ -41,11 +41,29 @@ export function resolveMock(
   // --- Decisions ---
   if (get && path === '/decisions') {
     const decision = search.get('decision')
-    const items = decision ? fx.decisions.filter((d) => d.decision === decision) : fx.decisions
-    return { status: 200, body: { decisions: items, total: items.length, next_token: null } }
+    const agentId = search.get('agent_id')
+    const sessionId = search.get('session_id')
+    let items = fx.decisions
+    if (decision) items = items.filter((d) => d.decision === decision)
+    if (agentId) items = items.filter((d) => d.agent_id === agentId)
+    if (sessionId) items = items.filter((d) => d.session_id === sessionId)
+    const limit = Number(search.get('limit') ?? 0)
+    const sliced = limit > 0 ? items.slice(0, limit) : items
+    return { status: 200, body: { decisions: sliced, total: items.length, next_token: null } }
   }
   if (m === 'POST' && /^\/quarantine\/.+/.test(path)) {
     return { status: 200, body: { success: true, new_status: 'quarantined' } }
+  }
+  if (m === 'DELETE' && /^\/quarantine\/.+/.test(path)) {
+    const sessionId = decodeURIComponent(path.split('/')[2])
+    return { status: 200, body: { success: true, session_id: sessionId, new_status: 'active', previous_status: 'quarantined' } }
+  }
+
+  // --- Sessions ---
+  if (get && path === '/sessions') {
+    const status = search.get('status')
+    const items = status ? fx.sessions.filter((s) => s.quarantine_status === status) : fx.sessions
+    return { status: 200, body: { sessions: items, total: items.length } }
   }
   if (m === 'POST' && /^\/decisions\/.+\/verdict$/.test(path)) {
     return {
@@ -81,7 +99,7 @@ export function resolveMock(
     }
   }
 
-  // --- Discovery ---
+  // --- Discovery (powers Import Agents onboarding) ---
   if (get && path === '/discovery/summary') return { status: 200, body: fx.discoverySummary }
   if (get && path === '/discovery/platforms') return { status: 200, body: { providers: fx.discoveryPlatforms } }
   if (get && path === '/discovery/agents') {
@@ -98,6 +116,21 @@ export function resolveMock(
   // --- Policies / Sigma ---
   if (get && path === '/policies') {
     return { status: 200, body: { policies: fx.policies, total: fx.policies.length, next_token: null } }
+  }
+  if (get && /^\/policies\/[^/]+$/.test(path)) {
+    const id = decodeURIComponent(path.split('/')[2])
+    const summary = fx.policies.find((p) => p.policy_id === id)
+    if (!summary) return { status: 404, body: { error: 'policy not found', error_code: 'NOT_FOUND' } }
+    return {
+      status: 200,
+      body: {
+        policy: {
+          ...summary,
+          content: fx.policyContents[id] ?? '',
+          s3_key: `policies/${id}/v${summary.version}.cedar`,
+        },
+      },
+    }
   }
   if (get && path === '/sigma-rules') {
     return { status: 200, body: { rules: fx.sigmaRules, total: fx.sigmaRules.length, next_token: null } }

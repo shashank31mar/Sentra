@@ -5,11 +5,14 @@ export const ROUTES = {
   deployments: '/deployments',
   agents: '/agents',
   agentDetail: '/agents/:agentId',
-  discovery: '/discovery',
+  topology: '/topology',
   import: '/import',
   deploy: '/deploy',
   policies: '/policies',
+  policyDetail: '/policies/:policyId',
+  quarantine: '/quarantine',
   audit: '/audit',
 } as const
 
 export const agentDetailPath = (agentId: string) => `/agents/${agentId}`
+export const policyDetailPath = (policyId: string) => `/policies/${encodeURIComponent(policyId)}`

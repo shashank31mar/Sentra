@@ -1,9 +1,12 @@
-import { IconShieldLock, IconToggleLeft, IconToggleRight } from '@tabler/icons-react'
+import { useEffect } from 'react'
+import { useNavigate, useSearchParams } from 'react-router-dom'
+import { IconChevronRight, IconShieldLock, IconToggleLeft, IconToggleRight } from '@tabler/icons-react'
 import { Card } from '../../components/ui/Card'
 import { PageHeader } from '../../components/ui/PageHeader'
 import { Table, TBody, Td, Th, THead, Tr } from '../../components/ui/Table'
 import { EmptyState, ErrorState, LoadingState } from '../../components/ui/states'
 import { usePolicies, useSigmaRules, useToggleSigmaRule } from '../../lib/query/usePolicies'
+import { policyDetailPath } from '../../app/routes'
 import { formatDateTime, formatNumber } from '../../lib/format'
 import type { PolicyStatus } from '../../types/enums'
 
@@ -21,12 +24,23 @@ const SEVERITY_COLOR: Record<string, string> = {
 }
 
 export function PolicyLibraryPage() {
+  const navigate = useNavigate()
   const policies = usePolicies()
   const sigma = useSigmaRules()
   const toggle = useToggleSigmaRule()
 
   const policyItems = policies.data?.pages.flatMap((p) => p.items) ?? []
   const ruleItems = sigma.data?.pages.flatMap((p) => p.items) ?? []
+
+  // Deep-link from Agent Inventory's clickable policy chips (?policy=<id>):
+  // scroll the matching row into view and flash a highlight.
+  const [params] = useSearchParams()
+  const highlightId = params.get('policy')
+  useEffect(() => {
+    if (!highlightId || policyItems.length === 0) return
+    const el = document.getElementById(`policy-row-${highlightId}`)
+    el?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+  }, [highlightId, policyItems.length])
 
   return (
     <div className="p-4 sm:p-6 lg:p-8">
@@ -54,10 +68,16 @@ export function PolicyLibraryPage() {
               <Th className="text-right">Version</Th>
               <Th className="text-right">Agents</Th>
               <Th className="text-right">Updated</Th>
+              <Th />
             </THead>
             <TBody>
               {policyItems.map((p) => (
-                <Tr key={p.policy_id}>
+                <Tr
+                  key={p.policy_id}
+                  id={`policy-row-${p.policy_id}`}
+                  onClick={() => navigate(policyDetailPath(p.policy_id))}
+                  className={p.policy_id === highlightId ? 'bg-cyan/10' : ''}
+                >
                   <Td>
                     <div className="font-display font-bold text-white">{p.name}</div>
                     <div className="text-[11px] font-mono text-muted">{p.policy_id}</div>
@@ -68,6 +88,7 @@ export function PolicyLibraryPage() {
                   <Td className="text-right font-mono text-secondary">v{p.version}</Td>
                   <Td className="text-right font-mono text-secondary">{formatNumber(p.agent_count)}</Td>
                   <Td className="text-right font-mono text-muted">{formatDateTime(p.updated_at)}</Td>
+                  <Td className="text-right text-muted"><IconChevronRight size={16} className="inline" /></Td>
                 </Tr>
               ))}
             </TBody>

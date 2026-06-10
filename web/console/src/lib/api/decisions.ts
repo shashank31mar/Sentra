@@ -12,6 +12,7 @@ export interface DecisionsFilters {
   since?: string
   until?: string
   agent_id?: string
+  session_id?: string
   decision?: Decision
   threat_type?: ThreatType
   cloud_provider?: CloudProvider

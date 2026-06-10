@@ -6,6 +6,7 @@ import {
   IconCloud,
   IconMenu2,
   IconSearch,
+  IconUserShield,
 } from '@tabler/icons-react'
 import { NAV_ITEMS } from '../../app/navConfig'
 
@@ -129,16 +130,20 @@ export function TopBar({ onMenuClick }: { onMenuClick: () => void }) {
           style={chipBorder}
         >
           <div className="text-right leading-tight hidden sm:block">
-            <div className="text-xs font-medium text-white">Dana Reyes</div>
-            <div className="text-[10px] font-mono text-muted">SecOps Admin</div>
+            <div className="text-xs font-medium text-white">Admin</div>
+            <div className="text-[10px] font-mono text-muted">Administrator</div>
           </div>
-          <img
-            src="https://i.pravatar.cc/48?u=danareyes"
-            alt="Dana Reyes"
-            decoding="async"
-            loading="lazy"
-            className="w-7 h-7 rounded-lg"
-          />
+          <span
+            className="w-7 h-7 rounded-lg flex items-center justify-center shrink-0"
+            style={{
+              background:
+                'linear-gradient(140deg, rgba(15,255,255,0.18), rgba(255,0,128,0.18))',
+              border: '1px solid rgba(15,255,255,0.3)',
+            }}
+            aria-label="Admin"
+          >
+            <IconUserShield size={16} className="text-cyan" />
+          </span>
         </div>
       </div>
     </header>

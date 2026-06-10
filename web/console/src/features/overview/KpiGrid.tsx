@@ -24,18 +24,40 @@ function SmallStat({
   label,
   children,
   accent = false,
+  onClick,
+  title,
 }: {
   icon: React.ReactNode
   label: string
   children: React.ReactNode
   accent?: boolean
+  onClick?: () => void
+  title?: string
 }) {
-  return (
-    <Card className="p-5" accent={accent ? 'danger' : 'default'}>
+  const body = (
+    <>
       <div className="flex items-center gap-2 text-[10px] uppercase tracking-[0.2em] text-secondary">
         {icon} {label}
       </div>
       <div className="font-display text-3xl font-bold mt-4 tracking-tight">{children}</div>
+    </>
+  )
+  if (onClick) {
+    return (
+      <button
+        type="button"
+        onClick={onClick}
+        title={title}
+        className="rounded-2xl bg-surface-2 p-5 text-left w-full cursor-pointer transition-all hover:border-pink/40"
+        style={{ border: accent ? '1px solid rgba(255,0,128,0.18)' : '1px solid var(--color-line)' }}
+      >
+        {body}
+      </button>
+    )
+  }
+  return (
+    <Card className="p-5" accent={accent ? 'danger' : 'default'}>
+      {body}
     </Card>
   )
 }
@@ -129,7 +151,13 @@ export function KpiGrid({ data }: { data: MetricsOverview }) {
         <SmallStat icon={<IconBolt size={13} />} label="Avg Latency">
           <span className="text-cyan">{formatNumber(data.avg_latency_ms)}<span className="text-xl ml-1 text-muted">ms</span></span>
         </SmallStat>
-        <SmallStat icon={<IconLockX size={13} />} label="Quarantined" accent>
+        <SmallStat
+          icon={<IconLockX size={13} />}
+          label="Quarantined"
+          accent
+          onClick={() => navigate(ROUTES.quarantine)}
+          title="View quarantined sessions"
+        >
           <span className="text-pink">{formatNumber(data.quarantined)}</span>
         </SmallStat>
         <SmallStat icon={<IconTarget size={13} />} label="False Positive">

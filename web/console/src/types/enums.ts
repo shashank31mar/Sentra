@@ -20,6 +20,8 @@ export type TrustStatus = 'healthy' | 'degraded' | 'critical' | 'unknown'
 
 export type AgentStatus = 'active' | 'idle' | 'quarantined' | 'inactive'
 
+export type QuarantineStatus = 'active' | 'quarantined' | 'suspended'
+
 export type DiscoveryStatus = 'managed' | 'unmanaged'
 
 export type ScanStatus = 'scanning' | 'idle'

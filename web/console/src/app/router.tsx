@@ -6,8 +6,11 @@ import { OverviewPage } from '../features/overview/OverviewPage'
 import { ThreatsPage } from '../features/threats/ThreatsPage'
 import { AgentInventoryPage } from '../features/agents/AgentInventoryPage'
 import { AgentDetailPage } from '../features/agents/AgentDetailPage'
-import { DiscoveryPage } from '../features/discovery/DiscoveryPage'
+import { TopologyPage } from '../features/topology/TopologyPage'
+import { ImportAgentsPage } from '../features/import/ImportAgentsPage'
 import { PolicyLibraryPage } from '../features/policies/PolicyLibraryPage'
+import { PolicyDetailPage } from '../features/policies/PolicyDetailPage'
+import { QuarantinePage } from '../features/quarantine/QuarantinePage'
 import { AuditTrailPage } from '../features/audit/AuditTrailPage'
 import { PlaceholderPage } from '../components/ui/PlaceholderPage'
 
@@ -21,10 +24,12 @@ export const router = createBrowserRouter([
       { path: ROUTES.deployments, element: <PlaceholderPage title="Deployments" /> },
       { path: ROUTES.agents, element: <AgentInventoryPage /> },
       { path: ROUTES.agentDetail, element: <AgentDetailPage /> },
-      { path: ROUTES.discovery, element: <DiscoveryPage /> },
-      { path: ROUTES.import, element: <PlaceholderPage title="Import Agents" /> },
+      { path: ROUTES.topology, element: <TopologyPage /> },
+      { path: ROUTES.import, element: <ImportAgentsPage /> },
       { path: ROUTES.deploy, element: <PlaceholderPage title="Deploy Agent" /> },
       { path: ROUTES.policies, element: <PolicyLibraryPage /> },
+      { path: ROUTES.policyDetail, element: <PolicyDetailPage /> },
+      { path: ROUTES.quarantine, element: <QuarantinePage /> },
       { path: ROUTES.audit, element: <AuditTrailPage /> },
     ],
   },

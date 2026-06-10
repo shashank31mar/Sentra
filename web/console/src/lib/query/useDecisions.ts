@@ -19,7 +19,12 @@ export function useQuarantine() {
   return useMutation({
     mutationFn: ({ sessionId, body }: { sessionId: string; body: QuarantineRequest }) =>
       decisionsApi.quarantine(sessionId, body),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['decisions'] }),
+    onSuccess: () => {
+      // Refresh the decision feed and the sessions list so quarantine status
+      // surfaces wherever a session is shown (Threat Explorer, Quarantine).
+      qc.invalidateQueries({ queryKey: ['decisions'] })
+      qc.invalidateQueries({ queryKey: ['sessions'] })
+    },
   })
 }
 

@@ -6,7 +6,7 @@ import { CloudBadge } from '../../components/ui/badges'
 import { StatusDot } from '../../components/ui/StatusDot'
 import { EmptyState, ErrorState, LoadingState } from '../../components/ui/states'
 import { useAgents } from '../../lib/query/useAgents'
-import { agentDetailPath } from '../../app/routes'
+import { agentDetailPath, policyDetailPath } from '../../app/routes'
 import { formatNumber, formatRelativeTime } from '../../lib/format'
 import type { AgentStatus } from '../../types/enums'
 
@@ -44,6 +44,7 @@ export function AgentInventoryPage() {
               <Th>Agent</Th>
               <Th>Cloud</Th>
               <Th>Status</Th>
+              <Th>Policies</Th>
               <Th className="text-right">Trust</Th>
               <Th className="text-right">Requests</Th>
               <Th className="text-right">Denied</Th>
@@ -62,6 +63,28 @@ export function AgentInventoryPage() {
                     <span className="inline-flex items-center gap-2 text-xs font-mono capitalize text-secondary">
                       <StatusDot color={STATUS_COLOR[a.status] ?? '#8DA2AE'} /> {a.status ?? '—'}
                     </span>
+                  </Td>
+                  <Td>
+                    {(a.attached_policy_ids?.length ?? 0) === 0 ? (
+                      <span className="text-xs font-mono text-muted">—</span>
+                    ) : (
+                      <div className="flex flex-wrap gap-1.5">
+                        {a.attached_policy_ids!.map((pid) => (
+                          <button
+                            key={pid}
+                            type="button"
+                            title={`View policy ${pid}`}
+                            onClick={(e) => {
+                              e.stopPropagation()
+                              navigate(policyDetailPath(pid))
+                            }}
+                            className="max-w-[180px] truncate px-2 py-0.5 rounded-md text-[11px] font-mono text-cyan bg-cyan/10 border border-cyan/20 hover:bg-cyan/20 transition-colors"
+                          >
+                            {pid}
+                          </button>
+                        ))}
+                      </div>
+                    )}
                   </Td>
                   <Td className="text-right font-mono" style={{ color: (a.trust_score_avg ?? 100) < 60 ? '#FF0080' : '#8DA2AE' }}>
                     {a.trust_score_avg ?? '—'}

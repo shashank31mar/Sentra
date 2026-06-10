@@ -29,11 +29,25 @@ export function TBody({ children }: { children: ReactNode }) {
   return <tbody className="divide-y divide-white/[0.04]">{children}</tbody>
 }
 
-export function Tr({ children, onClick }: { children: ReactNode; onClick?: () => void }) {
+export function Tr({
+  children,
+  onClick,
+  id,
+  className = '',
+  style,
+}: {
+  children: ReactNode
+  onClick?: () => void
+  id?: string
+  className?: string
+  style?: CSSProperties
+}) {
   return (
     <tr
+      id={id}
       onClick={onClick}
-      className={`transition-colors ${onClick ? 'cursor-pointer hover:bg-white/[0.025]' : ''}`}
+      style={style}
+      className={`transition-colors ${onClick ? 'cursor-pointer hover:bg-white/[0.025]' : ''} ${className}`}
     >
       {children}
     </tr>

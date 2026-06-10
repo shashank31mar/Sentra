@@ -11,6 +11,9 @@ export const queryKeys = {
   decisions: {
     list: (filters: Record<string, unknown>) => ['decisions', filters] as const,
   },
+  sessions: {
+    list: (filters: Record<string, unknown>) => ['sessions', filters] as const,
+  },
   logs: {
     list: (filters: Record<string, unknown>) => ['logs', filters] as const,
     conversation: (id: string) => ['logs', 'conversation', id] as const,

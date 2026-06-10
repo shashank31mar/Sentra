@@ -7,9 +7,11 @@ import type {
   PlatformDistribution,
   PolicySummary,
   ProviderScan,
+  SessionInfo,
   SigmaRule,
   TimeseriesPoint,
 } from '../types/api'
+import type { CloudProvider, Decision, ThreatType } from '../types/enums'
 
 export const overview: MetricsOverview = {
   range: '24h',
@@ -47,66 +49,87 @@ export function makeTimeseries(): TimeseriesPoint[] {
   }))
 }
 
+/* --------------------------------------------------------------------------
+ * Decisions feed — also powers the Topology flow map and per-agent Flow tab,
+ * so it spans several agents/tools with an allow/deny mix to make the Sankey
+ * (and its heat path) meaningful.
+ * ------------------------------------------------------------------------ */
+interface AgentSeed {
+  id: string
+  name: string
+  cloud: CloudProvider
+  session: string
+}
+const AGENT_SEEDS: Record<'fin' | 'sup' | 'exp' | 'hr', AgentSeed> = {
+  fin: { id: 'agt-7781', name: 'finance-reconciler-prod', cloud: 'aws', session: 'sess-9001' },
+  sup: { id: 'agt-5521', name: 'support-triage-gcp', cloud: 'gcp', session: 'sess-9002' },
+  exp: { id: 'agt-3310', name: 'data-export-prod', cloud: 'aws', session: 'sess-9003' },
+  hr: { id: 'agt-8890', name: 'hr-bot-azure', cloud: 'azure', session: 'sess-9004' },
+}
+
+let decSeq = 0
+function dec(
+  who: keyof typeof AGENT_SEEDS,
+  tool: string,
+  decision: Decision,
+  threat: ThreatType | null,
+  trust: number,
+): DecisionItem {
+  const s = AGENT_SEEDS[who]
+  decSeq += 1
+  return {
+    decision_id: `${s.session}:req-${decSeq}`,
+    session_id: s.session,
+    request_id: `req-${decSeq}`,
+    agent_id: s.id,
+    agent_name: s.name,
+    cloud_provider: s.cloud,
+    platform: 'sentra',
+    decision,
+    threat_type: threat,
+    tool_name: tool,
+    reason: decision === 'DENY' ? `Blocked ${tool}` : `Allowed ${tool}`,
+    trust_score: trust,
+    timestamp: new Date(Date.UTC(2026, 5, 6, 4, 19, Math.max(1, 58 - decSeq))).toISOString(),
+  }
+}
+
 export const decisions: DecisionItem[] = [
+  dec('fin', 'stripe.write', 'DENY', 'PROMPT_INJECTION', 41),
+  dec('fin', 'stripe.write', 'DENY', 'POLICY_VIOLATION', 43),
+  dec('fin', 'postgres.query', 'ALLOW', null, 68),
+  dec('fin', 'postgres.query', 'ALLOW', null, 70),
+  dec('fin', 's3.read', 'ALLOW', null, 66),
+  dec('fin', 'secretsmanager.get', 'DENY', 'POLICY_VIOLATION', 58),
+  dec('sup', 'bigquery.read', 'ALLOW', null, 92),
+  dec('sup', 'bigquery.read', 'ALLOW', null, 91),
+  dec('sup', 'bigquery.read', 'ALLOW', null, 90),
+  dec('sup', 'gmail.send', 'ALLOW', null, 89),
+  dec('sup', 'pubsub.publish', 'ALLOW', null, 88),
+  dec('sup', 'bigquery.read', 'DENY', 'DATA_EXFILTRATION', 60),
+  dec('exp', 's3.read', 'DENY', 'PII_LEAK', 55),
+  dec('exp', 's3.read', 'DENY', 'PII_LEAK', 52),
+  dec('exp', 's3.write', 'DENY', 'POLICY_VIOLATION', 50),
+  dec('hr', 'postgres.query', 'ALLOW', null, 88),
+  dec('hr', 'blob.read', 'ALLOW', null, 86),
+  dec('hr', 'graph.read', 'ALLOW', null, 84),
+]
+
+/** Runtime sessions (GET /v1/sessions). `sess-9001` is currently quarantined —
+ *  it maps to the blocked `finance-reconciler-prod` decisions. */
+export const sessions: SessionInfo[] = [
   {
-    decision_id: 'sess-9001:req-1',
     session_id: 'sess-9001',
-    request_id: 'req-1',
+    user_id: 'svc-finance',
     agent_id: 'agt-7781',
-    agent_name: 'finance-reconciler-prod',
-    cloud_provider: 'aws',
-    platform: 'sentra',
-    decision: 'DENY',
-    threat_type: 'PROMPT_INJECTION',
-    tool_name: 'stripe.write',
-    reason: 'Blocked write to Stripe API · injection',
     trust_score: 41,
-    timestamp: '2026-06-06T04:19:58Z',
-  },
-  {
-    decision_id: 'sess-9002:req-3',
-    session_id: 'sess-9002',
-    request_id: 'req-3',
-    agent_id: 'agt-5521',
-    agent_name: 'support-triage-gcp',
-    cloud_provider: 'gcp',
-    platform: 'sentra',
-    decision: 'ALLOW',
-    threat_type: null,
-    tool_name: 'bigquery.read',
-    reason: 'Allowed read BigQuery · verified',
-    trust_score: 92,
-    timestamp: '2026-06-06T04:19:55Z',
-  },
-  {
-    decision_id: 'sess-9003:req-2',
-    session_id: 'sess-9003',
-    request_id: 'req-2',
-    agent_id: 'agt-3310',
-    agent_name: 'data-export-prod',
-    cloud_provider: 'aws',
-    platform: 'bedrock',
-    decision: 'DENY',
-    threat_type: 'PII_LEAK',
-    tool_name: 's3.read',
-    reason: 'Blocked read S3 · PII denied',
-    trust_score: 55,
-    timestamp: '2026-06-06T04:19:46Z',
-  },
-  {
-    decision_id: 'sess-9004:req-7',
-    session_id: 'sess-9004',
-    request_id: 'req-7',
-    agent_id: 'agt-8890',
-    agent_name: 'hr-bot-azure',
-    cloud_provider: 'azure',
-    platform: 'sentra',
-    decision: 'ALLOW',
-    threat_type: null,
-    tool_name: 'postgres.query',
-    reason: 'Allowed query Postgres · auth OK',
-    trust_score: 88,
-    timestamp: '2026-06-06T04:19:42Z',
+    quarantine_status: 'quarantined',
+    total_requests: 214,
+    allow_count: 180,
+    deny_count: 34,
+    consecutive_allows: 0,
+    created_at: '2026-06-06T03:40:00Z',
+    last_activity: '2026-06-06T04:19:58Z',
   },
 ]
 
@@ -178,6 +201,44 @@ export const policies: PolicySummary[] = [
   { policy_id: 'pol-102', name: 'pii-redaction', status: 'active', version: 2, agent_count: 21, updated_at: '2026-06-05T18:40:00Z' },
   { policy_id: 'pol-103', name: 'refund-limits', status: 'draft', version: 1, agent_count: 0, updated_at: '2026-06-06T03:01:00Z' },
 ]
+
+/** Cedar source per policy_id, returned by GET /policies/:id with include_content. */
+export const policyContents: Record<string, string> = {
+  'pol-101': `// @name: baseline-guardrails
+// @id: pol-101
+permit (
+  principal in Group::"all-agents",
+  action in [
+    Action::"read:Postgres-fin",
+    Action::"read:S3-reports"
+  ],
+  resource in Resource::"fin-ledger-db"
+)
+when {
+  context.mfa == true &&
+  resource.region == "us-east-1"
+};`,
+  'pol-102': `// @name: pii-redaction
+// @id: pol-102
+forbid (
+  principal,
+  action in [Action::"write:Logs"],
+  resource
+)
+when {
+  context.contains_pii == true
+};`,
+  'pol-103': `// @name: refund-limits
+// @id: pol-103
+forbid (
+  principal in Group::"finance-team",
+  action == Action::"charge:Stripe",
+  resource
+)
+when {
+  context.amount > 10000
+};`,
+}
 
 export const sigmaRules: SigmaRule[] = [
   { rule_id: 'sig-001', title: 'Prompt injection — instruction override', category: 'injection', severity: 'high', status: 'enabled', match_count: 312 },

@@ -10,6 +10,7 @@ import type {
   MetricsRange,
   Platform,
   PolicyStatus,
+  QuarantineStatus,
   Risk,
   ScanStatus,
   SigmaStatus,
@@ -129,6 +130,83 @@ export interface QuarantineRequest {
   operator_id: string
 }
 
+/* ---------------------------- Sessions ---------------------------- */
+
+/** A runtime session row from `GET /v1/sessions` (LLD §Task 11). */
+export interface SessionInfo {
+  session_id: string
+  user_id: string
+  agent_id: string
+  trust_score: number
+  quarantine_status: QuarantineStatus
+  total_requests: number
+  allow_count: number
+  deny_count: number
+  consecutive_allows: number
+  created_at: string
+  last_activity: string
+}
+
+export interface SessionsResponse {
+  sessions: SessionInfo[]
+  total: number
+}
+
+/** Operator un-quarantine result from `DELETE /v1/quarantine/{id}`. */
+export interface ReleaseResult {
+  success: boolean
+  session_id: string
+  new_status: string
+  previous_status?: string
+  trust_score?: number
+  idempotent?: boolean
+}
+
+/* ---------------- Session decision trace (forensics) ---------------- */
+
+/** One validator's contribution to a decision (`GET /v1/sessions/{id}/decisions` → signals[]). */
+export interface DecisionSignal {
+  source: string // e.g. sentra.sigma, sentra.policy, sentra.trust, sentra.ml_classifier, sentra.context
+  decision: Decision | null
+  reason: string | null
+  priority: number | null
+  confidence: number | null
+  threat_type: ThreatType | null
+  matched_rule: string | null
+  severity: string | null
+  metadata: Record<string, unknown>
+}
+
+/** The combined verdict for a request (winning validator folded over the signals). */
+export interface DecisionCombined {
+  source: string
+  decision: Decision
+  reason: string | null
+  winning_source: string | null
+  threat_type: ThreatType | null
+  matched_rule: string | null
+  severity: string | null
+}
+
+/** One request's full trace: the prompt, caller, and per-validator breadcrumbs. */
+export interface SessionDecision {
+  request_id: string
+  timestamp_iso: string | null
+  user_input: string | null
+  agent_id: string | null
+  tool_name: string | null
+  source_ip: string | null
+  combined: DecisionCombined
+  signals: DecisionSignal[]
+}
+
+export interface SessionDecisionsResponse {
+  session_id: string
+  decisions: SessionDecision[]
+  total: number
+  next_token: string | null
+}
+
 /* ----------------------------- Agents ----------------------------- */
 
 export interface AgentListItem {
@@ -143,10 +221,14 @@ export interface AgentListItem {
   requests_denied: number
   active_sessions: number
   last_seen: string | null
+  /** Policy IDs attached to this agent. Present on the list response (raw
+   *  registry passthrough); may be omitted/null — always guard. */
+  attached_policy_ids?: string[] | null
 }
 
 export interface AgentDetail extends AgentListItem {
-  attached_policy_ids: string[]
+  /** May be omitted/null in real API responses (§11.2) — always guard. */
+  attached_policy_ids: string[] | null
   framework: string | null
   region: string | null
 }
@@ -209,8 +291,17 @@ export interface PolicySummary {
   updated_at: string
 }
 
+/**
+ * Raw policy content from `GET /v1/policies/{id}` (S3 passthrough). Typed as a
+ * union because the live API does NOT guarantee a string — it can return a
+ * structured object or null. Always normalize via `contentToString()` before
+ * calling string methods (see policyFormat.ts). Previously typed `string`,
+ * which let a non-string crash the CodeBlock viewer (`.split is not a function`).
+ */
+export type PolicyContent = string | Record<string, unknown> | null
+
 export interface PolicyDetail extends PolicySummary {
-  content: string
+  content: PolicyContent
   s3_key: string
 }
 

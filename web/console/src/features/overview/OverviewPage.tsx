@@ -95,7 +95,12 @@ export function OverviewPage() {
           </div>
         </Card>
 
-        <LiveActivity items={feedItems} isLoading={feed.isLoading} />
+        <LiveActivity
+          items={feedItems}
+          isLoading={feed.isLoading}
+          isFetching={feed.isFetching}
+          onRefresh={() => feed.refetch()}
+        />
       </div>
     </div>
   )
