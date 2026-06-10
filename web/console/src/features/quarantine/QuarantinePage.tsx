@@ -1,12 +1,13 @@
-import { Fragment, useState } from 'react'
-import { IconChevronDown, IconChevronRight, IconLockOpen, IconShieldLock } from '@tabler/icons-react'
+import { Fragment, useMemo, useState } from 'react'
+import { IconChevronDown, IconChevronRight, IconLockOpen, IconSearch, IconShieldLock } from '@tabler/icons-react'
 import { Card } from '../../components/ui/Card'
 import { PageHeader } from '../../components/ui/PageHeader'
+import { Button } from '../../components/ui/Button'
 import { Table, TBody, Td, Th, THead, Tr } from '../../components/ui/Table'
 import { StatusDot } from '../../components/ui/StatusDot'
 import { EmptyState, ErrorState, LoadingState } from '../../components/ui/states'
 import { DecisionTrace } from '../../components/decisions/DecisionTrace'
-import { useSessions, useReleaseQuarantine } from '../../lib/query/useSessions'
+import { useInfiniteSessions, useReleaseQuarantine } from '../../lib/query/useSessions'
 import { formatNumber, formatRelativeTime } from '../../lib/format'
 import type { SessionInfo } from '../../types/api'
 
@@ -48,9 +49,31 @@ function ReleaseButton({ session }: { session: SessionInfo }) {
 }
 
 export function QuarantinePage() {
-  const query = useSessions({ status: 'quarantined', limit: 200 })
-  const sessions = query.data?.sessions ?? []
+  const query = useInfiniteSessions({ status: 'quarantined', limit: 100 })
   const [expanded, setExpanded] = useState<string | null>(null)
+  const [search, setSearch] = useState('')
+
+  // Flatten + dedupe across pages (cursor boundaries are clean, but guard anyway).
+  const allSessions = useMemo(() => {
+    const seen = new Set<string>()
+    const out: SessionInfo[] = []
+    for (const p of query.data?.pages ?? []) {
+      for (const s of p.items) {
+        if (seen.has(s.session_id)) continue
+        seen.add(s.session_id)
+        out.push(s)
+      }
+    }
+    return out
+  }, [query.data])
+
+  // Search across loaded rows (session id, agent, user).
+  const needle = search.trim().toLowerCase()
+  const sessions = needle
+    ? allSessions.filter((s) =>
+        [s.session_id, s.agent_id, s.user_id].filter(Boolean).some((v) => String(v).toLowerCase().includes(needle)),
+      )
+    : allSessions
 
   return (
     <div className="p-4 sm:p-6 lg:p-8">
@@ -60,11 +83,21 @@ export function QuarantinePage() {
       />
 
       <Card>
-        <div className="flex items-center justify-between px-6 py-4" style={{ borderBottom: '1px solid var(--color-line)' }}>
+        <div className="flex flex-wrap items-center gap-3 px-6 py-4" style={{ borderBottom: '1px solid var(--color-line)' }}>
           <span className="text-sm font-medium uppercase tracking-[0.2em] text-secondary flex items-center gap-2">
             <IconShieldLock size={15} className="text-pink" /> Quarantine
           </span>
-          <span className="text-xs font-mono text-muted">{query.data?.total ?? 0} isolated</span>
+          <div className="relative flex items-center">
+            <IconSearch size={14} className="absolute left-3 text-muted" />
+            <input
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              placeholder="Search session / agent / user…"
+              className="h-9 rounded-xl bg-surface-2 pl-8 pr-3 w-64 text-xs font-mono text-white placeholder:text-muted outline-none focus:border-cyan/40"
+              style={{ border: '1px solid var(--color-line)' }}
+            />
+          </div>
+          <span className="ml-auto text-xs font-mono text-muted">{sessions.length} loaded{needle ? ' (matched)' : ''}</span>
         </div>
 
         {query.isLoading ? (
@@ -128,6 +161,14 @@ export function QuarantinePage() {
               })}
             </TBody>
           </Table>
+        )}
+
+        {query.hasNextPage && (
+          <div className="flex justify-center py-4" style={{ borderTop: '1px solid var(--color-line)' }}>
+            <Button variant="ghost" onClick={() => query.fetchNextPage()} disabled={query.isFetchingNextPage}>
+              {query.isFetchingNextPage ? 'Loading…' : 'Load more'}
+            </Button>
+          </div>
         )}
       </Card>
     </div>

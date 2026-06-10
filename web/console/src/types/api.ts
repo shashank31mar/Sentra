@@ -27,6 +27,21 @@ export interface ApiErrorBody {
   request_id?: string
 }
 
+/* ----------------------------- Identity ----------------------------- */
+
+/**
+ * Current operator identity, surfaced same-origin by the console edge at
+ * `/whoami` (it echoes the ALB-injected Cognito claims). All fields are
+ * best-effort — the ALB only guarantees the identity (email) by default, so
+ * `name`/`groups` may be empty. Always guard before display.
+ */
+export interface CurrentUser {
+  email: string | null
+  name: string | null
+  username: string | null
+  groups: string[]
+}
+
 /** Generic cursor-paginated response, normalized by the api client. */
 export interface Page<T> {
   items: T[]
@@ -150,6 +165,7 @@ export interface SessionInfo {
 export interface SessionsResponse {
   sessions: SessionInfo[]
   total: number
+  next_token?: string | null
 }
 
 /** Operator un-quarantine result from `DELETE /v1/quarantine/{id}`. */
@@ -303,6 +319,56 @@ export type PolicyContent = string | Record<string, unknown> | null
 export interface PolicyDetail extends PolicySummary {
   content: PolicyContent
   s3_key: string
+}
+
+/* ---- Sentra agent policy (the real `/v1/policies/{id}` content shape) ---- */
+
+/** One inner rule in a Sentra agent policy (`content.policies[]`). */
+export interface SentraPolicyRule {
+  policy_id?: string
+  name?: string
+  description?: string
+  rule?: string
+  action?: string
+  severity?: string
+  enabled?: boolean
+}
+
+/** A cross-cloud precondition — the marquee enforcement (`content.cross_cloud_dependencies[]`). */
+export interface CrossCloudDependency {
+  target_agent?: string
+  target_tool?: string
+  required_before?: string[]
+  max_age_seconds?: number
+}
+
+/**
+ * Normalized view of `GET /v1/policies/{id}` for the detail page. The live response is
+ * `{ policy: { metadata: {...}, content: {...} } }` — the summary fields live under `metadata`
+ * and the actual policy under `content` (a Sentra agent policy, NOT Cedar). The api client
+ * flattens both into this shape so the page never has to dig through the envelope.
+ */
+export interface PolicyDetailView {
+  policy_id: string
+  name: string
+  status: PolicyStatus
+  version: string
+  agent_id: string | null
+  platform: string | null
+  cloud_region: string | null
+  schema_version: string | null
+  allowed_tools: string[]
+  rules: SentraPolicyRule[]
+  cross_cloud_dependencies: CrossCloudDependency[]
+  max_calls_per_minute: number | null
+  /* metadata */
+  created_by: string | null
+  updated_at: string | null
+  content_hash: string | null
+  s3_key: string | null
+  match_count_24h: number | null
+  /* raw policy object for the YAML/JSON source viewer */
+  content: unknown
 }
 
 export interface SigmaRule {

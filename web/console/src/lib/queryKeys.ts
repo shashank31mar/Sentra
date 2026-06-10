@@ -2,6 +2,9 @@ import type { MetricsRange, TimeseriesBucket } from '../types/enums'
 
 /** Centralized React Query keys for cache consistency + invalidation. */
 export const queryKeys = {
+  auth: {
+    me: () => ['auth', 'me'] as const,
+  },
   metrics: {
     overview: (range: MetricsRange) => ['metrics', 'overview', range] as const,
     platformDistribution: () => ['metrics', 'platform-distribution'] as const,

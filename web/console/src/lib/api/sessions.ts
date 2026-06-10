@@ -1,6 +1,7 @@
 import { buildQuery, http } from '../http'
 import type { QuarantineStatus } from '../../types/enums'
 import type {
+  Page,
   ReleaseResult,
   SessionDecisionsResponse,
   SessionInfo,
@@ -11,12 +12,19 @@ export interface SessionsFilters {
   status?: QuarantineStatus
   agent_id?: string
   limit?: number
+  cursor?: string
 }
 
 export const sessionsApi = {
   list: async (filters: SessionsFilters = {}): Promise<SessionsResponse> => {
     const res = await http.get<SessionsResponse>('/sessions', { ...filters })
-    return { sessions: res.sessions ?? [], total: res.total ?? 0 }
+    return { sessions: res.sessions ?? [], total: res.total ?? 0, next_token: res.next_token ?? null }
+  },
+
+  /** Cursor-paginated page of sessions for infinite loading (Quarantine console). */
+  listPage: async (filters: SessionsFilters = {}): Promise<Page<SessionInfo>> => {
+    const res = await http.get<SessionsResponse>('/sessions', { ...filters })
+    return { items: res.sessions ?? [], total: res.total ?? 0, next_token: res.next_token ?? null }
   },
 
   /** Un-quarantine a session (operator override) — `DELETE /v1/quarantine/{id}`. */

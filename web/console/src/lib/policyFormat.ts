@@ -1,70 +1,12 @@
 /**
- * Helpers to render a Cedar PolicyDetail across CEDAR / JSON / YAML views and to
- * extract its individual elements (effect, principal, action, resource, conditions)
- * for the visual breakdown. All parsing is best-effort and null-safe — live policy
- * content can be malformed or empty, and must never crash the view.
+ * Render a Sentra agent policy's content for the source viewer (YAML / JSON) and a couple of
+ * small helpers. Sentra policies are agent YAML configs (allowed_tools, cross_cloud_dependencies,
+ * inner rules, rate limit) — NOT Cedar — so the viewer shows the real authored YAML and its JSON.
+ * All parsing is best-effort and null-safe: live content can be an object, a string, or null.
  */
-import type { PolicyDetail } from '../types/api'
+export type PolicyLang = 'yaml' | 'json'
 
-export type PolicyLang = 'cedar' | 'json' | 'yaml'
-
-export interface CedarElements {
-  effect: 'permit' | 'forbid' | null
-  principal: string | null
-  action: string | null
-  resource: string | null
-  conditions: string[]
-}
-
-export function parseCedarElements(content: unknown): CedarElements {
-  const empty: CedarElements = {
-    effect: null,
-    principal: null,
-    action: null,
-    resource: null,
-    conditions: [],
-  }
-  if (!content || typeof content !== 'string') return empty
-
-  const text = content.trim()
-  const clean = (s: string) => s.replace(/\s+/g, ' ').trim().replace(/[,;)]+$/, '')
-
-  const effectMatch = text.match(/\b(permit|forbid)\b/i)
-  const effect = effectMatch ? (effectMatch[1].toLowerCase() as 'permit' | 'forbid') : null
-
-  const principalMatch = text.match(/principal\s+([^,\n)]+)/i)
-  const resourceMatch = text.match(/resource\s+([^,\n)]+)/i)
-
-  let action: string | null = null
-  const actBracket = text.match(/action\s+in\s+\[([^\]]*)\]/i)
-  if (actBracket) action = clean(actBracket[1])
-  else {
-    const actSimple = text.match(/action\s+([^,\n)]+)/i)
-    if (actSimple) action = clean(actSimple[1])
-  }
-
-  const whenMatch = text.match(/when\s*\{([\s\S]*?)\}/i)
-  const conditions = whenMatch
-    ? whenMatch[1]
-        .split('&&')
-        .map((s) => s.replace(/\s+/g, ' ').trim())
-        .filter(Boolean)
-    : []
-
-  return {
-    effect,
-    principal: principalMatch ? clean(principalMatch[1]) : null,
-    action,
-    resource: resourceMatch ? clean(resourceMatch[1]) : null,
-    conditions,
-  }
-}
-
-/**
- * Coerce policy content to a string. The DTO types it as `string`, but the live
- * `/v1/policies/{id}` response can return a structured object (S3 passthrough) or
- * null — passing that to `.split()`/`<pre>` crashes the viewer. Stringify safely.
- */
+/** Coerce content to a string (the live API may return an object, a YAML string, or null). */
 export function contentToString(content: unknown): string {
   if (content === null || content === undefined) return ''
   if (typeof content === 'string') return content
@@ -75,49 +17,59 @@ export function contentToString(content: unknown): string {
   }
 }
 
-function policyToRecord(p: PolicyDetail) {
-  return {
-    policy_id: p.policy_id,
-    name: p.name,
-    status: p.status,
-    version: p.version,
-    agent_count: p.agent_count,
-    updated_at: p.updated_at,
-    s3_key: p.s3_key,
-    content: contentToString(p.content),
-  }
-}
-
-function yamlScalar(v: unknown): string {
+function scalar(v: unknown): string {
   if (v === null || v === undefined) return 'null'
   if (typeof v === 'number' || typeof v === 'boolean') return String(v)
   const s = String(v)
-  return /[:#\-?{}[\],&*!|>'"%@`]/.test(s) || s.trim() !== s ? JSON.stringify(s) : s
+  // Quote when YAML would otherwise mis-parse (special chars, leading/trailing space, empty).
+  return s === '' || /[:#\-?{}[\],&*!|>'"%@`]/.test(s) || s.trim() !== s ? JSON.stringify(s) : s
 }
 
-/** Render the policy in the requested language for the code viewer. */
-export function renderPolicy(p: PolicyDetail, lang: PolicyLang): string {
-  const content = contentToString(p.content)
-  if (lang === 'cedar') return content || '// No policy content available'
-  if (lang === 'json') return JSON.stringify(policyToRecord(p), null, 2)
+/** Minimal, dependency-free object → YAML. Handles nested objects, arrays, and scalars. */
+export function toYaml(value: unknown, indent = 0): string {
+  const pad = '  '.repeat(indent)
 
-  // yaml
-  const rec = policyToRecord(p)
-  return Object.entries(rec)
-    .map(([k, v]) => {
-      if (k === 'content') {
-        const body = String(v)
-        if (!body) return `${k}: ""`
-        const indented = body.split('\n').map((l) => `  ${l}`).join('\n')
-        return `${k}: |\n${indented}`
-      }
-      return `${k}: ${yamlScalar(v)}`
-    })
-    .join('\n')
+  if (Array.isArray(value)) {
+    if (value.length === 0) return `${pad}[]`
+    return value
+      .map((item) => {
+        if (item && typeof item === 'object') {
+          const block = toYaml(item, indent + 1).replace(new RegExp(`^${'  '.repeat(indent + 1)}`), '')
+          return `${pad}- ${block.trimStart()}`
+        }
+        return `${pad}- ${scalar(item)}`
+      })
+      .join('\n')
+  }
+
+  if (value && typeof value === 'object') {
+    const entries = Object.entries(value as Record<string, unknown>)
+    if (entries.length === 0) return `${pad}{}`
+    return entries
+      .map(([k, v]) => {
+        if (Array.isArray(v)) {
+          return v.length === 0 ? `${pad}${k}: []` : `${pad}${k}:\n${toYaml(v, indent + 1)}`
+        }
+        if (v && typeof v === 'object') {
+          return `${pad}${k}:\n${toYaml(v, indent + 1)}`
+        }
+        return `${pad}${k}: ${scalar(v)}`
+      })
+      .join('\n')
+  }
+
+  return `${pad}${scalar(value)}`
+}
+
+/** Render the policy content in the requested language for the code viewer. */
+export function renderContent(content: unknown, lang: PolicyLang): string {
+  if (content === null || content === undefined) return '# No policy content available'
+  // If the API handed back a YAML string, show it as-is in YAML mode.
+  if (lang === 'yaml') return typeof content === 'string' ? content : toYaml(content)
+  return typeof content === 'string' ? content : JSON.stringify(content, null, 2)
 }
 
 export function policyFilename(name: string, lang: PolicyLang): string {
   const base = (name || 'policy').replace(/[^a-z0-9_-]+/gi, '-').toLowerCase()
-  const ext = lang === 'cedar' ? 'cedar' : lang
-  return `${base}.${ext}`
+  return `${base}.${lang}`
 }

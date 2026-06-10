@@ -32,8 +32,36 @@ server {
         try_files $uri =404;
     }
 
+    # ---- Identity echo: surface the ALB-injected Cognito claim to the SPA ----
+    # The public ALB authenticates via Cognito and injects x-amzn-oidc-* headers
+    # on the upstream hop. The browser can't read them, so expose a tiny
+    # same-origin JSON endpoint the console can fetch (/whoami). `name`/`groups`
+    # need the signed x-amzn-oidc-data JWT decoded (njs/lua) — left null here, the
+    # SPA prettifies the email local-part as a display-name fallback.
+    location = /whoami {
+        default_type application/json;
+        add_header Cache-Control "no-store" always;
+        return 200 '{"email":"$http_x_amzn_oidc_identity","name":null,"username":"$http_x_amzn_oidc_identity","groups":[]}';
+    }
+
+    # ---- Sign-out: clear the ALB Cognito session, bounce to Cognito logout ----
+    # No REST logout API exists; the SPA performs a top-level navigation here.
+    # SENTRA_COGNITO_LOGOUT_URL is the Cognito hosted-UI logout endpoint, e.g.
+    # https://<domain>.auth.<region>.amazoncognito.com/logout?client_id=<id>&logout_uri=https://<alb>/
+    location = /logout {
+        add_header Set-Cookie "AWSELBAuthSessionCookie-0=; Path=/; Expires=Thu, 01 Jan 1970 00:00:00 GMT" always;
+        add_header Set-Cookie "AWSELBAuthSessionCookie-1=; Path=/; Expires=Thu, 01 Jan 1970 00:00:00 GMT" always;
+        return 302 "${SENTRA_COGNITO_LOGOUT_URL}";
+    }
+
     # ---- SPA history fallback ----
+    # index.html must NOT be heuristically cached: it points at the hashed /assets/ bundle, so a
+    # stale index.html silently pins the browser to an old build (new deploys appear "invisible"
+    # until a hard refresh). `no-cache` = the browser may store it but MUST revalidate every load
+    # (ETag → fast 304 when unchanged, fresh 200 right after a deploy). The hashed assets above stay
+    # immutable/long-cached, so this costs one tiny conditional request per navigation.
     location / {
         try_files $uri $uri/ /index.html;
+        add_header Cache-Control "no-cache" always;
     }
 }

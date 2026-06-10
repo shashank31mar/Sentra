@@ -1,6 +1,19 @@
 import { http } from '../http'
 import type { PolicyStatus } from '../../types/enums'
-import type { Page, PolicyDetail, PolicySummary, SigmaRule } from '../../types/api'
+import type {
+  CrossCloudDependency,
+  Page,
+  PolicyDetailView,
+  PolicySummary,
+  SentraPolicyRule,
+  SigmaRule,
+} from '../../types/api'
+
+const toNum = (v: unknown): number | null => {
+  const n = Number(v)
+  return Number.isFinite(n) ? n : null
+}
+const asArr = <T,>(v: unknown): T[] => (Array.isArray(v) ? (v as T[]) : [])
 
 export interface PoliciesFilters {
   agent_id?: string
@@ -27,10 +40,39 @@ export const policiesApi = {
     return { items: res.policies, total: res.total, next_token: res.next_token }
   },
 
-  detail: (policyId: string) =>
-    http.get<{ policy: PolicyDetail }>(`/policies/${encodeURIComponent(policyId)}`, {
-      include_content: true,
-    }),
+  /** Normalize the `{ policy: { metadata, content } }` envelope into a flat, page-ready view.
+   *  The summary fields live under `metadata`; the policy itself (Sentra agent policy) under
+   *  `content`. */
+  detail: async (policyId: string): Promise<PolicyDetailView> => {
+    const res = await http.get<{ policy?: { metadata?: Record<string, unknown>; content?: unknown } }>(
+      `/policies/${encodeURIComponent(policyId)}`,
+      { include_content: true },
+    )
+    const p = res.policy ?? {}
+    const m = (p.metadata ?? {}) as Record<string, unknown>
+    const c = (p.content && typeof p.content === 'object' ? p.content : {}) as Record<string, unknown>
+    const pick = (...vals: unknown[]) => vals.find((v) => v !== undefined && v !== null) ?? null
+    return {
+      policy_id: String(pick(m.policy_id, c.policy_id, policyId)),
+      name: String(pick(m.name, c.name, policyId)),
+      status: (pick(m.status, c.status, 'active') as PolicyStatus),
+      version: String(pick(m.version, c.version, '') ?? ''),
+      agent_id: (pick(m.agent_id, c.agent_id) as string | null),
+      platform: (pick(c.platform) as string | null),
+      cloud_region: (pick(c.cloud_region) as string | null),
+      schema_version: (pick(c.schema_version, m.schema_version) as string | null),
+      allowed_tools: asArr<string>(c.allowed_tools),
+      rules: asArr<SentraPolicyRule>(c.policies),
+      cross_cloud_dependencies: asArr<CrossCloudDependency>(c.cross_cloud_dependencies),
+      max_calls_per_minute: toNum(c.max_calls_per_minute),
+      created_by: (pick(m.created_by, c.created_by) as string | null),
+      updated_at: (pick(m.updated_at, m.created_at, c.created_at) as string | null),
+      content_hash: (pick(m.content_hash) as string | null),
+      s3_key: (pick(m.s3_key) as string | null),
+      match_count_24h: toNum(m.match_count_24h),
+      content: p.content ?? null,
+    }
+  },
 
   create: (body: { name: string; content: string }) =>
     http.post<{ policy_id: string; version: number; s3_key: string }>('/policies', body),

@@ -1,5 +1,5 @@
 import { Fragment, useMemo, useState } from 'react'
-import { IconChevronDown, IconChevronRight, IconLockX, IconShieldLock } from '@tabler/icons-react'
+import { IconChevronDown, IconChevronRight, IconLockX, IconSearch, IconShieldLock, IconX } from '@tabler/icons-react'
 import { Card } from '../../components/ui/Card'
 import { PageHeader } from '../../components/ui/PageHeader'
 import { SegmentedControl } from '../../components/ui/SegmentedControl'
@@ -14,6 +14,7 @@ import { useDecisions, useQuarantine } from '../../lib/query/useDecisions'
 import { useSessions } from '../../lib/query/useSessions'
 import { formatRelativeTime } from '../../lib/format'
 import type { Decision } from '../../types/enums'
+import type { DecisionItem } from '../../types/api'
 
 const FILTERS = [
   { value: 'all', label: 'All' },
@@ -24,8 +25,21 @@ const FILTERS = [
 export function ThreatsPage() {
   const [filter, setFilter] = useState<(typeof FILTERS)[number]['value']>('DENY')
   const [expanded, setExpanded] = useState<string | null>(null)
+  const [sessionId, setSessionId] = useState('')
+  const [search, setSearch] = useState('')
   const decision = filter === 'all' ? undefined : (filter as Decision)
-  const query = useDecisions(decision ? { decision } : {})
+
+  // Server-side filters page through ALL matching threats via the cursor (Load more); session-id is
+  // a backend filter. limit=100 = fewer round-trips.
+  const serverFilters = useMemo(
+    () => ({
+      ...(decision ? { decision } : {}),
+      ...(sessionId.trim() ? { session_id: sessionId.trim() } : {}),
+      limit: 100,
+    }),
+    [decision, sessionId],
+  )
+  const query = useDecisions(serverFilters)
   const quarantine = useQuarantine()
   const quarantinedSessions = useSessions({ status: 'quarantined', limit: 200 })
 
@@ -39,7 +53,29 @@ export function ThreatsPage() {
     return ids
   }, [quarantinedSessions.data, justQuarantined])
 
-  const items = query.data?.pages.flatMap((p) => p.items) ?? []
+  // Flatten pages + dedupe by decision_id (cursor page boundaries can re-include a row).
+  const allItems = useMemo(() => {
+    const seen = new Set<string>()
+    const out: DecisionItem[] = []
+    for (const p of query.data?.pages ?? []) {
+      for (const d of p.items) {
+        if (seen.has(d.decision_id)) continue
+        seen.add(d.decision_id)
+        out.push(d)
+      }
+    }
+    return out
+  }, [query.data])
+
+  // Free-text search over the loaded rows (agent, reason, tool, threat, session, id).
+  const needle = search.trim().toLowerCase()
+  const items = needle
+    ? allItems.filter((d) =>
+        [d.agent_name, d.reason, d.tool_name, d.threat_type, d.session_id, d.decision_id]
+          .filter(Boolean)
+          .some((v) => String(v).toLowerCase().includes(needle)),
+      )
+    : allItems
   const total = query.data?.pages[0]?.total ?? 0
 
   return (
@@ -51,9 +87,35 @@ export function ThreatsPage() {
       />
 
       <Card>
-        <div className="flex items-center justify-between px-6 py-4" style={{ borderBottom: '1px solid var(--color-line)' }}>
+        <div className="flex flex-wrap items-center gap-3 px-6 py-4" style={{ borderBottom: '1px solid var(--color-line)' }}>
           <span className="text-sm font-medium uppercase tracking-[0.2em] text-secondary">Decisions</span>
-          <span className="text-xs font-mono text-muted">{total} total</span>
+          <div className="relative flex items-center">
+            <IconSearch size={14} className="absolute left-3 text-muted" />
+            <input
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              placeholder="Search loaded rows…"
+              className="h-9 rounded-xl bg-surface-2 pl-8 pr-3 w-52 text-xs font-mono text-white placeholder:text-muted outline-none focus:border-cyan/40"
+              style={{ border: '1px solid var(--color-line)' }}
+            />
+          </div>
+          <div className="relative flex items-center">
+            <input
+              value={sessionId}
+              onChange={(e) => setSessionId(e.target.value)}
+              placeholder="Filter by session id…"
+              className="h-9 rounded-xl bg-surface-2 px-3 w-60 text-xs font-mono text-white placeholder:text-muted outline-none focus:border-cyan/40"
+              style={{ border: '1px solid var(--color-line)' }}
+            />
+            {sessionId && (
+              <button type="button" onClick={() => setSessionId('')} className="absolute right-2 text-muted hover:text-pink" aria-label="Clear session filter">
+                <IconX size={14} />
+              </button>
+            )}
+          </div>
+          <span className="ml-auto text-xs font-mono text-muted">
+            {items.length} loaded{needle ? ' (matched)' : ''} · {total}+ in window
+          </span>
         </div>
 
         {query.isLoading ? (
