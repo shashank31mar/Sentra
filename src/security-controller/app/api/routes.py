@@ -14,7 +14,7 @@ Routes are kept clean and focused on HTTP handling only.
 import logging
 from typing import Dict, Optional
 
-from fastapi import APIRouter, HTTPException, Header
+from fastapi import APIRouter, HTTPException, Header, Request
 
 from app.api.models import (
     ValidationRequest,
@@ -53,22 +53,32 @@ async def health_check() -> Dict:
 
 
 @router.post("/validate")
-async def validate_tool_call(request: ValidationRequest) -> Dict:
+async def validate_tool_call(request: ValidationRequest, http_request: Request) -> Dict:
     """
     Validate tool call before execution.
-    
+
     Runs 5-step validation pipeline:
     1. Trust Score Check (fail-fast if suspended/quarantined)
     2. Policy Engine (agent authorization)
     3. Sigma Rule Engine (threat detection)
     4. Context Validator (tool sequence validation)
     5. Abuse Detector (rate limiting)
-    
+
     Returns:
         ValidationResponse (ALLOW) or ValidationDenyResponse (DENY)
     """
     from app.services import ValidationService
-    
+
+    # Capture the caller IP for the audit trail / forensics view. Behind API Gateway + VPC Link the
+    # real client is the first hop of X-Forwarded-For; fall back to the socket peer. Stored on the
+    # request context so it propagates to every signal row (audit_logger._shared_attrs_from_request).
+    xff = http_request.headers.get("x-forwarded-for")
+    source_ip = (xff.split(",")[0].strip() if xff else None) or (
+        http_request.client.host if http_request.client else None
+    )
+    if source_ip:
+        request.context = {**(request.context or {}), "ip_address": source_ip}
+
     validation_service = ValidationService()
     return await validation_service.validate_tool_call(request)
 
@@ -171,6 +181,7 @@ async def scan_decisions(
     agent_id: Optional[str] = None,
     decision: Optional[str] = None,
     threat_type: Optional[str] = None,
+    session_id: Optional[str] = None,
     limit: int = 50,
     cursor: Optional[str] = None,
 ) -> Dict:
@@ -182,7 +193,7 @@ async def scan_decisions(
     try:
         return _decisions_service().scan_decisions(
             since=since, until=until, agent_id=agent_id,
-            decision=decision, threat_type=threat_type,
+            decision=decision, threat_type=threat_type, session_id=session_id,
             limit=limit, cursor=cursor,
         )
     except ValueError as exc:
@@ -914,24 +925,30 @@ async def update_sigma_rule(rule_id: str, request: Dict) -> Dict:
 
     Args:
         rule_id: Rule identifier
-        request: {"status": "stable" | "deprecated"}
+        request: {"status": "enabled" | "disabled"}  (native "stable"/"deprecated" also accepted)
 
     Returns:
         Success response or error
     """
-    from app.services.sigma_rules_service import SigmaRulesService
+    from app.services.sigma_rules_service import SigmaRulesService, _enabled_to_ddb_status
 
-    new_status = request.get('status')
-    if not new_status or new_status not in ['stable', 'deprecated']:
-        raise HTTPException(status_code=400, detail="Invalid status")
+    requested = request.get('status')
+    ddb_status = _enabled_to_ddb_status(requested)
+    if ddb_status is None:
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid status. Must be one of: enabled, disabled",
+        )
 
     service = SigmaRulesService()
-    success = await service.update_rule_status(rule_id, new_status)
+    success = await service.update_rule_status(rule_id, ddb_status)
 
     if not success:
         raise HTTPException(status_code=404, detail="Rule not found")
 
-    return {"success": True, "rule_id": rule_id, "status": new_status}
+    # Echo the console's vocabulary back, not the stored value.
+    api_status = "enabled" if ddb_status == "stable" else "disabled"
+    return {"success": True, "rule_id": rule_id, "status": api_status}
 
 
 # ============================================================
@@ -1172,21 +1189,27 @@ async def quarantine_session(session_id: str, request: Dict) -> Dict:
                 detail=f"Session {session_id} not found"
             )
         
-        # Check if already quarantined or suspended
+        # Idempotent: re-quarantining an already-quarantined/suspended session is a no-op success,
+        # not a 400 — operators and retries should be safe to repeat (idempotency / ops review).
         current_status = session.get('quarantine_status', 'active')
         if current_status in ['quarantined', 'suspended']:
-            raise HTTPException(
-                status_code=400,
-                detail=f"Session already {current_status}"
-            )
-        
+            return {
+                "success": True,
+                "message": f"Session {session_id} already {current_status}",
+                "session_id": session_id,
+                "previous_status": current_status,
+                "new_status": current_status,
+                "trust_score": session.get('trust_score'),
+                "idempotent": True,
+            }
+
         # Quarantine session
         updated_session = await session_manager.manual_quarantine(
             session_id=session_id,
             reason=reason,
             operator_id=operator_id
         )
-        
+
         return {
             "success": True,
             "message": f"Session {session_id} quarantined successfully",
@@ -1195,7 +1218,7 @@ async def quarantine_session(session_id: str, request: Dict) -> Dict:
             "new_status": updated_session.get('quarantine_status'),
             "trust_score": updated_session.get('trust_score')
         }
-        
+
     except HTTPException:
         raise
     except Exception as e:
@@ -1204,3 +1227,36 @@ async def quarantine_session(session_id: str, request: Dict) -> Dict:
             status_code=500,
             detail=f"Failed to quarantine session: {str(e)}"
         )
+
+
+@router.delete("/quarantine/{session_id}")
+async def release_session(session_id: str, operator_id: str = "operator") -> Dict:
+    """Release a session from quarantine ('un-quarantine'; operator override). Idempotent.
+
+    Sets quarantine_status back to 'active' and restores trust above the quarantine threshold so the
+    session isn't immediately re-quarantined. Releasing an already-active session is a no-op success.
+    """
+    from app.utils.session_manager import SessionManager
+
+    session_manager = SessionManager()
+    try:
+        session = await session_manager.get_session(session_id)
+        if not session:
+            raise HTTPException(status_code=404, detail=f"Session {session_id} not found")
+        current_status = session.get('quarantine_status', 'active')
+        if current_status == 'active':
+            return {
+                "success": True, "message": f"Session {session_id} already active",
+                "session_id": session_id, "new_status": "active", "idempotent": True,
+            }
+        updated = await session_manager.manual_release(session_id, operator_id)
+        return {
+            "success": True, "message": f"Session {session_id} released from quarantine",
+            "session_id": session_id, "previous_status": current_status,
+            "new_status": updated.get('quarantine_status'), "trust_score": updated.get('trust_score'),
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception(f"Failed to release session {session_id}: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to release session: {str(e)}")

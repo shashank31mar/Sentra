@@ -407,6 +407,48 @@ class SessionManager:
             logger.exception(f"Unexpected error quarantining session {session_id}")
             raise SessionUpdateError(f"Unexpected error: {e}")
     
+    async def manual_release(
+        self,
+        session_id: str,
+        operator_id: str,
+        restore_trust: float = 70.0,
+    ) -> Dict:
+        """Release a session from quarantine (operator override / 'un-quarantine').
+
+        Sets quarantine_status back to 'active' and restores trust ABOVE the quarantine threshold
+        (default 70) so the session isn't immediately re-quarantined by the trust check.
+        """
+        try:
+            current_time = int(time.time() * 1000)
+            response = self.table.update_item(
+                Key={'session_id': session_id},
+                UpdateExpression="""
+                    SET quarantine_status = :status,
+                        trust_score = :trust,
+                        quarantine_reason = :reason,
+                        quarantine_operator = :operator,
+                        quarantine_released_at = :timestamp,
+                        last_activity = :timestamp
+                """,
+                ExpressionAttributeValues={
+                    ':status': 'active',
+                    ':trust': Decimal(str(restore_trust)),  # DDB requires Decimal, not float
+                    ':reason': f'released by {operator_id}',
+                    ':operator': operator_id,
+                    ':timestamp': current_time,
+                },
+                ConditionExpression='attribute_exists(session_id)',
+                ReturnValues='ALL_NEW',
+            )
+            session = self._deserialize_session(response['Attributes'])
+            logger.warning(f"Session {session_id} released from quarantine by {operator_id}")
+            return session
+        except ClientError as e:
+            if e.response['Error']['Code'] == 'ConditionalCheckFailedException':
+                raise SessionNotFoundError(f"Session {session_id} not found")
+            logger.exception(f"DynamoDB error releasing session {session_id}")
+            raise SessionUpdateError(f"Failed to release session: {e}")
+
     def _get_consecutive_allows_required(self, trust_score: float) -> int:
         """
         Number of consecutive successful calls needed for increment.
@@ -506,41 +548,44 @@ class SessionManager:
         """
         try:
             from boto3.dynamodb.conditions import Attr
-            
-            # Build scan parameters
-            scan_kwargs = {
-                'Limit': min(limit, 200)  # Cap at 200
-            }
-            
-            # Add filters
+
+            cap = min(limit, 200)
+
+            # Build the filter (applied server-side AFTER each scan page).
             filter_expressions = []
-            
             if status:
                 filter_expressions.append(Attr('quarantine_status').eq(status))
-            
             if agent_id:
                 filter_expressions.append(Attr('agent_id').eq(agent_id))
-            
-            # Combine filters with AND
+
+            scan_kwargs: Dict[str, Any] = {}
             if filter_expressions:
                 filter_expr = filter_expressions[0]
                 for expr in filter_expressions[1:]:
                     filter_expr = filter_expr & expr
                 scan_kwargs['FilterExpression'] = filter_expr
-            
-            # Execute scan
-            response = self.table.scan(**scan_kwargs)
-            
-            # Parse sessions
-            sessions = []
-            for item in response.get('Items', []):
-                sessions.append(self._format_session_for_api(item))
-            
+
+            # IMPORTANT: DynamoDB applies `Limit` to items SCANNED, not items MATCHED — so a single
+            # scan with Limit+FilterExpression silently returns 0 quarantined sessions when they sit
+            # beyond the first page of (mostly active) sessions. Paginate until we have `cap` matches
+            # or the table is exhausted (mirrors count_sessions_by_status).
+            sessions: List[Dict[str, Any]] = []
+            while True:
+                response = self.table.scan(**scan_kwargs)
+                for item in response.get('Items', []):
+                    sessions.append(self._format_session_for_api(item))
+                    if len(sessions) >= cap:
+                        break
+                lek = response.get('LastEvaluatedKey')
+                if len(sessions) >= cap or not lek:
+                    break
+                scan_kwargs['ExclusiveStartKey'] = lek
+
             return {
                 "sessions": sessions,
                 "total": len(sessions)
             }
-            
+
         except ClientError as e:
             logger.exception(f"Failed to query sessions: {e}")
             raise

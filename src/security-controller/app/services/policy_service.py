@@ -342,7 +342,21 @@ class PolicyService:
         metrics_publisher = MetricsPublisher()
 
         try:
-            # 1. Validate
+            # PolicyCreateRequest omits the server-generated envelope fields, but validate_policy
+            # checks the full AgentPolicyDocument schema, which REQUIRES policy_id/status/created_at/
+            # created_by. Generate them up front so a well-formed create request validates, instead of
+            # being rejected on these required-but-server-owned fields (this previously made
+            # POST /v1/policies fail for every create).
+            policy_id = f"agent-config-{policy_data['agent_id']}"
+            now = datetime.utcnow().isoformat() + 'Z'
+            policy_data = dict(policy_data)
+            policy_data.setdefault('policy_id', policy_id)
+            policy_data.setdefault('status', 'active')
+            policy_data.setdefault('created_at', now)
+            policy_data.setdefault('updated_at', now)
+            policy_data.setdefault('created_by', operator_email)
+
+            # 1. Validate (now a complete AgentPolicyDocument)
             validator = PolicyValidator()
             is_valid, errors = validator.validate_policy(policy_data)
             if not is_valid:
@@ -351,7 +365,6 @@ class PolicyService:
                 raise ValidationException(errors)
 
             # 2. Check if policy already exists
-            policy_id = f"agent-config-{policy_data['agent_id']}"
             existing = await self.get_policy(policy_id)
             if existing:
                 await metrics_publisher.publish_policy_crud_metric('CREATE_POLICY', False, agent_id)
@@ -361,8 +374,9 @@ class PolicyService:
             yaml_content = yaml.dump(policy_data, sort_keys=False)
             content_hash = f"sha256:{hashlib.sha256(yaml_content.encode()).hexdigest()}"
 
-            # 4. Upload to S3
-            s3_store = S3PolicyStore()
+            # 4. Upload to S3 (configured artifacts bucket, NOT the hardcoded default which
+            # doesn't exist in deployed accounts — the bucket name is CDK-suffixed).
+            s3_store = S3PolicyStore(bucket_name=settings.s3_bucket)
             version = policy_data['version']
             s3_key = f"policies/agents/{policy_data['agent_id']}/v{version}.yaml"
             s3_version_id = await s3_store.upload(
@@ -371,15 +385,14 @@ class PolicyService:
                 metadata={'policy_id': policy_id, 'version': version}
             )
 
-            # 5. Store metadata in DynamoDB
-            now = datetime.utcnow().isoformat() + 'Z'
+            # 5. Store metadata in DynamoDB (now already computed above)
             metadata_item = {
                 'policy_id': policy_id,
                 'agent_id': policy_data['agent_id'],
                 'name': policy_data['name'],
                 'version': version,
                 'status': 'active',
-                's3_bucket': 'sentra-mvp-artifacts',
+                's3_bucket': settings.s3_bucket,
                 's3_key': s3_key,
                 's3_version_id': s3_version_id,
                 'allowed_tools_count': len(policy_data['allowed_tools']),

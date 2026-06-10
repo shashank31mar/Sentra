@@ -77,7 +77,27 @@ class TestCacheManager:
         result = cache.invalidate("nonexistent_key")
         assert result is False
     
-    def test_cache_clear(self):
+    def test_cache_invalidate_prefix(self):
+        """Test prefix-based invalidation evicts only the matching family"""
+        cache = CacheManager(enabled=True)
+
+        # Two cache families sharing the singleton: sigma + something else.
+        cache.set("sigma_rule:r1", "a", ttl=60)
+        cache.set("sigma_rules:status=None:level=None:limit=50:cursor=None", "b", ttl=60)
+        cache.set("sigma_rules:status=stable:level=high:limit=50:cursor=None", "c", ttl=60)
+        cache.set("policies:list", "keep-me", ttl=60)
+
+        removed = cache.invalidate_prefix("sigma_rule")
+        assert removed == 3  # both the per-rule and the two list entries
+
+        # Sigma entries gone, unrelated family preserved.
+        assert cache.get("sigma_rule:r1") is None
+        assert cache.get("sigma_rules:status=stable:level=high:limit=50:cursor=None") is None
+        assert cache.get("policies:list") == "keep-me"
+
+        # No match → zero removed, no error.
+        assert cache.invalidate_prefix("nomatch:") == 0
+
         """Test clearing all cache entries"""
         cache = CacheManager(enabled=True)
         

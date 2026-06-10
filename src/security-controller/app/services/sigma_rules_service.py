@@ -26,6 +26,75 @@ from app.utils.pagination import decode_cursor, next_token_from_response
 logger = logging.getLogger(__name__)
 
 
+# The console (LLD 21 SigmaRule DTO) speaks enabled/disabled + severity + match_count.
+# DynamoDB stores the Sigma-native vocabulary: status=stable|experimental|deprecated and
+# level=critical|high|medium|low, with match counts nested under `stats`. Only `stable` rules
+# are actually loaded into the detection engine, so `stable` => enabled and everything else
+# (experimental/deprecated) => disabled, which makes the console toggle reflect real enforcement.
+_DDB_STATUS_ENABLED = "stable"
+_DDB_STATUS_DISABLED = "deprecated"
+
+
+def _enabled_to_ddb_status(api_status: str) -> Optional[str]:
+    """Translate the console's enabled/disabled toggle to the stored Sigma status.
+
+    Accepts the native stored values too (stable/deprecated) for backward compatibility.
+    Returns None for anything unrecognized so the caller can 400.
+    """
+    mapping = {
+        "enabled": _DDB_STATUS_ENABLED,
+        "disabled": _DDB_STATUS_DISABLED,
+        "stable": _DDB_STATUS_ENABLED,
+        "deprecated": _DDB_STATUS_DISABLED,
+    }
+    return mapping.get((api_status or "").strip().lower())
+
+
+def _derive_category(rule: Dict) -> str:
+    """Pick a human-ish category for the console from the rule's tags/logsource.
+
+    Sigma rules don't have a first-class 'category' in our metadata; prefer the first
+    attack.*/owasp.* tag, else the logsource category, else a sane default.
+    """
+    tags = rule.get("tags") or []
+    if isinstance(tags, list):
+        for tag in tags:
+            tag_str = str(tag)
+            if tag_str.startswith(("attack.", "owasp.")):
+                # e.g. "attack.llm01" -> "llm01"; "owasp.llm.top10.2025" -> "llm"
+                return tag_str.split(".", 1)[1].split(".", 1)[0]
+        if tags:
+            return str(tags[0])
+    logsource = rule.get("logsource")
+    if isinstance(logsource, dict) and logsource.get("category"):
+        return str(logsource["category"])
+    return "detection"
+
+
+def _to_api_rule(rule: Dict) -> Dict:
+    """Map a raw DDB sigma metadata item to the console's SigmaRule contract.
+
+    enabled/disabled status, flat severity, flat match_count, derived category.
+    Unknown/extra fields are dropped — the console only renders these.
+    """
+    stats = rule.get("stats") or {}
+    match_count = stats.get("match_count_24h", 0)
+    # DDB numbers come back as Decimal; the API serializes ints cleanly.
+    try:
+        match_count = int(match_count)
+    except (TypeError, ValueError):
+        match_count = 0
+    ddb_status = (rule.get("status") or "").strip().lower()
+    return {
+        "rule_id": rule.get("rule_id"),
+        "title": rule.get("title") or rule.get("rule_id"),
+        "category": _derive_category(rule),
+        "severity": rule.get("level") or "medium",
+        "status": "enabled" if ddb_status == _DDB_STATUS_ENABLED else "disabled",
+        "match_count": match_count,
+    }
+
+
 class SigmaRulesServiceError(Exception):
     """Raised when Sigma rules service operations fail"""
     pass
@@ -153,7 +222,7 @@ class SigmaRulesService:
             )
             
             result = {
-                "rules": rules[:limit],
+                "rules": [_to_api_rule(r) for r in rules[:limit]],
                 "total": len(rules),
                 "next_token": next_token_from_response(response),
             }
@@ -267,7 +336,12 @@ class SigmaRulesService:
                 ExpressionAttributeNames={'#status': 'status'},
                 ExpressionAttributeValues={':status': new_status}
             )
+            # Bust cached reads so the change is visible immediately, not after
+            # the 300s TTL. Drop the per-rule entry AND every list entry (the
+            # list cache key encodes status/level/limit/cursor, so invalidate the
+            # whole `sigma_rules:` family by prefix rather than guessing keys).
             self.cache.invalidate(f"sigma_rule:{rule_id}")
+            self.cache.invalidate_prefix("sigma_rules:")
             logger.info(f"Updated rule {rule_id} status to {new_status}")
             return True
         except Exception as e:

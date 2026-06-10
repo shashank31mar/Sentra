@@ -224,6 +224,35 @@ class PolicyEngine:
                         cloud_region=cloud_region,
                     )
 
+            # Check 2b: High-fraud identity gate (hardcoded, same pattern as the refund limit).
+            # The Azure identity agent carries the real IEEE-CIS fraud data and forwards the
+            # subject's risk band in tool_params. A 'high' band means the controller refuses the
+            # verification itself — so it is NOT recorded in tool_history, and any downstream
+            # cross-cloud op (refund / SIM-swap) that requires a prior verify is then denied by the
+            # cross_cloud_dependency check. Real fraud data -> a real Sentra DENY -> blast-radius
+            # containment across clouds.
+            if request.tool_name == "verify_identity":
+                fraud_risk = str(request.tool_params.get("fraud_risk", "")).lower()
+                if fraud_risk == "high":
+                    fraud_score = request.tool_params.get("fraud_score")
+                    logger.warning(
+                        f"verify_identity refused: high fraud risk for "
+                        f"{request.tool_params.get('subject_id')} (score={fraud_score})"
+                    )
+                    return ValidationResult(
+                        decision="DENY",
+                        reason=(
+                            "Identity verification refused: subject flagged high fraud risk "
+                            f"(IEEE-CIS score={fraud_score})"
+                        ),
+                        violation_type="POLICY_VIOLATION",
+                        violated_policy="high_fraud_identity_block",
+                        penalty=-15,
+                        should_deny=True,
+                        platform=platform,
+                        cloud_region=cloud_region,
+                    )
+
             # Check 3: If invoking another agent, is that allowed?
             if request.tool_name == "invoke_agent":
                 target_agent = request.tool_params.get("agent_id")

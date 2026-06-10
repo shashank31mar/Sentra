@@ -33,6 +33,7 @@ def mock_cache_manager():
         cache.get = Mock(return_value=None)
         cache.set = Mock()
         cache.invalidate = Mock()
+        cache.invalidate_prefix = Mock()
         mock.return_value = cache
         yield cache
 
@@ -101,7 +102,8 @@ class TestSigmaRulesServiceListRules:
         
         # Assertions
         assert result['total'] == 1
-        assert result['rules'][0]['status'] == 'stable'
+        # Mapped to the console contract: stored status 'stable' => 'enabled'.
+        assert result['rules'][0]['status'] == 'enabled'
         
         # Verify query was called with status-index
         mock_table.query.assert_called_once()
@@ -124,7 +126,8 @@ class TestSigmaRulesServiceListRules:
         
         # Assertions
         assert result['total'] == 1
-        assert result['rules'][0]['level'] == 'high'
+        # Mapped to the console contract: stored 'level' is surfaced as 'severity'.
+        assert result['rules'][0]['severity'] == 'high'
         
         # Verify query was called with level-index
         mock_table.query.assert_called_once()
@@ -150,7 +153,7 @@ class TestSigmaRulesServiceListRules:
         
         # Assertions - should filter out medium level rule
         assert result['total'] == 1
-        assert result['rules'][0]['level'] == 'high'
+        assert result['rules'][0]['severity'] == 'high'
     
     @pytest.mark.asyncio
     async def test_list_sigma_rules_sorted_by_match_count(self, mock_dynamodb, mock_cache_manager, sample_sigma_rule):
@@ -418,3 +421,38 @@ class TestSigmaRulesServiceUpdateMatchCount:
         
         # Assertions - should return False, not raise
         assert result == False
+
+
+class TestSigmaRulesServiceUpdateStatus:
+    """Tests for update_rule_status() — enable/disable + cache busting"""
+
+    @pytest.mark.asyncio
+    async def test_update_rule_status_busts_caches(self, mock_dynamodb, mock_cache_manager):
+        """Toggling status must evict BOTH the per-rule entry and the list family
+        so the next read (engine + console) reloads from DynamoDB immediately."""
+        mock_table = Mock()
+        mock_table.update_item.return_value = {}
+        mock_dynamodb.return_value.Table.return_value = mock_table
+
+        service = SigmaRulesService()
+        result = await service.update_rule_status('sigma-llm-001', 'deprecated')
+
+        assert result is True
+        # Wrote the new status to DDB (which the status-index GSI keys on).
+        call_args = mock_table.update_item.call_args
+        assert call_args[1]['ExpressionAttributeValues'][':status'] == 'deprecated'
+        # Per-rule entry dropped + whole list family invalidated by prefix.
+        mock_cache_manager.invalidate.assert_called_once_with('sigma_rule:sigma-llm-001')
+        mock_cache_manager.invalidate_prefix.assert_called_once_with('sigma_rules:')
+
+    @pytest.mark.asyncio
+    async def test_update_rule_status_error_returns_false(self, mock_dynamodb, mock_cache_manager):
+        """A DynamoDB failure returns False and does not raise."""
+        mock_table = Mock()
+        mock_table.update_item.side_effect = Exception("DynamoDB error")
+        mock_dynamodb.return_value.Table.return_value = mock_table
+
+        service = SigmaRulesService()
+        result = await service.update_rule_status('sigma-llm-001', 'stable')
+
+        assert result is False

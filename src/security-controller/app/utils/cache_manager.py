@@ -171,6 +171,37 @@ class CacheManager:
                 return True
             return False
     
+    def invalidate_prefix(self, prefix: str) -> int:
+        """
+        Invalidate every cache entry whose key starts with ``prefix``.
+
+        Used for targeted cache busts when a single write affects a whole family
+        of cached reads (e.g. toggling one Sigma rule's status must drop both the
+        per-rule entry ``sigma_rule:<id>`` AND every list entry
+        ``sigma_rules:status=...:...`` so the next read reloads from DynamoDB).
+        Preferred over ``clear()`` because the cache is a process-wide singleton
+        shared by policies/agents/sigma — we only want to evict the affected family.
+
+        Args:
+            prefix: Key prefix to match.
+
+        Returns:
+            Number of entries removed.
+        """
+        if not self._enabled:
+            return 0
+
+        with self._lock:
+            keys_to_remove = [k for k in self._cache if k.startswith(prefix)]
+            for k in keys_to_remove:
+                del self._cache[k]
+            if keys_to_remove:
+                logger.debug(
+                    f"Cache invalidated by prefix {prefix!r}: "
+                    f"{len(keys_to_remove)} entries removed"
+                )
+            return len(keys_to_remove)
+    
     def clear(self) -> None:
         """
         Clear all cache entries.

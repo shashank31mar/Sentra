@@ -217,7 +217,7 @@ class AuditLogger:
         or platform is much faster than parsing nested metadata.
         """
         trust_score_before = session.get("trust_score", 100.0)
-        return {
+        shared = {
             "agent_id": request.get("agent_id"),
             "tool_name": request.get("tool_name"),
             "tool_params": request.get("tool_params") or {},
@@ -227,6 +227,12 @@ class AuditLogger:
             "operation_type": request.get("operation_type"),
             "trust_score_before": trust_score_before,
         }
+        # Caller IP (captured at the /v1/validate route from the gateway's X-Forwarded-For). Lets the
+        # detail/forensics view answer "which IP called". Omitted (not written) when unknown.
+        source_ip = (request.get("context") or {}).get("ip_address")
+        if source_ip:
+            shared["source_ip"] = source_ip
+        return shared
     
     def _build_log_event(
         self,

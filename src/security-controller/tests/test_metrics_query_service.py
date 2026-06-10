@@ -31,10 +31,11 @@ def test_overview_aggregates_cloudwatch_values():
     assert out["threats_blocked"] == 20
     assert out["avg_latency_ms"] == 12
     assert out["trust_score"] == 87
-    # one GetMetricData call with the 5 expression queries
+    # one GetMetricData call. No "total" query — ValidationsTotal always carries a Decision dim,
+    # so total = allowed + denied (an unfiltered SEARCH would match nothing). See overview().
     assert cw.get_metric_data.call_count == 1
     queries = cw.get_metric_data.call_args.kwargs["MetricDataQueries"]
-    assert {q["Id"] for q in queries} == {"total", "allowed", "denied", "latency", "trust"}
+    assert {q["Id"] for q in queries} == {"allowed", "denied", "latency", "trust"}
 
 
 def test_overview_empty_data_returns_zeros_and_null_trust():

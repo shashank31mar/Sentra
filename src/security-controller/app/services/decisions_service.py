@@ -143,9 +143,20 @@ class DecisionsService:
                 # No-signals shouldn't happen here (group exists only if at
                 # least one row matched), but be defensive.
                 continue
+
+            # Per-request forensic context (the prompt, the caller, the IP) lives as shared attrs on
+            # the raw signal rows — surface the first non-empty value so the detail view can show
+            # "what was the prompt / who called / from where" without a second round-trip.
+            def _first(field: str) -> Optional[Any]:
+                return next((it.get(field) for it in group if it.get(field)), None)
+
             decisions.append({
                 "request_id": rid,
                 "timestamp_iso": timestamp_iso,
+                "user_input": _first("user_input"),
+                "agent_id": _first("agent_id"),
+                "tool_name": _first("tool_name"),
+                "source_ip": _first("source_ip"),
                 "combined": {
                     # Workstream 17 / LLD 17 §4 — stamp the read-side aggregate
                     # with `dashboard.combined` so consumers can distinguish a
@@ -180,6 +191,7 @@ class DecisionsService:
         agent_id: Optional[str] = None,
         decision: Optional[str] = None,
         threat_type: Optional[str] = None,
+        session_id: Optional[str] = None,
         limit: int = 50,
         cursor: Optional[str] = None,
     ) -> dict[str, Any]:
@@ -201,47 +213,75 @@ class DecisionsService:
         else:
             since_dt = until_dt - timedelta(hours=24)
 
-        # Build FilterExpression for the optional filters.
+        # Optional filters (agent/decision/threat) become a FilterExpression; the time window is the
+        # GSI SORT key (timestamp_ms), expressed in the KeyConditionExpression below — NOT a filter.
+        since_ms = int(since_dt.timestamp() * 1000)
+        until_ms = int(until_dt.timestamp() * 1000)
+        expr_values: dict[str, Any] = {":since": {"N": str(since_ms)}, ":until": {"N": str(until_ms)}}
+        expr_names: dict[str, str] = {}
         filter_parts: list[str] = []
-        expr_values: dict[str, Any] = {
-            ":since": {"N": str(int(since_dt.timestamp() * 1000))},
-            ":until": {"N": str(int(until_dt.timestamp() * 1000))},
-        }
-        filter_parts.append("timestamp_ms BETWEEN :since AND :until")
-
         if agent_id:
             filter_parts.append("agent_id = :aid")
             expr_values[":aid"] = {"S": agent_id}
         if decision:
             filter_parts.append("#dec = :d")
             expr_values[":d"] = {"S": decision}
+            expr_names["#dec"] = "decision"  # reserved DDB word
         if threat_type:
             filter_parts.append("threat_type = :tt")
             expr_values[":tt"] = {"S": threat_type}
+        if session_id:
+            filter_parts.append("session_id = :sid")
+            expr_values[":sid"] = {"S": session_id}
 
-        kwargs: dict[str, Any] = {
-            "TableName": self.table_name,
-            "IndexName": _GSI_DECISION_DATE,
-            "Limit": min(limit, 200),
-            "FilterExpression": " AND ".join(filter_parts),
-            "ExpressionAttributeValues": expr_values,
-        }
-        if decision:
-            # `decision` is a reserved DDB word, hence the placeholder.
-            kwargs["ExpressionAttributeNames"] = {"#dec": "decision"}
-        if cursor:
-            try:
-                kwargs["ExclusiveStartKey"] = _decode_cursor(cursor)
-            except Exception as exc:
-                raise ValueError(f"invalid cursor: {exc}") from exc
-
-        try:
-            resp = self._ddb().scan(**kwargs)
-        except ClientError as exc:
-            logger.exception("scan_decisions failed: %s", exc)
-            return {"decisions": [], "next_token": None, "total": 0, "error": str(exc)}
-
-        items = [self._deserialize_item(it) for it in resp.get("Items", [])]
+        # decision_date is the GSI PARTITION key (YYYY-MM-DD), so Query each day in the window,
+        # newest-first. The previous Scan+Limit was broken: Scan applies Limit BEFORE the
+        # FilterExpression, so on a multi-date table it returned ~0 matches even when the window held
+        # hundreds of rows — which is why Live Activity showed nothing. (Cross-day cursor pagination
+        # is a follow-up; Live Activity reads the most-recent page.)
+        decisions_target = min(limit, 200)
+        # Fetch enough SIGNALS to yield ~`decisions_target` grouped DECISIONS. Each validation writes
+        # several signals (sigma/policy/trust/ml/context) that group into ONE decision by request_id,
+        # so capping signals at `limit` returns ~1 decision — which made the Overview's limit=5 Live
+        # Activity look single-agent. Over-fetch signals (bounded), group, then cap decisions.
+        # Also paginate per day so an agent_id/decision FilterExpression (applied after each page
+        # read) still finds enough matches.
+        signal_budget = min(decisions_target * 10, 2000)
+        page_size = 200
+        max_pages_per_day = 25
+        items: list[dict] = []
+        day = until_dt.date()
+        start_day = since_dt.date()
+        while day >= start_day and len(items) < signal_budget:
+            last_key: dict | None = None
+            for _ in range(max_pages_per_day):
+                if len(items) >= signal_budget:
+                    break
+                q: dict[str, Any] = {
+                    "TableName": self.table_name,
+                    "IndexName": _GSI_DECISION_DATE,
+                    "KeyConditionExpression": "decision_date = :dd AND timestamp_ms BETWEEN :since AND :until",
+                    "ExpressionAttributeValues": {**expr_values, ":dd": {"S": day.isoformat()}},
+                    "ScanIndexForward": False,  # newest first
+                    "Limit": page_size,
+                }
+                if filter_parts:
+                    q["FilterExpression"] = " AND ".join(filter_parts)
+                if expr_names:
+                    q["ExpressionAttributeNames"] = expr_names
+                if last_key:
+                    q["ExclusiveStartKey"] = last_key
+                try:
+                    resp = self._ddb().query(**q)
+                except ClientError as exc:
+                    logger.exception("scan_decisions query failed: %s", exc)
+                    return {"decisions": [], "next_token": None, "total": 0, "error": str(exc)}
+                items.extend(self._deserialize_item(it) for it in resp.get("Items", []))
+                last_key = resp.get("LastEvaluatedKey")
+                if not last_key:
+                    break
+            day -= timedelta(days=1)
+        items = items[:signal_budget]
 
         # Group signals by request_id and combine — same as get_session_decisions
         # but across sessions. The dashboard's all-events view can render
@@ -251,6 +291,8 @@ class DecisionsService:
             key = (it.get("session_id") or "<unknown>", it.get("request_id") or "<unknown>")
             groups.setdefault(key, []).append(it)
 
+        from app.utils.cloud import resolve_cloud_provider
+
         decisions = []
         for (sid, rid), group in groups.items():
             group.sort(key=lambda x: x.get("timestamp_ms", 0))
@@ -259,14 +301,29 @@ class DecisionsService:
                 combined = self._combiner.combine(signals_obj)
             except ValueError:
                 continue
+            # Representative item for the row's flat fields; prefer the denying signal for threat info.
+            rep = next((it for it in group if it.get("decision") == "DENY"), group[-1])
+            deny_sig = next((s for s in signals_obj if s.decision == "DENY"), None)
+            platform = rep.get("platform")
+            timestamp = next((it.get("timestamp_iso") for it in group if it.get("timestamp_iso")), None)
             decisions.append({
+                # Flat fields the SOC console renders (DecisionItem, LLD 21 §11.2):
+                # agent / tool / decision / threat / trust / cloud at the row level.
+                "decision_id": f"{sid}:{rid}",
                 "session_id": sid,
                 "request_id": rid,
-                "timestamp_iso": next(
-                    (it.get("timestamp_iso") for it in group if it.get("timestamp_iso")), None
-                ),
+                "agent_id": rep.get("agent_id"),
+                "agent_name": rep.get("agent_id"),
+                "cloud_provider": resolve_cloud_provider({"platform": platform}),
+                "platform": platform,
+                "decision": combined.decision,
+                "threat_type": deny_sig.threat_type if deny_sig else None,
+                "tool_name": rep.get("tool_name"),
+                "reason": combined.reason,
+                "trust_score": rep.get("trust_score_before"),
+                "timestamp": timestamp,
+                # Backward-compatible detail for drill-down consumers (Streamlit dashboard).
                 "combined": {
-                    # See get_session_decisions — same rationale, same source.
                     "source": Source.DASHBOARD_COMBINED,
                     "decision": combined.decision,
                     "reason": combined.reason,
@@ -275,15 +332,13 @@ class DecisionsService:
                 "signals": [s.to_dict() for s in signals_obj],
             })
 
-        # Canonical pagination (LLD 21 §11.1): next_token only, null = last page.
-        next_token = (
-            _encode_cursor(resp["LastEvaluatedKey"])
-            if "LastEvaluatedKey" in resp
-            else None
-        )
+        # Newest-first, then cap to the requested number of DECISIONS.
+        decisions.sort(key=lambda d: d.get("timestamp") or "", reverse=True)
+        decisions = decisions[:decisions_target]
+        # Cross-day cursor pagination is a follow-up; Live Activity reads the most-recent page.
         return {
             "decisions": decisions,
-            "next_token": next_token,
+            "next_token": None,
             "total": len(decisions),
         }
 

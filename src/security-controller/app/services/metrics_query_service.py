@@ -111,8 +111,11 @@ class MetricsQueryService:
         """
         start, end, seconds = self._range_window(range_token)
         period = seconds  # one bucket over the whole range → scalar
+        # NOTE: ValidationsTotal is always published with BOTH {AgentId, Decision} dims
+        # (metrics_publisher), so a SEARCH schema without Decision matches nothing. Rather than a
+        # separate unfiltered "total" series (which returned 0 — every metric carries a Decision),
+        # total = allowed + denied. DENY/ALLOW are the only decisions emitted for this counter.
         q = [
-            {"Id": "total", "Expression": self._search("ValidationsTotal", "Sum", period), "ReturnData": True},
             {"Id": "allowed", "Expression": self._search("ValidationsTotal", "Sum", period, "ALLOW"), "ReturnData": True},
             {"Id": "denied", "Expression": self._search("ValidationsTotal", "Sum", period, "DENY"), "ReturnData": True},
             {"Id": "latency", "Expression": self._search("ValidationLatency", "Average", period), "ReturnData": True},
@@ -127,9 +130,9 @@ class MetricsQueryService:
             vals = data.get(key, []) or []
             return (sum(vals) / len(vals)) if vals else None
 
-        requests_total = int(_sum("total"))
         allowed = int(_sum("allowed"))
         denied = int(_sum("denied"))
+        requests_total = allowed + denied
         avg_latency = _avg("latency")
         trust = _avg("trust")
         return {
