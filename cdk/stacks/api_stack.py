@@ -728,6 +728,16 @@ class ApiStack(Stack):
             request_validator=body_validator,
             request_parameters={"method.request.path.session_id": True},
         )
+        # DELETE /v1/quarantine/{session_id} — release/un-quarantine (operator action).
+        quarantine_session_resource.add_method(
+            "DELETE",
+            integration=create_http_integration(
+                self.nlb_base_url, "/v1/quarantine/{session_id}", "DELETE",
+                vpc_link=self.api_vpc_link,
+            ),
+            api_key_required=True,
+            request_parameters={"method.request.path.session_id": True},
+        )
 
         # ============================================================
         # Workstream 21 Phase 2: dashboard metrics endpoints (T20-T22)

@@ -811,7 +811,7 @@ class ComputeStack(Stack):
                         user_pool_client_id=cognito_stack.user_pool_client.user_pool_client_id,
                         user_pool_domain=f"{cognito_stack.user_pool_domain.domain_name}.auth.{self.region}.amazoncognito.com",
                         scope="openid email profile",
-                        session_timeout="3600",  # String required by CfnListener (1 hour)
+                        session_timeout="43200",  # String required by CfnListener (12 hours)
                         on_unauthenticated_request="authenticate"
                     ),
                     order=1
@@ -855,8 +855,59 @@ class ComputeStack(Stack):
                         # Fully-qualified to match the default_actions block (else login redirect fails).
                         user_pool_domain=f"{cognito_stack.user_pool_domain.domain_name}.auth.{self.region}.amazoncognito.com",
                         scope="openid email profile",
-                        session_timeout=3600,  # CfnListenerRule expects int (CfnListener took str)
+                        session_timeout=43200,  # CfnListenerRule expects int (12 hours)
                         on_unauthenticated_request="authenticate",
+                    ),
+                ),
+                elbv2.CfnListenerRule.ActionProperty(
+                    type="forward",
+                    order=2,
+                    target_group_arn=self.console_tg.target_group_arn,
+                ),
+            ],
+        )
+
+        # ------------------------------------------------------------
+        # WS-22: API XHR auth rule (HIGHER priority than the page rule above).
+        # SPA background fetch('/v1/...') calls must NEVER receive the interactive
+        # Cognito 302 redirect — a cross-origin login bounce can't be followed by
+        # an XHR (same-origin policy + CSP connect-src 'self'), which surfaced as
+        # "Unsafe attempt to load URL … from frame". With on_unauthenticated_request
+        # = "deny" the ALB returns a clean 401 for unauthenticated API calls; the
+        # console's http.ts treats that as AUTH_EXPIRED and re-auths at top level.
+        # Authenticated API calls still forward to the console target group.
+        # ------------------------------------------------------------
+        self.console_api_listener_rule = elbv2.CfnListenerRule(
+            self,
+            "ConsoleApiListenerRule",
+            listener_arn=self.public_https_listener.ref,
+            priority=5,  # lower number = evaluated before the page rule (priority 10)
+            conditions=[
+                elbv2.CfnListenerRule.RuleConditionProperty(
+                    field="host-header",
+                    host_header_config=elbv2.CfnListenerRule.HostHeaderConfigProperty(
+                        values=[console_host]
+                    ),
+                ),
+                elbv2.CfnListenerRule.RuleConditionProperty(
+                    field="path-pattern",
+                    path_pattern_config=elbv2.CfnListenerRule.PathPatternConfigProperty(
+                        values=["/v1/*"]
+                    ),
+                ),
+            ],
+            actions=[
+                elbv2.CfnListenerRule.ActionProperty(
+                    type="authenticate-cognito",
+                    order=1,
+                    authenticate_cognito_config=elbv2.CfnListenerRule.AuthenticateCognitoConfigProperty(
+                        user_pool_arn=cognito_stack.user_pool.user_pool_arn,
+                        user_pool_client_id=cognito_stack.user_pool_client.user_pool_client_id,
+                        user_pool_domain=f"{cognito_stack.user_pool_domain.domain_name}.auth.{self.region}.amazoncognito.com",
+                        scope="openid email profile",
+                        session_timeout=43200,
+                        # KEY DIFFERENCE vs the page rule: 401 instead of a 302 redirect.
+                        on_unauthenticated_request="deny",
                     ),
                 ),
                 elbv2.CfnListenerRule.ActionProperty(
