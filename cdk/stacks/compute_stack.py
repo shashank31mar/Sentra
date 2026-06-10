@@ -1440,6 +1440,16 @@ def handler(event, context):
                     # API base MUST include the /prod stage (nginx appends /v1/ → /prod/v1/).
                     "SENTRA_API_BASE": "https://iw3limi4k7.execute-api.us-east-1.amazonaws.com/prod",
                     "SENTRA_API_HOST": "iw3limi4k7.execute-api.us-east-1.amazonaws.com",
+                    # Cognito hosted-UI logout target for the nginx /logout location. Without this the
+                    # /logout block 302s to an empty Location and the Cognito session silently survives
+                    # (the user appears NOT signed out). `logout_uri` host is registered as an allowed
+                    # sign-out URL by the custom resource below (_get_logout_urls → https://{host}/).
+                    "SENTRA_COGNITO_LOGOUT_URL": (
+                        f"https://{cognito_stack.user_pool_domain.domain_name}"
+                        f".auth.{self.region}.amazoncognito.com/logout"
+                        f"?client_id={cognito_stack.user_pool_client.user_pool_client_id}"
+                        f"&logout_uri=https://{console_host}/"
+                    ),
                     "NGINX_ENVSUBST_FILTER": "SENTRA_",
                 },
                 # x-api-key injected server-side from Secrets Manager (never in the browser).

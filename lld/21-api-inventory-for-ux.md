@@ -61,8 +61,8 @@ These are defined in `cdk/stacks/api_stack.py` and implemented in `security-cont
 | GET | `/v1/policies/{policy_id}` | Get one policy (+ S3 content) | path `policy_id`, `include_content` | `{policy{metadata, content}}` | DDB + S3 | Policies |
 | PUT | `/v1/policies/{policy_id}` | Update policy (new S3 version) | `PolicyUpdateRequest` | `{policy_id, version}` | DDB + S3 | Policies |
 | DELETE | `/v1/policies/{policy_id}` | Soft-delete policy | path `policy_id` | `{success, status:"disabled"}` | DDB + S3 | Policies |
-| GET | `/v1/sigma-rules` | List Sigma rules + match counts | `category, severity, enabled, limit, cursor` | `{rules[], total, next_token}` | DDB + S3 | Policies / Threats |
-| PATCH | `/v1/sigma-rules/{rule_id}` | Enable/disable a rule | path `rule_id`, `{status}` | `{success, rule_id, status}` | DDB + S3 | Policies |
+| GET | `/v1/sigma-rules` | List Sigma rules + match counts | `status, level, limit, cursor` (see §13.2 — **not** `category/severity/enabled`) | `{rules[], total, next_token}` where each rule = `{rule_id, title, category, severity, status:"enabled"\|"disabled", match_count}` | DDB + S3 | Policies / Threats |
+| PATCH | `/v1/sigma-rules/{rule_id}` | Enable/disable a rule | path `rule_id`, `{status:"enabled"\|"disabled"}` (also accepts legacy `stable\|deprecated`, §13.2) | `{success, rule_id, status:"enabled"\|"disabled"}` | DDB + S3 | Policies |
 | POST | `/v1/agents/customer-query/query` | Customer-query agent (read) | `{message, session_id, context}` | `AgentResponse` | Bedrock + controller | (demo agent) |
 | POST | `/v1/agents/customer-query/action` | Customer-query agent (write) | `{message, session_id, context}` | `AgentResponse` | Bedrock + controller | (demo agent) |
 | POST | `/v1/agents/payment/query` | Payment agent (read) | `{message, session_id, context}` | `AgentResponse` | Bedrock + controller | (demo agent) |
@@ -72,23 +72,27 @@ These are defined in `cdk/stacks/api_stack.py` and implemented in `security-cont
 
 ## 4. Implemented but NOT exposed (Tier B — add API Gateway wiring)
 
-These already exist in `src/security-controller/app/api/routes.py`. They cover a large part of the dashboard/inventory needs — they only need an API Gateway resource + method (HTTP_PROXY via VPC Link) added in `api_stack.py`.
+> **Status update (WS-21 + WS-23, verified against `cdk/stacks/api_stack.py`):** most of this tier is now **wired through API Gateway** — `/v1/metrics/*`, `/v1/agents`, `/v1/agents/{id}`, `/v1/agents/{id}/tools`, `/v1/sessions`, `/v1/sessions/{id}/decisions`, `/v1/decisions`, `/v1/logs/conversation/{id}`, `/v1/quarantine/{id}` (POST **and** DELETE), `/v1/discovery/*`, `/v1/decisions/{id}/verdict`, and `/v1/agents/{id}/policies` (attach/detach) are all exposed today. The rows below are kept for provenance; the **Exposed?** column reflects current reality.
 
-| Method | Path | Purpose | Input | Output (key fields) | Powers UI |
-|--------|------|---------|-------|---------------------|-----------|
-| GET | `/v1/metrics` | Aggregated summary metrics | `since, until` | `{requests_total, allowed, denied, ...}` | Dashboard KPIs (Total Requests, Avg Latency, FP%) |
-| GET | `/v1/agents` | List agents (`enrich=true`) | `enrich` | per-agent: `agent_id, name, platform, status, trust_score_avg, requests_total, requests_allowed, requests_denied, active_sessions, last_seen` | Agent Inventory, Active Agents KPI |
-| GET | `/v1/agents/{agent_id}` | Agent detail + runtime stats | path `agent_id` | full agent object | Agent Detail |
-| GET | `/v1/agents/{agent_id}/tools` | Allowed tools for an agent | path `agent_id` | `{tools[], total}` | Agent Detail |
-| GET | `/v1/sessions` | List sessions | `status, agent_id, limit` | `{sessions[], total}` | Quarantined KPI, Threats |
-| GET | `/v1/sessions/{session_id}/decisions` | Decisions grouped by request | path + `request_id, agent_id, limit` | `{decisions[]}` | Agent Detail / drill-down |
-| GET | `/v1/sessions/{session_id}/signals` | Raw signals (debug) | path + filters | `{signals[]}` | Advanced drill-down |
-| GET | `/v1/decisions` | Cross-session time-range decision scan (GSI-2) | `since, until, agent_id, decision, threat_type, limit, cursor` | `{decisions[], total, next_token}` | Live Activity feed, Allowed-vs-Blocked chart |
-| GET | `/v1/logs/conversation/{conversation_id}` | Cross-agent conversation timeline | path | `{timeline[], statistics}` | Audit Trail (trace view) |
-| POST | `/v1/rollback/conversation/{conversation_id}` | Roll back all WRITEs in a conversation | `{reason, operator_id}` | `{rolled_back_count, ...}` | Audit/Threat remediation |
-| POST | `/v1/quarantine/{session_id}` | Operator quarantine override | `{reason, operator_id}` | `{success, new_status}` | Threats / Agent Detail |
+These already exist in `src/security-controller/app/api/routes.py`.
 
-> **Action:** expose the rows actually consumed by the console (`/v1/metrics`, `/v1/agents`, `/v1/agents/{id}`, `/v1/decisions`, `/v1/sessions`, `/v1/logs/conversation/{id}`, `/v1/quarantine/{id}`) by adding `StandardApiEndpoint`/`add_method` entries in `api_stack.py` with `api_key_required=True` and the matching `pass_query_params`.
+| Method | Path | Purpose | Input | Output (key fields) | Exposed? | Powers UI |
+|--------|------|---------|-------|---------------------|----------|-----------|
+| GET | `/v1/metrics` | Aggregated summary metrics (legacy Logs-Insights path; superseded by `/v1/metrics/overview`) | `since, until` | `{requests, latency, sessions, threats}` | ❌ no | (legacy; not consumed) |
+| GET | `/v1/agents` | List agents (`enrich=true`) | `enrich` | per-agent: `agent_id, name, platform, status, trust_score_avg, requests_total, requests_allowed, requests_denied, active_sessions, last_seen` | ✅ yes | Agent Inventory, Active Agents KPI |
+| GET | `/v1/agents/{agent_id}` | Agent detail + runtime stats | path `agent_id` | full agent object | ✅ yes | Agent Detail |
+| GET | `/v1/agents/{agent_id}/tools` | Allowed tools for an agent | path `agent_id` | `{tools[], total}` | ✅ yes | Agent Detail |
+| GET | `/v1/sessions` | List sessions | `status, agent_id, limit` | `{sessions[], total}` | ✅ yes | Quarantined KPI, Threats |
+| GET | `/v1/sessions/{session_id}/decisions` | Decisions grouped by request | path + `request_id, agent_id, limit` | `{decisions[]}` | ✅ yes | Agent Detail / drill-down |
+| GET | `/v1/sessions/{session_id}/signals` | Raw signals (debug) | path + filters | `{signals[]}` | ❌ no | Advanced drill-down |
+| POST | `/v1/sessions/{session_id}/signals` | External-producer signal write (Bedrock/Azure connectors, LLD 17 §8.1) | `session_id` + signal body | `{...}` (201) | ❌ no | (data plane; connector edge signals) |
+| GET | `/v1/decisions` | Cross-session time-range decision scan (GSI-2) | `since, until, agent_id, decision, threat_type, session_id, limit, cursor` (see §13.4) | `{decisions[], total, next_token}` | ✅ yes | Live Activity feed, Allowed-vs-Blocked chart |
+| GET | `/v1/logs/conversation/{conversation_id}` | Cross-agent conversation timeline | path | `{timeline[], statistics}` | ✅ yes | Audit Trail (trace view) |
+| POST | `/v1/rollback/conversation/{conversation_id}` | Roll back all WRITEs in a conversation | `{reason, operator_id}` | `{rolled_back_count, ...}` | ❌ no | Audit/Threat remediation |
+| POST | `/v1/quarantine/{session_id}` | Operator quarantine override (**idempotent** — §13.3) | `{reason, operator_id}` | `{success, previous_status, new_status, trust_score, idempotent?}` | ✅ yes | Threats / Agent Detail |
+| DELETE | `/v1/quarantine/{session_id}` | Release/un-quarantine (operator override, **idempotent** — §13.3) | query `operator_id` | `{success, previous_status?, new_status:"active", trust_score?, idempotent?}` | ✅ yes | Threats / Agent Detail |
+
+> **Action (largely done):** the rows consumed by the console are now exposed with `api_key_required=True`. Remaining unexposed rows (`/v1/metrics` legacy, `/v1/sessions/{id}/signals` GET+POST, `/v1/rollback/conversation/{id}`) are intentionally internal/superseded.
 
 ---
 
@@ -332,9 +336,12 @@ New/extended stores implied above (cross-ref LLD 06 data model, LLD 17 signal st
 
 ## 9. Summary
 
+> Original plan-time tiering (kept for context). For the **authoritative current state** — including endpoints added since (un-quarantine, idempotency, sigma contract changes, the `/v1/decisions` flat-field rows) — see **§13 As-built reconciliation**.
+
 - **15** customer-facing endpoints already **exposed** (Tier A) cover validation, logs, policies, sigma rules, agents-as-demo.
-- **11** endpoints are **implemented but not exposed** (Tier B) — cheapest wins; cover dashboard metrics, agent inventory/detail, decisions feed, sessions, conversation timeline, quarantine.
-- **~18** endpoints are **net-new** (Tier C) across Metrics rollups, Discovery, Deployments, Connections, and agent↔policy attach.
+- **11** endpoints were **implemented but not exposed** (Tier B) at audit time — most are now wired through API Gateway (see §4 status update + §13.1).
+- **~18** endpoints are **net-new** (Tier C) across Metrics, Discovery, Deployments, Connections, and agent↔policy attach; Metrics/Discovery/attach + verdict are now built and exposed, Deployments + Connections + `discovery/scan` remain unbuilt (P1).
+- **2** endpoints added after the original inventory: `DELETE /v1/quarantine/{session_id}` (release) and `POST /v1/sessions/{session_id}/signals` (connector signal write). See §13.
 
 ---
 
@@ -658,3 +665,107 @@ review queue ──► operator confirms via FP/FN buttons (§12.3) ──► la
 | **P0** | Capture FP/FN verdicts (§12.3) and **store silently** — accumulate the gold-label set. **Do not** show `false_positive_pct` on the UX (returns `null`). Ensure decisions persist enough to replay (mostly already true). |
 | **P1** | **Rule-replay** re-check + review queue. Cheap, reuses the engine. Surface candidates for human confirmation. |
 | **P2** | **Oracle re-eval** + **outcome correlation**; publish FP%/FN% on the dashboard; feed confirmed labels into rule tuning. |
+
+---
+
+## 13. As-built reconciliation (verified against code)
+
+> Added after a code audit of `src/security-controller/app/api/routes.py` and `cdk/stacks/api_stack.py`. This section is the **authoritative current state** where it disagrees with §3–§6 above (those captured the original plan). It records (a) the complete set of routes that exist in the controller, (b) endpoints that were added since the original inventory, and (c) request/response **contract changes** that diverged from the earlier spec.
+
+### 13.1 Complete controller route list (as implemented)
+
+Every `@router.*` in `routes.py`, with API Gateway exposure status:
+
+| Method | Path | Exposed (APIGW)? | Section |
+|--------|------|------------------|---------|
+| GET | `/v1/health` | ✅ | §3 |
+| POST | `/v1/validate` | ✅ | §3 |
+| GET | `/v1/logs` | ✅ | §3 |
+| GET | `/v1/sessions/{session_id}/decisions` | ✅ | §4 |
+| GET | `/v1/sessions/{session_id}/signals` | ❌ | §4 |
+| POST | `/v1/sessions/{session_id}/signals` | ❌ | §4 (new row) |
+| GET | `/v1/decisions` | ✅ | §4, §13.4 |
+| GET | `/v1/sessions` | ✅ | §4 |
+| GET | `/v1/metrics` | ❌ (legacy) | §4 |
+| GET | `/v1/metrics/overview` | ✅ | §6.1 / §11.2 |
+| GET | `/v1/metrics/platform-distribution` | ✅ | §6.1 / §11.2 |
+| GET | `/v1/metrics/decisions-timeseries` | ✅ | §6.1 / §11.2 |
+| GET | `/v1/discovery/agents` | ✅ | §6.2 / §11.3 |
+| GET | `/v1/discovery/summary` | ✅ | §6.2 / §11.3 |
+| GET | `/v1/discovery/platforms` | ✅ | §6.2 / §11.3 |
+| POST | `/v1/discovery/import` | ✅ | §6.2 / §11.3 |
+| POST | `/v1/agents/{agent_id}/policies` | ✅ | §6.5 / §11.5 |
+| DELETE | `/v1/agents/{agent_id}/policies/{policy_id}` | ✅ | §6.5 / §11.5 |
+| POST | `/v1/decisions/{decision_id}/verdict` | ✅ | §12.3 |
+| GET | `/v1/agents` | ✅ | §4 |
+| GET | `/v1/agents/{agent_id}` | ✅ | §4 |
+| GET | `/v1/agents/{agent_id}/tools` | ✅ | §4 |
+| GET | `/v1/policies` | ✅ | §3 |
+| POST | `/v1/policies` | ✅ | §3, §13.5 |
+| GET | `/v1/policies/{policy_id}` | ✅ | §3 |
+| PUT | `/v1/policies/{policy_id}` | ✅ | §3 |
+| DELETE | `/v1/policies/{policy_id}` | ✅ | §3 |
+| GET | `/v1/sigma-rules` | ✅ | §3, §13.2 |
+| PATCH | `/v1/sigma-rules/{rule_id}` | ✅ | §3, §13.2 |
+| GET | `/v1/logs/conversation/{conversation_id}` | ✅ | §4 |
+| POST | `/v1/rollback` | ✅ | §3 |
+| POST | `/v1/rollback/conversation/{conversation_id}` | ❌ | §4 |
+| POST | `/v1/quarantine/{session_id}` | ✅ | §4, §13.3 |
+| DELETE | `/v1/quarantine/{session_id}` | ✅ | §4, §13.3 (**new**) |
+
+> **Note — `POST /discovery/scan` and the job-status GETs** (`/discovery/scans/{scan_id}`, `/deployments/sync/{sync_id}`) specified in §11.3/§11.6 are **not implemented** in the controller today. P0 discovery is the read-model (summary/platforms/agents/import only); `scan` and async job-status polling are deferred with their domains.
+
+### 13.2 `GET /v1/sigma-rules` + `PATCH /v1/sigma-rules/{rule_id}` — contract changed
+
+**What §3 originally said:** query `category, severity, enabled`; PATCH body `{status}` with stored `stable|deprecated`.
+
+**As built (WS-23 fix):** the API now speaks the console's vocabulary while DynamoDB keeps the Sigma-native vocabulary internally.
+
+- **`GET /v1/sigma-rules` query params:** `status` (`stable|experimental|deprecated` — the *stored* status filter, applied via the `status-index` GSI), `level` (`critical|high|medium|low`), `limit` (default 50, max 200), `cursor`. There is **no** `category`/`severity`/`enabled` query param.
+- **`GET` response — each rule is mapped to the console contract** (not the raw DDB item):
+
+  | Field | Type | Source |
+  |-------|------|--------|
+  | `rule_id` | `str` | DDB `rule_id` |
+  | `title` | `str` | DDB `title` |
+  | `category` | `str` | derived from the first `attack.*`/`owasp.*` tag, else `logsource.category`, else `"detection"` |
+  | `severity` | `enum<critical\|high\|medium\|low>` | DDB `level` (renamed) |
+  | `status` | `enum<enabled\|disabled>` | DDB `status`: `stable ⇒ enabled`, everything else (`experimental`/`deprecated`) ⇒ `disabled` (reflects real engine enforcement — only `stable` rules load) |
+  | `match_count` | `int` | DDB `stats.match_count_24h` (flattened) |
+
+- **`PATCH /v1/sigma-rules/{rule_id}` body:** `{ "status": "enabled" | "disabled" }`. Legacy `stable|deprecated` are still accepted for back-compat. The handler translates `enabled→stable` / `disabled→deprecated` before writing, and the response echoes the **console** vocabulary: `{ success, rule_id, status: "enabled"|"disabled" }`.
+- **Cache behavior:** a successful PATCH invalidates the per-rule cache entry **and** the whole `sigma_rules:` list-cache family, so the next `GET` reflects the change immediately rather than after the 300s TTL. (Enforcement is independent of this cache — the `SigmaEngine` is constructed per validate request and re-reads `status='stable'` from DDB every call.)
+
+### 13.3 `POST /v1/quarantine/{session_id}` is now idempotent + `DELETE` release added
+
+**`POST /v1/quarantine/{session_id}` (changed):** previously returned `400 "Session already quarantined/suspended"` on a repeat. **Now idempotent** — re-quarantining an already-`quarantined`/`suspended` session returns `200` with the existing state and an `idempotent: true` flag instead of erroring. Success body:
+```json
+{ "success": true, "message": "...", "session_id": "...",
+  "previous_status": "active", "new_status": "quarantined",
+  "trust_score": 12.0, "idempotent": false }
+```
+A safe double-click / retry no longer fails. (`404` for unknown session still applies.)
+
+**`DELETE /v1/quarantine/{session_id}` (NEW — WS-23):** operator "un-quarantine" / release. Idempotent.
+- **Query:** `operator_id` (default `"operator"`).
+- **Behavior:** sets `quarantine_status` back to `active` **and restores `trust_score` to 70** (just above the quarantine threshold) so the trust check doesn't immediately re-quarantine the session on its next validation. Releasing an already-`active` session is a no-op success (`idempotent: true`).
+- **200:**
+  ```json
+  { "success": true, "message": "Session ... released from quarantine",
+    "session_id": "...", "previous_status": "quarantined",
+    "new_status": "active", "trust_score": 70.0 }
+  ```
+- **404** unknown session; **500** on update failure.
+
+> **Enum note:** §2 lists `quarantine_status` as `active | quarantined | suspended`. Release always targets `active`; it does not transition `suspended` sessions through any intermediate state.
+
+### 13.4 `GET /v1/decisions` — added `session_id` filter + flattened row fields
+
+- **Added query param:** `session_id` (optional) — filter the cross-session scan to one session.
+- **Full query set:** `since, until, agent_id, decision, threat_type, session_id, limit, cursor`.
+- **Response rows now carry flat, console-ready fields** (WS-23) so `DecisionItem` renders without drill-down: each decision includes `decision_id` (`{session_id}:{request_id}`), `agent_id`, `agent_name`, `cloud_provider`, `platform`, `decision`, `threat_type`, `tool_name`, `reason`, `trust_score`, `timestamp` — plus the original `combined`/`signals` detail for back-compat.
+- **Pagination caveat:** the handler currently queries per-day newest-first and **returns `next_token: null`** (cross-day cursor pagination is a documented follow-up). Live Activity reads the most-recent page; deep historical paging via this endpoint is not yet available.
+
+### 13.5 `POST /v1/policies` — server-owned envelope fields now auto-generated
+
+`PolicyCreateRequest` omits the server-owned envelope fields, but the policy schema validator requires `policy_id`/`status`/`created_at`/`created_by`. The create handler now **generates these up front** (`policy_id = "agent-config-{agent_id}"`, `status="active"`, timestamps, `created_by=operator`) so a well-formed create validates instead of being rejected. The S3 upload also now targets the **configured artifacts bucket** (`settings.s3_bucket`, CDK-suffixed) rather than the previously hard-coded `sentra-mvp-artifacts` name. No request/response shape change for callers — this fixes creates that previously failed.
