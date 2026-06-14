@@ -1351,7 +1351,13 @@ def handler(event, context):
                     "ML_CLASSIFIER_ESCALATION_MODEL_ID": "us.anthropic.claude-sonnet-4-6",
                     "ML_CLASSIFIER_TIMEOUT_SECONDS": "2.0",
                     "ML_CLASSIFIER_TOTAL_BUDGET_SECONDS": "2.5",
-                    "ML_CONFIDENCE_TRUST_THRESHOLD": "0.9",
+                    # WS24 M6: trust Haiku at >=0.7 instead of >=0.9. Escalation to
+                    # Sonnet (the ~1-2s tax) now fires only in [0.5, 0.7) instead of
+                    # [0.5, 0.9) — ~halving ML latency on the ALLOW path. Trade:
+                    # Haiku verdicts in [0.7, 0.9) no longer get a Sonnet second
+                    # opinion. Reversible (flip back + cdk deploy); validate F1 via
+                    # the eval harness / DENY-rate + winning_source after deploy.
+                    "ML_CONFIDENCE_TRUST_THRESHOLD": "0.7",
                     "ML_CONFIDENCE_ABSTAIN_THRESHOLD": "0.5",
                     # Cedar authorization engine (feature: cedar-policy). Config-
                     # driven so flipping shadow→cutover needs only a dev.yaml edit +
