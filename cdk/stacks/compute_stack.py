@@ -1307,8 +1307,6 @@ def handler(event, context):
                     "AWS_REGION": self.region,
                     "LOG_LEVEL": "INFO",
                     "SIGMA_RULES_PREFIX": "sigma_rules/llm/",
-                    "SIGMA_REFRESH_INTERVAL": "300",
-                    "POLICY_CACHE_TTL": "10",
                     "MAX_VALIDATION_TIME_MS": "5000",
                     "ENABLE_METRICS": "true",
                     "AUDIT_LOG_GROUP": storage_stack.audit_log_group.log_group_name,
@@ -1332,7 +1330,10 @@ def handler(event, context):
                     "CACHE_ENABLED": "true",
                     "AGENT_METADATA_CACHE_TTL_SECONDS": "60",
                     "TOOL_REGISTRY_CACHE_TTL_SECONDS": "300",
-                    "POLICY_CACHE_TTL_SECONDS": "10",
+                    # WS24 M3.3: policy-bundle cache TTL. 300s (was 10s) now that
+                    # resolve_policy_bundle is cached + invalidated on every policy/
+                    # binding write (cache.clear()), so cross-request reuse is safe.
+                    "POLICY_CACHE_TTL_SECONDS": "300",
                     "SIGMA_RULES_METADATA_CACHE_TTL_SECONDS": "600",
                     "MAX_CACHE_SIZE": "1000",
                     # ML Threat Classifier (Workstream 19 / LLD 19) — ACTIVE in dev.

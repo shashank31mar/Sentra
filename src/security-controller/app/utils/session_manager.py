@@ -7,6 +7,7 @@ to prevent race conditions.
 MVP: Uses atomic increment/decrement (UpdateExpression)
 Phase 2: Will migrate to optimistic locking with version field
 """
+import asyncio
 import base64
 import json
 import time
@@ -121,8 +122,10 @@ class SessionManager:
             Session dictionary with all fields
         """
         try:
-            # Try to get existing session
-            response = self.table.get_item(Key=tenancy.item_key('session_id', session_id))
+            # Try to get existing session. WS24 M4.3: offload the sync DynamoDB
+            # call off the event loop so concurrent validations don't serialize.
+            response = await asyncio.to_thread(
+                self.table.get_item, Key=tenancy.item_key('session_id', session_id))
             
             if 'Item' in response:
                 session = self._deserialize_session(response['Item'])
@@ -166,7 +169,7 @@ class SessionManager:
             # v2: tenant_id (base PK) + composite tenant_agent_id (the
             # agent-updated-index GSI key). No-op when the flag is off (T04).
             tenancy.stamp_agent_gsi(tenancy.stamp_base_item(new_session))
-            self.table.put_item(Item=new_session)
+            await asyncio.to_thread(self.table.put_item, Item=new_session)  # WS24 M4.3
             logger.info(f"Created new session: {session_id} with trust_score={self.INITIAL_SCORE}")
             
             return self._deserialize_session(new_session)
@@ -199,8 +202,9 @@ class SessionManager:
             penalty = self.PENALTIES.get(violation_type, -10)
             current_time = int(time.time() * 1000)
             
-            # Atomic update with UpdateExpression
-            response = self.table.update_item(
+            # Atomic update with UpdateExpression (WS24 M4.3: to_thread offload)
+            response = await asyncio.to_thread(
+                self.table.update_item,
                 Key=tenancy.item_key('session_id', session_id),
                 UpdateExpression="""
                     SET trust_score = if_not_exists(trust_score, :initial) + :penalty,
@@ -226,8 +230,9 @@ class SessionManager:
             # Update quarantine status based on new trust score
             new_status = self._get_quarantine_status(updated_session['trust_score'])
             
-            # Second update to set correct quarantine status
-            response = self.table.update_item(
+            # Second update to set correct quarantine status (WS24 M4.3)
+            response = await asyncio.to_thread(
+                self.table.update_item,
                 Key=tenancy.item_key('session_id', session_id),
                 UpdateExpression="SET quarantine_status = :status",
                 ExpressionAttributeValues={':status': new_status},
@@ -283,8 +288,9 @@ class SessionManager:
             if agent_id is not None:
                 history_entry['agent_id'] = agent_id
 
-            # First, increment consecutive_allows and add to tool_history
-            response = self.table.update_item(
+            # First, increment consecutive_allows and add to tool_history (WS24 M4.3)
+            response = await asyncio.to_thread(
+                self.table.update_item,
                 Key=tenancy.item_key('session_id', session_id),
                 UpdateExpression="""
                     SET consecutive_allows = if_not_exists(consecutive_allows, :zero) + :one,
@@ -313,7 +319,8 @@ class SessionManager:
                     {k: Decimal(str(v)) if isinstance(v, float) else v for k, v in item.items()}
                     for item in session['tool_history']
                 ]
-                self.table.update_item(
+                await asyncio.to_thread(
+                    self.table.update_item,
                     Key=tenancy.item_key('session_id', session_id),
                     UpdateExpression="SET tool_history = :history",
                     ExpressionAttributeValues={':history': history_for_db}
@@ -330,7 +337,8 @@ class SessionManager:
                 increment = self._get_increment_amount(trust_score)
                 new_score = min(100.0, trust_score + increment)
                 
-                response = self.table.update_item(
+                response = await asyncio.to_thread(
+                    self.table.update_item,
                     Key=tenancy.item_key('session_id', session_id),
                     UpdateExpression="""
                         SET trust_score = :new_score,

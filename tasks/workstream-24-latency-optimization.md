@@ -47,9 +47,16 @@
 - **Exit:** 0 per-request constructions ✅; sigma cache persists ✅; re-measure in M1.
 
 ### M3 — Sigma + Policy caches (F2/F3)
-- [ ] 3.1 Sigma cache → process/module-scoped, **tenant-aware** (system + customer rule sets).
-- [ ] 3.2 **Write-through** on rule CRUD (sync DDB + cache update) + **cross-instance invalidation** — `meta#version` row in `sentra-sigma-rules-metadata` (bumped on CRUD, keep `status='stable'` consistent) or Redis pub/sub.
-- [ ] 3.3 Add `SIGMA_RULES_CACHE_TTL_SECONDS` (new env var; not currently set) → 6h safety net. Remove orphan `SIGMA_REFRESH_INTERVAL`.
+> **⚠️ M3.1 + M3.2 are FORMALLY DEFERRED (not silently missing).** The singleton (M2)
+> already restored the sigma cache's *latency* benefit. What's missing is the
+> *correctness* feature: tenant scoping + cross-instance invalidation. Until it lands,
+> a sigma rule change is stale on other ECS tasks for up to the 300s TTL — an
+> accepted, time-bounded gap (NOT 6h, since M3.3 keeps the TTL at 300s). The policy
+> cache got `invalidate_policy_cache` + `cache.clear()` on writes; sigma has no
+> equivalent yet. **This is its own follow-up PR, scheduled next after the hot-path work.**
+- [ ] 3.1 Sigma cache → process/module-scoped, **tenant-aware** (system + customer rule sets). *(deferred)*
+- [ ] 3.2 **Write-through** on rule CRUD (sync DDB + cache update) + **cross-instance invalidation** — `meta#version` row in `sentra-sigma-rules-metadata` (bumped on CRUD, keep `status='stable'` consistent) or Redis pub/sub. *(deferred — correctness item, next PR)*
+- [~] 3.3 CDK config: `POLICY_CACHE_TTL_SECONDS` 10→**300** (safe — invalidated on writes); removed orphan `POLICY_CACHE_TTL` + `SIGMA_REFRESH_INTERVAL`. **Sigma TTL deliberately left at 300s** — bumping to 6h is unsafe until cross-instance invalidation (M3.2) exists. Done except the sigma-TTL bump, which is gated on M3.2.
 - [x] 3.4 Parallel cold-load of rule S3 objects (`asyncio.gather` over `to_thread` in `sigma_engine.load_rules_from_s3`). **Done.**
 - [x] 3.5 **Policy: cache on `resolve_policy_bundle(agent_id)`** via the WS5 `CacheManager`, tenant-scoped key, TTL=`policy_cache_ttl_seconds`; sync chain offloaded with `asyncio.to_thread`; invalidated by existing `cache.clear()` on every policy/binding write. **Done.**
 - [~] 3.6 Cache coverage: **STEP 4 (context) + STEP 5 (abuse) both resolve via `get_agent_policy → resolve_policy_bundle` → cached ✓.** STEP 2 Cedar uses its own module-level `_compiled_cache` for the compiled artifact; confirm whether its metadata resolve also routes through `resolve_policy_bundle` (else add). *Partial.*
@@ -59,7 +66,7 @@
 ### M4 — ML reorder + telemetry async + to_thread (F4/F5/F6)
 - [x] 4.1 Move ML classifier to the **end** of the pipeline (now STEP 6, after context + abuse). Deny-overrides/signal semantics preserved; final verdicts unchanged (verified by `test_validation_service`). **Done.**
 - [x] 4.2 Audit + metrics → fire-and-forget via `_fire_and_forget` (retained `_bg_tasks` set + done-callback logging exceptions). CloudWatch dual-write + DDB write retained, just async. False "fire-and-forget … never blocks" comment corrected. **Done.**
-- [~] 4.3 `to_thread` applied to the policy bundle resolve (2 DDB + 1 S3) and the sigma S3 fetches. **Remaining:** session_manager DDB calls + the telemetry boto3 (so background tasks don't touch the loop). *Partial.*
+- [x] 4.3 `to_thread` applied to the policy bundle resolve (2 DDB + 1 S3), the sigma S3 fetches, **and all session_manager hot-path calls** (get/create + both trust-update paths — 26 tests pass). **Remaining (minor):** telemetry boto3 internals so background tasks don't touch the loop, and the cold-path sigma-metadata DDB query. *Hot path done.*
 - [~] 4.4 Verdict parity covered by `test_validation_service` (final ALLOW/DENY unchanged after ML-last). **Remaining:** the broader recorded-baseline regression set from M1.4. *Partial.*
 - **Exit:** ML-hot p99 ≤ 900ms; fewer ML invocations (cheap checks short-circuit first).
 

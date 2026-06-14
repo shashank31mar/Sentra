@@ -181,6 +181,8 @@ The ALLOW path resolves the policy **three times** — STEP 2 (Cedar bundle), ST
 
 Every **cheap, local** check (context/sequence, abuse/rate-limit) now short-circuits **before** the expensive LLM call. The ML cost is paid only for traffic that passed *all* deterministic gates — strictly fewer ML invocations, no behavior change to verdicts on the deny path (deny-overrides semantics preserved; ML still short-circuits nothing cheaper than itself).
 
+> **Conscious side-effect (verdict attribution, not the binary):** for a request that *multiple* validators would independently DENY, the attributed `violation_type`/`threat_type` and the trust-score **penalty** now come from the earliest cheaper check rather than from ML. The final ALLOW/DENY is unchanged (and that's what the verdict guard asserts), but per-session trust *trajectories* can differ slightly vs. the old STEP-3.5 ordering. This is accepted: a cheaper, deterministic attribution is generally a *better* audit reason than "ML denied," and ML's penalty only mattered when nothing cheaper fired — which is exactly the path where ML still runs.
+
 ### 6.3 Explicitly deferred (per founder decision)
 - ML stays **enabled**. No threshold/escalation-band/model/risk-gating change in this LLD.
 - Deeper ML latency reduction (risk-gated ML, narrowing [0.5, 0.9] escalation, Haiku-inline + Sonnet-async) is **revisited after** R1/R3/R4/R5/R6 land and we re-measure — [WS24 M6](../tasks/workstream-24-latency-optimization.md). Long-term execution model = the parallel DAG in [LLD 20 §3.4](20-defense-in-depth-layers.md).

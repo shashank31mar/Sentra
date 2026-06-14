@@ -210,6 +210,11 @@ class PolicyEngine:
         `invalidate_policy_cache`; cross-instance staleness is TTL-bounded
         (consistent with the existing policy/agent metadata caches — fleet-wide
         invalidation is WS24 M3.2).
+
+        ⚠️ The returned (policy_data, metadata, agent) tree is a SHARED cache
+        reference. Callers MUST treat it as READ-ONLY — mutating any of these
+        dicts poisons the cache for every subsequent request in the TTL window.
+        Today's consumers (Cedar loader, context, abuse) are read-only.
         """
         cache_key = self._bundle_cache_key(agent_id)
         cached = self.cache.get(cache_key)

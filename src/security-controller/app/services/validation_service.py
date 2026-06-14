@@ -50,9 +50,18 @@ async def _timed(label: str, coro):
 # (best-practices §12.5) and the DDB signal write still run, just asynchronously;
 # crash-durability is the WS24 M7 shipper's job.
 _bg_tasks: "set" = set()
+# Soft cap: a large backlog means CloudWatch/DDB is slow and telemetry tasks are
+# accumulating (memory + connection pressure). We warn rather than drop — losing a
+# security-audit write is worse than the backlog — and the M7 durable shipper
+# removes this in-process queue entirely.
+_BG_TASKS_SOFT_CAP = 1000
 
 
 def _fire_and_forget(coro, label: str) -> None:
+    if len(_bg_tasks) > _BG_TASKS_SOFT_CAP:
+        logger.warning(
+            "telemetry backlog high: %d pending background tasks "
+            "(slow CloudWatch/DDB?)", len(_bg_tasks))
     task = asyncio.create_task(coro)
     _bg_tasks.add(task)
 
