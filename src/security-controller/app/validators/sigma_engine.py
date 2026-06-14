@@ -63,6 +63,7 @@ class SigmaEngine:
         s3_bucket: str = None,
         s3_prefix: str = None,
         cache_ttl_seconds: int = None,
+        metrics_publisher=None,
     ):
         self.s3_bucket = s3_bucket or settings.s3_bucket
         self.s3_prefix = s3_prefix or "sigma_rules/llm/"
@@ -72,6 +73,10 @@ class SigmaEngine:
         self.rules_cache: Optional[List[SigmaRule]] = None
         self.cache_timestamp = 0
         self.s3_client = boto3.client("s3", region_name=settings.aws_region)
+        # Emits one SigmaRuleMatches count (per RuleId) to CloudWatch on every
+        # match — the real source of truth for the console's "Matches" column.
+        # Lazily constructed so tests/offline paths can run without one.
+        self._metrics_publisher = metrics_publisher
 
     async def load_rules_metadata_from_dynamodb(self) -> List[Dict]:
         """
@@ -255,6 +260,22 @@ class SigmaEngine:
                 return tag.replace("llm.", "").upper()
         return "UNKNOWN_THREAT"
 
+    async def _emit_match(self, rule_id: str) -> None:
+        """Record a rule match to CloudWatch (fire-and-forget).
+
+        The publisher is constructed lazily on first use so the engine stays
+        cheap to instantiate and so offline/test paths that never match a rule
+        don't pull in a CloudWatch client. Any failure is swallowed — emitting a
+        metric must never turn an otherwise-correct DENY into an error.
+        """
+        try:
+            if self._metrics_publisher is None:
+                from app.utils.metrics_publisher import MetricsPublisher
+                self._metrics_publisher = MetricsPublisher()
+            await self._metrics_publisher.publish_sigma_match_metric(rule_id)
+        except Exception as e:
+            logger.warning(f"Could not emit Sigma match metric for {rule_id}: {e}")
+
     @stamps(Source.SENTRA_SIGMA)
     async def match_rules(self, user_input: str) -> ValidationResult:
         """
@@ -278,6 +299,11 @@ class SigmaEngine:
                         logger.warning(
                             f"Sigma rule matched: {rule.title} - pattern: '{pattern}'"
                         )
+                        # Record the match in CloudWatch (per-RuleId series). This
+                        # is what drives the console's "Matches" column; the DDB
+                        # stats.match_count_* fields are dead. Fire-and-forget so
+                        # a metrics failure never blocks the DENY.
+                        await self._emit_match(rule.id)
                         return ValidationResult(
                             decision="DENY",
                             reason=f"Threat detected: {rule.threat_type}",

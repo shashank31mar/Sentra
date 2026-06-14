@@ -51,6 +51,10 @@ def mock_session_manager():
     """Mock session manager"""
     with patch('app.services.agent_service.SessionManager') as mock:
         session_mgr = Mock()
+        # Enrichment now uses ONE combined indexed-Query call (WS-21 C5/T50).
+        session_mgr.get_agent_session_stats = AsyncMock(
+            return_value={'active_sessions': 3, 'avg_trust_score': 95.0}
+        )
         session_mgr.get_active_sessions_count = AsyncMock(return_value=3)
         session_mgr.get_avg_trust_score = AsyncMock(return_value=95.0)
         session_mgr.query_sessions = AsyncMock(return_value={
@@ -142,9 +146,12 @@ class TestAgentServiceListAgents:
         
         # First call returns page 1 with LastEvaluatedKey
         # Second call returns page 2 without LastEvaluatedKey
+        # Third call is the agent-policy-management T22 policy-status map scan
+        # (single projected Scan of policies-metadata for active_policy_id).
         mock_table.scan.side_effect = [
             {'Items': [sample_agent], 'LastEvaluatedKey': {'agent_id': 'test-agent'}},
-            {'Items': [agent2]}
+            {'Items': [agent2]},
+            {'Items': []},
         ]
         mock_dynamodb.return_value.Table.return_value = mock_table
         
@@ -167,7 +174,8 @@ class TestAgentServiceListAgents:
         # Assertions
         assert result['total'] == 2
         assert len(result['agents']) == 2
-        assert mock_table.scan.call_count == 2
+        # 2 agent-pagination scans + 1 policy-status-map scan (T22)
+        assert mock_table.scan.call_count == 3
 
     @pytest.mark.asyncio
     async def test_list_agents_shows_all_clouds_hides_internal(
@@ -384,15 +392,24 @@ policies: []
             {'Item': {**sample_tool, 'tool_id': 'test-tool-2'}}
         ]
 
-        # Mock Table() to return different tables for different calls
-        table_mock = Mock()
-        table_mock.side_effect = [
-            Mock(),  # agent_registry_table
-            tools_table,  # tool_registry_table (for tool lookups)
-            policies_metadata_table,  # policies_metadata_table
-            Mock()  # session table (for SessionManager)
-        ]
-        mock_dynamodb.return_value.Table = table_mock
+        # agent-policy-management T15: get_agent_tools resolves via the binding.
+        # An UNBOUND agent (no attached_policy_id) falls back to the agent-index
+        # GSI query the rest of this test mocks.
+        agent_registry_table = Mock()
+        agent_registry_table.get_item.return_value = {'Item': {'agent_id': 'test-agent'}}
+
+        # Dispatch Table() by name (order/count-independent): the service now
+        # resolves agent_registry / policies_metadata lazily via flag-aware
+        # properties, so the old positional side_effect list no longer matches.
+        def _table_by_name(name):
+            if 'agent-registry' in name:
+                return agent_registry_table
+            if 'tool-registry' in name:
+                return tools_table
+            if 'policies-metadata' in name:
+                return policies_metadata_table
+            return Mock()  # session-context etc.
+        mock_dynamodb.return_value.Table = Mock(side_effect=_table_by_name)
 
         # Create service and test
         service = AgentService()
@@ -411,15 +428,18 @@ policies: []
         policies_metadata_table = Mock()
         policies_metadata_table.query.return_value = {'Items': []}  # No policy found
 
-        # Mock Table() to return tables
-        table_mock = Mock()
-        table_mock.side_effect = [
-            Mock(),  # agent_registry_table
-            Mock(),  # tool_registry_table
-            policies_metadata_table,  # policies_metadata_table
-            Mock()  # session table (for SessionManager)
-        ]
-        mock_dynamodb.return_value.Table = table_mock
+        # Unbound agent → GSI fallback, which returns no policy (T15).
+        agent_registry_table = Mock()
+        agent_registry_table.get_item.return_value = {'Item': {'agent_id': 'test-agent'}}
+
+        # Dispatch Table() by name (order/count-independent).
+        def _table_by_name(name):
+            if 'agent-registry' in name:
+                return agent_registry_table
+            if 'policies-metadata' in name:
+                return policies_metadata_table
+            return Mock()  # tool-registry / session-context
+        mock_dynamodb.return_value.Table = Mock(side_effect=_table_by_name)
 
         # Create service and test
         service = AgentService()
@@ -463,15 +483,20 @@ policies: []
             {}  # Missing tool
         ]
 
-        # Mock Table() to return different tables for different calls
-        table_mock = Mock()
-        table_mock.side_effect = [
-            Mock(),  # agent_registry_table
-            tools_table,  # tool_registry_table
-            policies_metadata_table,  # policies_metadata_table
-            Mock()  # session table (for SessionManager)
-        ]
-        mock_dynamodb.return_value.Table = table_mock
+        # agent-policy-management T15: unbound agent → GSI fallback (mocked below).
+        agent_registry_table = Mock()
+        agent_registry_table.get_item.return_value = {'Item': {'agent_id': 'test-agent'}}
+
+        # Dispatch Table() by name (order/count-independent) — see note above.
+        def _table_by_name(name):
+            if 'agent-registry' in name:
+                return agent_registry_table
+            if 'tool-registry' in name:
+                return tools_table
+            if 'policies-metadata' in name:
+                return policies_metadata_table
+            return Mock()  # session-context etc.
+        mock_dynamodb.return_value.Table = Mock(side_effect=_table_by_name)
 
         # Create service and test
         service = AgentService()
@@ -568,7 +593,12 @@ class TestAgentServiceHelpers:
 
 
 class TestAgentServicePolicyAttach:
-    """WS-21 T33: attach/detach policy to an agent (attached_policy_ids SS)."""
+    """attach/detach the scalar policy BINDING (agent-policy-management T21).
+
+    Supersedes WS-21 T33's String-Set semantics: `attached_policy_id` is a scalar
+    the engine reads; attach replaces atomically (no 409), detach is conditional
+    on the current value.
+    """
 
     @pytest.mark.asyncio
     async def test_attach_policy_success(self, mock_dynamodb, mock_cache_manager, mock_session_manager):
@@ -597,22 +627,28 @@ class TestAgentServicePolicyAttach:
             await service.attach_policy('missing', 'p1')
 
     @pytest.mark.asyncio
-    async def test_attach_policy_already_attached(self, mock_dynamodb, mock_cache_manager, mock_session_manager):
+    async def test_attach_policy_rebind_replaces(self, mock_dynamodb, mock_cache_manager, mock_session_manager):
+        """Rebind-as-replace (§4.2 E): attaching when already bound is a safe
+        atomic swap, NOT a 409 — the old String-Set ValueError is gone."""
         mock_table = Mock()
         mock_table.get_item.side_effect = [
-            {'Item': {'agent_id': 'a1', 'attached_policy_ids': {'p1'}}},
-            {'Item': {'policy_id': 'p1'}},
+            {'Item': {'agent_id': 'a1', 'attached_policy_id': 'p1'}},  # already bound to p1
+            {'Item': {'policy_id': 'p2'}},                            # new policy exists
         ]
         mock_dynamodb.return_value.Table.return_value = mock_table
 
         service = AgentService()
-        with pytest.raises(ValueError):
-            await service.attach_policy('a1', 'p1')
+        out = await service.attach_policy('a1', 'p2')
+
+        assert out['status'] == 'attached'
+        assert out['policy_id'] == 'p2'
+        # single conditional update_item swaps the scalar binding
+        mock_table.update_item.assert_called_once()
 
     @pytest.mark.asyncio
     async def test_detach_policy_success(self, mock_dynamodb, mock_cache_manager, mock_session_manager):
         mock_table = Mock()
-        mock_table.get_item.return_value = {'Item': {'agent_id': 'a1', 'attached_policy_ids': {'p1'}}}
+        mock_table.get_item.return_value = {'Item': {'agent_id': 'a1', 'attached_policy_id': 'p1'}}
         mock_dynamodb.return_value.Table.return_value = mock_table
 
         service = AgentService()

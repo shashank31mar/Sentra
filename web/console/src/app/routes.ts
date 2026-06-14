@@ -6,13 +6,21 @@ export const ROUTES = {
   agents: '/agents',
   agentDetail: '/agents/:agentId',
   topology: '/topology',
+  connect: '/connect',
   import: '/import',
   deploy: '/deploy',
   policies: '/policies',
+  policyNew: '/policies/new',
+  policyEdit: '/policies/:policyId/edit',
   policyDetail: '/policies/:policyId',
   quarantine: '/quarantine',
   audit: '/audit',
 } as const
 
 export const agentDetailPath = (agentId: string) => `/agents/${agentId}`
+/** Import review scoped to a just-connected cloud account. */
+export const importPath = (connectionId?: string) =>
+  connectionId ? `/import?connection=${encodeURIComponent(connectionId)}` : '/import'
 export const policyDetailPath = (policyId: string) => `/policies/${encodeURIComponent(policyId)}`
+export const policyNewPath = () => '/policies/new'
+export const policyEditPath = (policyId: string) => `/policies/${encodeURIComponent(policyId)}/edit`

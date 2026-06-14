@@ -27,6 +27,7 @@ from app.combiners import DenyOverrides, Signal, Source
 from app.combiners.signal import Signal as SignalClass  # alias for clarity in helpers
 from app.combiners.sources import DEFAULT_PRIORITIES
 from app.config import settings
+from app.utils import tenancy
 from app.utils.signal_store_writer import (
     _ISO_MS_Z,
     _isoformat_ms_z,
@@ -46,7 +47,6 @@ class DecisionsService:
     """
 
     def __init__(self):
-        self.table_name = settings.dynamodb_validation_signals_table
         self.region = settings.aws_region
         self._client: Optional[Any] = None
         self._deser = TypeDeserializer()
@@ -59,6 +59,11 @@ class DecisionsService:
         if self._client is None:
             self._client = boto3.client("dynamodb", region_name=self.region)
         return self._client
+
+    @property
+    def table_name(self) -> str:
+        """Validation-signals table name, resolved per-call (flag-aware, T7)."""
+        return tenancy.table_name("validation_signals")
 
     # -----------------------------------------------------------------------
     # Read paths
@@ -78,14 +83,18 @@ class DecisionsService:
         provided, narrows to that one request via SK begins_with — the
         dashboard's hot-path pattern.
         """
+        # Base PK is the composite `tenant_session_id` when v2 is on; the SK
+        # (`sk`) and the begins_with(request_id) pattern are unchanged (T04/T05).
+        pk_attr = tenancy.signal_pk_attr()
+        pk_value = tenancy.signal_pk_value(session_id)
         kwargs: dict[str, Any] = {
             "TableName": self.table_name,
             "Limit": min(limit, 500),
-            "KeyConditionExpression": "session_id = :sid",
-            "ExpressionAttributeValues": {":sid": {"S": session_id}},
+            "KeyConditionExpression": f"{pk_attr} = :sid",
+            "ExpressionAttributeValues": {":sid": {"S": pk_value}},
         }
         if request_id:
-            kwargs["KeyConditionExpression"] = "session_id = :sid AND begins_with(sk, :rid)"
+            kwargs["KeyConditionExpression"] = f"{pk_attr} = :sid AND begins_with(sk, :rid)"
             kwargs["ExpressionAttributeValues"][":rid"] = {"S": f"{request_id}#"}
 
         # Optional source / agent_id filter applied post-query (small N expected).
@@ -266,11 +275,16 @@ class DecisionsService:
             for _ in range(max_pages_per_day):
                 if len(items) >= signal_budget:
                     break
+                # decision-date GSI PK is the composite `tenant_decision_date`
+                # (`{tenant}#{YYYY-MM-DD}`) when v2 is on (workstream T5; backs
+                # GET /v1/decisions — the regression guard in T10).
+                dd_attr = tenancy.decision_date_gsi_attr()
+                dd_value = tenancy.decision_date_gsi_value(day.isoformat())
                 q: dict[str, Any] = {
                     "TableName": self.table_name,
                     "IndexName": _GSI_DECISION_DATE,
-                    "KeyConditionExpression": "decision_date = :dd AND timestamp_ms BETWEEN :since AND :until",
-                    "ExpressionAttributeValues": {**expr_values, ":dd": {"S": day.isoformat()}},
+                    "KeyConditionExpression": f"{dd_attr} = :dd AND timestamp_ms BETWEEN :since AND :until",
+                    "ExpressionAttributeValues": {**expr_values, ":dd": {"S": dd_value}},
                     "ScanIndexForward": False,  # newest first
                     "Limit": page_size,
                 }
@@ -490,7 +504,10 @@ class DecisionsService:
                 continue
             self._ddb().update_item(
                 TableName=self.table_name,
-                Key={"session_id": {"S": session_id}, "sk": {"S": sk}},
+                Key={
+                    tenancy.signal_pk_attr(): {"S": tenancy.signal_pk_value(session_id)},
+                    "sk": {"S": sk},
+                },
                 UpdateExpression=(
                     "SET operator_verdict = :v, verdict_reason = :r, "
                     "verdict_by = :o, verdict_at = :t"

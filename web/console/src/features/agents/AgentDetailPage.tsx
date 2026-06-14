@@ -39,7 +39,9 @@ export function AgentDetailPage() {
     return <div className="p-8"><Card className="p-6"><ErrorState error={detail.error} onRetry={() => detail.refetch()} /></Card></div>
 
   const a = detail.data
-  const policyIds = a.attached_policy_ids ?? []
+  // agent-policy-management T47: single scalar binding (active_policy_id), not
+  // the vestigial String-Set. 0-or-1 policy.
+  const policyIds = a.active_policy_id ? [a.active_policy_id] : []
 
   return (
     <div className="p-4 sm:p-6 lg:p-8">

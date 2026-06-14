@@ -24,7 +24,8 @@ export function AgentFlowTab({ agent }: { agent: AgentDetail }) {
   )
   const graph = useMemo(() => buildAgentFlow(items, agent.agent_id, agent.name), [items, agent.agent_id, agent.name])
   const heat = useMemo(() => computeHeatPath(graph), [graph])
-  const policyIds = agent.attached_policy_ids ?? []
+  // agent-policy-management T47: scalar binding (0-or-1), not the vestigial Set.
+  const policyIds = agent.active_policy_id ? [agent.active_policy_id] : []
   const toolColCount = graph.nodes.filter((n) => n.column === 1).length
 
   return (

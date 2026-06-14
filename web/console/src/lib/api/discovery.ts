@@ -14,6 +14,10 @@ export interface DiscoveryAgentsFilters {
   risk?: Risk
   status?: DiscoveryStatus
   since?: string
+  /** Scope the review table to a just-connected account (connections-api-spec §5).
+   *  Forward-compat: accepted by the controller; a no-op filter in the P0
+   *  policy-derived read-model. */
+  connection_id?: string
   limit?: number
   cursor?: string
 }

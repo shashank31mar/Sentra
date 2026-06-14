@@ -22,9 +22,16 @@ export type AgentStatus = 'active' | 'idle' | 'quarantined' | 'inactive'
 
 export type QuarantineStatus = 'active' | 'quarantined' | 'suspended'
 
-export type DiscoveryStatus = 'managed' | 'unmanaged'
+/** Detected-agents lifecycle (feature §8.1). managed = validate data flowing. */
+export type DiscoveryStatus = 'not_imported' | 'imported' | 'managed'
 
 export type ScanStatus = 'scanning' | 'idle'
+
+/** Cloud-account connection lifecycle (connections-api-spec §2). */
+export type ConnectionStatus = 'connecting' | 'connected' | 'error' | 'disconnected'
+
+/** Interception state for a managed agent (feature.md §8). UI label only in P0. */
+export type InterceptionStatus = 'planned' | 'live' | 'none'
 
 export type PolicyStatus = 'active' | 'disabled' | 'draft'
 
@@ -50,6 +57,7 @@ export type ThreatType =
   | 'JAILBREAK'
   | 'DATA_EXFILTRATION'
   | 'PII_LEAK'
+  | 'POLICY_DISABLED' // agent-policy-management T14: bound policy disabled → fail-secure DENY
   | (string & {})
 
 /** Standard machine error codes (LLD §11.1). */

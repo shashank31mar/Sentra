@@ -89,10 +89,13 @@ def test_attach_unknown_404(client, mock_agent_attach):
     assert r.status_code == 404
 
 
-def test_attach_conflict_409(client, mock_agent_attach):
-    mock_agent_attach.attach_policy.side_effect = ValueError("already attached")
+def test_attach_when_bound_replaces_no_409(client, mock_agent_attach):
+    """agent-policy-management T21: rebind-as-replace. Attaching to an
+    already-bound agent is an atomic swap → 200, NOT a 409. The service no longer
+    raises ValueError on rebind, and the route no longer maps one to 409."""
     r = client.post("/v1/agents/a/policies", json={"policy_id": "p"})
-    assert r.status_code == 409
+    assert r.status_code == 200
+    assert r.json()["status"] == "attached"
 
 
 def test_detach_ok(client, mock_agent_attach):

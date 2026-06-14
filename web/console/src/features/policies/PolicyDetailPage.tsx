@@ -14,9 +14,9 @@ import { CodeBlock } from '../../components/ui/CodeBlock'
 import { StatusDot } from '../../components/ui/StatusDot'
 import { ErrorState, LoadingState } from '../../components/ui/states'
 import { usePolicyDetail } from '../../lib/query/usePolicies'
-import { ROUTES } from '../../app/routes'
+import { ROUTES, policyEditPath } from '../../app/routes'
 import { formatDateTime } from '../../lib/format'
-import { policyFilename, renderContent, type PolicyLang } from '../../lib/policyFormat'
+import { policyFilename, renderCedar, renderContent, type PolicyLang } from '../../lib/policyFormat'
 import type { PolicyStatus } from '../../types/enums'
 
 const POLICY_STATUS_COLOR: Partial<Record<PolicyStatus, string>> = {
@@ -33,6 +33,7 @@ const SEVERITY_COLOR: Record<string, string> = {
 }
 
 const LANGS: { id: PolicyLang; label: string }[] = [
+  { id: 'cedar', label: 'CEDAR' },
   { id: 'yaml', label: 'YAML' },
   { id: 'json', label: 'JSON' },
 ]
@@ -70,11 +71,14 @@ function MetaRow({ label, children }: { label: string; children: React.ReactNode
 export function PolicyDetailPage() {
   const { policyId = '' } = useParams()
   const navigate = useNavigate()
-  const [lang, setLang] = useState<PolicyLang>('yaml')
+  const [lang, setLang] = useState<PolicyLang>('cedar')
   const detail = usePolicyDetail(policyId)
 
   const policy = detail.data
-  const code = useMemo(() => (policy ? renderContent(policy.content, lang) : ''), [policy, lang])
+  const code = useMemo(
+    () => (policy ? (lang === 'cedar' ? renderCedar(policy) : renderContent(policy.content, lang)) : ''),
+    [policy, lang],
+  )
 
   if (detail.isLoading) return <div className="p-8"><Card className="p-6"><LoadingState /></Card></div>
   if (detail.isError || !policy)
@@ -96,9 +100,32 @@ export function PolicyDetailPage() {
         title={policy.name}
         subtitle={`${policy.policy_id} · v${policy.version}${policy.platform ? ` · ${policy.platform}` : ''}`}
         actions={
-          <span className="inline-flex items-center gap-2 text-xs font-mono capitalize" style={{ color: statusColor }}>
-            <StatusDot color={statusColor} /> {policy.status ?? '—'}
-          </span>
+          <div className="flex items-center gap-3">
+            {/* cedar-policy CT13a: enforcement-form badge. */}
+            <span
+              className="inline-flex items-center px-2 h-6 rounded-md text-[10px] font-bold tracking-wide uppercase border"
+              style={
+                policy.policy_format === 'cedar'
+                  ? { color: '#0FFFFF', background: 'rgba(15,255,255,0.08)', borderColor: 'rgba(15,255,255,0.25)' }
+                  : { color: '#8DA2AE', background: 'rgba(141,162,174,0.08)', borderColor: 'rgba(141,162,174,0.25)' }
+              }
+              title={policy.policy_format === 'cedar' ? 'Cedar — compiled policy is authoritative for enforcement' : 'Legacy structured (YAML) policy'}
+            >
+              {policy.policy_format === 'cedar' ? 'Cedar' : 'YAML'}
+            </span>
+            <span className="inline-flex items-center gap-2 text-xs font-mono capitalize" style={{ color: statusColor }}>
+              <StatusDot color={statusColor} /> {policy.status ?? '—'}
+            </span>
+            <button
+              type="button"
+              disabled={policy.status === 'disabled'}
+              title={policy.status === 'disabled' ? 'Enable to edit' : 'Edit policy'}
+              onClick={() => navigate(policyEditPath(policy.policy_id))}
+              className="px-3 h-9 rounded-xl text-xs font-bold text-cyan bg-cyan/10 border border-cyan/20 hover:bg-cyan/20 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+            >
+              Edit
+            </button>
+          </div>
         }
       />
 

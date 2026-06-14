@@ -33,6 +33,7 @@ from botocore.exceptions import BotoCoreError, ClientError
 
 from app.combiners.signal import Signal
 from app.config import settings
+from app.utils import tenancy
 
 logger = logging.getLogger(__name__)
 
@@ -137,6 +138,10 @@ def _build_item(
         if k in item:
             continue  # never overwrite per-signal fields
         item[k] = v
+    # v2: add composite base PK (tenant_session_id) + GSI keys (tenant_agent_id,
+    # tenant_decision_date). SK / decision_date / timestamp_ms are untouched in
+    # both modes — the LLD 17 §5.2 writer contract is preserved (workstream T6).
+    tenancy.stamp_signal_item(item)
     return _to_ddb_value(item)
 
 
@@ -152,7 +157,9 @@ class SignalStoreWriter:
     """
 
     def __init__(self, table_name: Optional[str] = None, region: Optional[str] = None):
-        self.table_name = table_name or settings.dynamodb_validation_signals_table
+        # Explicit override (tests) wins; otherwise resolve per-write so the
+        # TENANCY_V2_ENABLED flag is honored live (workstream T6/T7).
+        self._table_name_override = table_name
         self.region = region or settings.aws_region
         self._client = boto3.client("dynamodb", region_name=self.region)
         # Tuned constants from LLD 17 §10
@@ -160,6 +167,10 @@ class SignalStoreWriter:
         self.max_retries = settings.signal_store_batch_max_retries
         self.ttl_days = settings.signal_store_ttl_days
         self.retry_backoff_ms = [50, 200, 800]
+
+    @property
+    def table_name(self) -> str:
+        return self._table_name_override or tenancy.table_name("validation_signals")
 
     def write_signals(
         self,

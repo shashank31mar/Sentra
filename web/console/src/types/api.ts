@@ -5,6 +5,7 @@
 import type {
   AgentStatus,
   CloudProvider,
+  ConnectionStatus,
   Decision,
   DiscoveryStatus,
   MetricsRange,
@@ -237,14 +238,24 @@ export interface AgentListItem {
   requests_denied: number
   active_sessions: number
   last_seen: string | null
-  /** Policy IDs attached to this agent. Present on the list response (raw
-   *  registry passthrough); may be omitted/null — always guard. */
+  /** The agent's governing policy binding, present iff that policy is
+   *  lifecycle-active (agent-policy-management §4.4). null → show "Attach";
+   *  non-null → show "Detach" + "Update". The single source of truth for the
+   *  Inventory actions and Agent Detail/Flow tabs. */
+  active_policy_id?: string | null
+  /** @deprecated vestigial String-Set; the scalar binding (active_policy_id) is
+   *  authoritative. No longer written by attach/detach (T21/T47). */
   attached_policy_ids?: string[] | null
+  /** Present when listed with `managed_only` (Agent Inventory, feature §8.1):
+   *  "managed" + the most recent validate timestamp (data flowing). */
+  lifecycle_status?: 'managed'
+  last_active?: string | null
 }
 
 export interface AgentDetail extends AgentListItem {
-  /** May be omitted/null in real API responses (§11.2) — always guard. */
-  attached_policy_ids: string[] | null
+  active_policy_id?: string | null
+  /** @deprecated see AgentListItem.attached_policy_ids (T47). */
+  attached_policy_ids?: string[] | null
   framework: string | null
   region: string | null
 }
@@ -274,14 +285,21 @@ export interface ProviderScan {
 }
 
 export interface DiscoveredAgent {
+  /** Dedupe-stable id = the source's native_resource_id (feature §8.1). */
   id: string
+  /** Our registry agent_id once imported; null for not_imported (scan-only). */
+  agent_id: string | null
+  native_resource_id: string
   name: string
   cloud_provider: CloudProvider
   framework: string | null
-  first_seen: string
+  first_seen: string | null
   /** P0: provisional heuristic — label as such (§11.3). */
   risk: Risk
+  /** not_imported → imported → managed (data flowing). */
   status: DiscoveryStatus
+  /** Most recent /v1/validate timestamp; null until traffic seen (Managed). */
+  last_active?: string | null
 }
 
 export interface ImportResult {
@@ -296,7 +314,58 @@ export interface ImportResponse {
   agents: ImportResult[]
 }
 
+/* ----------------------------- Connections ----------------------------- */
+
+/**
+ * A connected cloud account (connections-api-spec §3). Secrets stay in a vault;
+ * we hold a reference + the least-privilege scopes only (feature.md §6 / §10.3).
+ */
+export interface CloudConnection {
+  id: string
+  cloud_provider: CloudProvider
+  status: ConnectionStatus
+  /** Human account label/alias; null until known. */
+  account_ref: string | null
+  /** Minted by us; enforced in the role trust policy (confused-deputy guard). */
+  external_id: string
+  /** The principal the customer trusts in their cross-account role. */
+  aegion_principal_arn: string
+  /** Set by the operator after deploying the stack; null until then. */
+  role_arn: string | null
+  /** Least-privilege read-only scopes the role grants. */
+  scopes: string[]
+  /** From the last successful test/scan; null until tested. */
+  agents_visible: number | null
+  last_scan: string | null
+  connected_at: string | null
+  /** Human message when status=error, else null. */
+  error: string | null
+}
+
+export interface CreateConnectionRequest {
+  cloud_provider: CloudProvider
+}
+
+/** Result of `POST /v1/connections/{id}/test` — the AssumeRole probe (not an HTTP error on `ok:false`). */
+export interface ConnectionTestResult {
+  ok: boolean
+  agents_visible: number | null
+  message: string
+}
+
+/** Result of `POST /v1/connections/{id}/scan`. */
+export interface ScanResult {
+  scan_id: string
+  status: ScanStatus
+  discovered_count: number | null
+}
+
 /* ----------------------------- Policies / Sigma ----------------------------- */
+
+/** Authoring/enforcement form of a policy (cedar-policy CT12/CT13b). `cedar`
+ *  means a compiled Cedar co-artifact exists and is authoritative for evaluation;
+ *  `yaml` is the legacy structured-only form. Absent ⇒ treat as `yaml`. */
+export type PolicyFormat = 'yaml' | 'cedar'
 
 export interface PolicySummary {
   policy_id: string
@@ -305,6 +374,13 @@ export interface PolicySummary {
   version: number
   agent_count: number
   updated_at: string
+  /** Authoring origin — present on the raw list passthrough. Used for the
+   *  attach helper hint (§6.1) and `created_by` for the system-policy gating
+   *  (§2.8). May be absent depending on the record. */
+  agent_id?: string | null
+  created_by?: string | null
+  /** Migration-progress badge (cedar-policy CT13b). Absent ⇒ `yaml`. */
+  policy_format?: PolicyFormat | null
 }
 
 /**
@@ -358,9 +434,11 @@ export interface PolicyDetailView {
   cloud_region: string | null
   schema_version: string | null
   allowed_tools: string[]
+  allowed_agents: string[]
   rules: SentraPolicyRule[]
   cross_cloud_dependencies: CrossCloudDependency[]
   max_calls_per_minute: number | null
+  max_refund_amount: number | null
   /* metadata */
   created_by: string | null
   updated_at: string | null
@@ -369,6 +447,47 @@ export interface PolicyDetailView {
   match_count_24h: number | null
   /* raw policy object for the YAML/JSON source viewer */
   content: unknown
+  /** Enforcement form (cedar-policy CT12/CT13a). Absent ⇒ `yaml`. */
+  policy_format: PolicyFormat
+  /** Backend-generated, READ-ONLY compiled Cedar (cedar-policy CT12/CT13). Present
+   *  when `policy_format==='cedar'`; the CEDAR source tab renders this verbatim
+   *  rather than the client-side projection. Null ⇒ fall back to the projection. */
+  cedar_content: string | null
+  generator_version: string | null
+}
+
+/* ---- Policy create/update request shapes (what the backend expects) ---- */
+
+/** One inner rule in a create/update request (`policies[]`). Mirrors the
+ *  backend PolicyRule; `policy_id`, `name`, `severity` are the required core. */
+export interface PolicyRuleRequest {
+  policy_id: string
+  name: string
+  severity: string
+  action?: string
+  rule?: string
+  description?: string
+  enabled?: boolean
+  [key: string]: unknown
+}
+
+/** Body for POST /v1/policies (create) — the structured document the backend
+ *  validates (agent-policy-management §7). On UPDATE, `version` is OMITTED so the
+ *  backend auto-increments (sending the prefilled value overwrites the same S3
+ *  version and breaks audit/rollback — T31/K10). */
+export interface PolicyCreateRequest {
+  schema_version: 'v1'
+  agent_id: string
+  name: string
+  version?: string
+  allowed_tools: string[]
+  policies: PolicyRuleRequest[]
+  description?: string
+  platform?: string
+  cloud_region?: string
+  allowed_agents?: string[]
+  cross_cloud_dependencies?: CrossCloudDependency[]
+  max_calls_per_minute?: number
 }
 
 export interface SigmaRule {
@@ -378,4 +497,26 @@ export interface SigmaRule {
   severity: 'low' | 'medium' | 'high' | 'critical'
   status: SigmaStatus
   match_count: number
+}
+
+/** One detection selection within a Sigma rule (e.g. `instruction_override`). */
+export interface SigmaRuleSelection {
+  name: string
+  /** Matched field + modifier, e.g. "prompt|contains". */
+  field: string
+  /** Literal substrings/patterns the rule matches on. */
+  patterns: string[]
+}
+
+/** Full Sigma rule content for the detail view (`GET /v1/sigma-rules/{id}/content`). */
+export interface SigmaRuleContent {
+  rule_id: string
+  title: string
+  description: string
+  level: string
+  status: string
+  tags: string[]
+  condition: string | null
+  selections: SigmaRuleSelection[]
+  patterns_total: number
 }

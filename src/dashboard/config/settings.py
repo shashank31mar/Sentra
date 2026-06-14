@@ -44,11 +44,10 @@ class Settings:
             "SESSION_CONTEXT_TABLE",
             "sentra-session-context"
         )
-        self.policies_table = os.getenv(
-            "POLICIES_TABLE",
-            "sentra-policies"
-        )
-        
+        # NOTE: the legacy `sentra-policies` table (POLICIES_TABLE) was retired —
+        # policies live in sentra-policies-metadata + S3. The dashboard never
+        # queried it, so the setting is removed.
+
         # CloudWatch Logs
         self.audit_log_group = os.getenv(
             "AUDIT_LOG_GROUP",

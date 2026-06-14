@@ -6,6 +6,9 @@ import logging
 from typing import Dict, List, Optional, Tuple
 from pydantic import ValidationError
 
+from app.config import settings
+from app.utils import tenancy
+
 logger = logging.getLogger(__name__)
 
 
@@ -13,9 +16,15 @@ class PolicyValidator:
     """Validates policy documents (schema + business rules)."""
 
     def __init__(self):
-        self.dynamodb = boto3.resource('dynamodb')
-        self.agent_registry = self.dynamodb.Table('sentra-agent-registry')
-        self.tool_registry = self.dynamodb.Table('sentra-tool-registry')
+        # Region-aware + flag-aware: the agent registry is resolved per-call via
+        # the tenancy helper (was a hardcoded `Table('sentra-agent-registry')`
+        # with no region — workstream T9). Tool registry is not tenant-scoped.
+        self.dynamodb = boto3.resource('dynamodb', region_name=settings.aws_region)
+        self.tool_registry = self.dynamodb.Table(settings.dynamodb_tool_registry_table)
+
+    @property
+    def agent_registry(self):
+        return self.dynamodb.Table(tenancy.table_name('agent_registry'))
 
     def validate_policy(self, policy_data: Dict) -> Tuple[bool, Optional[List[str]]]:
         """
@@ -52,15 +61,19 @@ class PolicyValidator:
             if not self._tool_exists(tool_id):
                 logger.warning(f"Tool '{tool_id}' not found in registry (policy will still be accepted)")
 
-        # 4. Policy rules are valid Python expressions?
-        for i, rule in enumerate(policy_data.get('policies', [])):
-            rule_expr = rule.get('rule')
-            if rule_expr:
-                if not self._is_valid_rule_expression(rule_expr):
-                    errors.append(
-                        f"Invalid rule expression at policies[{i}]: '{rule_expr}' "
-                        f"(must be valid Python expression)"
-                    )
+        # 4. Cedar schema validation (CT11) — REPLACES the legacy `compile(rule,
+        #    'eval')` syntax check on the inert `policies[].rule` strings (which
+        #    enforce nothing — C2). The decorative rule strings are no longer
+        #    compiled; no `eval`/`compile` of policy strings remains. When Cedar
+        #    is enabled, the policy's GENERATED Cedar must pass the Cedar schema
+        #    validator (surfaced as VALIDATION_ERROR), which is the real authz
+        #    contract going forward.
+        if settings.cedar_enabled:
+            from app.validators.cedar.evaluator import validate_policy_set
+            from app.validators.cedar.generator import generate_cedar
+            cedar_errors = validate_policy_set(
+                generate_cedar(policy_data.get('policy_id', '<new>'), policy_data))
+            errors.extend(f"Cedar schema validation: {e}" for e in cedar_errors)
 
         # 5. No duplicate policy IDs within document
         policy_ids = [p.get('policy_id') for p in policy_data.get('policies', [])]
@@ -77,7 +90,7 @@ class PolicyValidator:
     def _agent_exists(self, agent_id: str) -> bool:
         """Check if agent exists in registry."""
         try:
-            response = self.agent_registry.get_item(Key={'agent_id': agent_id})
+            response = self.agent_registry.get_item(Key=tenancy.item_key('agent_id', agent_id))
             return 'Item' in response
         except Exception as e:
             logger.error(f"Error checking agent existence: {e}")
@@ -90,16 +103,6 @@ class PolicyValidator:
             return 'Item' in response
         except Exception as e:
             logger.error(f"Error checking tool existence: {e}")
-            return False
-
-    def _is_valid_rule_expression(self, rule: str) -> bool:
-        """Check if rule is a valid Python expression (syntax only, no execution)."""
-        try:
-            compile(rule, '<string>', 'eval')
-            return True
-        except SyntaxError:
-            return False
-        except Exception:
             return False
 
     def _is_valid_semver(self, version: str) -> bool:

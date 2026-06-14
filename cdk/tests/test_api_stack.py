@@ -62,6 +62,7 @@ def api_template() -> Template:
         "import",                  # T32
         "policies",                # T33 (also Tier A; present either way)
         "{policy_id}",             # T33 detach
+        "status",                  # agent-policy-management T24: /policies/{policy_id}/status
         "{decision_id}",           # T34
         "verdict",                 # T34
     ],
@@ -70,6 +71,20 @@ def test_tier_b_resources_synthesized(api_template, path_part):
     """Each Tier B path segment is present in the synthesized API (Phase 1)."""
     api_template.has_resource_properties(
         "AWS::ApiGateway::Resource", {"PathPart": path_part}
+    )
+
+
+def test_policy_status_patch_method_synthesized(api_template):
+    """agent-policy-management T24: PATCH /policies/{policy_id}/status is wired
+    with the policy_id path param (the one new method in this feature)."""
+    api_template.has_resource_properties(
+        "AWS::ApiGateway::Method",
+        {
+            "HttpMethod": "PATCH",
+            "RequestParameters": Match.object_like(
+                {"method.request.path.policy_id": True}
+            ),
+        },
     )
 
 

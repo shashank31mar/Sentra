@@ -67,6 +67,61 @@ export function buildQuery(params?: Record<string, QueryValue>): string {
   return qs ? `?${qs}` : ''
 }
 
+/** "CODE: message" — the controller embeds the machine code in the detail string
+ *  (e.g. "PROVIDER_NOT_AVAILABLE: …", "NOT_CONNECTED: …", "VALIDATION_ERROR: …"). */
+const CODED_DETAIL_RE = /^([A-Z][A-Z0-9_]+):\s*([\s\S]+)$/
+
+/**
+ * Normalize the controller's error bodies into our {@link ApiErrorBody} envelope.
+ *
+ * The security-controller (FastAPI) has no global error handler, so error
+ * responses come back as `{ detail }` in one of three shapes:
+ *  - a string, sometimes `"CODE: message"` (connections domain — routes.py);
+ *  - a custom dict `{ success, error, error_type, … }` (app/exceptions.py);
+ *  - a list of pydantic errors (422 RequestValidationError).
+ * It may also already be the LLD §11.1 envelope `{ error, error_code, request_id }`
+ * (e.g. the Vite dev proxy / mock router). This collapses all of them so toasts
+ * and ErrorState show the real message + code instead of a generic "Request failed".
+ */
+export function normalizeErrorBody(raw: unknown): Partial<ApiErrorBody> {
+  if (raw == null) return {}
+  if (typeof raw === 'string') return { error: raw }
+  if (typeof raw !== 'object') return {}
+  const obj = raw as Record<string, unknown>
+
+  // Already our envelope (mock router / dev proxy passthrough).
+  if (typeof obj.error === 'string') {
+    return {
+      error: obj.error,
+      error_code: (obj.error_code as string) ?? (obj.error_type as string),
+      request_id: obj.request_id as string | undefined,
+    }
+  }
+
+  const detail = obj.detail
+  if (typeof detail === 'string') {
+    const m = CODED_DETAIL_RE.exec(detail)
+    return m ? { error: m[2], error_code: m[1] } : { error: detail }
+  }
+  if (Array.isArray(detail)) {
+    // FastAPI 422 — join the per-field messages.
+    const msg = detail
+      .map((e) => (e && typeof e === 'object' ? (e as { msg?: string }).msg : String(e)))
+      .filter(Boolean)
+      .join('; ')
+    return { error: msg || 'Validation error', error_code: 'VALIDATION_ERROR' }
+  }
+  if (detail && typeof detail === 'object') {
+    const d = detail as Record<string, unknown>
+    return {
+      error: (d.error as string) ?? (d.message as string),
+      error_code: d.error_type as string | undefined,
+      request_id: d.request_id as string | undefined,
+    }
+  }
+  return {}
+}
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   // Code-level mock adapter (no service worker). In prod, VITE_DATA_SOURCE is
   // unset so USE_MOCKS is false and this branch never runs — the mockRouter is
@@ -117,13 +172,13 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   }
 
   if (!res.ok) {
-    let body: Partial<ApiErrorBody> = {}
+    let raw: unknown
     try {
-      body = (await res.json()) as Partial<ApiErrorBody>
+      raw = await res.json()
     } catch {
       /* non-JSON error body */
     }
-    throw new ApiException(res.status, body)
+    throw new ApiException(res.status, normalizeErrorBody(raw))
   }
 
   if (res.status === 204) return undefined as T
@@ -133,11 +188,17 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 export const http = {
   get: <T>(path: string, params?: Record<string, QueryValue>) =>
     request<T>(`${path}${buildQuery(params)}`),
-  post: <T>(path: string, body?: unknown) =>
-    request<T>(path, { method: 'POST', body: body ? JSON.stringify(body) : undefined }),
-  put: <T>(path: string, body?: unknown) =>
-    request<T>(path, { method: 'PUT', body: body ? JSON.stringify(body) : undefined }),
-  patch: <T>(path: string, body?: unknown) =>
-    request<T>(path, { method: 'PATCH', body: body ? JSON.stringify(body) : undefined }),
-  del: <T>(path: string) => request<T>(path, { method: 'DELETE' }),
+  post: <T>(path: string, body?: unknown, headers?: Record<string, string>) =>
+    request<T>(path, { method: 'POST', body: body ? JSON.stringify(body) : undefined, headers }),
+  put: <T>(path: string, body?: unknown, headers?: Record<string, string>) =>
+    request<T>(path, { method: 'PUT', body: body ? JSON.stringify(body) : undefined, headers }),
+  patch: <T>(path: string, body?: unknown, headers?: Record<string, string>) =>
+    request<T>(path, { method: 'PATCH', body: body ? JSON.stringify(body) : undefined, headers }),
+  del: <T>(path: string, headers?: Record<string, string>) =>
+    request<T>(path, { method: 'DELETE', headers }),
 }
+
+/** Build an `X-Operator-Email` header map (omitted when no operator is known).
+ *  agent-policy-management §9: all writes attribute the operator. */
+export const operatorHeader = (email?: string | null): Record<string, string> =>
+  email ? { 'X-Operator-Email': email } : {}

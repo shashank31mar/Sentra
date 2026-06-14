@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { IconFlame, IconSitemap } from '@tabler/icons-react'
 import { Card } from '../../components/ui/Card'
 import { PageHeader } from '../../components/ui/PageHeader'
@@ -43,12 +43,29 @@ function Kpi({ label, value, accent }: { label: string; value: string; accent?: 
   )
 }
 
+// A single 200-row page of the most-recent decisions is dominated by the busiest
+// agents (so Top-N can look static, and the ribbon weights are skewed). Auto-
+// paginate up to this many decisions so the map reflects real traffic share. NOTE:
+// this maps every agent that HAS traffic — it can't show idle agents, since the
+// map is built from decisions. (~5 pages; weights stabilize well before this.)
+const MAX_FLOWS = 1000
+
 export function TopologyPage() {
   const [view, setView] = useState<(typeof VIEW)[number]['value']>('all')
   const [topN, setTopN] = useState<(typeof TOPN)[number]['value']>('10')
-  const query = useDecisions({ limit: 200 })
+  // No polling here (refetchInterval:false) — a topology map is not a live feed,
+  // and re-polling every accumulated page on a timer would be wasteful.
+  const query = useDecisions({ limit: 200 }, { refetchInterval: false })
+  const { fetchNextPage, hasNextPage, isFetchingNextPage } = query
 
   const items = useMemo(() => query.data?.pages.flatMap((p) => p.items) ?? [], [query.data])
+
+  // Pull additional pages until we've mapped a representative sample (or run out).
+  useEffect(() => {
+    if (hasNextPage && !isFetchingNextPage && items.length < MAX_FLOWS) {
+      void fetchNextPage()
+    }
+  }, [hasNextPage, isFetchingNextPage, items.length, fetchNextPage])
   const filtered = useMemo(
     () => (view === 'all' ? items : items.filter((d) => d.decision === (view as Decision))),
     [items, view],
@@ -67,6 +84,11 @@ export function TopologyPage() {
         subtitle="Cross-fleet flow map — clouds to agents to tools, weighted by live traffic. The brightest ribbon is the hottest path."
         actions={
           <div className="flex items-center gap-3 flex-wrap">
+            {isFetchingNextPage && (
+              <span className="text-[11px] font-mono text-muted animate-pulse">
+                mapping {items.length} flows…
+              </span>
+            )}
             <SegmentedControl options={TOPN} value={topN} onChange={setTopN} />
             <SegmentedControl options={VIEW} value={view} onChange={setView} />
           </div>

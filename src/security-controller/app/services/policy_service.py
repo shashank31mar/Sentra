@@ -21,6 +21,8 @@ import yaml
 from botocore.exceptions import ClientError
 
 from app.config import settings
+from app.utils import tenancy
+from app.validators.cedar import policy_artifact
 from app.utils.cache_manager import get_cache_manager
 from app.utils.pagination import decode_cursor, next_token_from_response
 from app.exceptions import (
@@ -60,16 +62,18 @@ class PolicyService:
         self.logs_client = boto3.client('logs', region_name=self.region)
         self.cloudwatch = boto3.client('cloudwatch', region_name=self.region)
         
-        # Tables
-        self.policies_metadata_table = self.dynamodb.Table(settings.dynamodb_policies_metadata_table)
-        
         # Cache manager
         self.cache = get_cache_manager()
         self.cache_ttl = settings.policy_cache_ttl_seconds
         
         # Metrics namespace
         self.metrics_namespace = "AgentManagementAPI"
-    
+
+    # Resolved per-call so TENANCY_V2_ENABLED is honored live (workstream T7).
+    @property
+    def policies_metadata_table(self):
+        return self.dynamodb.Table(tenancy.table_name('policies_metadata'))
+
     async def query_policies(
         self,
         agent_id: Optional[str] = None,
@@ -110,35 +114,39 @@ class PolicyService:
             # Query DynamoDB based on filters
             policies = []
             
+            metadata_table = self.policies_metadata_table
             if agent_id:
-                # Use agent-index GSI
+                # Use agent-index GSI (composite tenant_agent_id PK when v2).
                 logger.info(f"Querying policies for agent: {agent_id}")
-                response = self.policies_metadata_table.query(
+                agent_kce, agent_val = tenancy.agent_index_kce_value(agent_id)
+                response = metadata_table.query(
                     IndexName='agent-index',
-                    KeyConditionExpression='agent_id = :agent_id',
-                    ExpressionAttributeValues={':agent_id': agent_id},
+                    KeyConditionExpression=agent_kce,
+                    ExpressionAttributeValues={':agent_id': agent_val},
                     Limit=limit,
                     **({"ExclusiveStartKey": start_key} if start_key else {})
                 )
                 policies = response.get('Items', [])
-                
+
             elif status:
-                # Use status-index GSI
+                # Use status-index GSI (tenant_id + status PK/SK when v2).
                 logger.info(f"Querying policies with status: {status}")
-                response = self.policies_metadata_table.query(
+                status_kce, status_names, status_values = tenancy.status_index_query(status)
+                response = metadata_table.query(
                     IndexName='status-index',
-                    KeyConditionExpression='#status = :status',
-                    ExpressionAttributeNames={'#status': 'status'},
-                    ExpressionAttributeValues={':status': status},
+                    KeyConditionExpression=status_kce,
+                    ExpressionAttributeNames=status_names,
+                    ExpressionAttributeValues=status_values,
                     Limit=limit,
                     **({"ExclusiveStartKey": start_key} if start_key else {})
                 )
                 policies = response.get('Items', [])
-                
+
             else:
-                # Scan all policies (no filters)
+                # Scan all policies (no filters) → tenant-scoped Query when v2.
                 logger.info("Scanning all policies")
-                response = self.policies_metadata_table.scan(
+                response = tenancy.query_or_scan(
+                    metadata_table,
                     Limit=limit,
                     **({"ExclusiveStartKey": start_key} if start_key else {})
                 )
@@ -193,7 +201,7 @@ class PolicyService:
             
             # Get from DynamoDB
             logger.info(f"Loading policy {policy_id} from DynamoDB")
-            response = self.policies_metadata_table.get_item(Key={'policy_id': policy_id})
+            response = self.policies_metadata_table.get_item(Key=tenancy.item_key('policy_id', policy_id))
             
             if 'Item' not in response:
                 logger.warning(f"Policy {policy_id} not found")
@@ -242,14 +250,28 @@ class PolicyService:
             policy_obj = self.s3_client.get_object(Bucket=s3_bucket, Key=s3_key)
             policy_content = policy_obj['Body'].read().decode('utf-8')
             
-            # Parse YAML
+            # Parse the structured source (always the editor's source of truth).
             policy_data = yaml.safe_load(policy_content)
-            
+
+            # Surface policy_format + the READ-ONLY generated Cedar (CT12/CT13).
+            # The structured view stays the only editor (single source of truth,
+            # Kiro #6); cedar_content is preview-only. Loaded from the .cedar
+            # co-artifact (CT06c); best-effort so a missing co-artifact never
+            # fails the detail view.
+            policy_format = metadata.get(policy_artifact.POLICY_FORMAT_FIELD, policy_artifact.FORMAT_YAML)
+            policy_data['policy_format'] = policy_format
+            if policy_format == policy_artifact.FORMAT_CEDAR:
+                try:
+                    policy_data['cedar_content'] = policy_artifact.load_compiled_policies(
+                        self.s3_client, s3_bucket, s3_key)
+                except Exception:
+                    logger.warning(f"Cedar co-artifact missing for {policy_id}; preview omitted")
+
             # Merge metadata with content
             policy_data['metadata'] = metadata
-            
+
             return policy_data
-            
+
         except Exception as e:
             logger.exception(f"Error getting policy content for {policy_id}")
             return None
@@ -385,6 +407,14 @@ class PolicyService:
                 metadata={'policy_id': policy_id, 'version': version}
             )
 
+            # 4b. Born-Cedar on save (CT12) — only when the Cedar feature is on.
+            # Generates + schema-validates the `.cedar` co-artifact and writes it
+            # beside the structured source (CT06c); a schema-invalid result is a
+            # VALIDATION_ERROR. When cedar is disabled (default) the policy stays
+            # structured-only and the CT08 backfill migrates it later.
+            policy_format, generator_version = self._maybe_write_cedar(
+                policy_id, policy_data, s3_key)
+
             # 5. Store metadata in DynamoDB (now already computed above)
             metadata_item = {
                 'policy_id': policy_id,
@@ -400,12 +430,18 @@ class PolicyService:
                 'severity_breakdown': self._calculate_severity_breakdown(policy_data['policies']),
                 'content_hash': content_hash,
                 'schema_version': policy_data.get('schema_version', 'v1'),
+                'policy_format': policy_format,
                 'created_at': now,
                 'updated_at': now,
                 'created_by': operator_email,
                 'last_updated_by': operator_email
             }
+            if generator_version:
+                metadata_item['generator_version'] = generator_version
 
+            # Stamp tenant_id (base PK) + composite tenant_agent_id (agent-index
+            # GSI) when v2 is on; no-op otherwise (workstream T04).
+            tenancy.stamp_agent_gsi(tenancy.stamp_base_item(metadata_item))
             self.policies_metadata_table.put_item(Item=metadata_item)
 
             # 6. Audit log
@@ -474,24 +510,29 @@ class PolicyService:
         if existing.get('status') == 'disabled':
             raise ForbiddenException("Cannot update disabled policy. Enable it first.")
 
-        # 3. Merge with existing metadata for validation
-        # User provides content fields, we add system metadata
+        # 3. Compute the new version FIRST. The editor OMITS version on edit so we
+        #    auto-increment (agent-policy-management §6.3 / K10). This MUST happen
+        #    before validation: the policy schema requires `version`, so validating
+        #    a version-less body would 400 ("Schema error at version: Field
+        #    required") even though we're about to assign one.
+        new_version = policy_data.get('version') or self._increment_version(existing['version'])
+
+        # 4. Merge with existing metadata for validation (incl. the resolved
+        #    version + system-owned fields the user doesn't send).
         policy_data_with_metadata = {
             **policy_data,
             'policy_id': policy_id,
+            'version': new_version,
             'status': existing.get('status', 'active'),
             'created_at': existing.get('created_at'),
             'created_by': existing.get('created_by')
         }
 
-        # 4. Validate
+        # 5. Validate
         validator = PolicyValidator()
         is_valid, errors = validator.validate_policy(policy_data_with_metadata)
         if not is_valid:
             raise ValidationException(errors)
-
-        # 4. Auto-increment version if not provided
-        new_version = policy_data.get('version', self._increment_version(existing['version']))
 
         # 5. Generate content hash
         yaml_content = yaml.dump(policy_data, sort_keys=False)
@@ -507,15 +548,23 @@ class PolicyService:
             metadata={'policy_id': policy_id, 'version': new_version}
         )
 
+        # 6b. Born-Cedar on update (CT12): regenerate + write the `.cedar` for the
+        # NEW version when cedar is on; else reset to structured (the new version
+        # has no compiled .cedar until the CT08 backfill regenerates it — CT06c).
+        policy_format, generator_version = self._maybe_write_cedar(
+            policy_id, policy_data, s3_key)
+
         # 7. Update metadata
         now = datetime.utcnow().isoformat() + 'Z'
         self.policies_metadata_table.update_item(
-            Key={'policy_id': policy_id},
+            Key=tenancy.item_key('policy_id', policy_id),
             UpdateExpression="""
                 SET version = :version,
                     s3_key = :s3_key,
                     s3_version_id = :s3_version_id,
                     content_hash = :content_hash,
+                    policy_format = :policy_format,
+                    generator_version = :generator_version,
                     allowed_tools_count = :tools_count,
                     policies_count = :policies_count,
                     severity_breakdown = :severity,
@@ -527,6 +576,10 @@ class PolicyService:
                 ':s3_key': s3_key,
                 ':s3_version_id': s3_version_id,
                 ':content_hash': content_hash,
+                ':policy_format': policy_format,
+                # None when structured-only; stored so the cache key + staleness
+                # detection see a consistent value across create/update.
+                ':generator_version': generator_version,
                 ':tools_count': len(policy_data['allowed_tools']),
                 ':policies_count': len(policy_data['policies']),
                 ':severity': self._calculate_severity_breakdown(policy_data['policies']),
@@ -591,7 +644,7 @@ class PolicyService:
         # 3. Soft delete (idempotent)
         now = datetime.utcnow().isoformat() + 'Z'
         self.policies_metadata_table.update_item(
-            Key={'policy_id': policy_id},
+            Key=tenancy.item_key('policy_id', policy_id),
             UpdateExpression="SET #status = :disabled, updated_at = :now, last_updated_by = :operator",
             ExpressionAttributeNames={'#status': 'status'},
             ExpressionAttributeValues={
@@ -616,6 +669,106 @@ class PolicyService:
             'disabled_at': now,
             'message': 'Policy disabled successfully'
         }
+
+    async def set_policy_status(
+        self,
+        policy_id: str,
+        status: str,
+        operator_email: str
+    ) -> Dict:
+        """
+        Enable or disable a policy (lifecycle status flip).
+
+        agent-policy-management §4.3 / T20. `active` = enable (the previously
+        missing re-enable capability); `disabled` = disable (alias of soft-delete).
+        The engine reads this status when resolving an agent's bound policy:
+        flipping to `disabled` fail-secure DENYs every bound agent (POLICY_DISABLED);
+        flipping to `active` restores them.
+
+        §2.8 (DECIDED): there is **no** `created_by=='system'` 403 here —
+        Enable/Disable are allowed on seeded (system) policies. Only DELETE stays
+        protected (see delete_policy). Do not mirror delete's guard.
+
+        Args:
+            policy_id: Policy identifier
+            status: "active" | "disabled"
+            operator_email: Operator performing the change
+
+        Returns:
+            Dict with success, policy_id, status, updated_at
+
+        Raises:
+            ValidationException: invalid status
+            NotFoundException: policy not found
+        """
+        from datetime import datetime
+
+        if status not in ('active', 'disabled'):
+            raise ValidationException(
+                ["status must be 'active' or 'disabled'"]
+            )
+
+        existing = await self.get_policy(policy_id)
+        if not existing:
+            raise NotFoundException(f"Policy {policy_id} not found")
+
+        now = datetime.utcnow().isoformat() + 'Z'
+        self.policies_metadata_table.update_item(
+            Key=tenancy.item_key('policy_id', policy_id),
+            UpdateExpression="SET #status = :status, updated_at = :now, last_updated_by = :operator",
+            ExpressionAttributeNames={'#status': 'status'},
+            ExpressionAttributeValues={
+                ':status': status,
+                ':now': now,
+                ':operator': operator_email
+            }
+        )
+
+        operation = 'ENABLE_POLICY' if status == 'active' else 'DISABLE_POLICY'
+        self._log_audit(operation, policy_id, operator_email, {'status': status})
+
+        # Clear cache so the next read reflects the new status. (Per-process
+        # cache; multi-task staleness is TTL-bounded — agent-policy-management
+        # K7 — there is no cross-task invalidation claim.)
+        self.cache.clear()
+
+        logger.info(f"Set policy {policy_id} status to {status}")
+
+        return {
+            'success': True,
+            'policy_id': policy_id,
+            'status': status,
+            'updated_at': now
+        }
+
+    def _maybe_write_cedar(self, policy_id: str, policy_data: Dict, s3_key: str):
+        """Born-Cedar on save (CT12). When `cedar_enabled`, generate the `.cedar`
+        co-artifact, schema-validate it, and write it beside the structured source
+        (CT06c). Returns `(policy_format, generator_version)`.
+
+        When cedar is disabled (default) this is a no-op returning
+        `(FORMAT_YAML, None)` — the save path stays byte-identical to pre-Cedar.
+        A schema-invalid generated policy raises ValidationException (the on-save
+        Cedar schema check that replaces the syntax-only check — CT11/CT12).
+        """
+        if not settings.cedar_enabled:
+            return policy_artifact.FORMAT_YAML, None
+
+        # Lazy import so cedarpy only loads when the feature is on.
+        from app.validators.cedar.evaluator import validate_policy_set
+        from app.validators.cedar.generator import GENERATOR_VERSION, generate_cedar
+
+        cedar_text = generate_cedar(policy_id, policy_data)
+        errors = validate_policy_set(cedar_text)
+        if errors:
+            logger.error("Generated Cedar for %s failed schema validation: %s", policy_id, errors)
+            raise ValidationException([f"Cedar schema validation: {e}" for e in errors])
+
+        policy_artifact.put_compiled_policies(
+            self.s3_client, settings.s3_bucket, s3_key, cedar_text,
+            metadata={'policy_id': policy_id, 'generator_version': GENERATOR_VERSION})
+        logger.info("Born-Cedar: wrote .cedar co-artifact for %s (generator %s)", policy_id, GENERATOR_VERSION)
+        return policy_artifact.FORMAT_CEDAR, GENERATOR_VERSION
 
     def _calculate_severity_breakdown(self, policies: List[Dict]) -> Dict:
         """Calculate severity breakdown for metadata."""

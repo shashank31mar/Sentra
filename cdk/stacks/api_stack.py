@@ -23,6 +23,7 @@ from aws_cdk import (
     aws_cloudwatch_actions as cw_actions,
     aws_sns as sns,
     aws_iam as iam,
+    aws_secretsmanager as secretsmanager,
 )
 from constructs import Construct
 import os
@@ -190,6 +191,55 @@ class ApiStack(Stack):
         # Associate API key with usage plan
         self.usage_plan.add_api_key(self.api_key)
         self.usage_plan.add_api_stage(stage=self.api.deployment_stage)
+
+        # ============================================================
+        # Dedicated usage plan + key for the /v1/validate ENFORCEMENT hot path
+        # ============================================================
+        # 2026-06-13 incident: the console's polling exhausted the shared monthly
+        # quota, which 429'd the agents' /v1/validate calls → ~8h with Sentra
+        # returning 429 instead of validating. The enforcement path must NOT share
+        # a quota with console reads. This plan is THROTTLE-ONLY (no monthly quota —
+        # you never want to stop validating because a request count was hit); abuse
+        # is bounded by rate/burst. The key value is GENERATED into Secrets Manager
+        # and reused as the API key, so the agent Lambdas read it from the secret
+        # with no manual key-copy step (unlike the console's manually-populated key).
+        self.validate_api_key_secret = secretsmanager.Secret(
+            self,
+            "ValidateApiKeySecret",
+            secret_name=self.config.get_api_gateway_config(
+                "validate_api_key_secret_name", "sentra-validate-api-key"),
+            description="Sentra /v1/validate enforcement API key (isolated from the console usage plan)",
+            # Plain-string generated key, reused verbatim as the API key value so
+            # the agent's secret read and the API Gateway key are identical. The
+            # agent Lambda's get_sentra_api_key() tolerates BOTH a plain string and
+            # a JSON {"key": ...} secret (lambda/bedrock_agent_actions/index.py), so
+            # this stays simple and avoids the ApiKey-value replacement conflict
+            # that a dynamic-reference change would trigger on redeploy.
+            generate_secret_string=secretsmanager.SecretStringGenerator(
+                exclude_punctuation=True, include_space=False, password_length=40),
+        )
+        self.validate_api_key = apigateway.ApiKey(
+            self,
+            "ValidateApiKey",
+            api_key_name=self.config.get_api_gateway_config("validate_api_key_name", "sentra-validate-key"),
+            description="Enforcement hot path (/v1/validate) — isolated from console quota",
+            value=self.validate_api_key_secret.secret_value.unsafe_unwrap(),
+            enabled=True,
+        )
+        self.validate_usage_plan = apigateway.UsagePlan(
+            self,
+            "ValidateUsagePlan",
+            name=self.config.get_api_gateway_config("validate_usage_plan_name", "sentra-validate-usage-plan"),
+            description="Sentra /v1/validate enforcement path — throttle only, no monthly quota",
+            throttle=apigateway.ThrottleSettings(
+                rate_limit=self.config.get_api_gateway_config("validate_usage_plan_rate_limit", 500),
+                burst_limit=self.config.get_api_gateway_config("validate_usage_plan_burst_limit", 1000),
+            ),
+        )
+        self.validate_usage_plan.add_api_key(self.validate_api_key)
+        self.validate_usage_plan.add_api_stage(stage=self.api.deployment_stage)
+        CfnOutput(self, "ValidateApiKeySecretArn", value=self.validate_api_key_secret.secret_arn,
+                  description="Secret holding the /v1/validate enforcement API key")
 
         # ============================================================
         # VPC Link (Workstream 16 — ADR-022)
@@ -549,6 +599,22 @@ class ApiStack(Stack):
             request_parameters={"method.request.path.policy_id": True}
         )
 
+        # PATCH /v1/policies/{policy_id}/status - Enable/disable (lifecycle).
+        # agent-policy-management §4.5 / T24: the ONE new method in this feature.
+        # A dedicated `status` sub-resource (contract path is /{policy_id}/status,
+        # not a bare PATCH on {policy_id}); mechanism mirrors the sigma-rule PATCH.
+        policy_status_resource = policy_id_resource.add_resource("status")
+        policy_status_resource.add_method(
+            "PATCH",
+            integration=create_http_integration(
+                self.nlb_base_url, "/v1/policies/{policy_id}/status", "PATCH",
+                vpc_link=self.api_vpc_link,
+            ),
+            api_key_required=True,
+            request_validator=body_validator,
+            request_parameters={"method.request.path.policy_id": True}
+        )
+
         # ============================================================
         # Sigma Rules APIs (Workstream 7)
         # ============================================================
@@ -567,6 +633,7 @@ class ApiStack(Stack):
                     "severity": "method.request.querystring.severity",
                     "enabled": "method.request.querystring.enabled",
                     "limit": "method.request.querystring.limit",
+                    "range": "method.request.querystring.range",
                 }
             ),
             api_key_required=True,
@@ -575,6 +642,7 @@ class ApiStack(Stack):
                 "method.request.querystring.severity": False,
                 "method.request.querystring.enabled": False,
                 "method.request.querystring.limit": False,
+                "method.request.querystring.range": False,
             }
         )
 
@@ -593,6 +661,19 @@ class ApiStack(Stack):
             request_parameters={"method.request.path.rule_id": True}
         )
 
+        # GET /v1/sigma-rules/{rule_id}/content - Full rule content (detection
+        # selections + patterns) for the console's expandable rule detail.
+        sigma_rule_content_resource = sigma_rule_id_resource.add_resource("content")
+        sigma_rule_content_resource.add_method(
+            "GET",
+            integration=create_http_integration(
+                self.nlb_base_url, "/v1/sigma-rules/{rule_id}/content", "GET",
+                vpc_link=self.api_vpc_link,
+            ),
+            api_key_required=True,
+            request_parameters={"method.request.path.rule_id": True}
+        )
+
         # ============================================================
         # Workstream 21: SOC Console Tier B endpoints (LLD 21 §3 / T10-T17)
         # These routes already exist in security-controller; this wires them
@@ -601,15 +682,21 @@ class ApiStack(Stack):
         # (integration mapping) and request_parameters (method).
         # ============================================================
 
-        # T10: GET /v1/agents (list; ?enrich=)
+        # T10: GET /v1/agents (list; ?enrich= &managed_only=)
         agents_resource.add_method(
             "GET",
             integration=create_http_integration(
                 self.nlb_base_url, "/v1/agents", "GET", vpc_link=self.api_vpc_link,
-                pass_query_params={"enrich": "method.request.querystring.enrich"},
+                pass_query_params={
+                    "enrich": "method.request.querystring.enrich",
+                    "managed_only": "method.request.querystring.managed_only",
+                },
             ),
             api_key_required=True,
-            request_parameters={"method.request.querystring.enrich": False},
+            request_parameters={
+                "method.request.querystring.enrich": False,
+                "method.request.querystring.managed_only": False,
+            },
         )
 
         # T11/T12: GET /v1/agents/{agent_id} and /v1/agents/{agent_id}/tools
@@ -801,6 +888,7 @@ class ApiStack(Stack):
                     "framework": "method.request.querystring.framework",
                     "risk": "method.request.querystring.risk",
                     "status": "method.request.querystring.status",
+                    "connection_id": "method.request.querystring.connection_id",
                     "limit": "method.request.querystring.limit",
                     "cursor": "method.request.querystring.cursor",
                 },
@@ -811,6 +899,7 @@ class ApiStack(Stack):
                 "method.request.querystring.framework": False,
                 "method.request.querystring.risk": False,
                 "method.request.querystring.status": False,
+                "method.request.querystring.connection_id": False,
                 "method.request.querystring.limit": False,
                 "method.request.querystring.cursor": False,
             },
@@ -880,6 +969,52 @@ class ApiStack(Stack):
             request_validator=body_validator,
             request_parameters={"method.request.path.decision_id": True},
         )
+
+        # ============================================================
+        # Cloud Connections (Connect-Account wizard — connections-api-spec.md)
+        # ============================================================
+        connections_resource = v1_resource.add_resource("connections")
+        # GET /v1/connections (list) + POST /v1/connections (create)
+        connections_resource.add_method(
+            "GET",
+            integration=create_http_integration(
+                self.nlb_base_url, "/v1/connections", "GET", vpc_link=self.api_vpc_link,
+            ),
+            api_key_required=True,
+        )
+        connections_resource.add_method(
+            "POST",
+            integration=create_http_integration(
+                self.nlb_base_url, "/v1/connections", "POST", vpc_link=self.api_vpc_link,
+            ),
+            api_key_required=True,
+            request_validator=body_validator,
+        )
+
+        # /v1/connections/{connection_id} — GET, PUT, DELETE
+        connection_id_resource = connections_resource.add_resource("{connection_id}")
+        for _method in ("GET", "PUT", "DELETE"):
+            connection_id_resource.add_method(
+                _method,
+                integration=create_http_integration(
+                    self.nlb_base_url, "/v1/connections/{connection_id}", _method,
+                    vpc_link=self.api_vpc_link,
+                ),
+                api_key_required=True,
+                request_parameters={"method.request.path.connection_id": True},
+            )
+
+        # POST /v1/connections/{connection_id}/test  and  .../scan
+        for _action in ("test", "scan"):
+            connection_id_resource.add_resource(_action).add_method(
+                "POST",
+                integration=create_http_integration(
+                    self.nlb_base_url, f"/v1/connections/{{connection_id}}/{_action}", "POST",
+                    vpc_link=self.api_vpc_link,
+                ),
+                api_key_required=True,
+                request_parameters={"method.request.path.connection_id": True},
+            )
 
         # ============================================================
         # Task 11: CloudWatch Alarms for API Gateway

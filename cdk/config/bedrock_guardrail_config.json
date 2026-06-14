@@ -39,7 +39,7 @@
     "authenticationConfig": {
       "type": "API_KEY",
       "apiKeyName": "x-api-key",
-      "apiKeySecretArn": "arn:aws:secretsmanager:us-east-1:531109575379:secret:sentra-api-key-eSeuJO"
+      "apiKeySecretArn": "arn:aws:secretsmanager:us-east-1:531109575379:secret:sentra-validate-api-key"
     }
   }
 }

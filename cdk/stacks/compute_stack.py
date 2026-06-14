@@ -164,10 +164,9 @@ class ComputeStack(Stack):
             description="Task role for Security Controller service",
         )
 
-        # DynamoDB permissions (legacy tables)
+        # DynamoDB permissions
         storage_stack.session_context_table.grant_read_write_data(self.security_controller_task_role)
-        storage_stack.policies_table.grant_read_data(self.security_controller_task_role)
-        
+
         # DynamoDB permissions (Data Model v2 tables - Workstream 6, Task 1.5)
         # WS-21: read + write — attach/detach policy (update_item) and discovery
         # import (put_item) mutate the registry, in addition to all the reads.
@@ -187,6 +186,27 @@ class ComputeStack(Stack):
         # implicit (DDB grants apply to the table and its indexes).
         storage_stack.validation_signal_store.table.grant_read_write_data(
             self.security_controller_task_role
+        )
+
+        # Tenancy v2 tables (Multi-Cloud Agent Import — P0a/T02). Granted now so
+        # the migration script + the flag flip work without a second deploy; the
+        # tables sit empty until TENANCY_V2_ENABLED is set. Mirrors the v1 grants
+        # above (read+write on all four).
+        for _v2_table in storage_stack.tenancy_v2_tables:
+            _v2_table.grant_read_write_data(self.security_controller_task_role)
+
+        # Cloud Connections (Connect-Account wizard — connections-api-spec.md).
+        storage_stack.connections_table.grant_read_write_data(self.security_controller_task_role)
+        # Discovery cache (feature §8.1) — scan persists what it lists here.
+        storage_stack.discovery_cache_table.grant_read_write_data(self.security_controller_task_role)
+        # The /connections/{id}/test + /scan endpoints perform a live
+        # sts:AssumeRole into the customer's cross-account discovery role
+        # (external-id enforced). Least-privilege: only Aegion* discovery roles.
+        self.security_controller_task_role.add_to_policy(
+            iam.PolicyStatement(
+                actions=["sts:AssumeRole"],
+                resources=["arn:aws:iam::*:role/Aegion*"],
+            )
         )
 
         # S3 permissions - read sigma_rules and policies, write debug_logs
@@ -986,7 +1006,8 @@ class ComputeStack(Stack):
                     "/v1/decisions*",
                     "/v1/discovery*",
                     "/v1/quarantine*",
-                    "/v1/rollback*"  # Tier A; had no ALB rule → was 404'ing too
+                    "/v1/rollback*",  # Tier A; had no ALB rule → was 404'ing too
+                    "/v1/connections*"  # Connect-Account wizard (connections-api-spec)
                 ])
             ],
             action=elbv2.ListenerAction.forward(
@@ -1282,7 +1303,6 @@ def handler(event, context):
                     "PORT": "8080",
                     "SERVICE_NAME": "security-controller",
                     "SESSION_CONTEXT_TABLE": storage_stack.session_context_table.table_name,
-                    "POLICIES_TABLE": storage_stack.policies_table.table_name,
                     "ARTIFACTS_BUCKET": storage_stack.artifacts_bucket.bucket_name,
                     "AWS_REGION": self.region,
                     "LOG_LEVEL": "INFO",
@@ -1297,6 +1317,17 @@ def handler(event, context):
                     "TOOL_REGISTRY_TABLE": storage_stack.tool_registry_table.table_name,
                     "POLICIES_METADATA_TABLE": storage_stack.policies_metadata_table.table_name,
                     "SIGMA_RULES_METADATA_TABLE": storage_stack.sigma_rules_metadata_table.table_name,
+                    # Tenancy v2 (Multi-Cloud Agent Import — P0a/T02). Flag defaults
+                    # OFF; the v2 table names are always present so flipping the flag
+                    # needs only an env change + force-new-deployment, not a redeploy.
+                    "TENANCY_V2_ENABLED": str(config.get("tenancy_v2_enabled", False)).lower(),
+                    "AGENT_REGISTRY_TABLE_V2": storage_stack.agent_registry_table_v2.table_name,
+                    "POLICIES_METADATA_TABLE_V2": storage_stack.policies_metadata_table_v2.table_name,
+                    "SESSION_CONTEXT_TABLE_V2": storage_stack.session_context_table_v2.table_name,
+                    "VALIDATION_SIGNALS_TABLE_V2": storage_stack.validation_signal_store_v2.table_name,
+                    # Cloud Connections (Connect-Account wizard).
+                    "CONNECTIONS_TABLE": storage_stack.connections_table.table_name,
+                    "DISCOVERY_CACHE_TABLE": storage_stack.discovery_cache_table.table_name,
                     # Cache Configuration (Workstream 5, Task 1)
                     "CACHE_ENABLED": "true",
                     "AGENT_METADATA_CACHE_TTL_SECONDS": "60",
@@ -1321,6 +1352,13 @@ def handler(event, context):
                     "ML_CLASSIFIER_TOTAL_BUDGET_SECONDS": "2.5",
                     "ML_CONFIDENCE_TRUST_THRESHOLD": "0.9",
                     "ML_CONFIDENCE_ABSTAIN_THRESHOLD": "0.5",
+                    # Cedar authorization engine (feature: cedar-policy). Config-
+                    # driven so flipping shadow→cutover needs only a dev.yaml edit +
+                    # cdk deploy (mirrors tenancy_v2). cedar_enabled gates the
+                    # engine; cedar_shadow_mode keeps the legacy verdict live while
+                    # Cedar runs alongside and records CedarShadowDiscrepancy (CT07).
+                    "CEDAR_ENABLED": str(config.get("cedar_enabled", False)).lower(),
+                    "CEDAR_SHADOW_MODE": str(config.get("cedar_shadow_mode", False)).lower(),
                 },
                 "health_check_command": ["CMD-SHELL", "curl -f http://localhost:8080/v1/health || exit 1"],
             },

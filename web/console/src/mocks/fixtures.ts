@@ -1,5 +1,6 @@
 import type {
   AgentListItem,
+  CloudConnection,
   DecisionItem,
   DiscoveredAgent,
   DiscoverySummary,
@@ -146,6 +147,7 @@ export const agents: AgentListItem[] = [
     requests_denied: 1110,
     active_sessions: 4,
     last_seen: '2026-06-06T04:19:58Z',
+    active_policy_id: 'pol-101', // bound → Inventory shows Detach + Update
   },
   {
     agent_id: 'agt-5521',
@@ -159,6 +161,7 @@ export const agents: AgentListItem[] = [
     requests_denied: 140,
     active_sessions: 11,
     last_seen: '2026-06-06T04:19:55Z',
+    active_policy_id: 'pol-102',
   },
   {
     agent_id: 'agt-8890',
@@ -172,6 +175,7 @@ export const agents: AgentListItem[] = [
     requests_denied: 31,
     active_sessions: 0,
     last_seen: '2026-06-06T04:10:11Z',
+    active_policy_id: null, // unbound → Inventory shows Attach
   },
 ]
 
@@ -191,15 +195,41 @@ export const discoveryPlatforms: ProviderScan[] = [
 ]
 
 export const discoveredAgents: DiscoveredAgent[] = [
-  { id: 'disc-001', name: 'payments-router-prod', cloud_provider: 'aws', framework: 'LangChain', first_seen: '2026-06-06T02:19:00Z', risk: 'high', status: 'unmanaged' },
-  { id: 'disc-004', name: 'analytics-summarizer', cloud_provider: 'aws', framework: 'LlamaIndex', first_seen: '2026-06-05T04:19:00Z', risk: 'low', status: 'managed' },
-  { id: 'disc-009', name: 'notify-worker-gcp', cloud_provider: 'gcp', framework: null, first_seen: '2026-06-06T01:02:00Z', risk: 'med', status: 'unmanaged' },
+  // not_imported: visible in the cloud scan, no registry row yet.
+  { id: 'JGECQEHF9N', agent_id: null, native_resource_id: 'JGECQEHF9N', name: 'payments-router-prod', cloud_provider: 'aws', framework: 'LangChain', first_seen: '2026-06-06T02:19:00Z', risk: 'high', status: 'not_imported', last_active: null },
+  // managed: imported AND validate traffic flowing.
+  { id: 'arn-analytics', agent_id: 'analytics-summarizer', native_resource_id: 'arn-analytics', name: 'analytics-summarizer', cloud_provider: 'aws', framework: 'LlamaIndex', first_seen: '2026-06-05T04:19:00Z', risk: 'low', status: 'managed', last_active: '2026-06-11T11:58:00Z' },
+  // imported: registry row exists, no traffic yet (SDK not wired).
+  { id: 'arn-notify', agent_id: 'notify-worker-gcp', native_resource_id: 'arn-notify', name: 'notify-worker-gcp', cloud_provider: 'gcp', framework: null, first_seen: '2026-06-06T01:02:00Z', risk: 'med', status: 'imported', last_active: null },
+]
+
+/** The principal the customer trusts in their cross-account role (connections-api-spec §3). */
+export const AEGION_PRINCIPAL_ARN = 'arn:aws:iam::531109575379:root'
+
+/** Read-only, least-privilege scopes seeded onto a new AWS connection. */
+export const AWS_DISCOVERY_SCOPES = ['bedrock-agent:List*', 'bedrock-agent:Get*', 'lambda:GetFunction']
+
+export const connections: CloudConnection[] = [
+  {
+    id: 'conn-aws-acme',
+    cloud_provider: 'aws',
+    status: 'connected',
+    account_ref: 'global-prod-01',
+    external_id: 'ext-acme-9f3c2a',
+    aegion_principal_arn: AEGION_PRINCIPAL_ARN,
+    role_arn: 'arn:aws:iam::531109575379:role/AegionDiscoveryRole',
+    scopes: AWS_DISCOVERY_SCOPES,
+    agents_visible: 14,
+    last_scan: '2026-06-10T18:31:00Z',
+    connected_at: '2026-06-10T18:22:00Z',
+    error: null,
+  },
 ]
 
 export const policies: PolicySummary[] = [
-  { policy_id: 'pol-101', name: 'baseline-guardrails', status: 'active', version: 4, agent_count: 38, updated_at: '2026-06-05T22:10:00Z' },
-  { policy_id: 'pol-102', name: 'pii-redaction', status: 'active', version: 2, agent_count: 21, updated_at: '2026-06-05T18:40:00Z' },
-  { policy_id: 'pol-103', name: 'refund-limits', status: 'draft', version: 1, agent_count: 0, updated_at: '2026-06-06T03:01:00Z' },
+  { policy_id: 'pol-101', name: 'baseline-guardrails', status: 'active', version: 4, agent_count: 38, updated_at: '2026-06-05T22:10:00Z', policy_format: 'cedar' },
+  { policy_id: 'pol-102', name: 'pii-redaction', status: 'active', version: 2, agent_count: 21, updated_at: '2026-06-05T18:40:00Z', policy_format: 'cedar' },
+  { policy_id: 'pol-103', name: 'refund-limits', status: 'draft', version: 1, agent_count: 0, updated_at: '2026-06-06T03:01:00Z', policy_format: 'yaml' },
 ]
 
 /** Cedar source per policy_id, returned by GET /policies/:id with include_content. */

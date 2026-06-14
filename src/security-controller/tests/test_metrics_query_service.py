@@ -107,3 +107,39 @@ def test_attack_category_count_distinct_threat_types():
         ]
     }
     assert svc.attack_category_count() == 2
+
+
+def test_sigma_match_counts_aggregates_per_rule():
+    """sigma_match_counts() returns {rule_id: summed count} over the window."""
+    cw = Mock()
+    # ListMetrics enumerates the RuleId dimensions that have data.
+    cw.list_metrics.return_value = {
+        "Metrics": [
+            {"Dimensions": [{"Name": "RuleId", "Value": "sigma-llm-001"}]},
+            {"Dimensions": [{"Name": "RuleId", "Value": "sigma-llm-002"}]},
+        ]
+    }
+    # GetMetricData returns one summed value per rule query id (r0, r1).
+    cw.get_metric_data.return_value = {
+        "MetricDataResults": [
+            {"Id": "r0", "Values": [7.0]},
+            {"Id": "r1", "Values": [3.0]},
+        ]
+    }
+    svc = MetricsQueryService(cloudwatch_client=cw)
+    counts = svc.sigma_match_counts("24h")
+
+    assert counts == {"sigma-llm-001": 7, "sigma-llm-002": 3}
+    # Window defaults sensibly and a single GetMetricData call is made.
+    assert cw.get_metric_data.call_count == 1
+
+
+def test_sigma_match_counts_no_series_returns_empty():
+    """No emitted metrics yet -> empty map (caller defaults rules to 0)."""
+    cw = Mock()
+    cw.list_metrics.return_value = {"Metrics": []}
+    svc = MetricsQueryService(cloudwatch_client=cw)
+
+    assert svc.sigma_match_counts("7d") == {}
+    # No rule series -> no GetMetricData call needed.
+    cw.get_metric_data.assert_not_called()

@@ -25,7 +25,18 @@ const options: ChartOptions<'line'> = {
   maintainAspectRatio: false,
   interaction: { mode: 'index', intersect: false },
   plugins: {
-    legend: { display: false },
+    legend: {
+      display: true,
+      position: 'top',
+      align: 'end',
+      labels: {
+        color: '#8DA2AE',
+        boxWidth: 10,
+        boxHeight: 10,
+        usePointStyle: true,
+        font: { family: 'IBM Plex Mono', size: 10 },
+      },
+    },
     tooltip: {
       backgroundColor: '#06101A',
       borderColor: 'rgba(255,255,255,0.1)',
@@ -63,6 +74,20 @@ export function AllowedVsBlockedChart({ series }: { series: TimeseriesPoint[] })
       data={{
         labels,
         datasets: [
+          {
+            // Total request volume (allowed + blocked) — a thin, fill-less
+            // envelope. Makes a collapse in overall traffic obvious at a glance
+            // (e.g. the API-quota outage that silently dropped both series).
+            label: 'Total',
+            data: series.map((p) => p.allowed + p.blocked),
+            borderColor: '#8DA2AE',
+            borderDash: [4, 3],
+            fill: false,
+            tension: 0.4,
+            borderWidth: 1.5,
+            pointRadius: 0,
+            pointHoverRadius: 4,
+          },
           {
             label: 'Allowed',
             data: series.map((p) => p.allowed),

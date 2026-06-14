@@ -64,11 +64,15 @@ class BedrockAgentStack(Stack):
         # Store Sentra API Gateway key for Lambda to call /validate API
         # Note: The actual key value is set manually or imported from existing secret
 
-        # Import existing secret (created manually or via CLI)
+        # Agents authenticate to /v1/validate with the DEDICATED enforcement key
+        # (created by the API stack into this secret), NOT the console's key — so
+        # console polling can never starve agent validation via a shared quota
+        # (2026-06-13 incident). The API stack deploys before this stack so the
+        # secret exists; referenced by name (no hard CFN cross-stack dependency).
         sentra_api_key_secret = secretsmanager.Secret.from_secret_name_v2(
             self,
             "SentraApiKeySecret",
-            secret_name="sentra-api-key"
+            secret_name="sentra-validate-api-key"
         )
 
         # Alternative: Create new secret (use this if secret doesn't exist)
@@ -135,7 +139,7 @@ class BedrockAgentStack(Stack):
                 "CUSTOMERS_TABLE": storage_stack.demo_customers_table.table_name,
                 "ORDERS_TABLE": storage_stack.demo_orders_table.table_name,
                 "SENTRA_API_ENDPOINT": sentra_api_endpoint,
-                "SENTRA_API_KEY_SECRET": "sentra-api-key"
+                "SENTRA_API_KEY_SECRET": "sentra-validate-api-key"
             },
             code=lambda_.Code.from_asset(
                 os.path.join(os.path.dirname(__file__), "..", "..", "lambda", "bedrock_agent_actions")
@@ -472,7 +476,8 @@ When processing refunds, be aware that there are security limits in place.""",
                 "authenticationConfig": {
                     "type": "API_KEY",
                     "apiKeyName": "x-api-key",
-                    "apiKeySecretArn": "arn:aws:secretsmanager:us-east-1:531109575379:secret:sentra-api-key-eSeuJO"
+                    # Dedicated /v1/validate enforcement key (not the console key).
+                    "apiKeySecretArn": sentra_api_key_secret.secret_arn
                 }
             }
         }

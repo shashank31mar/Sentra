@@ -19,6 +19,7 @@ import boto3
 from botocore.exceptions import ClientError
 
 from app.config import settings
+from app.utils import tenancy
 
 logger = logging.getLogger(__name__)
 
@@ -49,8 +50,7 @@ class SessionManager:
     
     def __init__(self):
         self.dynamodb = boto3.resource(AWS_SERVICE_DYNAMODB, region_name=settings.aws_region)
-        self.table = self.dynamodb.Table(settings.dynamodb_session_table)
-        
+
         # Trust scoring thresholds
         self.INITIAL_SCORE = settings.trust_initial_score
         self.QUARANTINE_THRESHOLD = settings.trust_quarantine_threshold
@@ -66,9 +66,19 @@ class SessionManager:
             "SEQUENCE_VIOLATION": -15,
             "UNAUTHORIZED_TOOL": -15,
             "UNAUTHORIZED_AGENT_INVOCATION": -15,
+            # agent-policy-management T14: fail-secure policy-resolution DENYs.
+            # POLICY_NOT_FOUND was previously falling through to the -10 default;
+            # pin both to -15 so a missing/disabled binding penalizes consistently.
+            "POLICY_NOT_FOUND": -15,
+            "POLICY_DISABLED": -15,
             "SYSTEM_ERROR": -10
         }
-    
+
+    # Session table resolved per-call so TENANCY_V2_ENABLED is honored live (T7).
+    @property
+    def table(self):
+        return self.dynamodb.Table(tenancy.table_name('session_context'))
+
     async def get_session(self, session_id: str) -> Optional[Dict]:
         """
         Get existing session without creating if not found.
@@ -80,7 +90,7 @@ class SessionManager:
             Session dictionary or None if not found
         """
         try:
-            response = self.table.get_item(Key={'session_id': session_id})
+            response = self.table.get_item(Key=tenancy.item_key('session_id', session_id))
             
             if 'Item' in response:
                 session = self._deserialize_session(response['Item'])
@@ -112,7 +122,7 @@ class SessionManager:
         """
         try:
             # Try to get existing session
-            response = self.table.get_item(Key={'session_id': session_id})
+            response = self.table.get_item(Key=tenancy.item_key('session_id', session_id))
             
             if 'Item' in response:
                 session = self._deserialize_session(response['Item'])
@@ -152,7 +162,10 @@ class SessionManager:
                 
                 'ttl': ttl
             }
-            
+
+            # v2: tenant_id (base PK) + composite tenant_agent_id (the
+            # agent-updated-index GSI key). No-op when the flag is off (T04).
+            tenancy.stamp_agent_gsi(tenancy.stamp_base_item(new_session))
             self.table.put_item(Item=new_session)
             logger.info(f"Created new session: {session_id} with trust_score={self.INITIAL_SCORE}")
             
@@ -188,7 +201,7 @@ class SessionManager:
             
             # Atomic update with UpdateExpression
             response = self.table.update_item(
-                Key={'session_id': session_id},
+                Key=tenancy.item_key('session_id', session_id),
                 UpdateExpression="""
                     SET trust_score = if_not_exists(trust_score, :initial) + :penalty,
                         consecutive_allows = :zero,
@@ -215,7 +228,7 @@ class SessionManager:
             
             # Second update to set correct quarantine status
             response = self.table.update_item(
-                Key={'session_id': session_id},
+                Key=tenancy.item_key('session_id', session_id),
                 UpdateExpression="SET quarantine_status = :status",
                 ExpressionAttributeValues={':status': new_status},
                 ReturnValues='ALL_NEW'
@@ -272,7 +285,7 @@ class SessionManager:
 
             # First, increment consecutive_allows and add to tool_history
             response = self.table.update_item(
-                Key={'session_id': session_id},
+                Key=tenancy.item_key('session_id', session_id),
                 UpdateExpression="""
                     SET consecutive_allows = if_not_exists(consecutive_allows, :zero) + :one,
                         allow_count = if_not_exists(allow_count, :zero) + :one,
@@ -301,7 +314,7 @@ class SessionManager:
                     for item in session['tool_history']
                 ]
                 self.table.update_item(
-                    Key={'session_id': session_id},
+                    Key=tenancy.item_key('session_id', session_id),
                     UpdateExpression="SET tool_history = :history",
                     ExpressionAttributeValues={':history': history_for_db}
                 )
@@ -318,7 +331,7 @@ class SessionManager:
                 new_score = min(100.0, trust_score + increment)
                 
                 response = self.table.update_item(
-                    Key={'session_id': session_id},
+                    Key=tenancy.item_key('session_id', session_id),
                     UpdateExpression="""
                         SET trust_score = :new_score,
                             consecutive_allows = :zero,
@@ -374,7 +387,7 @@ class SessionManager:
             current_time = int(time.time() * 1000)
             
             response = self.table.update_item(
-                Key={'session_id': session_id},
+                Key=tenancy.item_key('session_id', session_id),
                 UpdateExpression="""
                     SET quarantine_status = :status,
                         quarantine_reason = :reason,
@@ -423,7 +436,7 @@ class SessionManager:
         try:
             current_time = int(time.time() * 1000)
             response = self.table.update_item(
-                Key={'session_id': session_id},
+                Key=tenancy.item_key('session_id', session_id),
                 UpdateExpression="""
                     SET quarantine_status = :status,
                         trust_score = :trust,
@@ -582,7 +595,7 @@ class SessionManager:
             sessions: List[Dict[str, Any]] = []
             last_key: Optional[Dict[str, Any]] = None
             while True:
-                response = self.table.scan(**scan_kwargs)
+                response = tenancy.query_or_scan(self.table, **scan_kwargs)
                 for item in response.get('Items', []):
                     sessions.append(self._format_session_for_api(item))
                 last_key = response.get('LastEvaluatedKey')
@@ -679,7 +692,7 @@ class SessionManager:
                 'FilterExpression': Attr('quarantine_status').eq(status),
             }
             while True:
-                response = self.table.scan(**scan_kwargs)
+                response = tenancy.query_or_scan(self.table, **scan_kwargs)
                 count += response.get('Count', 0)
                 lek = response.get('LastEvaluatedKey')
                 if not lek:
@@ -700,7 +713,7 @@ class SessionManager:
             scores: Dict[str, list] = {}
             scan_kwargs = {'ProjectionExpression': 'agent_id, trust_score'}
             while True:
-                response = self.table.scan(**scan_kwargs)
+                response = tenancy.query_or_scan(self.table, **scan_kwargs)
                 for item in response.get('Items', []):
                     agent_id = item.get('agent_id')
                     if not agent_id:
@@ -715,55 +728,60 @@ class SessionManager:
             logger.exception("Failed to count agents below trust threshold")
             return 0
 
-    async def get_active_sessions_count(self, agent_id: str) -> int:
-        """
-        Count active sessions for a specific agent.
+    async def get_agent_session_stats(self, agent_id: str) -> Dict[str, Any]:
+        """Active-session count + average trust score for an agent in ONE indexed
+        Query.
 
-        Args:
-            agent_id: Agent identifier
+        WS-21 C5 / T50 perf fix: replaces two full-table `scan`s (one per stat,
+        per agent → O(agents × table)) with a single `Query` on the
+        `agent-updated-index` GSI (PK=agent_id) → O(sessions-for-agent). Paginated,
+        so it stays correct beyond a 1MB page (the old scans silently dropped
+        sessions past the first page).
 
-        Returns:
-            Number of active sessions (excludes expired/suspended)
+        Semantics preserved from the old methods:
+          - active_sessions = sessions whose quarantine_status != 'suspended'
+          - avg_trust_score = mean trust_score over ALL the agent's sessions,
+            or 100.0 when the agent has none.
         """
+        from boto3.dynamodb.conditions import Key
+
+        items: List[Dict] = []
+        kwargs: Dict[str, Any] = {
+            'IndexName': 'agent-updated-index',
+            # PK is the composite `tenant_agent_id` when v2 is on (workstream T5).
+            'KeyConditionExpression': tenancy.agent_index_key_condition(agent_id),
+        }
         try:
-            from boto3.dynamodb.conditions import Attr
+            while True:
+                response = self.table.query(**kwargs)
+                items.extend(response.get('Items', []))
+                lek = response.get('LastEvaluatedKey')
+                if not lek:
+                    break
+                kwargs['ExclusiveStartKey'] = lek
+        except ClientError:
+            logger.exception(f"Failed to load session stats for agent {agent_id}")
+            return {'active_sessions': 0, 'avg_trust_score': 100.0}
 
-            response = self.table.scan(
-                FilterExpression=Attr('agent_id').eq(agent_id) & Attr('quarantine_status').ne('suspended')
-            )
+        active = sum(1 for s in items if s.get('quarantine_status') != 'suspended')
+        if items:
+            avg = round(sum(float(s.get('trust_score', 100.0)) for s in items) / len(items), 1)
+        else:
+            avg = 100.0
+        return {'active_sessions': active, 'avg_trust_score': avg}
 
-            return len(response.get('Items', []))
+    async def get_active_sessions_count(self, agent_id: str) -> int:
+        """Count active (non-suspended) sessions for an agent.
 
-        except ClientError as e:
-            logger.exception(f"Failed to count active sessions for agent {agent_id}")
-            return 0
+        Thin wrapper over get_agent_session_stats (single indexed Query). Kept for
+        any standalone caller; the enrichment hot path calls the combined method
+        directly so it issues ONE query per agent, not two.
+        """
+        return (await self.get_agent_session_stats(agent_id))['active_sessions']
 
     async def get_avg_trust_score(self, agent_id: str) -> float:
+        """Average trust score across an agent's sessions (100.0 if none).
+
+        Thin wrapper over get_agent_session_stats (single indexed Query).
         """
-        Calculate average trust score across all active sessions for an agent.
-
-        Args:
-            agent_id: Agent identifier
-
-        Returns:
-            Average trust score (0-100), or 100.0 if no sessions
-        """
-        try:
-            from boto3.dynamodb.conditions import Attr
-
-            response = self.table.scan(
-                FilterExpression=Attr('agent_id').eq(agent_id)
-            )
-
-            sessions = response.get('Items', [])
-
-            if not sessions:
-                return 100.0  # Default if no sessions
-
-            # Calculate average
-            total_score = sum(float(s.get('trust_score', 100.0)) for s in sessions)
-            return round(total_score / len(sessions), 1)
-
-        except ClientError as e:
-            logger.exception(f"Failed to calculate avg trust score for agent {agent_id}")
-            return 100.0
+        return (await self.get_agent_session_stats(agent_id))['avg_trust_score']

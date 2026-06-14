@@ -365,7 +365,17 @@ class PolicyUpdateRequest(PolicyCreateRequest):
     Request model for PUT /v1/policies/{policy_id}.
 
     Updates existing policy (creates new S3 version).
-    Same validation rules as PolicyCreateRequest.
-    Reference: LLD 11 Section 3.2
+    Same validation rules as PolicyCreateRequest, EXCEPT `version` is optional.
+
+    agent-policy-management §6.3 / K10: the editor OMITS `version` on edit so the
+    service auto-increments it (`update_policy` does `policy_data.get('version',
+    self._increment_version(...))`). Create's `version` is required (`...`); if we
+    inherited that here, every edit that correctly omits version would 422 at
+    request validation before the service ever runs. Override it to Optional —
+    omit to auto-bump; if provided, it must still be semver.
     """
-    pass
+    version: Optional[str] = Field(
+        None,
+        pattern=r'^\d+\.\d+\.\d+$',
+        description="Omit to auto-increment the patch version; if provided, must be semver",
+    )

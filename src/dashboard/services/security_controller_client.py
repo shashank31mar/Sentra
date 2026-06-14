@@ -548,7 +548,8 @@ class SecurityControllerClient:
         self,
         status: Optional[str] = None,
         level: Optional[str] = None,
-        limit: int = 50
+        limit: int = 50,
+        match_range: str = "24h"
     ) -> Dict:
         """
         Get list of Sigma rules with match counts.
@@ -557,13 +558,14 @@ class SecurityControllerClient:
             status: Filter by status (stable, experimental, deprecated).
             level: Filter by severity level (critical, high, medium, low).
             limit: Maximum number of rules to return.
+            match_range: Match-count time window (1h, 24h, 7d, 30d).
 
         Returns:
             Dict with success, status_code, rules, total, has_more, error (if failed).
         """
         try:
             url = f"{self.base_url}/v1/sigma-rules"
-            params = {"limit": limit}
+            params = {"limit": limit, "range": match_range}
 
             if status:
                 params["status"] = status
@@ -610,6 +612,18 @@ class SecurityControllerClient:
                 return {"success": False, "error": f"HTTP {resp.status_code}"}
         except requests.exceptions.RequestException as e:
             logger.error(f"Error updating sigma rule: {e}")
+            return {"success": False, "error": str(e)}
+
+    def get_sigma_rule_content(self, rule_id: str) -> Dict:
+        """Get a Sigma rule's detection selections/patterns for the detail view."""
+        try:
+            url = f"{self.base_url}/v1/sigma-rules/{rule_id}/content"
+            resp = requests.get(url, timeout=self.timeout)
+            if resp.status_code == 200:
+                return {"success": True, "data": resp.json()}
+            return {"success": False, "error": f"HTTP {resp.status_code}"}
+        except requests.exceptions.RequestException as e:
+            logger.error(f"Error fetching sigma rule content: {e}")
             return {"success": False, "error": str(e)}
 
     # ============================================================
@@ -799,18 +813,19 @@ def get_policies_cached(agent_id: Optional[str] = None) -> Dict:
 # ============================================================
 
 @st.cache_data(ttl=5, show_spinner=False)
-def get_sigma_rules_cached(status: Optional[str] = None) -> Dict:
+def get_sigma_rules_cached(status: Optional[str] = None, match_range: str = "24h") -> Dict:
     """
     Get Sigma rules (cached for 5 seconds).
 
     Args:
         status: Optional status filter
+        match_range: Match-count time window (1h, 24h, 7d, 30d)
 
     Returns:
         Dict with rules list
     """
     client = _get_client()
-    return client.get_sigma_rules(status=status)
+    return client.get_sigma_rules(status=status, match_range=match_range)
 
 
 @st.cache_data(ttl=5, show_spinner=False)

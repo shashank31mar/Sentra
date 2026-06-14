@@ -1,19 +1,33 @@
 import { useState } from 'react'
-import { IconRadar2, IconDownload } from '@tabler/icons-react'
+import { useNavigate, useSearchParams } from 'react-router-dom'
+import { IconDownload, IconCloudComputing, IconCloudCheck } from '@tabler/icons-react'
 import { Card } from '../../components/ui/Card'
 import { PageHeader } from '../../components/ui/PageHeader'
 import { Button } from '../../components/ui/Button'
+import { SegmentedControl } from '../../components/ui/SegmentedControl'
 import { Table, TBody, Td, Th, THead, Tr } from '../../components/ui/Table'
 import { CloudBadge, DiscoveryStatusBadge, RiskBadge } from '../../components/ui/badges'
 import { StatusDot } from '../../components/ui/StatusDot'
 import { EmptyState, ErrorState, LoadingState } from '../../components/ui/states'
+import { useToast } from '../../components/ui/Toast'
 import {
   useDiscoveredAgents,
   useDiscoveryPlatforms,
   useDiscoverySummary,
   useImportAgents,
 } from '../../lib/query/useDiscovery'
+import { useConnection } from '../../lib/query/useConnections'
+import { ImportResultDrawer } from './ImportResultDrawer'
+import { agentDetailPath, ROUTES } from '../../app/routes'
+import { ApiException } from '../../lib/http'
 import { formatNumber, formatRelativeTime } from '../../lib/format'
+import type { EnforcementMode } from '../../types/enums'
+import type { ImportResponse } from '../../types/api'
+
+const ENFORCEMENT_OPTIONS: readonly { value: EnforcementMode; label: string }[] = [
+  { value: 'monitor', label: 'Monitor' },
+  { value: 'enforce', label: 'Enforce' },
+]
 
 function KpiCard({ label, value, accent }: { label: string; value: string; accent?: string }) {
   return (
@@ -25,16 +39,28 @@ function KpiCard({ label, value, accent }: { label: string; value: string; accen
 }
 
 /**
- * Onboarding surface: detect unmanaged agents (from governing policy artifacts)
- * and bring the selected ones under governance. Previously lived under
- * "Discovery"; that slot is now the fleet Topology view.
+ * Discovery review + import (feature.md §13). Detect unmanaged agents (from
+ * governing policy artifacts, scoped to a connected account when arriving from
+ * the Connect wizard via `?connection=`), pick an enforcement mode, and bring
+ * the selected ones under governance — surfacing the per-agent import result.
  */
 export function ImportAgentsPage() {
+  const navigate = useNavigate()
+  const { error: toastError, success } = useToast()
+  const [params] = useSearchParams()
+  const connectionId = params.get('connection') ?? undefined
+  const connection = useConnection(connectionId)
+
   const summary = useDiscoverySummary()
   const platforms = useDiscoveryPlatforms()
-  const agentsQuery = useDiscoveredAgents()
+  // Scope the review table to the connected account when arriving from the wizard.
+  const agentsQuery = useDiscoveredAgents(connectionId ? { connection_id: connectionId } : {})
   const importAgents = useImportAgents()
+
   const [selected, setSelected] = useState<Set<string>>(new Set())
+  const [enforcementMode, setEnforcementMode] = useState<EnforcementMode>('monitor')
+  const [importResult, setImportResult] = useState<ImportResponse | null>(null)
+  const [drawerOpen, setDrawerOpen] = useState(false)
 
   const agents = agentsQuery.data?.pages.flatMap((p) => p.items) ?? []
 
@@ -52,8 +78,16 @@ export function ImportAgentsPage() {
   const doImport = () => {
     if (selected.size === 0) return
     importAgents.mutate(
-      { agentIds: [...selected] },
-      { onSuccess: () => setSelected(new Set()) },
+      { agentIds: [...selected], enforcementMode },
+      {
+        onSuccess: (res) => {
+          setSelected(new Set())
+          setImportResult(res)
+          setDrawerOpen(true)
+          success(`Imported ${res.imported} agent${res.imported === 1 ? '' : 's'}`)
+        },
+        onError: (err) => toastError(err instanceof ApiException ? err.message : 'Import failed.'),
+      },
     )
   }
 
@@ -61,12 +95,18 @@ export function ImportAgentsPage() {
     <div className="p-4 sm:p-6 lg:p-8">
       <PageHeader
         title="Import Agents"
-        subtitle="Detect unmanaged agents from governing policy artifacts and bring them under governance."
+        subtitle="Connect discovers your agents; Import brings the selected ones under management against their governing policy."
         actions={
           <>
-            {/* POST /discovery/scan is descoped in P0 — disabled with tooltip */}
-            <Button variant="ghost" disabled title="Dynamic scan ships in a later release">
-              <IconRadar2 size={14} /> Trigger Scan
+            <div
+              className="flex items-center gap-2"
+              title="Enforcement posture recorded on import. Monitor = observe-only; Enforce blocks. Runtime enforcement of this posture activates with governance (P1) — imports observe in Monitor today."
+            >
+              <span className="text-[11px] font-mono text-muted hidden sm:inline">Mode</span>
+              <SegmentedControl options={ENFORCEMENT_OPTIONS} value={enforcementMode} onChange={setEnforcementMode} />
+            </div>
+            <Button variant="ghost" onClick={() => navigate(ROUTES.connect)}>
+              <IconCloudComputing size={14} /> Connect account
             </Button>
             <Button onClick={doImport} disabled={selected.size === 0 || importAgents.isPending}>
               <IconDownload size={14} /> Import {selected.size > 0 ? `(${selected.size})` : ''}
@@ -74,6 +114,21 @@ export function ImportAgentsPage() {
           </>
         }
       />
+
+      {/* Connection context (arriving from the Connect wizard) */}
+      {connection.data && (
+        <Card className="px-5 py-3 mb-5 flex items-center justify-between gap-3 flex-wrap">
+          <span className="flex items-center gap-2.5 text-sm text-secondary">
+            <IconCloudCheck size={18} className="text-green" />
+            <CloudBadge provider={connection.data.cloud_provider} />
+            <span className="font-mono text-ink">{connection.data.account_ref ?? connection.data.id}</span>
+          </span>
+          <span className="text-xs font-mono text-muted">
+            {connection.data.agents_visible != null ? `${formatNumber(connection.data.agents_visible)} agents visible · ` : ''}
+            last scan {formatRelativeTime(connection.data.last_scan)}
+          </span>
+        </Card>
+      )}
 
       {/* Summary KPIs */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-5 mb-5">
@@ -134,13 +189,24 @@ export function ImportAgentsPage() {
             </THead>
             <TBody>
               {agents.map((d) => (
-                <Tr key={d.id}>
+                <Tr
+                  key={d.id}
+                  // Imported/Managed agents have a registry record → open detail.
+                  // not_imported agents have none (Agent Detail would 404), so the
+                  // row toggles selection instead (feature §8.1).
+                  onClick={() =>
+                    d.agent_id ? navigate(agentDetailPath(d.agent_id)) : toggle(d.id)
+                  }
+                >
                   <Td>
                     <input
                       type="checkbox"
-                      className="accent-cyan w-4 h-4 cursor-pointer"
+                      aria-label={`Select ${d.name} for import`}
+                      className="accent-cyan w-4 h-4 cursor-pointer disabled:cursor-not-allowed"
                       checked={selected.has(d.id)}
-                      disabled={d.status === 'managed'}
+                      // Only not_imported agents can be imported.
+                      disabled={d.status !== 'not_imported'}
+                      onClick={(e) => e.stopPropagation()}
                       onChange={() => toggle(d.id)}
                     />
                   </Td>
@@ -156,6 +222,13 @@ export function ImportAgentsPage() {
           </Table>
         )}
       </Card>
+
+      <ImportResultDrawer
+        open={drawerOpen}
+        onClose={() => setDrawerOpen(false)}
+        result={importResult}
+        enforcementMode={enforcementMode}
+      />
     </div>
   )
 }

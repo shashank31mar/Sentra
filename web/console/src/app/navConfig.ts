@@ -7,6 +7,7 @@ import {
   IconSitemap,
   IconCloudDownload,
   IconCloudUpload,
+  IconCloudComputing,
   IconShieldLock,
   IconLockExclamation,
   IconListSearch,
@@ -44,6 +45,7 @@ export const NAV_GROUPS: NavGroup[] = [
   {
     title: 'Onboard',
     items: [
+      { label: 'Connect Account', to: ROUTES.connect, icon: IconCloudComputing },
       { label: 'Import Agents', to: ROUTES.import, icon: IconCloudDownload },
       { label: 'Deploy Agent', to: ROUTES.deploy, icon: IconCloudUpload },
     ],

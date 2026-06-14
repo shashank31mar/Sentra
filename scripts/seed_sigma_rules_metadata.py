@@ -197,6 +197,11 @@ def get_sigma_rule_metadata_items(
                 "s3_key": s3_key,
                 "patterns_count": patterns_count,
                 "tags": rule.get("tags", []),
+                # DEAD FIELD: match counts are sourced from CloudWatch (the
+                # SigmaRuleMatches metric, per RuleId) and read back via
+                # MetricsQueryService.sigma_match_counts(). These stats.* fields
+                # are seeded to 0 and never incremented at runtime — kept only
+                # for schema stability. The console does NOT read them.
                 "stats": {
                     "match_count_24h": 0,
                     "match_count_7d": 0,

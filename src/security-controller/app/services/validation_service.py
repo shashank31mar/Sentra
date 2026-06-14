@@ -12,6 +12,7 @@ Architecture:
 import time
 import secrets
 import logging
+import contextvars
 from typing import Dict, List, Optional
 
 from app.api.models import ValidationRequest, ValidationResult
@@ -19,6 +20,26 @@ from app.config import settings
 from app.utils.session_manager import SessionManager, SessionUpdateError
 
 logger = logging.getLogger(__name__)
+
+
+# --- M1 latency instrumentation (LLD 24 / WS24) ---------------------------------
+# Per-request per-step wall-clock timings, kept in a contextvar so concurrent
+# requests don't collide (each request runs in its own asyncio task → its own
+# copy). Wrap any awaited step in `_timed("label", coro)`; emitted once per
+# request as the structured `validation.timing` log line.
+_step_timings: "contextvars.ContextVar" = contextvars.ContextVar("step_timings", default=None)
+
+
+async def _timed(label: str, coro):
+    """Await `coro`, recording its elapsed ms under `label` in the per-request
+    timings dict (no-op if instrumentation isn't initialized for this request)."""
+    t = time.perf_counter()
+    try:
+        return await coro
+    finally:
+        d = _step_timings.get()
+        if d is not None:
+            d[label] = round((time.perf_counter() - t) * 1000, 1)
 
 
 class ValidationService:
@@ -63,7 +84,16 @@ class ValidationService:
         # settings.ml_classifier_enabled; instance is still created so the loader
         # logs surface "validator present, flag off" instead of "validator missing".
         self.ml_classifier = MLClassifierValidator()  # WS19 ✅
-        
+
+        # Cedar policy engine (feature: cedar-policy). Constructed only when
+        # enabled; it reuses self.policy_engine for binding resolution + cloud
+        # stamping. In shadow mode it runs alongside the legacy engine at STEP 2
+        # and records disagreements without affecting the live verdict (CT07).
+        self.cedar_engine = None
+        if settings.cedar_enabled:
+            from app.validators.cedar.engine import CedarPolicyEngine
+            self.cedar_engine = CedarPolicyEngine(policy_engine=self.policy_engine)
+
         # Audit logging and metrics (Task 9)
         from app.utils.audit_logger import AuditLogger
         from app.utils.metrics_publisher import MetricsPublisher
@@ -82,42 +112,59 @@ class ValidationService:
             Dict with decision (ALLOW/DENY), trust_score, latency, etc.
         """
         start_time = time.time()
-        
+        _step_timings.set({})  # M1 (LLD 24): start per-request step timing
+
         try:
             # Load or create session
-            session = await self.session_manager.get_or_create_session(
+            session = await _timed("session", self.session_manager.get_or_create_session(
                 request.session_id,
                 user_id="unknown",  # Will be populated by agents
                 agent_id=request.agent_id
-            )
-            
+            ))
+
             # Run 5-step validation pipeline. signals[] collects every
             # validator's contribution (Workstream 17 / LLD 17 §3.2). The
             # final ValidationResult is the verdict (short-circuited DENY
             # or full-pipeline ALLOW); signals[] is the full breakdown for
             # the audit logger's dual-write and the dashboard's "By" column.
-            validation_result, signals = await self._run_validation_pipeline(request, session)
+            validation_result, signals = await _timed(
+                "pipeline", self._run_validation_pipeline(request, session))
 
-            # Handle DENY
+            # Handle DENY / ALLOW (handle = trust update + audit + metrics today;
+            # see WS24 M4 for moving audit+metrics off this path).
             if validation_result.should_deny:
-                return await self._handle_deny(
+                response = await _timed("handle", self._handle_deny(
                     request,
                     session,
                     validation_result,
                     start_time,
                     signals=signals,
-                )
+                ))
+            else:
+                # ALLOW — pass validation_result so cross-cloud fields
+                # (platform, cloud_region) can be surfaced in the response.
+                response = await _timed("handle", self._handle_allow(
+                    request,
+                    session,
+                    start_time,
+                    validation_result=validation_result,
+                    signals=signals,
+                ))
 
-            # Handle ALLOW — pass the validation_result so cross-cloud fields
-            # (platform, cloud_region) on it can be surfaced in the response.
-            return await self._handle_allow(
-                request,
-                session,
-                start_time,
-                validation_result=validation_result,
-                signals=signals,
+            # M1 (LLD 24 / WS24): single structured line with the per-step
+            # breakdown so we can re-baseline post-singleton and target the
+            # dominant cost (ML vs sigma vs policy vs the rest).
+            logger.info(
+                "validation.timing",
+                extra={
+                    "timing_ms": _step_timings.get() or {},
+                    "total_ms": response.get("latency_ms"),
+                    "decision": response.get("decision"),
+                    "agent_id": request.agent_id,
+                },
             )
-            
+            return response
+
         except SessionUpdateError as e:
             logger.exception(f"Session update error: {e}")
             return self._create_error_response(
@@ -180,35 +227,71 @@ class ValidationService:
         # ============================================================
         # STEP 1: Trust Score Check (Task 4 ✅)
         # ============================================================
-        # KNOWN GAP (WS15 M2 review, Issue #6): a trust-check DENY here returns
-        # before policy_engine runs, so the response carries platform=None and
-        # cloud_region=None UNLESS the interceptor (Bedrock Lambda / Azure
-        # Function) already stamped them on the inbound request. The downstream
-        # `_handle_deny` does fall back to request.platform / request.cloud_region,
-        # so interceptors that send those fields produce correct audit entries.
-        # If a future interceptor doesn't, the trust-check-DENY audit row will
-        # be missing the cross-cloud columns. Accepted gap; document in audit
-        # query tooling so consumers know "platform=NULL on a trust DENY" is
-        # not a data corruption — it's a quarantined session that bypassed
-        # policy lookup. Fixing properly would require trust_checker to fetch
-        # the policy itself, adding latency to every validation call.
-        trust_result = _capture(await self.trust_checker.check(session, request))
+        # A trust-check DENY returns before policy_engine runs. Previously the
+        # response carried platform=None/cloud_region=None unless the interceptor
+        # stamped them (WS15 M2 known gap, Issue #6). agent-policy-management
+        # K9/C2: cloud identity is now a per-agent attribute, so we resolve it
+        # from the agent registry on the DENY path (one cheap get_item, only on
+        # DENY — the ALLOW path gets it from the loaded policy at STEP 2).
+        trust_result = _capture(await _timed("trust", self.trust_checker.check(session, request)))
         if trust_result.should_deny:
+            if trust_result.platform is None or trust_result.cloud_region is None:
+                # Best-effort: cloud identity is audit metadata — never let a
+                # resolution hiccup turn a clean security DENY into a 500.
+                try:
+                    a_platform, a_region = self.policy_engine.get_agent_cloud_identity(
+                        request.agent_id
+                    )
+                except Exception:
+                    a_platform, a_region = None, None
+                    logger.debug("trust-DENY cloud stamp skipped", exc_info=True)
+                if trust_result.platform is None:
+                    trust_result.platform = a_platform or request.platform
+                if trust_result.cloud_region is None:
+                    trust_result.cloud_region = a_region or request.cloud_region
             return trust_result, signals
 
         # ============================================================
-        # STEP 2: Policy Engine (Task 5 ✅)
+        # STEP 2: Policy Engine (Task 5 ✅ / Cedar feature CT07+CT10)
         # ============================================================
-        policy_result = _capture(await self.policy_engine.validate(request))
+        # Authoritative policy engine selection:
+        #   * cedar_enabled & NOT shadow  → CedarPolicyEngine IS the decision (CT10 cutover).
+        #   * cedar_enabled & shadow      → legacy decides; Cedar runs alongside, logs
+        #                                   disagreements, no influence (CT07).
+        #   * cedar disabled (default)    → legacy decides; Cedar never runs.
+        # Cedar fails secure on its own evaluator error (returns POLICY_ERROR DENY).
+        cedar = getattr(self, "cedar_engine", None)
+        cutover = cedar is not None and settings.cedar_enabled and not settings.cedar_shadow_mode
+
+        if cutover:
+            policy_result = _capture(await _timed("policy", cedar.validate(request)))
+            if policy_result.is_abstain:
+                # Agent not Cedar-migrated yet — fall back to legacy enforcement
+                # so there is never an un-enforced window during rollout.
+                logger.info(
+                    "Cedar abstained (not migrated) for %s; falling back to legacy engine",
+                    request.agent_id)
+                policy_result = _capture(await _timed("policy_fallback", self.policy_engine.validate(request)))
+        else:
+            policy_result = _capture(await _timed("policy", self.policy_engine.validate(request)))
+            # Cedar shadow comparison (CT07): run Cedar alongside, record any
+            # disagreement, but the live decision stays the legacy engine's. Must
+            # run BEFORE the should_deny short-circuit so both verdicts are
+            # compared even on a policy DENY. Never raises — shadow is best-effort.
+            if cedar is not None and settings.cedar_shadow_mode:
+                await self._cedar_shadow_compare(request, policy_result)
+
         if policy_result.should_deny:
             return policy_result, signals
-        # Workstream 15: capture cross-cloud fields from the policy result so
-        # they can be propagated onto every downstream result (DENY or ALLOW).
+        # Capture the agent-sourced cross-cloud fields (the policy engine stamped
+        # platform/cloud_region from the AGENT record, not the policy doc —
+        # agent-policy-management §2.3/C2) so they propagate onto every
+        # downstream result (DENY or ALLOW).
         platform_from_policy = policy_result.platform
         cloud_region_from_policy = policy_result.cloud_region
 
         def _stamp(result: ValidationResult) -> ValidationResult:
-            """Attach the policy-derived cross-cloud fields to a result that
+            """Attach the agent-sourced cross-cloud fields to a result that
             didn't natively carry them (sigma, context, abuse, cross-agent)."""
             if result.platform is None:
                 result.platform = platform_from_policy
@@ -219,14 +302,14 @@ class ValidationService:
         # ============================================================
         # STEP 2.5: Cross-Agent Validator (Workstream 12 ✅)
         # ============================================================
-        cross_agent_result = _capture(await self.cross_agent_validator.validate(request))
+        cross_agent_result = _capture(await _timed("cross_agent", self.cross_agent_validator.validate(request)))
         if cross_agent_result.should_deny:
             return _stamp(cross_agent_result), signals
 
         # ============================================================
         # STEP 3: Sigma Rule Engine (Task 6 ✅)
         # ============================================================
-        sigma_result = _capture(await self.sigma_engine.match_rules(request.user_input))
+        sigma_result = _capture(await _timed("sigma", self.sigma_engine.match_rules(request.user_input)))
         if sigma_result.should_deny:
             return _stamp(sigma_result), signals
 
@@ -240,7 +323,7 @@ class ValidationService:
         # short-circuit-on-DENY, and that's more efficient for the attack path).
         # When the flag is off (default), this validator returns ABSTAIN with
         # zero Bedrock cost.
-        ml_result = _capture(await self.ml_classifier.validate(request))
+        ml_result = _capture(await _timed("ml", self.ml_classifier.validate(request)))
         # Shadow mode (WS19 M3): the validator ran and its Signal is already in
         # signals[] via _capture, but we MUST NOT let its DENY short-circuit the
         # pipeline — the combined verdict has to fall back to sigma + policy
@@ -253,7 +336,7 @@ class ValidationService:
         # ============================================================
         # STEP 4: Context Validator (Task 7 ✅)
         # ============================================================
-        context_result = _capture(await self.context_validator.validate_sequence(session, request))
+        context_result = _capture(await _timed("context", self.context_validator.validate_sequence(session, request)))
         if context_result.should_deny:
             return _stamp(context_result), signals
 
@@ -261,8 +344,8 @@ class ValidationService:
         # STEP 5: Abuse Detector (Task 8 ✅)
         # ============================================================
         # Get policy for rate limit check
-        policy = await self.policy_engine.get_agent_policy(request.agent_id)
-        abuse_result = _capture(await self.abuse_detector.check_rate_limit(session, policy))
+        policy = await _timed("abuse_policy_load", self.policy_engine.get_agent_policy(request.agent_id))
+        abuse_result = _capture(await _timed("abuse", self.abuse_detector.check_rate_limit(session, policy)))
         if abuse_result.should_deny:
             return _stamp(abuse_result), signals
 
@@ -276,7 +359,58 @@ class ValidationService:
             platform=platform_from_policy,
             cloud_region=cloud_region_from_policy,
         ), signals
-    
+
+    async def _cedar_shadow_compare(
+        self, request: ValidationRequest, live_result: ValidationResult
+    ) -> None:
+        """Run CedarPolicyEngine in shadow and record any disagreement vs the
+        legacy engine's `live_result` (CT07). Side-effect only: emits the
+        `CedarShadowDiscrepancy` metric + a structured log. NEVER raises and
+        NEVER touches the live verdict or the combiner's signals.
+
+        Disagreement kinds (for CT09 triage):
+          * ``cedar_abstain`` — agent not Cedar-migrated; not counted as a diff.
+          * ``cedar_error``   — Cedar emitted POLICY_ERROR where legacy didn't.
+          * ``verdict``       — ALLOW/DENY differ.
+          * ``violation_type``— same verdict, different violation_type
+                                (matters for invoke_agent reasons, §7 collapse).
+          * ``none``          — agreement.
+        """
+        try:
+            cedar_result = await self.cedar_engine.validate(request)
+
+            if cedar_result.is_abstain:
+                await self.metrics_publisher.publish_cedar_shadow_metric(
+                    agreed=True, disagreement_kind="cedar_abstain")
+                return
+
+            live_deny = bool(live_result.should_deny)
+            cedar_deny = bool(cedar_result.should_deny)
+
+            if cedar_result.violation_type == "POLICY_ERROR" and live_result.violation_type != "POLICY_ERROR":
+                kind = "cedar_error"
+            elif live_deny != cedar_deny:
+                kind = "verdict"
+            elif live_deny and cedar_deny and live_result.violation_type != cedar_result.violation_type:
+                kind = "violation_type"
+            else:
+                kind = "none"
+
+            if kind != "none":
+                logger.warning(
+                    "Cedar shadow disagreement [%s] agent=%s tool=%s "
+                    "legacy=(%s/%s/%s) cedar=(%s/%s/%s)",
+                    kind, request.agent_id, request.tool_name,
+                    live_result.decision, live_result.violation_type, live_result.violated_policy,
+                    cedar_result.decision, cedar_result.violation_type, cedar_result.violated_policy,
+                )
+
+            await self.metrics_publisher.publish_cedar_shadow_metric(
+                agreed=(kind == "none"), disagreement_kind=kind)
+        except Exception:
+            # Shadow must never break the live path.
+            logger.exception("Cedar shadow comparison failed (non-blocking)")
+
     async def _handle_deny(
         self,
         request: ValidationRequest,
@@ -347,10 +481,10 @@ class ValidationService:
             severity=validation_result.severity,
         )
 
-        # Workstream 15: surface cross-cloud fields. Prefer the policy-derived
-        # values stashed on validation_result; fall back to interceptor-supplied
-        # request hints. If neither is present (e.g., early trust_checker DENY
-        # on a session with no resolved policy yet), leave as null.
+        # Surface cross-cloud fields (agent-policy-management §2.3/C2: these are
+        # AGENT-sourced — stamped from the registry by the policy engine, or by the
+        # STEP 1 early-DENY path). Fall back to interceptor-supplied request hints.
+        # Downstream audit_logger / decisions_service inherit these with no change.
         platform = validation_result.platform or request.platform
         cloud_region = validation_result.cloud_region or request.cloud_region
         if platform:
@@ -448,8 +582,8 @@ class ValidationService:
             "action_id": action_id,
         }
 
-        # Workstream 15: surface policy-derived cross-cloud fields when
-        # available. Prefer validation_result; fall back to interceptor hints.
+        # Surface agent-sourced cross-cloud fields (agent-policy-management
+        # §2.3/C2). Prefer validation_result; fall back to interceptor hints.
         platform = (validation_result.platform if validation_result else None) or request.platform
         cloud_region = (validation_result.cloud_region if validation_result else None) or request.cloud_region
         if platform:

@@ -71,26 +71,43 @@ def _derive_category(rule: Dict) -> str:
     return "detection"
 
 
-def _to_api_rule(rule: Dict) -> Dict:
+def _to_api_rule(rule: Dict, match_count: Optional[int] = None) -> Dict:
     """Map a raw DDB sigma metadata item to the console's SigmaRule contract.
 
     enabled/disabled status, flat severity, flat match_count, derived category.
     Unknown/extra fields are dropped — the console only renders these.
+
+    match_count comes from CloudWatch (the SigmaRuleMatches metric, per RuleId),
+    passed in by the caller. The DDB ``stats.match_count_*`` fields are DEAD —
+    they were never incremented at runtime (the only writer,
+    update_rule_match_count(), is called by nothing but tests), so they sit at
+    their seeded 0 forever. We intentionally do NOT read them here. If CloudWatch
+    has no series for a rule yet (it never matched, or matched before emission
+    shipped), the count is 0.
     """
-    stats = rule.get("stats") or {}
-    match_count = stats.get("match_count_24h", 0)
-    # DDB numbers come back as Decimal; the API serializes ints cleanly.
+    if match_count is None:
+        match_count = 0
     try:
         match_count = int(match_count)
     except (TypeError, ValueError):
         match_count = 0
+
+    # patterns_count lives flat on the DDB item (written by the seed script).
+    patterns_count = rule.get("patterns_count", 0)
+    try:
+        patterns_count = int(patterns_count)
+    except (TypeError, ValueError):
+        patterns_count = 0
+
     ddb_status = (rule.get("status") or "").strip().lower()
     return {
         "rule_id": rule.get("rule_id"),
         "title": rule.get("title") or rule.get("rule_id"),
+        "description": rule.get("description", ""),
         "category": _derive_category(rule),
         "severity": rule.get("level") or "medium",
         "status": "enabled" if ddb_status == _DDB_STATUS_ENABLED else "disabled",
+        "patterns_count": patterns_count,
         "match_count": match_count,
     }
 
@@ -133,24 +150,44 @@ class SigmaRulesService:
         
         # Metrics namespace
         self.metrics_namespace = "AgentManagementAPI"
+
+    def _get_match_counts(self, match_range: str) -> Dict[str, int]:
+        """Per-rule Sigma match counts from CloudWatch for the given window.
+
+        Delegates to MetricsQueryService.sigma_match_counts (reads the
+        SigmaRuleMatches metric, per RuleId). Returns {} on any error so the
+        rule list still renders with zeroed counts rather than failing.
+        """
+        try:
+            from app.services.metrics_query_service import MetricsQueryService
+            return MetricsQueryService(self.cloudwatch).sigma_match_counts(match_range)
+        except Exception as e:
+            logger.warning(f"Could not load Sigma match counts from CloudWatch: {e}")
+            return {}
     
     async def list_sigma_rules(
         self,
         status: Optional[str] = None,
         level: Optional[str] = None,
         limit: int = 50,
-        cursor: Optional[str] = None
+        cursor: Optional[str] = None,
+        match_range: str = "24h"
     ) -> Dict:
         """
         List Sigma rules from DynamoDB metadata table with filters.
         
         Data Source: sentra-sigma-rules-metadata table
         Note: Returns metadata only. Full rule content in S3, loaded on-demand.
-        
+
+        Match counts are sourced from CloudWatch (the SigmaRuleMatches metric,
+        per RuleId) for the requested ``match_range`` window — NOT from the dead
+        DDB ``stats.match_count_*`` fields.
+
         Args:
             status: Filter by status (stable/experimental/deprecated) (optional)
             level: Filter by severity level (critical/high/medium/low) (optional)
             limit: Max results (default: 50, max: 200)
+            match_range: Time window for match counts (1h/24h/7d/30d, default 24h)
             
         Returns:
             Dictionary with rules array, total, and has_more flag
@@ -159,8 +196,8 @@ class SigmaRulesService:
         cache_hit = False
         
         try:
-            # Build cache key (cursor included so pages don't collide)
-            cache_key = f"sigma_rules:status={status}:level={level}:limit={limit}:cursor={cursor}"
+            # Build cache key (cursor + match_range included so pages/windows don't collide)
+            cache_key = f"sigma_rules:status={status}:level={level}:limit={limit}:cursor={cursor}:range={match_range}"
             start_key = decode_cursor(cursor) if cursor else None
             cached_data = self.cache.get(cache_key)
             if cached_data:
@@ -213,16 +250,25 @@ class SigmaRulesService:
             # Apply additional filters if both status and level provided
             if status and level:
                 rules = [r for r in rules if r.get('level') == level]
-            
-            # Sort by match count (most active first)
-            # Match counts are stored in metadata (updated by Security Controller)
+
+            # Fetch per-rule match counts from CloudWatch for the requested
+            # window. This is the real source of truth — the DDB
+            # stats.match_count_* fields are dead (never incremented at runtime).
+            # On any CloudWatch error we fall back to an empty map (counts -> 0)
+            # so the rule list still renders; the count column just shows 0.
+            match_counts = self._get_match_counts(match_range)
+
+            # Sort by CloudWatch match count (most active first).
             rules.sort(
-                key=lambda r: r.get('stats', {}).get('match_count_24h', 0),
+                key=lambda r: match_counts.get(r.get('rule_id'), 0),
                 reverse=True
             )
-            
+
             result = {
-                "rules": [_to_api_rule(r) for r in rules[:limit]],
+                "rules": [
+                    _to_api_rule(r, match_counts.get(r.get('rule_id'), 0))
+                    for r in rules[:limit]
+                ],
                 "total": len(rules),
                 "next_token": next_token_from_response(response),
             }
@@ -355,9 +401,14 @@ class SigmaRulesService:
     ) -> bool:
         """
         Update match count for a Sigma rule (atomic increment).
-        
-        Called by Security Controller when a rule matches.
-        
+
+        DEAD CODE — DO NOT WIRE THIS UP. Match counts now live in CloudWatch
+        (the SigmaRuleMatches metric, per RuleId, emitted by SigmaEngine on each
+        match) and are read back via MetricsQueryService.sigma_match_counts().
+        The console reads CloudWatch, never the DDB ``stats.match_count_*``
+        fields this method writes. Kept only so the existing unit tests and the
+        DDB schema stay intact; nothing in the request path calls it.
+
         Args:
             rule_id: Sigma rule identifier
             increment: Amount to increment (default: 1)

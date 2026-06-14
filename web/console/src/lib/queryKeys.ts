@@ -26,6 +26,10 @@ export const queryKeys = {
     detail: (id: string) => ['agents', 'detail', id] as const,
     tools: (id: string) => ['agents', 'tools', id] as const,
   },
+  connections: {
+    list: () => ['connections', 'list'] as const,
+    detail: (id: string) => ['connections', 'detail', id] as const,
+  },
   discovery: {
     summary: () => ['discovery', 'summary'] as const,
     platforms: () => ['discovery', 'platforms'] as const,
@@ -37,5 +41,6 @@ export const queryKeys = {
   },
   sigma: {
     list: (filters: Record<string, unknown>) => ['sigma-rules', filters] as const,
+    content: (id: string) => ['sigma-rules', 'content', id] as const,
   },
 } as const

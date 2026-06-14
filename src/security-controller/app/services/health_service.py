@@ -11,6 +11,7 @@ import boto3
 from botocore.exceptions import ClientError
 
 from app.config import settings
+from app.utils import tenancy
 from app.utils.helpers import get_uptime_seconds
 
 logger = logging.getLogger(__name__)
@@ -87,10 +88,9 @@ class HealthService:
     ) -> bool:
         """
         Check DynamoDB connectivity and table availability.
-        
-        Checks 6 tables:
-        - sentra-session-context (legacy)
-        - sentra-policies (legacy)
+
+        Checks 5 tables (the validator's actual dependencies):
+        - sentra-session-context
         - sentra-agent-registry (Data Model v2)
         - sentra-tool-registry (Data Model v2)
         - sentra-policies-metadata (Data Model v2)
@@ -102,10 +102,11 @@ class HealthService:
         try:
             dynamodb = boto3.client(AWS_SERVICE_DYNAMODB, region_name=self.region)
             
-            # Check session table
+            # Check session table (follows TENANCY_V2_ENABLED so the probe targets
+            # the table actually serving traffic — workstream T7).
             session_healthy = await self._check_dynamodb_table(
                 dynamodb,
-                settings.dynamodb_session_table,
+                tenancy.table_name("session_context"),
                 "dynamodb_session_table",
                 dependencies,
                 errors
@@ -114,12 +115,12 @@ class HealthService:
             # Check Data Model v2 tables (Workstream 6)
             agent_registry_healthy = await self._check_dynamodb_table(
                 dynamodb,
-                settings.dynamodb_agent_registry_table,
+                tenancy.table_name("agent_registry"),
                 "dynamodb_agent_registry_table",
                 dependencies,
                 errors
             )
-            
+
             tool_registry_healthy = await self._check_dynamodb_table(
                 dynamodb,
                 settings.dynamodb_tool_registry_table,
@@ -127,10 +128,10 @@ class HealthService:
                 dependencies,
                 errors
             )
-            
+
             policies_metadata_healthy = await self._check_dynamodb_table(
                 dynamodb,
-                settings.dynamodb_policies_metadata_table,
+                tenancy.table_name("policies_metadata"),
                 "dynamodb_policies_metadata_table",
                 dependencies,
                 errors

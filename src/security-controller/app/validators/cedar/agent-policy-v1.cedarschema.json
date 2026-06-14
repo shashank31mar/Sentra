@@ -1,0 +1,58 @@
+{
+  "": {
+    "entityTypes": {
+      "Agent": {
+        "shape": {
+          "type": "Record",
+          "attributes": {
+            "allowed_tools": {
+              "type": "Set",
+              "element": { "type": "Entity", "name": "Tool" }
+            },
+            "allowed_agents": {
+              "type": "Set",
+              "element": { "type": "Entity", "name": "Agent" }
+            },
+            "max_refund_amount": { "type": "Long", "required": false }
+          }
+        }
+      },
+      "Tool": {
+        "shape": {
+          "type": "Record",
+          "attributes": {}
+        }
+      }
+    },
+    "actions": {
+      "UseTool": {
+        "appliesTo": {
+          "principalTypes": ["Agent"],
+          "resourceTypes": ["Tool"],
+          "context": {
+            "type": "Record",
+            "attributes": {
+              "amount": { "type": "Long", "required": false },
+              "fraud_risk": { "type": "String", "required": false },
+              "cloud_region": { "type": "String", "required": false }
+            }
+          }
+        }
+      },
+      "InvokeAgent": {
+        "appliesTo": {
+          "principalTypes": ["Agent"],
+          "resourceTypes": ["Agent"],
+          "context": {
+            "type": "Record",
+            "attributes": {
+              "amount": { "type": "Long", "required": false },
+              "fraud_risk": { "type": "String", "required": false },
+              "cloud_region": { "type": "String", "required": false }
+            }
+          }
+        }
+      }
+    }
+  }
+}

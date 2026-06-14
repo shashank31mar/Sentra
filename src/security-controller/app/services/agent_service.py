@@ -20,6 +20,8 @@ import yaml
 from botocore.exceptions import ClientError
 
 from app.config import settings
+from app.utils import tenancy
+from app.validators.cedar import policy_artifact
 from app.utils.cache_manager import get_cache_manager
 from app.utils.session_manager import SessionManager
 
@@ -79,10 +81,8 @@ class AgentService:
         self.cloudwatch = boto3.client('cloudwatch', region_name=self.region)
         self.s3_client = boto3.client('s3', region_name=self.region)
 
-        # Tables (only for agent/tool/policy metadata - NOT sessions)
-        self.agent_registry_table = self.dynamodb.Table(settings.dynamodb_agent_registry_table)
+        # Tool registry is not tenant-scoped in M0a (platform-global); bind once.
         self.tool_registry_table = self.dynamodb.Table(settings.dynamodb_tool_registry_table)
-        self.policies_metadata_table = self.dynamodb.Table(settings.dynamodb_policies_metadata_table)
 
         # Session management (use SessionManager for consistency)
         self.session_manager = SessionManager()
@@ -93,8 +93,19 @@ class AgentService:
 
         # Metrics namespace
         self.metrics_namespace = "AgentManagementAPI"
-    
-    async def list_agents(self, enrich: bool = True) -> Dict:
+
+    # Agent registry + policies-metadata are resolved per-call so the
+    # TENANCY_V2_ENABLED flag is honored live (workstream T7). Table() is a
+    # cheap name-binding, so re-resolving per access costs nothing.
+    @property
+    def agent_registry_table(self):
+        return self.dynamodb.Table(tenancy.table_name('agent_registry'))
+
+    @property
+    def policies_metadata_table(self):
+        return self.dynamodb.Table(tenancy.table_name('policies_metadata'))
+
+    async def list_agents(self, enrich: bool = True, managed_only: bool = False) -> Dict:
         """
         List all agents with optional runtime statistics.
         
@@ -114,7 +125,7 @@ class AgentService:
         
         try:
             # Check cache first (separate cache keys for enriched vs non-enriched)
-            cache_key = f"agents_list_enrich_{enrich}"
+            cache_key = f"agents_list_enrich_{enrich}_managed_{managed_only}"
             cached_data = self.cache.get(cache_key)
             if cached_data:
                 logger.debug(f"Returning cached agents list (enrich={enrich})")
@@ -128,13 +139,14 @@ class AgentService:
             last_evaluated_key = None
             
             # Paginate through all results (handles tables with >1MB of data)
+            registry_table = self.agent_registry_table
             while True:
                 if last_evaluated_key:
-                    response = self.agent_registry_table.scan(
-                        ExclusiveStartKey=last_evaluated_key
+                    response = tenancy.query_or_scan(
+                        registry_table, ExclusiveStartKey=last_evaluated_key
                     )
                 else:
-                    response = self.agent_registry_table.scan()
+                    response = tenancy.query_or_scan(registry_table)
                 
                 agents.extend(response.get('Items', []))
                 
@@ -152,12 +164,35 @@ class AgentService:
             agents = [agent for agent in agents if agent.get('visibility', 'external') != 'internal']
             logger.debug(f"Filtered to {len(agents)} customer-facing agents (excluded visibility=internal)")
 
+            # feature §8.1: the Agent Inventory shows ONLY Managed agents — those
+            # with observed /v1/validate traffic (data flowing). Imported-but-silent
+            # agents stay in the Import tab. Signal-derived + sticky + last_active.
+            # Opt-in (managed_only) so other callers of GET /v1/agents are unaffected.
+            if managed_only:
+                from app.utils import agent_activity
+                signals_table = self.dynamodb.Table(tenancy.table_name('validation_signals'))
+                active = agent_activity.last_active(signals_table, [a.get('agent_id') for a in agents])
+                agents = [a for a in agents if a.get('agent_id') in active]
+                for a in agents:
+                    a['last_active'] = active.get(a.get('agent_id'))
+                    a['lifecycle_status'] = 'managed'
+                logger.debug(f"Filtered to {len(agents)} Managed agents (validate traffic observed)")
+
             # Ensure every returned agent has a resolved cloud_provider (derive
             # from platform if the attribute is missing) so the API never emits a
             # value outside the documented enum (Kombai crash fix).
             from app.utils.cloud import resolve_cloud_provider
             for agent in agents:
                 agent['cloud_provider'] = resolve_cloud_provider(agent)
+
+            # agent-policy-management §4.4/T22: surface active_policy_id (the
+            # binding iff its policy is lifecycle-active). Batch-load all policy
+            # statuses ONCE, then map — no per-agent lookup (D / no N+1).
+            status_map = self._load_policy_status_map()
+            for agent in agents:
+                agent['active_policy_id'] = self._active_policy_id(
+                    agent.get('attached_policy_id'), status_map.get(agent.get('attached_policy_id'))
+                )
 
             # Enrich if requested (default behavior for backward compatibility)
             if enrich:
@@ -220,45 +255,93 @@ class AgentService:
             "providers": _compute_provider_breakdown(counts, total),
         }
 
-    async def attach_policy(self, agent_id: str, policy_id: str) -> Dict[str, Any]:
-        """WS-21 T33: attach a policy to an agent (stored as attached_policy_ids SS).
+    async def attach_policy(
+        self, agent_id: str, policy_id: str, operator_email: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """Set the agent's policy BINDING (agent-policy-management §4.2 / T21).
 
-        Raises KeyError (→404) if agent or policy is missing, ValueError (→409)
-        if already attached.
+        Writes the scalar `attached_policy_id` the engine reads — this REPLACES the
+        previous vestigial String-Set write (WS-21 T33). Rebind-as-replace: an
+        already-bound agent is swapped atomically in a single conditional
+        update_item (no forced detach-first, no 409). The scalar SET is item-level
+        atomic, so concurrent attaches can't interleave into a corrupt multi-value
+        state the way the old String-Set ADD could. `operator_email` (when sent) is
+        recorded as `last_updated_by` for binding audit attribution.
+
+        Raises KeyError (→404) if the agent or policy is missing.
         """
-        agent = self.agent_registry_table.get_item(Key={'agent_id': agent_id}).get('Item')
+        agent = self.agent_registry_table.get_item(Key=tenancy.item_key('agent_id', agent_id)).get('Item')
         if not agent:
             raise KeyError(f"agent {agent_id} not found")
-        policy = self.policies_metadata_table.get_item(Key={'policy_id': policy_id}).get('Item')
+        policy = self.policies_metadata_table.get_item(Key=tenancy.item_key('policy_id', policy_id)).get('Item')
         if not policy:
             raise KeyError(f"policy {policy_id} not found")
-        if policy_id in set(agent.get('attached_policy_ids') or []):
-            raise ValueError(f"policy {policy_id} already attached to {agent_id}")
 
         attached_at = datetime.utcnow().isoformat() + 'Z'
-        self.agent_registry_table.update_item(
-            Key={'agent_id': agent_id},
-            UpdateExpression="SET updated_at = :u ADD attached_policy_ids :p",
-            ExpressionAttributeValues={':u': attached_at, ':p': {policy_id}},
-        )
+        try:
+            self.agent_registry_table.update_item(
+                Key=tenancy.item_key('agent_id', agent_id),
+                UpdateExpression="SET attached_policy_id = :p, updated_at = :u, last_updated_by = :who",
+                ExpressionAttributeValues={
+                    ':p': policy_id, ':u': attached_at, ':who': operator_email or 'unknown',
+                },
+                # Guard against a TOCTOU delete between the read above and the
+                # write (the agent must still exist).
+                ConditionExpression="attribute_exists(agent_id)",
+            )
+        except ClientError as e:
+            if e.response['Error']['Code'] == 'ConditionalCheckFailedException':
+                raise KeyError(f"agent {agent_id} not found")
+            raise
+        self._invalidate_agent_cache(agent_id)
         return {"agent_id": agent_id, "policy_id": policy_id,
                 "status": "attached", "attached_at": attached_at}
 
-    async def detach_policy(self, agent_id: str, policy_id: str) -> Dict[str, Any]:
-        """WS-21 T33: detach a policy from an agent. KeyError (→404) if the agent
-        is missing or the policy is not currently attached."""
-        agent = self.agent_registry_table.get_item(Key={'agent_id': agent_id}).get('Item')
+    async def detach_policy(
+        self, agent_id: str, policy_id: str, operator_email: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """Clear the agent's policy BINDING (agent-policy-management §4.2 / T21).
+
+        Removes the scalar `attached_policy_id` only if it currently equals
+        `policy_id` (ConditionExpression), so a detach can't race a concurrent
+        rebind into clearing the wrong policy. `operator_email` (when sent) is
+        recorded as `last_updated_by`. KeyError (→404) if the agent is missing or
+        not currently bound to that policy.
+        """
+        agent = self.agent_registry_table.get_item(Key=tenancy.item_key('agent_id', agent_id)).get('Item')
         if not agent:
             raise KeyError(f"agent {agent_id} not found")
-        if policy_id not in set(agent.get('attached_policy_ids') or []):
+        if agent.get('attached_policy_id') != policy_id:
             raise KeyError(f"policy {policy_id} not attached to {agent_id}")
 
-        self.agent_registry_table.update_item(
-            Key={'agent_id': agent_id},
-            UpdateExpression="SET updated_at = :u DELETE attached_policy_ids :p",
-            ExpressionAttributeValues={':u': datetime.utcnow().isoformat() + 'Z', ':p': {policy_id}},
-        )
+        try:
+            self.agent_registry_table.update_item(
+                Key=tenancy.item_key('agent_id', agent_id),
+                UpdateExpression="REMOVE attached_policy_id SET updated_at = :u, last_updated_by = :who",
+                ExpressionAttributeValues={
+                    ':u': datetime.utcnow().isoformat() + 'Z',
+                    ':who': operator_email or 'unknown',
+                    ':current': policy_id,
+                },
+                ConditionExpression="attached_policy_id = :current",
+            )
+        except ClientError as e:
+            if e.response['Error']['Code'] == 'ConditionalCheckFailedException':
+                raise KeyError(f"policy {policy_id} not attached to {agent_id}")
+            raise
+        self._invalidate_agent_cache(agent_id)
         return {"agent_id": agent_id, "policy_id": policy_id, "status": "detached"}
+
+    def _invalidate_agent_cache(self, agent_id: str) -> None:
+        """Best-effort local cache bust after a binding write so this task's
+        subsequent reads reflect it. The cache manager only exposes clear()
+        (no per-key delete), which is fine here — binding writes are rare and the
+        agent/list entries are cheap to repopulate. Other tasks are TTL-bounded
+        (agent-policy-management K7); no cross-task invalidation is claimed."""
+        try:
+            self.cache.clear()
+        except Exception:  # cache is an optimization; never fail a write on it
+            logger.debug("agent cache invalidation skipped", exc_info=True)
 
     async def get_agent(self, agent_id: str) -> Optional[Dict]:
         """
@@ -285,17 +368,30 @@ class AgentService:
             
             # Load agent metadata from DynamoDB
             logger.info(f"Loading agent {agent_id} from sentra-agent-registry")
-            response = self.agent_registry_table.get_item(Key={'agent_id': agent_id})
+            response = self.agent_registry_table.get_item(Key=tenancy.item_key('agent_id', agent_id))
             
             if 'Item' not in response:
                 logger.warning(f"Agent {agent_id} not found")
                 return None
             
             agent = response['Item']
-            
+
+            # agent-policy-management §4.4/T22: active_policy_id = the binding iff
+            # its policy is active. Single endpoint → one get_item on the bound id.
+            from app.utils.cloud import resolve_cloud_provider
+            agent['cloud_provider'] = resolve_cloud_provider(agent)
+            bound = agent.get('attached_policy_id')
+            bound_status = None
+            if bound:
+                bound_meta = self.policies_metadata_table.get_item(
+                    Key=tenancy.item_key('policy_id', bound)
+                ).get('Item')
+                bound_status = (bound_meta or {}).get('status')
+            agent['active_policy_id'] = self._active_policy_id(bound, bound_status)
+
             # Enrich with runtime statistics
             enriched_agent = await self._enrich_agent_metadata(agent)
-            
+
             # Add allowed tools count
             tools_count = await self._get_agent_tools_count(agent_id)
             enriched_agent['allowed_tools_count'] = tools_count
@@ -313,6 +409,80 @@ class AgentService:
             self._publish_error_metric("GetAgent", "SERVICE_ERROR")
             return None
     
+    def _load_policy_status_map(self) -> Dict[str, str]:
+        """{policy_id: status} for every policy, via ONE projected Scan.
+
+        agent-policy-management §4.4/T22 (Batch/D): the list endpoint maps each
+        agent's binding to active_policy_id without an N+1 per-agent lookup. A
+        Scan is the conscious MVP choice (~4 policies, trivial); it is wrong at
+        scale — swap for BatchGetItem on the referenced ids when the policy set
+        grows.
+        """
+        status_map: Dict[str, str] = {}
+        metadata_table = self.policies_metadata_table
+        kwargs = {"ProjectionExpression": "policy_id, #s",
+                  "ExpressionAttributeNames": {"#s": "status"}}
+        while True:
+            resp = tenancy.query_or_scan(metadata_table, **kwargs)
+            for item in resp.get("Items", []):
+                pid = item.get("policy_id")
+                if pid:
+                    status_map[pid] = item.get("status")
+            lek = resp.get("LastEvaluatedKey")
+            if not lek:
+                return status_map
+            kwargs["ExclusiveStartKey"] = lek
+
+    @staticmethod
+    def _active_policy_id(attached_policy_id: Optional[str], status: Optional[str]) -> Optional[str]:
+        """The binding iff its policy is lifecycle-active, else None (§4.4).
+
+        Binding-only by design: an UNBOUND agent reports null even if a legacy
+        GSI policy would still resolve at enforcement time — the UI uses null to
+        prompt 'Attach', nudging the operator onto the binding model.
+        """
+        if attached_policy_id and status == 'active':
+            return attached_policy_id
+        return None
+
+    def _resolve_policy_metadata_for_agent(self, agent_id: str) -> Optional[Dict]:
+        """Policy metadata for an agent via its binding, else the legacy GSI.
+
+        agent-policy-management G1/T15 — mirrors PolicyEngine.get_agent_policy
+        resolution so display paths (Agent Detail → Tools) agree with enforcement:
+          1. read the agent's `attached_policy_id`; load that policy by stored id
+             (never reconstructed, K2); require it lifecycle-active.
+          2. no binding → fall back to the `agent-index` GSI (`status=active`).
+        Returns the metadata Item, or None if nothing resolvable.
+        """
+        agent = self.agent_registry_table.get_item(
+            Key=tenancy.item_key('agent_id', agent_id)
+        ).get('Item') or {}
+        bound_policy_id = agent.get('attached_policy_id')
+
+        if bound_policy_id:
+            meta = self.policies_metadata_table.get_item(
+                Key=tenancy.item_key('policy_id', bound_policy_id)
+            ).get('Item')
+            # Bound but missing/disabled → no tools to show (matches the engine's
+            # fail-secure DENY; the UI surfaces "no active policy").
+            if not meta or meta.get('status') != 'active':
+                return None
+            return meta
+
+        agent_kce, agent_val = tenancy.agent_index_kce_value(agent_id)
+        resp = self.policies_metadata_table.query(
+            IndexName='agent-index',
+            KeyConditionExpression=agent_kce,
+            FilterExpression='#status = :status',
+            ExpressionAttributeNames={'#status': 'status'},
+            ExpressionAttributeValues={':agent_id': agent_val, ':status': 'active'},
+            Limit=1,
+            ScanIndexForward=False,
+        )
+        items = resp.get('Items', [])
+        return items[0] if items else None
+
     async def get_agent_tools(self, agent_id: str) -> Dict:
         """
         Get allowed tools for an agent.
@@ -344,38 +514,48 @@ class AgentService:
             # Get allowed tool IDs using hybrid pattern (DynamoDB metadata + S3 content)
             logger.info(f"Loading allowed tools for agent {agent_id} using hybrid pattern")
 
-            # Step 1: Query metadata table using agent-index GSI
-            metadata_response = self.policies_metadata_table.query(
-                IndexName='agent-index',
-                KeyConditionExpression='agent_id = :agent_id',
-                FilterExpression='#status = :status',
-                ExpressionAttributeNames={'#status': 'status'},
-                ExpressionAttributeValues={
-                    ':agent_id': agent_id,
-                    ':status': 'active'
-                },
-                Limit=1,
-                ScanIndexForward=False  # Get latest version first
-            )
-
-            if not metadata_response.get('Items'):
+            # Step 1: Resolve the agent's policy metadata via its BINDING so the
+            # displayed tools match the ENFORCED policy (agent-policy-management
+            # G1/T15). The engine resolves via attached_policy_id; this display
+            # path must agree, else the Tools tab shows the GSI-authored policy's
+            # tools after a different policy is bound. Falls back to the legacy
+            # GSI during migration (§2.6).
+            metadata = self._resolve_policy_metadata_for_agent(agent_id)
+            if not metadata:
                 logger.warning(f"No active policy metadata found for agent {agent_id}")
                 return {"agent_id": agent_id, "tools": [], "total": 0}
 
-            metadata = metadata_response['Items'][0]
-
-            # Step 2: Download full policy YAML from S3
+            # Step 2: Download the STRUCTURED policy source from S3.
+            #
+            # CT06b/CT06c invariant: `s3_key` ALWAYS points at the structured
+            # source (`…/v{version}.yaml`), even when `policy_format == 'cedar'`.
+            # The compiled Cedar is a co-artifact at a derived `.cedar` key and is
+            # NEVER what `s3_key` references. So `allowed_tools` for the Tools tab
+            # is always read from the structured source — never from the `.cedar`
+            # text (which isn't YAML and would break this path). We assert the key
+            # is a structured-source extension so a future drift fails loud here
+            # instead of silently returning an empty Tools tab.
             s3_bucket = metadata.get('s3_bucket')
             s3_key = metadata.get('s3_key')
+            policy_format = metadata.get(policy_artifact.POLICY_FORMAT_FIELD, policy_artifact.FORMAT_YAML)
 
             if not s3_bucket or not s3_key:
                 logger.error(f"Policy metadata missing S3 reference for agent {agent_id}")
                 return {"agent_id": agent_id, "tools": [], "total": 0}
 
+            if s3_key.endswith(policy_artifact.CEDAR_EXT):
+                # s3_key must address the structured source, not the compiled Cedar.
+                logger.error(
+                    f"Agent {agent_id} s3_key {s3_key!r} points at compiled Cedar, "
+                    f"not the structured source (policy_format={policy_format}); "
+                    f"refusing to YAML-parse it"
+                )
+                return {"agent_id": agent_id, "tools": [], "total": 0}
+
             policy_obj = self.s3_client.get_object(Bucket=s3_bucket, Key=s3_key)
             policy_content = policy_obj['Body'].read().decode('utf-8')
 
-            # Step 3: Parse YAML and extract allowed_tools
+            # Step 3: Parse the structured source and extract allowed_tools.
             policy_data = yaml.safe_load(policy_content)
             allowed_tool_ids = policy_data.get('allowed_tools', [])
 
@@ -437,14 +617,12 @@ class AgentService:
         agent['requests_allowed'] = request_counts.get('allowed', 0)
         agent['requests_denied'] = request_counts.get('denied', 0)
         
-        # Get active sessions count
-        active_sessions = await self._get_active_sessions_count(agent_id)
-        agent['active_sessions'] = active_sessions
-        
-        # Get average trust score
-        avg_trust = await self._get_avg_trust_score(agent_id)
-        agent['trust_score_avg'] = avg_trust
-        
+        # Session-derived stats (active count + avg trust) in ONE indexed Query
+        # on agent-updated-index — was two full-table scans per agent (WS-21 C5/T50).
+        stats = await self.session_manager.get_agent_session_stats(agent_id)
+        agent['active_sessions'] = stats['active_sessions']
+        agent['trust_score_avg'] = stats['avg_trust_score']
+
         return agent
     
     async def _get_ecs_status(self, service_name: Optional[str]) -> Dict:
@@ -586,34 +764,6 @@ class AgentService:
             logger.warning(f"Error getting request counts for {agent_id}: {e}")
             return {'total': 0, 'allowed': 0, 'denied': 0}
     
-    async def _get_active_sessions_count(self, agent_id: str) -> int:
-        """
-        Get count of active sessions for an agent.
-
-        Delegates to SessionManager for consistency and efficiency.
-
-        Args:
-            agent_id: Agent identifier
-
-        Returns:
-            Count of active sessions
-        """
-        return await self.session_manager.get_active_sessions_count(agent_id)
-
-    async def _get_avg_trust_score(self, agent_id: str) -> float:
-        """
-        Get average trust score for an agent's sessions.
-
-        Delegates to SessionManager for consistency with trust score logic.
-
-        Args:
-            agent_id: Agent identifier
-
-        Returns:
-            Average trust score (0-100)
-        """
-        return await self.session_manager.get_avg_trust_score(agent_id)
-    
     async def _get_agent_tools_count(self, agent_id: str) -> int:
         """
         Get count of allowed tools for an agent using hybrid pattern.
@@ -626,13 +776,14 @@ class AgentService:
         """
         try:
             # Query metadata table using agent-index GSI
+            agent_kce, agent_val = tenancy.agent_index_kce_value(agent_id)
             metadata_response = self.policies_metadata_table.query(
                 IndexName='agent-index',
-                KeyConditionExpression='agent_id = :agent_id',
+                KeyConditionExpression=agent_kce,
                 FilterExpression='#status = :status',
                 ExpressionAttributeNames={'#status': 'status'},
                 ExpressionAttributeValues={
-                    ':agent_id': agent_id,
+                    ':agent_id': agent_val,
                     ':status': 'active'
                 },
                 Limit=1,

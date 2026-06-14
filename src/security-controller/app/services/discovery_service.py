@@ -1,36 +1,55 @@
 """
-DiscoveryService — WS-21 Phase 3 (T31/T32). STATIC, policy-derived discovery.
+DiscoveryService — Detected-agents inventory (feature §8.1).
 
-Discovery is a **read-model** over existing data: agents declared in policy
-artifacts (`sentra-policies-metadata`) joined against the managed inventory
-(`sentra-agent-registry`). No new tables, no async scanner — dynamic discovery
-(runtime request-path observation) is deferred to WS-21 T62.
+The Detected-Agents list is the **union** of two sources, deduped by the
+source's native id:
+  1. **Imported** — agents that have a registry row (managed by us), any cloud.
+  2. **Visible-but-not-imported** — agents the live scan persisted into the
+     discovery cache (`bedrock:ListAgents` today) that have no registry row.
 
-`cloud_provider`/`framework` aren't in policy metadata, so they're sourced from
-the registry when the agent is managed, else defaulted. `risk` is a provisional
-heuristic from the policy's severity breakdown (LLD 21 §11.3 — label as
-provisional in the UI until T62).
+Lifecycle status per agent (derived, never hand-set):
+  - `not_imported` — scanned, no registry row.
+  - `imported`     — registry row exists, but no `/v1/validate` traffic seen.
+  - `managed`      — registry row AND validate traffic observed (data flowing).
+`imported → managed` flips only on observed validate signals (sticky +
+`last_active`). Source of truth = the validation-signal store's agent index.
+
+Dedupe key is `native_resource_id` (Bedrock agentId / ARN, etc.); existing rows
+that predate that field fall back to a normalized-name match.
 """
 import logging
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 
 import boto3
+from boto3.dynamodb.conditions import Key
+from botocore.exceptions import ClientError
 
 from app.config import settings
+from app.utils import tenancy
 from app.utils.cloud import resolve_cloud_provider
 
 logger = logging.getLogger(__name__)
 
 _PROVIDERS_TOTAL = 3  # aws / gcp / azure
 
+# Lifecycle statuses (feature §8.1).
+NOT_IMPORTED = "not_imported"
+IMPORTED = "imported"
+MANAGED = "managed"
+
 
 def _now_iso() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
+def _norm(name: Optional[str]) -> str:
+    """Normalized name for fallback dedupe (case/space/underscore-insensitive)."""
+    return (name or "").strip().lower().replace("_", "-")
+
+
 def _risk_from_severity(breakdown: Optional[Dict[str, Any]]) -> str:
-    """Provisional risk heuristic from a policy's severity breakdown (T31)."""
+    """Provisional risk heuristic from a policy's severity breakdown."""
     b = breakdown or {}
     def _n(k: str) -> int:
         try:
@@ -53,12 +72,28 @@ def _is_within_24h(ts: Any) -> bool:
 
 
 class DiscoveryService:
-    """Read-model + import over policy artifacts and the agent registry."""
+    """Union read-model (registry ∪ scanned) + import."""
 
     def __init__(self):
         self.dynamodb = boto3.resource("dynamodb", region_name=settings.aws_region)
-        self.policies_metadata_table = self.dynamodb.Table(settings.dynamodb_policies_metadata_table)
-        self.agent_registry_table = self.dynamodb.Table(settings.dynamodb_agent_registry_table)
+
+    # Tables resolved per-call so TENANCY_V2_ENABLED is honored live (T7).
+    @property
+    def policies_metadata_table(self):
+        return self.dynamodb.Table(tenancy.table_name("policies_metadata"))
+
+    @property
+    def agent_registry_table(self):
+        return self.dynamodb.Table(tenancy.table_name("agent_registry"))
+
+    @property
+    def signals_table(self):
+        return self.dynamodb.Table(tenancy.table_name("validation_signals"))
+
+    @property
+    def discovery_cache_table(self):
+        # Born tenant-scoped (no v1/v2 flag): net-new table, PK tenant_id.
+        return self.dynamodb.Table(settings.dynamodb_discovery_cache_table)
 
     # ----------------------------------------------------------------- helpers
 
@@ -66,7 +101,7 @@ class DiscoveryService:
         items: List[Dict[str, Any]] = []
         kwargs: Dict[str, Any] = {}
         while True:
-            resp = table.scan(**kwargs)
+            resp = tenancy.query_or_scan(table, **kwargs)
             items.extend(resp.get("Items", []))
             lek = resp.get("LastEvaluatedKey")
             if not lek:
@@ -75,10 +110,17 @@ class DiscoveryService:
         return items
 
     def _registry_by_agent(self) -> Dict[str, Dict[str, Any]]:
-        return {it.get("agent_id"): it for it in self._scan_all(self.agent_registry_table)}
+        # Hide internal control-plane infra (matches agent_service / WS-21 D4).
+        out: Dict[str, Dict[str, Any]] = {}
+        for it in self._scan_all(self.agent_registry_table):
+            if it.get("visibility") == "internal":
+                continue
+            aid = it.get("agent_id")
+            if aid:
+                out[aid] = it
+        return out
 
     def _policies_by_agent(self) -> Dict[str, Dict[str, Any]]:
-        """First policy seen per agent_id (one governing policy per agent)."""
         out: Dict[str, Dict[str, Any]] = {}
         for pol in self._scan_all(self.policies_metadata_table):
             agent_id = pol.get("agent_id")
@@ -86,20 +128,93 @@ class DiscoveryService:
                 out[agent_id] = pol
         return out
 
-    def _build_rows(self) -> List[Dict[str, Any]]:
+    def _scanned_agents(self, connection_id: Optional[str] = None) -> List[Dict[str, Any]]:
+        """Agents the live scan persisted into the discovery cache (tenant-scoped).
+        Empty (not an error) if the cache table doesn't exist yet."""
+        items: List[Dict[str, Any]] = []
+        kwargs: Dict[str, Any] = {
+            "KeyConditionExpression": Key("tenant_id").eq(tenancy.current_tenant())
+        }
+        try:
+            while True:
+                resp = self.discovery_cache_table.query(**kwargs)
+                items.extend(resp.get("Items", []))
+                lek = resp.get("LastEvaluatedKey")
+                if not lek:
+                    break
+                kwargs["ExclusiveStartKey"] = lek
+        except ClientError:
+            logger.warning("discovery-cache unavailable; union falls back to registry only")
+            return []
+        if connection_id:
+            items = [it for it in items if it.get("connection_id") == connection_id]
+        return items
+
+    def _last_active(self, agent_ids: List[str]) -> Dict[str, str]:
+        """{agent_id: latest validate-signal timestamp_iso} for agents with traffic
+        (feature §8.1). Presence ⇒ Managed (sticky)."""
+        from app.utils import agent_activity
+        return agent_activity.last_active(self.signals_table, agent_ids)
+
+    def _native_id(self, reg: Dict[str, Any], agent_id: str) -> str:
+        return reg.get("native_resource_id") or agent_id
+
+    def _build_rows(self, connection_id: Optional[str] = None) -> List[Dict[str, Any]]:
         registry = self._registry_by_agent()
+        policies = self._policies_by_agent()
+        activity = self._last_active(list(registry.keys()))
+        scanned = self._scanned_agents(connection_id)
+
         rows: List[Dict[str, Any]] = []
-        for agent_id, pol in self._policies_by_agent().items():
-            reg = registry.get(agent_id)
+        seen_native: set = set()
+        seen_name: set = set()
+
+        # 1) Imported (registry) agents — status managed iff validate traffic seen.
+        for agent_id, reg in registry.items():
+            native = self._native_id(reg, agent_id)
+            name = reg.get("name") or agent_id
+            pol = policies.get(agent_id)
+            last_active = activity.get(agent_id)
             rows.append({
-                "id": agent_id,
-                "name": pol.get("name") or agent_id,
+                "id": native,
+                "agent_id": agent_id,
+                "native_resource_id": native,
+                "name": name,
                 "cloud_provider": resolve_cloud_provider(reg),
-                "framework": "unknown",  # not available statically; T62 (dynamic)
-                "first_seen": pol.get("created_at"),
-                "risk": _risk_from_severity(pol.get("severity_breakdown")),
-                "status": "managed" if reg else "unmanaged",
+                "framework": reg.get("framework") or "unknown",
+                "first_seen": reg.get("created_at") or (pol.get("created_at") if pol else None),
+                "risk": _risk_from_severity(pol.get("severity_breakdown")) if pol else "low",
+                "status": MANAGED if last_active else IMPORTED,
+                "last_active": last_active,
             })
+            seen_native.add(native)
+            seen_name.add(_norm(name))
+            seen_name.add(_norm(agent_id))
+
+        # 2) Scanned-only agents (visible in cloud, not imported) — dedupe by
+        #    native id, falling back to normalized name for pre-backfill rows.
+        for sc in scanned:
+            native = sc.get("native_resource_id")
+            name = sc.get("name") or native
+            if not native:
+                continue
+            if native in seen_native or _norm(name) in seen_name:
+                continue  # already represented by an imported row
+            rows.append({
+                "id": native,
+                "agent_id": None,
+                "native_resource_id": native,
+                "name": name,
+                "cloud_provider": sc.get("cloud_provider") or "aws",
+                "framework": sc.get("framework") or "unknown",
+                "first_seen": sc.get("first_seen") or sc.get("last_scanned"),
+                "risk": "low",  # provisional until tool introspection (T62)
+                "status": NOT_IMPORTED,
+                "last_active": None,
+            })
+            seen_native.add(native)
+            seen_name.add(_norm(name))
+
         return rows
 
     # ------------------------------------------------------------------ reads
@@ -110,10 +225,11 @@ class DiscoveryService:
         framework: Optional[str] = None,
         risk: Optional[str] = None,
         status: Optional[str] = None,
+        connection_id: Optional[str] = None,
         limit: int = 50,
         cursor: Optional[str] = None,
     ) -> Dict[str, Any]:
-        rows = self._build_rows()
+        rows = self._build_rows(connection_id)
         if cloud_provider:
             rows = [r for r in rows if r["cloud_provider"] == cloud_provider]
         if framework:
@@ -123,9 +239,6 @@ class DiscoveryService:
         if status:
             rows = [r for r in rows if r["status"] == status]
 
-        # Honor limit/cursor (Kiro review). The read-model is fully in memory, so
-        # the opaque cursor encodes a simple offset (not a DDB key). Canonical
-        # next_token per LLD 21 §11.1. decode_cursor raises ValueError → 400.
         from app.utils.pagination import decode_cursor, encode_cursor
         total = len(rows)
         limit = max(1, min(int(limit), 200))
@@ -141,7 +254,7 @@ class DiscoveryService:
         providers = {r["cloud_provider"] for r in rows if r["cloud_provider"] != "unknown"}
         return {
             "detected": len(rows),
-            "unmanaged": sum(1 for r in rows if r["status"] == "unmanaged"),
+            "unmanaged": sum(1 for r in rows if r["status"] == NOT_IMPORTED),
             "new_24h": sum(1 for r in rows if _is_within_24h(r["first_seen"])),
             "providers_connected": len(providers),
             "providers_total": _PROVIDERS_TOTAL,
@@ -166,48 +279,82 @@ class DiscoveryService:
     async def import_agents(
         self, agent_ids: List[str], enforcement_mode: str = "monitor"
     ) -> Dict[str, Any]:
-        """Promote discovered agents to managed (D2 contract).
+        """Promote agents to managed (registry rows). `agent_ids` are the union
+        rows' `id` (= native_resource_id). Each is resolved from the scanned
+        cache or (legacy) a policy artifact; importing stores `native_resource_id`
+        so future scans dedupe exactly.
 
-        Raises ValueError (→400) on empty input, LookupError (→422) when no
-        requested id maps to a policy. Per-row status handles partial success.
+        Raises ValueError (→400) on empty input, LookupError (→422) when none of
+        the ids resolve. Per-row status handles partial success.
         """
         if not agent_ids:
             raise ValueError("agent_ids is required and must be non-empty")
 
-        policies = self._policies_by_agent()
         registry = self._registry_by_agent()
-        if all(aid not in policies for aid in agent_ids):
-            raise LookupError("none of the requested agent_ids are declared in a policy")
+        policies = self._policies_by_agent()
+        scanned_by_native = {s.get("native_resource_id"): s for s in self._scanned_agents()}
+        # Registry index by native id (incl. fallback) so we can detect "already imported".
+        reg_native = {self._native_id(r, aid): aid for aid, r in registry.items()}
+        reg_name = {_norm(r.get("name") or aid): aid for aid, r in registry.items()}
+        reg_name.update({_norm(aid): aid for aid in registry})
+
+        resolvable = [
+            i for i in agent_ids
+            if i in scanned_by_native or i in policies or i in reg_native
+        ]
+        if not resolvable:
+            raise LookupError("none of the requested ids resolve to a scanned or policy-declared agent")
 
         results: List[Dict[str, Any]] = []
         imported = 0
         now = _now_iso()
-        for agent_id in agent_ids:
-            pol = policies.get(agent_id)
-            if not pol:
-                results.append({"discovery_id": agent_id, "agent_id": None,
-                                "status": "failed", "reason": "no governing policy"})
-                continue
-            if agent_id in registry:
-                results.append({"discovery_id": agent_id, "agent_id": agent_id,
+        for ident in agent_ids:
+            sc = scanned_by_native.get(ident)
+            pol = policies.get(ident)
+
+            # Already imported? (by native id or normalized name)
+            existing = reg_native.get(ident)
+            if not existing and sc:
+                existing = reg_name.get(_norm(sc.get("name")))
+            if not existing and ident in registry:
+                existing = ident
+            if existing:
+                results.append({"discovery_id": ident, "agent_id": existing,
                                 "status": "skipped", "reason": "already managed"})
                 continue
-            self.agent_registry_table.put_item(Item={
+
+            if sc:
+                # Imported from a live cloud scan.
+                agent_id = sc.get("name") or ident
+                native = ident
+                cloud = sc.get("cloud_provider") or "aws"
+            elif pol:
+                # Legacy policy-derived import.
+                agent_id = ident
+                native = ident
+                cloud = resolve_cloud_provider({"platform": "sentra"})
+            else:
+                results.append({"discovery_id": ident, "agent_id": None,
+                                "status": "failed", "reason": "not found in scan or policy"})
+                continue
+
+            registry_item = {
                 "agent_id": agent_id,
-                "name": pol.get("name") or agent_id,
+                "native_resource_id": native,
+                "name": (sc.get("name") if sc else (pol.get("name") if pol else agent_id)) or agent_id,
                 "status": "active",
-                "platform": "sentra",
-                # derive from platform so the API never emits an unmapped value;
-                # real platform/cloud is refined on enrich / dynamic discovery (T62)
-                "cloud_provider": resolve_cloud_provider({"platform": "sentra"}),
+                "platform": "bedrock" if sc else "sentra",
+                "cloud_provider": cloud,
                 "security_type": "secured",
                 "visibility": "external",
                 "type": "action",
                 "enforcement_mode": enforcement_mode,
-                "source_policy_id": pol.get("policy_id"),
+                "source_policy_id": pol.get("policy_id") if pol else None,
                 "created_at": now,
                 "updated_at": now,
-            })
+            }
+            tenancy.stamp_base_item(registry_item)
+            self.agent_registry_table.put_item(Item=registry_item)
             imported += 1
-            results.append({"discovery_id": agent_id, "agent_id": agent_id, "status": "managed"})
+            results.append({"discovery_id": ident, "agent_id": agent_id, "status": "managed"})
         return {"imported": imported, "agents": results}

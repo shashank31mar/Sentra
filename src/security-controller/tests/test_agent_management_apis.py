@@ -306,7 +306,8 @@ class TestGetSigmaRulesEndpoint:
             status=None,
             level=None,
             limit=50,
-            cursor=None
+            cursor=None,
+            match_range='24h'
         )
     
     def test_get_sigma_rules_with_status_filter(self, client, mock_sigma_rules_service):
@@ -320,7 +321,8 @@ class TestGetSigmaRulesEndpoint:
             status='stable',
             level=None,
             limit=50,
-            cursor=None
+            cursor=None,
+            match_range='24h'
         )
     
     def test_get_sigma_rules_with_level_filter(self, client, mock_sigma_rules_service):
@@ -334,7 +336,8 @@ class TestGetSigmaRulesEndpoint:
             status=None,
             level='high',
             limit=50,
-            cursor=None
+            cursor=None,
+            match_range='24h'
         )
     
     def test_get_sigma_rules_with_limit(self, client, mock_sigma_rules_service):
@@ -348,7 +351,8 @@ class TestGetSigmaRulesEndpoint:
             status=None,
             level=None,
             limit=10,
-            cursor=None
+            cursor=None,
+            match_range='24h'
         )
     
     def test_get_sigma_rules_invalid_status(self, client, mock_sigma_rules_service):
@@ -424,5 +428,6 @@ class TestEndpointErrorHandling:
             status='stable',
             level='high',
             limit=10,
-            cursor=None
+            cursor=None,
+            match_range='24h'
         )

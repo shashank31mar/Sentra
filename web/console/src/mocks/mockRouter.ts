@@ -1,8 +1,21 @@
 import * as fx from './fixtures'
+import type { CloudConnection } from '../types/api'
 
 export interface MockResponse {
   status: number
   body: unknown
+}
+
+/**
+ * In-memory connection store so the Connect Account wizard behaves statefully
+ * across calls within a dev session (create → set role → test → scan). Seeded
+ * from fixtures; lives for the lifetime of the lazily-imported mock module.
+ */
+const connStore = new Map<string, CloudConnection>(fx.connections.map((c) => [c.id, { ...c }]))
+let connSeq = connStore.size
+
+function nowIso(): string {
+  return new Date().toISOString()
 }
 
 /**
@@ -84,7 +97,19 @@ export function resolveMock(
     const id = decodeURIComponent(path.split('/')[2])
     const agent = fx.agents.find((a) => a.agent_id === id)
     if (!agent) return { status: 404, body: { error: 'agent not found', error_code: 'NOT_FOUND' } }
-    return { status: 200, body: { ...agent, attached_policy_ids: ['pol-101'], framework: 'LangChain', region: 'us-east-1' } }
+    // Scalar binding (agent-policy-management T47): active_policy_id comes from
+    // the fixture; the vestigial attached_policy_ids Set is gone.
+    return { status: 200, body: { ...agent, framework: 'LangChain', region: 'us-east-1' } }
+  }
+  // Attach / detach the scalar binding (T21).
+  if (m === 'POST' && /^\/agents\/[^/]+\/policies$/.test(path)) {
+    const agentId = decodeURIComponent(path.split('/')[2])
+    const policyId = (body as { policy_id?: string })?.policy_id ?? ''
+    return { status: 200, body: { agent_id: agentId, policy_id: policyId, status: 'attached', attached_at: new Date().toISOString() } }
+  }
+  if (m === 'DELETE' && /^\/agents\/[^/]+\/policies\/[^/]+$/.test(path)) {
+    const parts = path.split('/')
+    return { status: 200, body: { agent_id: decodeURIComponent(parts[2]), policy_id: decodeURIComponent(parts[4]), status: 'detached' } }
   }
   if (get && /^\/agents\/[^/]+\/tools$/.test(path)) {
     return {
@@ -97,6 +122,78 @@ export function resolveMock(
         total: 2,
       },
     }
+  }
+
+  // --- Connections (powers Connect Account wizard) ---
+  if (get && path === '/connections') {
+    return { status: 200, body: { connections: [...connStore.values()] } }
+  }
+  if (m === 'POST' && path === '/connections') {
+    const cloud = (body as { cloud_provider?: string })?.cloud_provider ?? 'aws'
+    if (cloud !== 'aws') {
+      return { status: 409, body: { error: `${cloud} connections are not available yet`, error_code: 'PROVIDER_NOT_AVAILABLE' } }
+    }
+    connSeq += 1
+    const id = `conn-aws-${connSeq}`
+    const conn: CloudConnection = {
+      id,
+      cloud_provider: 'aws',
+      status: 'connecting',
+      account_ref: null,
+      external_id: `ext-${Math.random().toString(16).slice(2, 8)}`,
+      aegion_principal_arn: fx.AEGION_PRINCIPAL_ARN,
+      role_arn: null,
+      scopes: fx.AWS_DISCOVERY_SCOPES,
+      agents_visible: null,
+      last_scan: null,
+      connected_at: null,
+      error: null,
+    }
+    connStore.set(id, conn)
+    return { status: 201, body: conn }
+  }
+  if (get && /^\/connections\/[^/]+$/.test(path)) {
+    const conn = connStore.get(decodeURIComponent(path.split('/')[2]))
+    if (!conn) return { status: 404, body: { error: 'connection not found', error_code: 'NOT_FOUND' } }
+    return { status: 200, body: conn }
+  }
+  if (m === 'PUT' && /^\/connections\/[^/]+$/.test(path)) {
+    const conn = connStore.get(decodeURIComponent(path.split('/')[2]))
+    if (!conn) return { status: 404, body: { error: 'connection not found', error_code: 'NOT_FOUND' } }
+    conn.role_arn = (body as { role_arn?: string })?.role_arn ?? conn.role_arn
+    return { status: 200, body: conn }
+  }
+  if (m === 'POST' && /^\/connections\/[^/]+\/test$/.test(path)) {
+    const conn = connStore.get(decodeURIComponent(path.split('/')[2]))
+    if (!conn) return { status: 404, body: { error: 'connection not found', error_code: 'NOT_FOUND' } }
+    const roleArn = (body as { role_arn?: string })?.role_arn
+    if (roleArn) conn.role_arn = roleArn
+    // A role ARN containing "fail" simulates a rejecting trust policy.
+    const ok = Boolean(conn.role_arn) && !/fail/i.test(conn.role_arn ?? '')
+    if (ok) {
+      conn.status = 'connected'
+      conn.agents_visible = 14
+      conn.connected_at = nowIso()
+      conn.account_ref = conn.account_ref ?? 'global-prod-01'
+      conn.error = null
+      return { status: 200, body: { ok: true, agents_visible: 14, message: 'AssumeRole OK · 14 agents visible' } }
+    }
+    conn.status = 'error'
+    conn.error = 'AccessDenied: external id mismatch'
+    return { status: 200, body: { ok: false, agents_visible: null, message: 'AccessDenied: external id mismatch' } }
+  }
+  if (m === 'POST' && /^\/connections\/[^/]+\/scan$/.test(path)) {
+    const conn = connStore.get(decodeURIComponent(path.split('/')[2]))
+    if (!conn) return { status: 404, body: { error: 'connection not found', error_code: 'NOT_FOUND' } }
+    if (conn.status !== 'connected') {
+      return { status: 409, body: { error: 'connection is not connected', error_code: 'NOT_CONNECTED' } }
+    }
+    conn.last_scan = nowIso()
+    return { status: 202, body: { scan_id: `scan-${Math.random().toString(16).slice(2, 6)}`, status: 'scanning', discovered_count: null } }
+  }
+  if (m === 'DELETE' && /^\/connections\/[^/]+$/.test(path)) {
+    connStore.delete(decodeURIComponent(path.split('/')[2]))
+    return { status: 204, body: undefined }
   }
 
   // --- Discovery (powers Import Agents onboarding) ---
@@ -121,19 +218,69 @@ export function resolveMock(
     const id = decodeURIComponent(path.split('/')[2])
     const summary = fx.policies.find((p) => p.policy_id === id)
     if (!summary) return { status: 404, body: { error: 'policy not found', error_code: 'NOT_FOUND' } }
+    // cedar-policy CT13b: mirror the live `{ policy: { metadata, content } }`
+    // envelope so the client maps policy_format + the Cedar body correctly.
+    const fmt = summary.policy_format ?? 'yaml'
     return {
       status: 200,
       body: {
         policy: {
-          ...summary,
+          metadata: { ...summary, policy_format: fmt, s3_key: `policies/${id}/v${summary.version}.yaml` },
           content: fx.policyContents[id] ?? '',
-          s3_key: `policies/${id}/v${summary.version}.cedar`,
         },
       },
     }
   }
+  // Policy lifecycle writes (agent-policy-management T34).
+  if (m === 'POST' && path === '/policies') {
+    const b = (body as { agent_id?: string; name?: string; version?: string }) ?? {}
+    const newId = `pol-${Math.floor(Math.random() * 9000 + 1000)}`
+    return { status: 201, body: { policy_id: newId, version: b.version ?? '1.0.0', s3_key: `policies/${b.agent_id}/${newId}.yaml` } }
+  }
+  if (m === 'PATCH' && /^\/policies\/[^/]+\/status$/.test(path)) {
+    const id = decodeURIComponent(path.split('/')[2])
+    const status = (body as { status?: string })?.status ?? 'active'
+    return { status: 200, body: { success: true, policy_id: id, status, updated_at: new Date().toISOString() } }
+  }
+  if (m === 'PUT' && /^\/policies\/[^/]+$/.test(path)) {
+    const id = decodeURIComponent(path.split('/')[2])
+    return { status: 200, body: { success: true, policy_id: id, version: '1.0.1' } }
+  }
+  if (m === 'DELETE' && /^\/policies\/[^/]+$/.test(path)) {
+    const id = decodeURIComponent(path.split('/')[2])
+    return { status: 200, body: { success: true, policy_id: id, status: 'disabled', disabled_at: new Date().toISOString() } }
+  }
   if (get && path === '/sigma-rules') {
     return { status: 200, body: { rules: fx.sigmaRules, total: fx.sigmaRules.length, next_token: null } }
+  }
+  if (get && /^\/sigma-rules\/[^/]+\/content$/.test(path)) {
+    const id = decodeURIComponent(path.split('/')[2])
+    const rule = fx.sigmaRules.find((r) => r.rule_id === id)
+    return {
+      status: 200,
+      body: {
+        rule_id: id,
+        title: rule?.title ?? id,
+        description: 'Detects prompt-injection / jailbreak attempts in agent inputs.',
+        level: rule?.severity ?? 'medium',
+        status: rule?.status ?? 'enabled',
+        tags: ['llm.prompt_injection', 'attack.initial_access'],
+        condition: '1 of them',
+        selections: [
+          {
+            name: 'instruction_override',
+            field: 'prompt|contains',
+            patterns: ['ignore previous instructions', 'disregard previous', 'forget previous instructions'],
+          },
+          {
+            name: 'role_manipulation',
+            field: 'prompt|contains',
+            patterns: ['you are now', 'act as if you are', 'pretend you are'],
+          },
+        ],
+        patterns_total: 6,
+      },
+    }
   }
   if (m === 'PATCH' && /^\/sigma-rules\/.+/.test(path)) {
     return { status: 200, body: { success: true, rule_id: decodeURIComponent(path.split('/')[2]), status: (body as { status?: string })?.status ?? 'enabled' } }

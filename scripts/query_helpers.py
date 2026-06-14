@@ -18,6 +18,8 @@ from schemas import (
     SigmaRuleDocument,
 )
 
+import _tenancy  # shared tenancy helpers (workstream T08)
+
 
 # Custom exceptions
 class AgentNotFoundError(Exception):
@@ -65,9 +67,9 @@ def get_agent_by_id(agent_id: str) -> Agent:
         AgentNotFoundError: If agent not found
     """
     try:
-        table = dynamodb.Table('sentra-agent-registry')
-        response = table.get_item(Key={'agent_id': agent_id})
-        
+        table = dynamodb.Table(_tenancy.table_name('sentra-agent-registry', 'sentra-agent-registry-v2'))
+        response = table.get_item(Key=_tenancy.item_key('agent_id', agent_id))
+
         if 'Item' not in response:
             raise AgentNotFoundError(f"Agent not found: {agent_id}")
         
@@ -88,17 +90,17 @@ def list_agents(status: Optional[str] = None) -> List[Agent]:
         List of Agent objects
     """
     try:
-        table = dynamodb.Table('sentra-agent-registry')
-        
+        table = dynamodb.Table(_tenancy.table_name('sentra-agent-registry', 'sentra-agent-registry-v2'))
+
         if status:
             # Query using status-index GSI
             response = table.query(
                 IndexName='status-index',
-                KeyConditionExpression=Key('status').eq(status)
+                KeyConditionExpression=_tenancy.status_index_condition(status)
             )
         else:
-            # Scan all agents
-            response = table.scan()
+            # List all agents (tenant-scoped Query when v2, else full scan)
+            response = _tenancy.query_or_scan(table)
         
         items = response.get('Items', [])
         return [Agent(**item) for item in items]
@@ -193,9 +195,9 @@ def get_policy_metadata(policy_id: str) -> PolicyMetadata:
         PolicyNotFoundError: If policy not found
     """
     try:
-        table = dynamodb.Table('sentra-policies-metadata')
-        response = table.get_item(Key={'policy_id': policy_id})
-        
+        table = dynamodb.Table(_tenancy.table_name('sentra-policies-metadata', 'sentra-policies-metadata-v2'))
+        response = table.get_item(Key=_tenancy.item_key('policy_id', policy_id))
+
         if 'Item' not in response:
             raise PolicyNotFoundError(f"Policy metadata not found: {policy_id}")
         
@@ -261,12 +263,12 @@ def list_policies_by_agent(agent_id: str) -> List[PolicyMetadata]:
         List of PolicyMetadata objects
     """
     try:
-        table = dynamodb.Table('sentra-policies-metadata')
-        
-        # Query using agent-index GSI
+        table = dynamodb.Table(_tenancy.table_name('sentra-policies-metadata', 'sentra-policies-metadata-v2'))
+
+        # Query using agent-index GSI (composite tenant_agent_id PK when v2)
         response = table.query(
             IndexName='agent-index',
-            KeyConditionExpression=Key('agent_id').eq(agent_id)
+            KeyConditionExpression=_tenancy.agent_index_condition(agent_id)
         )
         
         items = response.get('Items', [])
@@ -287,12 +289,12 @@ def list_policies_by_status(status: str) -> List[PolicyMetadata]:
         List of PolicyMetadata objects
     """
     try:
-        table = dynamodb.Table('sentra-policies-metadata')
-        
-        # Query using status-index GSI
+        table = dynamodb.Table(_tenancy.table_name('sentra-policies-metadata', 'sentra-policies-metadata-v2'))
+
+        # Query using status-index GSI (tenant_id PK + status SK when v2)
         response = table.query(
             IndexName='status-index',
-            KeyConditionExpression=Key('status').eq(status)
+            KeyConditionExpression=_tenancy.status_index_condition(status)
         )
         
         items = response.get('Items', [])

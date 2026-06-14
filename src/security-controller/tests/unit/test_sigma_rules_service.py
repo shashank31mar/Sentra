@@ -157,26 +157,34 @@ class TestSigmaRulesServiceListRules:
     
     @pytest.mark.asyncio
     async def test_list_sigma_rules_sorted_by_match_count(self, mock_dynamodb, mock_cache_manager, sample_sigma_rule):
-        """Test that rules are sorted by match_count_24h descending"""
-        # Setup mocks with multiple rules
-        rule1 = {**sample_sigma_rule, 'rule_id': 'rule-1', 'stats': {'match_count_24h': Decimal('10')}}
-        rule2 = {**sample_sigma_rule, 'rule_id': 'rule-2', 'stats': {'match_count_24h': Decimal('50')}}
-        rule3 = {**sample_sigma_rule, 'rule_id': 'rule-3', 'stats': {'match_count_24h': Decimal('5')}}
-        
+        """Test that rules are sorted by CloudWatch match count descending.
+
+        Match counts now come from CloudWatch (the SigmaRuleMatches metric), not
+        the dead DDB stats.* fields — so we stub _get_match_counts.
+        """
+        rule1 = {**sample_sigma_rule, 'rule_id': 'rule-1'}
+        rule2 = {**sample_sigma_rule, 'rule_id': 'rule-2'}
+        rule3 = {**sample_sigma_rule, 'rule_id': 'rule-3'}
+
         mock_table = Mock()
         mock_table.scan.return_value = {
             'Items': [rule1, rule2, rule3]
         }
         mock_dynamodb.return_value.Table.return_value = mock_table
-        
+
         # Create service and test
         service = SigmaRulesService()
+        service._get_match_counts = Mock(return_value={'rule-1': 10, 'rule-2': 50, 'rule-3': 5})
         result = await service.list_sigma_rules()
-        
+
         # Assertions - should be sorted by match count descending
         assert result['rules'][0]['rule_id'] == 'rule-2'  # 50 matches
         assert result['rules'][1]['rule_id'] == 'rule-1'  # 10 matches
         assert result['rules'][2]['rule_id'] == 'rule-3'  # 5 matches
+        # Counts surfaced from CloudWatch, not DDB.
+        assert result['rules'][0]['match_count'] == 50
+        assert result['rules'][1]['match_count'] == 10
+        assert result['rules'][2]['match_count'] == 5
     
     @pytest.mark.asyncio
     async def test_list_sigma_rules_with_limit(self, mock_dynamodb, mock_cache_manager, sample_sigma_rule):

@@ -1,0 +1,14 @@
+# Redocly ruleset for the AegionAI Guard API spec.
+#   redocly lint    aegion-guard-api.openapi.yaml
+#   redocly preview-docs aegion-guard-api.openapi.yaml
+# operation-4xx-response is relaxed: the common auth/throttle/server errors are defined once in
+# components.responses and referenced from the integration endpoints; the read endpoints share the
+# same gateway-level error envelope, so repeating 4xx on every GET adds noise, not information.
+extends:
+  - recommended
+rules:
+  operation-4xx-response: off
+  no-invalid-media-type-examples: warn
+  security-defined: error
+  operation-operationId-unique: error
+  no-unused-components: warn

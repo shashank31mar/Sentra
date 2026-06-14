@@ -7,6 +7,11 @@ boto3==1.34.20
 pyyaml==6.0.1
 python-json-logger==2.0.7
 
+# Cedar authorization engine (in-process). CT01 build-spike confirmed the
+# manylinux wheel installs + imports on python:3.11-slim for linux/amd64
+# (ECS target) with zero transitive deps — no Rust build stage, no sidecar.
+cedarpy==4.8.4
+
 # Testing dependencies (for development)
 # pytest==9.0.1
 # pytest-asyncio==1.3.0

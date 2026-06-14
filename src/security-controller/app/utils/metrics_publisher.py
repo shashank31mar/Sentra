@@ -111,6 +111,75 @@ class MetricsPublisher:
             logger.exception(f"Failed to publish validation metrics (non-blocking): {e}")
             # Don't raise - metrics publishing should not block validation
     
+    async def publish_sigma_match_metric(self, rule_id: str):
+        """
+        Publish a Sigma rule match to CloudWatch.
+
+        Emits one count per match under a per-rule ``RuleId`` dimension. This is
+        the source of truth for the console's "Matches" column — the
+        ``stats.match_count_*`` fields in the DynamoDB metadata table are dead
+        (never incremented at runtime). CloudWatch gives us native time-windowing
+        (1h/24h/7d/30d) without a decay job, and ``MetricsQueryService`` reads it
+        back via GetMetricData.
+
+        Args:
+            rule_id: Sigma rule identifier (e.g., "sigma-llm-001"). Used as the
+                RuleId dimension so each rule gets its own series.
+
+        Note: Fire-and-forget. Metrics failures must never block validation.
+        """
+        try:
+            self.cloudwatch.put_metric_data(
+                Namespace=self.namespace,
+                MetricData=[
+                    {
+                        'MetricName': 'SigmaRuleMatches',
+                        'Value': 1,
+                        'Unit': 'Count',
+                        'Dimensions': [
+                            {'Name': 'RuleId', 'Value': rule_id}
+                        ]
+                    }
+                ]
+            )
+            logger.debug(f"Published Sigma match metric for rule {rule_id}")
+        except Exception as e:
+            logger.exception(f"Failed to publish Sigma match metric (non-blocking): {e}")
+            # Don't raise - metrics publishing should not block validation
+
+    async def publish_cedar_shadow_metric(self, agreed: bool, disagreement_kind: str = "none"):
+        """Publish a Cedar shadow-mode comparison result (feature: cedar-policy CT07).
+
+        One data point per shadowed request: ``CedarShadowDiscrepancy`` = 1 on a
+        disagreement (else 0), plus a ``CedarShadowEvaluated`` count so the
+        disagreement rate is computable. The ``Kind`` dimension records the shape
+        of the disagreement (e.g. ``verdict``, ``violation_type``, ``cedar_error``)
+        for triage at CT09.
+
+        Note: Fire-and-forget. Shadow telemetry must never block the live path.
+        """
+        try:
+            self.cloudwatch.put_metric_data(
+                Namespace=self.namespace,
+                MetricData=[
+                    {
+                        'MetricName': 'CedarShadowEvaluated',
+                        'Value': 1,
+                        'Unit': 'Count',
+                    },
+                    {
+                        'MetricName': 'CedarShadowDiscrepancy',
+                        'Value': 0 if agreed else 1,
+                        'Unit': 'Count',
+                        'Dimensions': [
+                            {'Name': 'Kind', 'Value': disagreement_kind}
+                        ]
+                    },
+                ]
+            )
+        except Exception as e:
+            logger.exception(f"Failed to publish Cedar shadow metric (non-blocking): {e}")
+
     async def publish_session_metrics(self, quarantined_count: int, suspended_count: int):
         """
         Publish session status metrics.

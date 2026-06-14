@@ -40,7 +40,15 @@ async def lifespan(app: FastAPI):
         "port": settings.port,
         "aws_region": settings.aws_region
     })
-    
+
+    # Build the ValidationService once and reuse it for every request
+    # (LLD 24 / WS24 M2). Per-request construction rebuilt ~10 boto3 clients and
+    # discarded the Sigma rule cache, adding hundreds of ms per call. __init__ does
+    # no network I/O (client objects + a local YAML read only), so it is safe here.
+    from app.services import ValidationService
+    app.state.validation_service = ValidationService()
+    logger.info("ValidationService singleton initialized")
+
     yield
     
     # Shutdown

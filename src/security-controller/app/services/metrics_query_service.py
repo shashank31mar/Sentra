@@ -231,3 +231,74 @@ class MetricsQueryService:
             if not next_token:
                 break
         return out
+
+    # ----------------------------------------------------- sigma rule matches
+
+    def _list_sigma_rule_ids(self) -> List[str]:
+        """Enumerate every RuleId dimension ever seen on the SigmaRuleMatches metric.
+
+        ListMetrics reflects metrics observed in the trailing ~2 weeks, which is
+        wider than any of our ranges, so we then sum each series over the actual
+        window. A rule that has never matched has no series here and so is
+        (correctly) absent from the result — the caller defaults it to 0.
+        """
+        rule_ids: set = set()
+        token = None
+        while True:
+            kwargs: Dict[str, Any] = {
+                "Namespace": NAMESPACE,
+                "MetricName": "SigmaRuleMatches",
+            }
+            if token:
+                kwargs["NextToken"] = token
+            resp = self.cloudwatch.list_metrics(**kwargs)
+            for metric in resp.get("Metrics", []):
+                for dim in metric.get("Dimensions", []):
+                    if dim.get("Name") == "RuleId":
+                        rule_ids.add(dim.get("Value"))
+            token = resp.get("NextToken")
+            if not token:
+                break
+        return sorted(rule_ids)
+
+    def sigma_match_counts(self, range_token: str = "24h") -> Dict[str, int]:
+        """Per-rule Sigma match counts over the range, keyed {rule_id: count}.
+
+        Source of truth for the console's "Matches" column (the DDB
+        stats.match_count_* fields are dead). Returns only rules that have at
+        least one series in CloudWatch; the caller defaults unseen rules to 0.
+        Defaults to a 24h window to match the dashboard's default selector.
+        """
+        rule_ids = self._list_sigma_rule_ids()
+        if not rule_ids:
+            return {}
+
+        start, end, seconds = self._range_window(range_token)
+        period = seconds  # one bucket over the whole range -> scalar per rule
+
+        # One GetMetricData query per rule. Metric math ids must be
+        # alphanumeric and start with a lowercase letter, so map rule_id ->
+        # "r<index>" and keep a reverse lookup.
+        id_map: Dict[str, str] = {f"r{i}": rid for i, rid in enumerate(rule_ids)}
+        queries = [
+            {
+                "Id": qid,
+                "MetricStat": {
+                    "Metric": {
+                        "Namespace": NAMESPACE,
+                        "MetricName": "SigmaRuleMatches",
+                        "Dimensions": [{"Name": "RuleId", "Value": rid}],
+                    },
+                    "Period": period,
+                    "Stat": "Sum",
+                },
+                "ReturnData": True,
+            }
+            for qid, rid in id_map.items()
+        ]
+
+        data = self._get_metric_data(queries, start, end)
+        counts: Dict[str, int] = {}
+        for qid, rid in id_map.items():
+            counts[rid] = int(sum(data.get(qid, []) or []))
+        return counts

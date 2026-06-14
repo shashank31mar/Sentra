@@ -53,8 +53,15 @@ def get_sentra_api_key():
 
     secret_name = os.environ['SENTRA_API_KEY_SECRET']
     response = secrets_client.get_secret_value(SecretId=secret_name)
-    secret = json.loads(response['SecretString'])
-    _api_key_cache = secret['key']
+    raw = response['SecretString']
+    # Tolerate both secret shapes: JSON {"key": "..."} (the console key's
+    # convention) and a plain-string key (the dedicated /v1/validate key is a
+    # CDK-generated plain string). Either way we end up with the raw API key.
+    try:
+        parsed = json.loads(raw)
+        _api_key_cache = parsed['key'] if isinstance(parsed, dict) and 'key' in parsed else raw
+    except (json.JSONDecodeError, TypeError):
+        _api_key_cache = raw
     return _api_key_cache
 
 

@@ -158,61 +158,40 @@ def sample_request():
     )
 
 
+# --- CT11: legacy per-tool authorization REMOVED -----------------------------
+# The hardcoded checks (allowed_tools, refund cap, fraud gate, invoke_agent) that
+# validate() used to run were removed when CedarPolicyEngine became authoritative.
+# Those ALLOW/DENY behaviors are now covered by test_cedar_policy_engine.py.
+# validate() is a fail-secure floor, reached only via the cedar-disabled/abstain
+# paths — so for a loadable policy it now DENYs with POLICY_ERROR.
+
 @pytest.mark.asyncio
-async def test_authorized_tool_returns_allow(policy_engine, sample_request):
-    """Authorized tool (query_customers in allowed_tools) returns ALLOW."""
+async def test_validate_is_fail_secure_after_cedar_cutover(policy_engine, sample_request):
+    """A loadable policy (pre-CT11 this returned ALLOW) now fails secure: the
+    legacy authorization engine is retired, Cedar is authoritative."""
     result = await policy_engine.validate(sample_request)
-    assert result.decision == "ALLOW"
-    assert result.should_deny is False
-    assert "passed" in result.reason.lower()
-    # Workstream 15: cross-cloud fields populated from policy
+    assert result.decision == "DENY"
+    assert result.should_deny is True
+    assert result.violation_type == "POLICY_ERROR"
+    assert "retired" in result.reason.lower()
+    # Cloud identity still stamped for the audit log.
     assert result.platform == "bedrock"
     assert result.cloud_region == "us-east-1"
 
 
 @pytest.mark.asyncio
-async def test_unauthorized_tool_returns_deny(policy_engine, sample_request):
-    """Unauthorized tool returns DENY."""
-    sample_request.tool_name = "process_refund"  # not in customer-query-agent's allowed_tools
-    result = await policy_engine.validate(sample_request)
-    assert result.decision == "DENY"
-    assert result.should_deny is True
-    assert result.violation_type == "UNAUTHORIZED_TOOL"
-    assert "not authorized" in result.reason.lower()
-    assert result.penalty == -15
-    # Workstream 15: DENY responses also carry cross-cloud fields
-    assert result.platform == "bedrock"
-
-
-@pytest.mark.asyncio
-async def test_authorized_agent_invocation_returns_allow(policy_engine, sample_request):
-    sample_request.tool_name = "invoke_agent"
-    sample_request.tool_params = {"agent_id": "payment-agent"}
-    result = await policy_engine.validate(sample_request)
-    assert result.decision == "ALLOW"
-
-
-@pytest.mark.asyncio
-async def test_unauthorized_agent_invocation_returns_deny(policy_engine, sample_request):
-    sample_request.tool_name = "invoke_agent"
-    sample_request.tool_params = {"agent_id": "unauthorized-agent"}
-    result = await policy_engine.validate(sample_request)
-    assert result.decision == "DENY"
-    assert result.should_deny is True
-    assert result.violation_type == "UNAUTHORIZED_AGENT_INVOCATION"
-    assert "cannot invoke" in result.reason.lower()
-    assert result.penalty == -15
-
-
-@pytest.mark.asyncio
-async def test_invoke_agent_without_target_returns_deny(policy_engine, sample_request):
-    sample_request.tool_name = "invoke_agent"
-    sample_request.tool_params = {}  # missing agent_id
-    result = await policy_engine.validate(sample_request)
-    assert result.decision == "DENY"
-    assert result.should_deny is True
-    assert result.violation_type == "INVALID_AGENT_INVOCATION"
-    assert "requires target agent_id" in result.reason.lower()
+async def test_validate_fail_secure_regardless_of_tool(policy_engine, sample_request):
+    """No tool-specific path remains — every tool/param shape fail-secure DENYs."""
+    for tool, params in [
+        ("process_refund", {"amount": 1}),
+        ("invoke_agent", {"agent_id": "payment-agent"}),
+        ("invoke_agent", {}),
+    ]:
+        sample_request.tool_name = tool
+        sample_request.tool_params = params
+        result = await policy_engine.validate(sample_request)
+        assert result.decision == "DENY"
+        assert result.violation_type == "POLICY_ERROR"
 
 
 @pytest.mark.asyncio
@@ -240,31 +219,6 @@ async def test_inactive_policy_filtered_out(policy_engine):
 
 
 @pytest.mark.asyncio
-async def test_payment_agent_cannot_invoke_others(policy_engine, sample_request):
-    sample_request.agent_id = "payment-agent"
-    sample_request.tool_name = "invoke_agent"
-    sample_request.tool_params = {"agent_id": "customer-query-agent"}
-    result = await policy_engine.validate(sample_request)
-    assert result.decision == "DENY"
-    assert result.should_deny is True
-    assert result.violation_type == "UNAUTHORIZED_AGENT_INVOCATION"
-
-
-@pytest.mark.asyncio
-async def test_payment_agent_authorized_tools(policy_engine, sample_request):
-    sample_request.agent_id = "payment-agent"
-
-    sample_request.tool_name = "check_order"
-    assert (await policy_engine.validate(sample_request)).decision == "ALLOW"
-
-    sample_request.tool_name = "process_refund"
-    assert (await policy_engine.validate(sample_request)).decision == "ALLOW"
-
-    sample_request.tool_name = "reverse_refund"
-    assert (await policy_engine.validate(sample_request)).decision == "ALLOW"
-
-
-@pytest.mark.asyncio
 async def test_get_agent_policy_returns_correct_policy(policy_engine):
     policy = await policy_engine.get_agent_policy("customer-query-agent")
     assert policy["agent_id"] == "customer-query-agent"
@@ -279,13 +233,30 @@ async def test_get_agent_policy_returns_correct_policy(policy_engine):
 
 @pytest.mark.asyncio
 async def test_error_handling_returns_deny(policy_engine, sample_request):
-    """If the metadata table reference is broken, the engine fails secure (DENY).
+    """If the policies-metadata table is broken, the engine fails secure (DENY).
 
-    Rewritten from the legacy `policy_engine.table = None` pattern (which targeted
-    an attribute that no longer exists) to point at the actual production attribute
-    `metadata_table`.
+    `metadata_table` / `agent_registry` are now flag-aware PROPERTIES (resolved
+    via the tenancy helper, workstream T5/T7), so the test breaks the backend
+    instead of reassigning the attribute: the registry read still works (cloud
+    identity resolves) while the policies-metadata query raises a ClientError —
+    exactly the production failure mode that must DENY.
     """
-    policy_engine.metadata_table = None
+    from unittest.mock import Mock
+    from botocore.exceptions import ClientError
+
+    err = ClientError({"Error": {"Code": "InternalError", "Message": "boom"}}, "Query")
+    broken = Mock()
+    broken.query.side_effect = err
+    broken.get_item.side_effect = err
+    working_registry = Mock()
+    working_registry.get_item.return_value = {}  # agent not found → GSI fallback path
+
+    def _table(name):
+        return broken if "policies-metadata" in name else working_registry
+
+    policy_engine.dynamodb = Mock()
+    policy_engine.dynamodb.Table.side_effect = _table
+
     result = await policy_engine.validate(sample_request)
     assert result.decision == "DENY"
     assert result.should_deny is True

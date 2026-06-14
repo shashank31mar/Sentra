@@ -1,0 +1,279 @@
+{
+    "Items": [
+        {
+            "agent_id": {
+                "S": "azure-verification-agent"
+            },
+            "updated_at": {
+                "S": "2026-05-20T06:46:47.458145Z"
+            },
+            "version": {
+                "N": "1"
+            },
+            "policy_id": {
+                "S": "pol-azure-verification-agent-001"
+            },
+            "cloud_region": {
+                "S": "eastus2"
+            },
+            "allowed_tools": {
+                "L": [
+                    {
+                        "S": "verify_image_authenticity"
+                    },
+                    {
+                        "S": "check_fraud_score"
+                    }
+                ]
+            },
+            "max_calls_per_minute": {
+                "N": "30"
+            },
+            "created_at": {
+                "S": "2026-05-20T06:46:47.458145Z"
+            },
+            "platform": {
+                "S": "azure_foundry"
+            },
+            "allowed_agents": {
+                "L": []
+            },
+            "cross_cloud_dependencies": {
+                "L": []
+            },
+            "is_active": {
+                "BOOL": true
+            }
+        },
+        {
+            "agent_id": {
+                "S": "customer-query-agent"
+            },
+            "updated_at": {
+                "S": "2026-05-20T06:46:47.458119Z"
+            },
+            "version": {
+                "N": "1"
+            },
+            "allowed_tools": {
+                "L": [
+                    {
+                        "S": "query_customers"
+                    },
+                    {
+                        "S": "query_orders"
+                    },
+                    {
+                        "S": "query_with_limit"
+                    },
+                    {
+                        "S": "get_customer_by_id"
+                    },
+                    {
+                        "S": "invoke_agent"
+                    },
+                    {
+                        "S": "call_payment_agent"
+                    }
+                ]
+            },
+            "max_calls_per_minute": {
+                "N": "30"
+            },
+            "policy_id": {
+                "S": "pol-customer-query-agent-001"
+            },
+            "cloud_region": {
+                "S": "us-east-1"
+            },
+            "created_at": {
+                "S": "2026-05-20T06:46:47.458119Z"
+            },
+            "platform": {
+                "S": "bedrock"
+            },
+            "allowed_agents": {
+                "L": [
+                    {
+                        "S": "payment-agent"
+                    }
+                ]
+            },
+            "cross_cloud_dependencies": {
+                "L": []
+            },
+            "is_active": {
+                "BOOL": true
+            }
+        },
+        {
+            "agent_id": {
+                "S": "payment-agent"
+            },
+            "updated_at": {
+                "S": "2026-05-20T06:46:47.458132Z"
+            },
+            "version": {
+                "N": "1"
+            },
+            "policy_id": {
+                "S": "pol-payment-agent-001"
+            },
+            "allowed_tools": {
+                "L": [
+                    {
+                        "S": "check_order"
+                    },
+                    {
+                        "S": "process_refund"
+                    },
+                    {
+                        "S": "reverse_refund"
+                    }
+                ]
+            },
+            "max_calls_per_minute": {
+                "N": "15"
+            },
+            "cloud_region": {
+                "S": "us-east-1"
+            },
+            "created_at": {
+                "S": "2026-05-20T06:46:47.458132Z"
+            },
+            "platform": {
+                "S": "bedrock"
+            },
+            "allowed_agents": {
+                "L": []
+            },
+            "cross_cloud_dependencies": {
+                "L": []
+            },
+            "is_active": {
+                "BOOL": true
+            }
+        },
+        {
+            "agent_id": {
+                "S": "payment-agent"
+            },
+            "policy_type": {
+                "S": "tool_authorization"
+            },
+            "action": {
+                "S": "CONDITIONAL"
+            },
+            "cloud_region": {
+                "S": "us-east-1"
+            },
+            "created_at": {
+                "S": "2025-12-01T18:45:00Z"
+            },
+            "priority": {
+                "N": "100"
+            },
+            "tool_name": {
+                "S": "process_refund"
+            },
+            "updated_at": {
+                "S": "2026-05-20T00:00:00Z"
+            },
+            "conditions": {
+                "M": {
+                    "max_refund_amount": {
+                        "N": "5000"
+                    }
+                }
+            },
+            "policy_id": {
+                "S": "pol-payment-agent-refund-limit"
+            },
+            "platform": {
+                "S": "bedrock"
+            },
+            "cross_cloud_dependencies": {
+                "L": []
+            },
+            "description": {
+                "S": "Refund limit policy - blocks refunds over $5,000"
+            }
+        },
+        {
+            "agent_id": {
+                "S": "sentra-mvp-customer-service-agent"
+            },
+            "updated_at": {
+                "S": "2026-05-20T06:46:47.458140Z"
+            },
+            "version": {
+                "N": "1"
+            },
+            "policy_id": {
+                "S": "pol-sentra-mvp-customer-service-agent-001"
+            },
+            "cloud_region": {
+                "S": "us-east-1"
+            },
+            "allowed_tools": {
+                "L": [
+                    {
+                        "S": "query_customers"
+                    },
+                    {
+                        "S": "get_order_details"
+                    },
+                    {
+                        "S": "process_refund"
+                    }
+                ]
+            },
+            "max_calls_per_minute": {
+                "N": "30"
+            },
+            "created_at": {
+                "S": "2026-05-20T06:46:47.458140Z"
+            },
+            "platform": {
+                "S": "bedrock"
+            },
+            "allowed_agents": {
+                "L": [
+                    {
+                        "S": "azure-verification-agent"
+                    }
+                ]
+            },
+            "cross_cloud_dependencies": {
+                "L": [
+                    {
+                        "M": {
+                            "required_before": {
+                                "L": [
+                                    {
+                                        "S": "process_refund"
+                                    }
+                                ]
+                            },
+                            "max_age_seconds": {
+                                "N": "300"
+                            },
+                            "target_tool": {
+                                "S": "verify_image_authenticity"
+                            },
+                            "target_agent": {
+                                "S": "azure-verification-agent"
+                            }
+                        }
+                    }
+                ]
+            },
+            "is_active": {
+                "BOOL": true
+            }
+        }
+    ],
+    "Count": 5,
+    "ScannedCount": 5,
+    "ConsumedCapacity": null
+}

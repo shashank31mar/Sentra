@@ -33,7 +33,7 @@ async def health_check() -> Dict:
     Health check endpoint with dependency verification.
     
     Checks connectivity to:
-    - DynamoDB (sentra-session-context, sentra-policies)
+    - DynamoDB (sentra-session-context, sentra-policies-metadata, …)
     - S3 (sentra-mvp-artifacts)
     - CloudWatch Logs
     
@@ -67,8 +67,6 @@ async def validate_tool_call(request: ValidationRequest, http_request: Request) 
     Returns:
         ValidationResponse (ALLOW) or ValidationDenyResponse (DENY)
     """
-    from app.services import ValidationService
-
     # Capture the caller IP for the audit trail / forensics view. Behind API Gateway + VPC Link the
     # real client is the first hop of X-Forwarded-For; fall back to the socket peer. Stored on the
     # request context so it propagates to every signal row (audit_logger._shared_attrs_from_request).
@@ -79,7 +77,14 @@ async def validate_tool_call(request: ValidationRequest, http_request: Request) 
     if source_ip:
         request.context = {**(request.context or {}), "ip_address": source_ip}
 
-    validation_service = ValidationService()
+    # Reuse the process-wide ValidationService built at startup (app/main.py
+    # lifespan, LLD 24 / WS24 M2). Per-request construction rebuilt ~10 boto3
+    # clients and defeated the Sigma rule cache. Fall back to a local instance only
+    # if lifespan didn't run (e.g. some test harnesses).
+    validation_service = getattr(http_request.app.state, "validation_service", None)
+    if validation_service is None:
+        from app.services import ValidationService
+        validation_service = ValidationService()
     return await validation_service.validate_tool_call(request)
 
 
@@ -385,15 +390,22 @@ async def discovery_agents(
     framework: Optional[str] = None,
     risk: Optional[str] = None,
     status: Optional[str] = None,
+    connection_id: Optional[str] = None,
     limit: int = 50,
     cursor: Optional[str] = None,
 ) -> Dict:
-    """WS-21 T32: detected-agents table (static, policy-derived read-model)."""
+    """WS-21 T32: detected-agents table (static, policy-derived read-model).
+
+    `connection_id` (connections-api-spec §5) scopes the review table to a just-
+    connected account. Backward-compatible — omitted ⇒ current behavior. In the
+    P0 policy-derived read-model there is no per-connection agent mapping yet, so
+    it is accepted and forwarded for forward-compat (no-op filter today).
+    """
     from app.services.discovery_service import DiscoveryService
     try:
         return await DiscoveryService().list_discovered(
             cloud_provider=cloud_provider, framework=framework, risk=risk,
-            status=status, limit=limit, cursor=cursor,
+            status=status, connection_id=connection_id, limit=limit, cursor=cursor,
         )
     except ValueError as exc:  # malformed cursor
         raise HTTPException(status_code=400, detail=str(exc))
@@ -427,27 +439,125 @@ async def discovery_import(request: Dict) -> Dict:
         raise HTTPException(status_code=422, detail=str(exc))
 
 
+# ============================================================
+# Cloud Connections (Connect-Account wizard — connections-api-spec.md)
+# ============================================================
+
+def _connection_http(exc: Exception):
+    """Map connections-domain exceptions to HTTP (status code is the contract)."""
+    from app.services.connections_service import (
+        ConnectionNotFound, InvalidRoleArn, NotConnected, ProviderNotAvailable,
+    )
+    if isinstance(exc, ConnectionNotFound):
+        return HTTPException(status_code=404, detail=str(exc))
+    if isinstance(exc, ProviderNotAvailable):
+        return HTTPException(status_code=409, detail=f"PROVIDER_NOT_AVAILABLE: {exc}")
+    if isinstance(exc, NotConnected):
+        return HTTPException(status_code=409, detail=f"NOT_CONNECTED: {exc}")
+    if isinstance(exc, InvalidRoleArn):
+        return HTTPException(status_code=400, detail=f"VALIDATION_ERROR: {exc}")
+    return HTTPException(status_code=500, detail=str(exc))
+
+
+@router.get("/connections")
+async def list_connections() -> Dict:
+    """List the tenant's cloud connections (spec §4.1)."""
+    from app.services.connections_service import ConnectionsService
+    return ConnectionsService().list_connections()
+
+
+@router.post("/connections", status_code=201)
+async def create_connection(request: Dict) -> Dict:
+    """Create a connection + mint external_id (spec §4.2). 409 for gcp/azure (v1)."""
+    from app.services.connections_service import ConnectionsService, ConnectionError
+    try:
+        return ConnectionsService().create_connection(request.get("cloud_provider"))
+    except ConnectionError as exc:
+        raise _connection_http(exc)
+
+
+@router.get("/connections/{connection_id}")
+async def get_connection(connection_id: str) -> Dict:
+    """Get one connection (spec §4.3)."""
+    from app.services.connections_service import ConnectionsService, ConnectionError
+    try:
+        return ConnectionsService().get_connection(connection_id)
+    except ConnectionError as exc:
+        raise _connection_http(exc)
+
+
+@router.put("/connections/{connection_id}")
+async def update_connection(connection_id: str, request: Dict) -> Dict:
+    """Attach/replace the role ARN after the operator deploys the stack (spec §4.4)."""
+    from app.services.connections_service import ConnectionsService, ConnectionError
+    try:
+        return ConnectionsService().set_role_arn(connection_id, request.get("role_arn"))
+    except ConnectionError as exc:
+        raise _connection_http(exc)
+
+
+@router.post("/connections/{connection_id}/test")
+async def test_connection(connection_id: str, request: Dict = None) -> Dict:
+    """Live sts:AssumeRole + read-only probe (spec §4.5). A rejected role returns
+    200 {ok:false, message} — only an unknown connection is an HTTP error."""
+    from app.services.connections_service import ConnectionsService, ConnectionError
+    try:
+        role_arn = (request or {}).get("role_arn")
+        return ConnectionsService().test_connection(connection_id, role_arn)
+    except ConnectionError as exc:
+        raise _connection_http(exc)
+
+
+@router.post("/connections/{connection_id}/scan", status_code=202)
+async def scan_connection(connection_id: str) -> Dict:
+    """Trigger discovery for this connection (spec §4.6). 409 if not connected."""
+    from app.services.connections_service import ConnectionsService, ConnectionError
+    try:
+        return ConnectionsService().scan_connection(connection_id)
+    except ConnectionError as exc:
+        raise _connection_http(exc)
+
+
+@router.delete("/connections/{connection_id}", status_code=204)
+async def delete_connection(connection_id: str) -> None:
+    """Disconnect — drop the reference; imported agents are retained (spec §4.7)."""
+    from app.services.connections_service import ConnectionsService, ConnectionError
+    try:
+        ConnectionsService().delete_connection(connection_id)
+    except ConnectionError as exc:
+        raise _connection_http(exc)
+
+
 @router.post("/agents/{agent_id}/policies")
-async def attach_agent_policy(agent_id: str, request: Dict) -> Dict:
-    """WS-21 T33: attach a policy to an agent."""
+async def attach_agent_policy(
+    agent_id: str,
+    request: Dict,
+    operator_email: str = Header(None, alias="X-Operator-Email"),
+) -> Dict:
+    """Set the agent's policy binding (agent-policy-management §4.2).
+
+    Rebind-as-replace: attaching when already bound is an atomic swap (no 409).
+    """
     policy_id = request.get("policy_id")
     if not policy_id:
         raise HTTPException(status_code=400, detail="policy_id is required")
     from app.services.agent_service import AgentService
     try:
-        return await AgentService().attach_policy(agent_id, policy_id)
+        return await AgentService().attach_policy(agent_id, policy_id, operator_email)
     except KeyError as exc:
         raise HTTPException(status_code=404, detail=str(exc))
-    except ValueError as exc:
-        raise HTTPException(status_code=409, detail=str(exc))
 
 
 @router.delete("/agents/{agent_id}/policies/{policy_id}")
-async def detach_agent_policy(agent_id: str, policy_id: str) -> Dict:
-    """WS-21 T33: detach a policy from an agent."""
+async def detach_agent_policy(
+    agent_id: str,
+    policy_id: str,
+    operator_email: str = Header(None, alias="X-Operator-Email"),
+) -> Dict:
+    """Clear the agent's policy binding (agent-policy-management §4.2)."""
     from app.services.agent_service import AgentService
     try:
-        return await AgentService().detach_policy(agent_id, policy_id)
+        return await AgentService().detach_policy(agent_id, policy_id, operator_email)
     except KeyError as exc:
         raise HTTPException(status_code=404, detail=str(exc))
 
@@ -479,12 +589,16 @@ async def post_decision_verdict(decision_id: str, request: Dict) -> Dict:
 # ============================================================
 
 @router.get("/agents")
-async def get_agents(enrich: bool = True) -> Dict:
+async def get_agents(enrich: bool = True, managed_only: bool = False) -> Dict:
     """
     List all registered agents.
-    
+
     Args:
         enrich: If True (default), include runtime statistics. Set to False for fast response.
+        managed_only: If True, return ONLY Managed agents — those with observed
+            /v1/validate traffic (data flowing). The Agent Inventory uses this so
+            imported-but-silent agents stay in the Import tab (feature §8.1).
+            Each returned agent carries `lifecycle_status="managed"` + `last_active`.
     
     Returns:
         AgentsResponse with agents array and total count
@@ -510,7 +624,7 @@ async def get_agents(enrich: bool = True) -> Dict:
     from app.services.agent_service import AgentService
     
     agent_service = AgentService()
-    return await agent_service.list_agents(enrich=enrich)
+    return await agent_service.list_agents(enrich=enrich, managed_only=managed_only)
 
 
 @router.get("/agents/{agent_id}")
@@ -845,12 +959,60 @@ async def delete_policy(
         raise HTTPException(status_code=e.status_code, detail=e.to_dict())
 
 
+@router.patch("/policies/{policy_id}/status")
+async def set_policy_status(
+    policy_id: str,
+    request: Dict,
+    operator_email: str = Header(None, alias="X-Operator-Email")
+) -> Dict:
+    """
+    Enable or disable a policy (lifecycle status flip).
+
+    agent-policy-management §4.3 / T20. Mirrors PATCH /sigma-rules/{rule_id}.
+
+    Path Parameters:
+        policy_id: Policy identifier
+
+    Request Body:
+        {"status": "active" | "disabled"}   (active = enable, disabled = disable)
+
+    Headers:
+        X-Operator-Email: Email of operator (optional)
+
+    Returns:
+        {success, policy_id, status, updated_at}
+
+    HTTP Status Codes:
+        200 OK - Status updated
+        400 Bad Request - Invalid status
+        404 Not Found - Policy not found
+
+    Note (§2.8): Enable/Disable are ALLOWED on system (`created_by='system'`)
+    policies — there is intentionally NO 403 here. Only DELETE is protected.
+    """
+    from app.services.policy_service import PolicyService
+    from app.exceptions import ValidationException, NotFoundException
+
+    try:
+        policy_service = PolicyService()
+        return await policy_service.set_policy_status(
+            policy_id=policy_id,
+            status=request.get('status'),
+            operator_email=operator_email or "unknown"
+        )
+    except ValidationException as e:
+        raise HTTPException(status_code=e.status_code, detail=e.to_dict())
+    except NotFoundException as e:
+        raise HTTPException(status_code=e.status_code, detail=e.to_dict())
+
+
 @router.get("/sigma-rules")
 async def get_sigma_rules(
     status: Optional[str] = None,
     level: Optional[str] = None,
     limit: int = 50,
-    cursor: Optional[str] = None
+    cursor: Optional[str] = None,
+    range: str = "24h"
 ) -> Dict:
     """
     List Sigma rules with match counts.
@@ -859,6 +1021,7 @@ async def get_sigma_rules(
         status: Filter by status (stable/experimental/deprecated) (optional)
         level: Filter by severity level (critical/high/medium/low) (optional)
         limit: Max results (default: 50, max: 200)
+        range: Match-count time window (1h/24h/7d/30d, default 24h)
     
     Returns:
         SigmaRulesResponse with rules array, total, and has_more flag
@@ -908,6 +1071,13 @@ async def get_sigma_rules(
             status_code=400,
             detail=f"Invalid level. Must be one of: {', '.join(valid_levels)}"
         )
+
+    # Validate match-count range
+    if range not in _VALID_METRIC_RANGES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"range must be one of {sorted(_VALID_METRIC_RANGES)}",
+        )
     
     sigma_rules_service = SigmaRulesService()
     try:
@@ -915,7 +1085,8 @@ async def get_sigma_rules(
             status=status,
             level=level,
             limit=limit,
-            cursor=cursor
+            cursor=cursor,
+            match_range=range
         )
     except ValueError as exc:  # malformed cursor
         raise HTTPException(status_code=400, detail=str(exc))
@@ -952,6 +1123,65 @@ async def update_sigma_rule(rule_id: str, request: Dict) -> Dict:
     # Echo the console's vocabulary back, not the stored value.
     api_status = "enabled" if ddb_status == "stable" else "disabled"
     return {"success": True, "rule_id": rule_id, "status": api_status}
+
+
+@router.get("/sigma-rules/{rule_id}/content")
+async def get_sigma_rule_content(rule_id: str) -> Dict:
+    """
+    Get a Sigma rule's full content, including its detection selections/patterns.
+
+    Downloads the rule YAML from S3 (via the metadata's s3_key) and returns a
+    UI-friendly breakdown of the detection block so the console can show exactly
+    what each rule matches on.
+
+    Path Parameters:
+        rule_id: Sigma rule identifier (e.g., sigma-llm-001)
+
+    Returns:
+        - rule_id, title, description, level, status, tags
+        - condition: the Sigma detection condition (e.g., "1 of them")
+        - selections: [{name, field, patterns: [...]}] — one entry per detection
+          selection. ``field`` is the matched field+modifier (e.g.
+          "prompt|contains"); ``patterns`` are the literal substrings matched.
+        - patterns_total: total number of patterns across all selections
+    """
+    from app.services.sigma_rules_service import SigmaRulesService
+
+    service = SigmaRulesService()
+    rule_data = await service.get_sigma_rule_content(rule_id)
+    if not rule_data:
+        raise HTTPException(status_code=404, detail="Rule not found")
+
+    detection = rule_data.get("detection") or {}
+    selections = []
+    patterns_total = 0
+    condition = None
+    for sel_name, sel_data in detection.items():
+        if sel_name == "condition":
+            condition = sel_data
+            continue
+        if isinstance(sel_data, dict):
+            for field, values in sel_data.items():
+                pattern_list = values if isinstance(values, list) else [values]
+                patterns_total += len(pattern_list)
+                selections.append({
+                    "name": sel_name,
+                    "field": field,
+                    "patterns": [str(p) for p in pattern_list],
+                })
+
+    metadata = rule_data.get("metadata") or {}
+    return {
+        "rule_id": rule_id,
+        "title": rule_data.get("title") or metadata.get("title") or rule_id,
+        "description": rule_data.get("description", metadata.get("description", "")),
+        "level": rule_data.get("level", metadata.get("level", "medium")),
+        "status": metadata.get("status", rule_data.get("status", "")),
+        "tags": rule_data.get("tags", metadata.get("tags", [])),
+        "condition": condition,
+        "selections": selections,
+        "patterns_total": patterns_total,
+    }
 
 
 # ============================================================

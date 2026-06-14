@@ -181,44 +181,11 @@ class StorageStack(Stack):
             projection_type=dynamodb.ProjectionType.ALL,  # Include all attributes
         )
 
-        # ============================================================
-        # DynamoDB Table 2: sentra-policies (Task 6)
-        # ============================================================
-        # Purpose: Store policy metadata (actual YAML in S3)
-        # See LLD Section 3.3.2 for full schema details
-        # Access Pattern: GetItem by policy_id, Query by agent_id
-        # Streams: Enabled for audit trail of policy changes
-
-        policies_config = dynamodb_config.get("policies", {})
-
-        self.policies_table = dynamodb.Table(
-            self,
-            "PoliciesTable",
-            table_name=policies_config.get("table_name", "sentra-policies"),
-            partition_key=dynamodb.Attribute(
-                name="policy_id",
-                type=dynamodb.AttributeType.STRING
-            ),
-            billing_mode=dynamodb.BillingMode.PAY_PER_REQUEST,  # On-demand pricing (ADR-013)
-            point_in_time_recovery=policies_config.get("point_in_time_recovery", True),  # Critical config
-            removal_policy=RemovalPolicy.DESTROY,  # For dev/demo - RETAIN for production
-            stream=dynamodb.StreamViewType.NEW_AND_OLD_IMAGES,  # Audit policy changes
-        )
-
-        # GSI: agent-version-index (agent_id, version)
-        # Access Pattern: Get latest policy version for an agent
-        self.policies_table.add_global_secondary_index(
-            index_name="agent-version-index",
-            partition_key=dynamodb.Attribute(
-                name="agent_id",
-                type=dynamodb.AttributeType.STRING
-            ),
-            sort_key=dynamodb.Attribute(
-                name="version",
-                type=dynamodb.AttributeType.NUMBER
-            ),
-            projection_type=dynamodb.ProjectionType.ALL,
-        )
+        # NOTE: the legacy `sentra-policies` table (pre-hybrid-storage, Task 6)
+        # has been retired. Policies now live in `sentra-policies-metadata`
+        # (metadata) + S3 (full YAML). Nothing read the legacy table at runtime
+        # (validator, dashboard, health check all use the metadata table), so the
+        # table + its grants/env/outputs were removed (cleanup, 2026-06).
 
         # ============================================================
         # CloudFormation Outputs - DynamoDB Tables (Task 6)
@@ -241,22 +208,6 @@ class StorageStack(Stack):
             export_name=f"{naming_config.get('prefix', 'sentra-mvp')}-session-context-table-arn",
         )
 
-        # Policies Table Outputs
-        CfnOutput(
-            self,
-            "PoliciesTableName",
-            value=self.policies_table.table_name,
-            description="DynamoDB table name for policy metadata",
-            export_name=f"{naming_config.get('prefix', 'sentra-mvp')}-policies-table-name",
-        )
-
-        CfnOutput(
-            self,
-            "PoliciesTableArn",
-            value=self.policies_table.table_arn,
-            description="DynamoDB table ARN for policies",
-            export_name=f"{naming_config.get('prefix', 'sentra-mvp')}-policies-table-arn",
-        )
 
         # ============================================================
         # DynamoDB Table 3: sentra-demo-orders (Task 7)
@@ -752,6 +703,154 @@ class StorageStack(Stack):
         )
 
         # ============================================================
+        # Tenancy v2 Tables (Multi-Cloud Agent Import — P0a, Workstream M0a/T01)
+        # ============================================================
+        # Multi-tenant variants of the four runtime tables. `tenant_id` is the
+        # partition key on every store (feature §14.2); the old PK becomes the
+        # sort key, so a tenant Query() is the natural isolation boundary and
+        # get_item is an exact (tenant_id, entity_id) lookup.
+        #
+        # Agent-keyed GSIs key off a composite `tenant_agent_id` attribute
+        # (`{tenant}#{agent_id}`) so the plain `agent_id` attribute is never
+        # clobbered; the compliance GSI keys off `tenant_decision_date`.
+        #
+        # These are created EMPTY and read/written only behind TENANCY_V2_ENABLED
+        # (workstream §1.2). Removal policies mirror their v1 counterparts (T5)
+        # so a flag-rollback keeps both schemas intact.
+
+        # agent-registry-v2: PK tenant_id / SK agent_id; status-index (tenant_id / status)
+        self.agent_registry_table_v2 = dynamodb.Table(
+            self,
+            "AgentRegistryTableV2",
+            table_name=agent_registry_config.get("table_name_v2", "sentra-agent-registry-v2"),
+            partition_key=dynamodb.Attribute(name="tenant_id", type=dynamodb.AttributeType.STRING),
+            sort_key=dynamodb.Attribute(name="agent_id", type=dynamodb.AttributeType.STRING),
+            billing_mode=dynamodb.BillingMode.PAY_PER_REQUEST,
+            point_in_time_recovery=True,
+            removal_policy=RemovalPolicy.RETAIN,
+        )
+        self.agent_registry_table_v2.add_global_secondary_index(
+            index_name="status-index",
+            partition_key=dynamodb.Attribute(name="tenant_id", type=dynamodb.AttributeType.STRING),
+            sort_key=dynamodb.Attribute(name="status", type=dynamodb.AttributeType.STRING),
+            projection_type=dynamodb.ProjectionType.ALL,
+        )
+
+        # policies-metadata-v2: PK tenant_id / SK policy_id;
+        #   agent-index (tenant_agent_id), status-index (tenant_id / status)
+        self.policies_metadata_table_v2 = dynamodb.Table(
+            self,
+            "PoliciesMetadataTableV2",
+            table_name=policies_metadata_config.get("table_name_v2", "sentra-policies-metadata-v2"),
+            partition_key=dynamodb.Attribute(name="tenant_id", type=dynamodb.AttributeType.STRING),
+            sort_key=dynamodb.Attribute(name="policy_id", type=dynamodb.AttributeType.STRING),
+            billing_mode=dynamodb.BillingMode.PAY_PER_REQUEST,
+            point_in_time_recovery=True,
+            removal_policy=RemovalPolicy.RETAIN,
+        )
+        self.policies_metadata_table_v2.add_global_secondary_index(
+            index_name="agent-index",
+            partition_key=dynamodb.Attribute(name="tenant_agent_id", type=dynamodb.AttributeType.STRING),
+            projection_type=dynamodb.ProjectionType.ALL,
+        )
+        self.policies_metadata_table_v2.add_global_secondary_index(
+            index_name="status-index",
+            partition_key=dynamodb.Attribute(name="tenant_id", type=dynamodb.AttributeType.STRING),
+            sort_key=dynamodb.Attribute(name="status", type=dynamodb.AttributeType.STRING),
+            projection_type=dynamodb.ProjectionType.ALL,
+        )
+
+        # session-context-v2: PK tenant_id / SK session_id;
+        #   agent-updated-index (tenant_agent_id / last_activity). DESTROY (ephemeral).
+        self.session_context_table_v2 = dynamodb.Table(
+            self,
+            "SessionContextTableV2",
+            table_name=session_context_config.get("table_name_v2", "sentra-session-context-v2"),
+            partition_key=dynamodb.Attribute(name="tenant_id", type=dynamodb.AttributeType.STRING),
+            sort_key=dynamodb.Attribute(name="session_id", type=dynamodb.AttributeType.STRING),
+            billing_mode=dynamodb.BillingMode.PAY_PER_REQUEST,
+            time_to_live_attribute="ttl",
+            point_in_time_recovery=False,
+            removal_policy=RemovalPolicy.DESTROY,
+            stream=dynamodb.StreamViewType.NEW_AND_OLD_IMAGES,
+        )
+        self.session_context_table_v2.add_global_secondary_index(
+            index_name="agent-updated-index",
+            partition_key=dynamodb.Attribute(name="tenant_agent_id", type=dynamodb.AttributeType.STRING),
+            sort_key=dynamodb.Attribute(name="last_activity", type=dynamodb.AttributeType.NUMBER),
+            projection_type=dynamodb.ProjectionType.ALL,
+        )
+
+        # validation-signals-v2: tenant-scoped variant of the LLD 17 construct.
+        self.validation_signal_store_v2 = ValidationSignalStoreTable(
+            self,
+            "ValidationSignalStoreV2",
+            table_name=signal_store_config.get(
+                "table_name_v2", "sentra-validation-signals-v2"
+            ),
+            tenant_scoped=True,
+        )
+
+        # Cloud Connections (Connect-Account wizard — connections-api-spec.md).
+        # Born tenant-scoped (PK tenant_id, SK id) — net-new table, no v1/v2 flag.
+        # Stores a credentials *reference* (role_arn) + minted external_id + scopes,
+        # never a secret. RETAIN: losing a connection record orphans the binding.
+        connections_config = dynamodb_config.get("connections", {})
+        self.connections_table = dynamodb.Table(
+            self,
+            "ConnectionsTable",
+            table_name=connections_config.get("table_name", "sentra-connections"),
+            partition_key=dynamodb.Attribute(name="tenant_id", type=dynamodb.AttributeType.STRING),
+            sort_key=dynamodb.Attribute(name="id", type=dynamodb.AttributeType.STRING),
+            billing_mode=dynamodb.BillingMode.PAY_PER_REQUEST,
+            point_in_time_recovery=True,
+            removal_policy=RemovalPolicy.RETAIN,
+        )
+        CfnOutput(
+            self,
+            "ConnectionsTableName",
+            value=self.connections_table.table_name,
+            description="DynamoDB table name for cloud connections (Connect-Account wizard)",
+            export_name=f"{naming_config.get('prefix', 'sentra-mvp')}-connections-table-name",
+        )
+
+        # Discovery cache (feature §8.1) — agents the live scan finds in a
+        # connected account. Born tenant-scoped (PK tenant_id, SK native_resource_id);
+        # the Detected-Agents union dedupes registry ∪ this on native_resource_id.
+        discovery_cache_config = dynamodb_config.get("discovery_cache", {})
+        self.discovery_cache_table = dynamodb.Table(
+            self,
+            "DiscoveryCacheTable",
+            table_name=discovery_cache_config.get("table_name", "sentra-discovery-cache"),
+            partition_key=dynamodb.Attribute(name="tenant_id", type=dynamodb.AttributeType.STRING),
+            sort_key=dynamodb.Attribute(name="native_resource_id", type=dynamodb.AttributeType.STRING),
+            billing_mode=dynamodb.BillingMode.PAY_PER_REQUEST,
+            point_in_time_recovery=False,
+            removal_policy=RemovalPolicy.RETAIN,
+        )
+        CfnOutput(
+            self,
+            "DiscoveryCacheTableName",
+            value=self.discovery_cache_table.table_name,
+            description="DynamoDB table name for discovery cache (scanned cloud agents)",
+            export_name=f"{naming_config.get('prefix', 'sentra-mvp')}-discovery-cache-table-name",
+        )
+
+        for _logical, _table in {
+            "agent-registry-v2": self.agent_registry_table_v2,
+            "policies-metadata-v2": self.policies_metadata_table_v2,
+            "session-context-v2": self.session_context_table_v2,
+            "validation-signals-v2": self.validation_signal_store_v2,
+        }.items():
+            CfnOutput(
+                self,
+                f"{_logical.replace('-', ' ').title().replace(' ', '')}TableName",
+                value=_table.table_name,
+                description=f"DynamoDB table name for {_logical} (tenancy v2)",
+                export_name=f"{naming_config.get('prefix', 'sentra-mvp')}-{_logical}-table-name",
+            )
+
+        # ============================================================
         # ECR Repositories (Task 9 - moved from Compute Stack)
         # ============================================================
         ecr_config = config.get("compute", {}).get("ecr", {})
@@ -796,16 +895,6 @@ class StorageStack(Stack):
     def session_context_table_arn(self) -> str:
         """Return session context table ARN for IAM permissions"""
         return self.session_context_table.table_arn
-
-    @property
-    def policies_table_name(self) -> str:
-        """Return policies table name for cross-stack references"""
-        return self.policies_table.table_name
-
-    @property
-    def policies_table_arn(self) -> str:
-        """Return policies table ARN for IAM permissions"""
-        return self.policies_table.table_arn
 
     # DynamoDB Demo Table Properties (Task 7)
     @property
@@ -891,3 +980,30 @@ class StorageStack(Stack):
     @property
     def validation_signal_store_table_arn(self) -> str:
         return self.validation_signal_store.table_arn
+
+    @property
+    def connections_table_name(self) -> str:
+        return self.connections_table.table_name
+
+    @property
+    def connections_table_arn(self) -> str:
+        return self.connections_table.table_arn
+
+    @property
+    def discovery_cache_table_name(self) -> str:
+        return self.discovery_cache_table.table_name
+
+    @property
+    def discovery_cache_table_arn(self) -> str:
+        return self.discovery_cache_table.table_arn
+
+    # Tenancy v2 Table Properties (Multi-Cloud Agent Import — P0a/T01)
+    @property
+    def tenancy_v2_tables(self) -> list:
+        """All four tenancy-v2 `dynamodb.Table` constructs, for IAM grants."""
+        return [
+            self.agent_registry_table_v2,
+            self.policies_metadata_table_v2,
+            self.session_context_table_v2,
+            self.validation_signal_store_v2.table,
+        ]

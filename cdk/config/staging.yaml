@@ -15,6 +15,21 @@ aws:
 # Environment
 environment: "staging"
 
+# Tenancy v2 cutover flag (Multi-Cloud Agent Import — P0a, workstream §1.2).
+# false → controller reads/writes the v1 tables (today). Flip to true only
+# after the migration script has copied v1→v2 under tenant=default and the
+# write-freeze cutover (workstream T09) is ready.
+tenancy_v2_enabled: false
+
+# Cedar authorization engine (feature: cedar-policy). Direct cutover posture
+# (per founder decision 2026-06-13): when this env is deployed, Cedar is the
+# authoritative policy engine from the start (dev validated: 780 shadow
+# comparisons, 0 disagreements). Requires the CT08 backfill after first deploy
+# so policies carry a .cedar co-artifact. Set cedar_shadow_mode: true to
+# shadow-validate first instead.
+cedar_enabled: true
+cedar_shadow_mode: false
+
 # VPC Configuration
 vpc:
   cidr: "10.0.0.0/16"
@@ -71,9 +86,6 @@ storage:
       table_name: "sentra-session-context"
       ttl_hours: 24
 
-    policies:
-      table_name: "sentra-policies"
-      point_in_time_recovery: true  # Critical config data
 
     demo_orders:
       table_name: "sentra-demo-orders"

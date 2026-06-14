@@ -44,6 +44,52 @@ class Settings(BaseSettings):
         default="sentra-validation-signals",
         validation_alias="VALIDATION_SIGNALS_TABLE"
     )
+
+    # ------------------------------------------------------------------
+    # Tenancy v2 (Multi-Cloud Agent Import — P0a, workstream §1.2)
+    # ------------------------------------------------------------------
+    # Master cutover flag. OFF (default) → every read/write hits the v1
+    # tables exactly as today (byte-identical, rollback-safe). ON → the
+    # `*-v2` tenant-scoped tables. Read PER REQUEST via the tenancy helper
+    # (never latched at __init__) so a rolling deploy that runs old+new tasks
+    # concurrently stays consistent within each task's env (workstream T7).
+    tenancy_v2_enabled: bool = Field(
+        default=False, validation_alias="TENANCY_V2_ENABLED"
+    )
+    dynamodb_agent_registry_table_v2: str = Field(
+        default="sentra-agent-registry-v2",
+        validation_alias="AGENT_REGISTRY_TABLE_V2",
+    )
+    dynamodb_policies_metadata_table_v2: str = Field(
+        default="sentra-policies-metadata-v2",
+        validation_alias="POLICIES_METADATA_TABLE_V2",
+    )
+    dynamodb_session_table_v2: str = Field(
+        default="sentra-session-context-v2",
+        validation_alias="SESSION_CONTEXT_TABLE_V2",
+    )
+    dynamodb_validation_signals_table_v2: str = Field(
+        default="sentra-validation-signals-v2",
+        validation_alias="VALIDATION_SIGNALS_TABLE_V2",
+    )
+
+    # ------------------------------------------------------------------
+    # Cloud Connections (Connect-Account wizard — connections-api-spec.md)
+    # ------------------------------------------------------------------
+    # Born tenant-scoped (PK tenant_id) — no v1/v2 flag split (it's a net-new
+    # table, feature §6 group F / §14.2). Stores a credentials *reference* +
+    # scopes only; the assumed role itself lives in the customer account.
+    dynamodb_connections_table: str = Field(
+        default="sentra-connections",
+        validation_alias="CONNECTIONS_TABLE",
+    )
+    # Discovery cache (feature §8.1): agents the live scan sees in a connected
+    # account, persisted so the Detected-Agents list is the real account union
+    # (not policy-derived). Born tenant-scoped (PK tenant_id, SK native_resource_id).
+    dynamodb_discovery_cache_table: str = Field(
+        default="sentra-discovery-cache",
+        validation_alias="DISCOVERY_CACHE_TABLE",
+    )
     signal_store_ttl_days: int = Field(default=90, validation_alias="SIGNAL_STORE_TTL_DAYS")
     signal_store_write_timeout_ms: int = Field(default=200, validation_alias="SIGNAL_STORE_WRITE_TIMEOUT_MS")
     signal_store_batch_max_retries: int = Field(default=3, validation_alias="SIGNAL_STORE_BATCH_MAX_RETRIES")
@@ -70,6 +116,16 @@ class Settings(BaseSettings):
     # ML's real-world accuracy on production-shaped traffic before flipping it
     # into the combiner. Default off; flip on in shadow phase, then off for active.
     ml_classifier_shadow_mode: bool = Field(default=False, validation_alias="ML_CLASSIFIER_SHADOW_MODE")
+
+    # Cedar authorization engine (feature: cedar-policy).
+    # cedar_enabled: master switch for the Cedar policy engine. cedar_shadow_mode:
+    # when both are true, CedarPolicyEngine runs ALONGSIDE the legacy policy_engine
+    # at STEP 2, records its verdict + any disagreement (Sentra/SecurityController
+    # `CedarShadowDiscrepancy` metric), but the LIVE decision stays the legacy
+    # engine's — mirrors ml_classifier_shadow_mode. Cutover (CT10): shadow off,
+    # enabled on, Cedar takes the policy slot. Both default off.
+    cedar_enabled: bool = Field(default=False, validation_alias="CEDAR_ENABLED")
+    cedar_shadow_mode: bool = Field(default=False, validation_alias="CEDAR_SHADOW_MODE")
     # Workload isolation lever (LLD 19 §2.4): the validator's invocations route
     # through this Application Inference Profile, separating its quota / cost /
     # CloudWatch metrics from any other Bedrock consumer on the same model family.

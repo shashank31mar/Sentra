@@ -506,3 +506,41 @@ class TestAsymmetricRecoveryLogic:
         # Quarantined (0-39): +2
         assert session_manager._get_increment_amount(39.9) == 2
         assert session_manager._get_increment_amount(0.0) == 2
+
+
+class TestAgentSessionStats:
+    """WS-21 C5/T50: get_agent_session_stats uses ONE indexed Query (not scans)."""
+
+    @pytest.mark.asyncio
+    async def test_stats_query_on_gsi_count_and_avg(self, session_manager, mock_dynamodb_table):
+        mock_dynamodb_table.query.return_value = {
+            'Items': [
+                {'agent_id': 'a1', 'trust_score': 90, 'quarantine_status': 'active'},
+                {'agent_id': 'a1', 'trust_score': 70, 'quarantine_status': 'active'},
+                {'agent_id': 'a1', 'trust_score': 20, 'quarantine_status': 'suspended'},
+            ]
+        }
+        out = await session_manager.get_agent_session_stats('a1')
+        # avg over ALL three sessions (90+70+20)/3 = 60.0; active excludes suspended → 2
+        assert out == {'active_sessions': 2, 'avg_trust_score': 60.0}
+        # used the GSI Query, NOT a full-table scan
+        kwargs = mock_dynamodb_table.query.call_args.kwargs
+        assert kwargs['IndexName'] == 'agent-updated-index'
+        mock_dynamodb_table.scan.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_stats_paginates(self, session_manager, mock_dynamodb_table):
+        mock_dynamodb_table.query.side_effect = [
+            {'Items': [{'agent_id': 'a1', 'trust_score': 100, 'quarantine_status': 'active'}],
+             'LastEvaluatedKey': {'k': 1}},
+            {'Items': [{'agent_id': 'a1', 'trust_score': 50, 'quarantine_status': 'active'}]},
+        ]
+        out = await session_manager.get_agent_session_stats('a1')
+        assert out == {'active_sessions': 2, 'avg_trust_score': 75.0}
+        assert mock_dynamodb_table.query.call_count == 2
+
+    @pytest.mark.asyncio
+    async def test_stats_no_sessions_defaults(self, session_manager, mock_dynamodb_table):
+        mock_dynamodb_table.query.return_value = {'Items': []}
+        out = await session_manager.get_agent_session_stats('lonely')
+        assert out == {'active_sessions': 0, 'avg_trust_score': 100.0}

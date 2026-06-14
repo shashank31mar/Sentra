@@ -15,6 +15,25 @@ aws:
 # Environment
 environment: "dev"
 
+# Tenancy v2 cutover flag (Multi-Cloud Agent Import — P0a, workstream §1.2).
+# false → controller reads/writes the v1 tables (today). Flip to true only
+# after the migration script has copied v1→v2 under tenant=default and the
+# write-freeze cutover (workstream T09) is ready.
+tenancy_v2_enabled: false
+
+# Cedar authorization engine (feature: cedar-policy). Rollout: shadow first
+# (both true → Cedar runs alongside, legacy verdict stays live, discrepancies
+# recorded as CedarShadowDiscrepancy), then cutover by flipping
+# cedar_shadow_mode → false + cdk deploy. Requires the CT08 backfill so policies
+# carry a .cedar co-artifact (else Cedar abstains → legacy enforces).
+cedar_enabled: true
+# CUTOVER 2026-06-13: shadow → off after a clean shadow window (780 comparisons
+# on organic traffic, 0 disagreements; 19-case offline parity gate; 489 unit
+# tests). CedarPolicyEngine is now the authoritative policy decision on the
+# /v1/validate hot path. Rollback: set back to true (or cedar_enabled:false) +
+# cdk deploy Sentra-DEV-Compute-Stack.
+cedar_shadow_mode: false
+
 # VPC Configuration
 vpc:
   cidr: "10.0.0.0/16"
@@ -76,9 +95,6 @@ storage:
       table_name: "sentra-session-context"
       ttl_hours: 24
 
-    policies:
-      table_name: "sentra-policies"
-      point_in_time_recovery: true  # Critical config data
 
     demo_orders:
       table_name: "sentra-demo-orders"
@@ -161,7 +177,12 @@ api_gateway:
   usage_plan_burst_limit: 200  # 200 burst per API key
 
   # Quota settings
-  usage_plan_quota_limit: 100000  # 100,000 requests per month
+  # Raised 2026-06-13 from 100k → 2M: the live SOC console's polling
+  # (metrics/decisions/threats auto-refresh) exhausted the 100k/month quota in
+  # ~4 days (102,524 used → every call 429 "Limit Exceeded"). 2M gives ~66k/day
+  # headroom vs the observed ~35k/day peak. ROOT-CAUSE follow-up: trim console
+  # poll frequency so quota isn't the backstop for chatty polling.
+  usage_plan_quota_limit: 2000000  # 2,000,000 requests per month
 
   # CORS settings (MVP: allow all origins)
   cors_allow_origins:

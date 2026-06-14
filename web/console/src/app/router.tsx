@@ -8,8 +8,10 @@ import { AgentInventoryPage } from '../features/agents/AgentInventoryPage'
 import { AgentDetailPage } from '../features/agents/AgentDetailPage'
 import { TopologyPage } from '../features/topology/TopologyPage'
 import { ImportAgentsPage } from '../features/import/ImportAgentsPage'
+import { ConnectAccountPage } from '../features/connect/ConnectAccountPage'
 import { PolicyLibraryPage } from '../features/policies/PolicyLibraryPage'
 import { PolicyDetailPage } from '../features/policies/PolicyDetailPage'
+import { PolicyEditorPage } from '../features/policies/PolicyEditorPage'
 import { QuarantinePage } from '../features/quarantine/QuarantinePage'
 import { AuditTrailPage } from '../features/audit/AuditTrailPage'
 import { PlaceholderPage } from '../components/ui/PlaceholderPage'
@@ -25,9 +27,13 @@ export const router = createBrowserRouter([
       { path: ROUTES.agents, element: <AgentInventoryPage /> },
       { path: ROUTES.agentDetail, element: <AgentDetailPage /> },
       { path: ROUTES.topology, element: <TopologyPage /> },
+      { path: ROUTES.connect, element: <ConnectAccountPage /> },
       { path: ROUTES.import, element: <ImportAgentsPage /> },
       { path: ROUTES.deploy, element: <PlaceholderPage title="Deploy Agent" /> },
       { path: ROUTES.policies, element: <PolicyLibraryPage /> },
+      // Static /policies/new MUST precede the /policies/:policyId param route.
+      { path: ROUTES.policyNew, element: <PolicyEditorPage /> },
+      { path: ROUTES.policyEdit, element: <PolicyEditorPage /> },
       { path: ROUTES.policyDetail, element: <PolicyDetailPage /> },
       { path: ROUTES.quarantine, element: <QuarantinePage /> },
       { path: ROUTES.audit, element: <AuditTrailPage /> },

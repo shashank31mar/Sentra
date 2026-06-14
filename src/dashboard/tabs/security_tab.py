@@ -26,10 +26,20 @@ def render():
             threat_summary.render(threat_data)
 
     with col_right:
+        # Match-count time window selector (drives the CloudWatch query that
+        # backs the "Matches" column). Default 24h.
+        _RANGE_LABELS = {"1h": "Last 1 hour", "24h": "Last 24 hours", "7d": "Last 7 days", "30d": "Last 30 days"}
+        range_token = st.selectbox(
+            "Match window",
+            options=list(_RANGE_LABELS.keys()),
+            index=1,  # 24h default
+            format_func=lambda t: _RANGE_LABELS[t],
+            key="security_tab_sigma_match_range",
+        )
         # Fetch and render Sigma rules (isolated in container to prevent nesting issues)
-        rules = _fetch_sigma_rules()
+        rules = _fetch_sigma_rules(range_token)
         with st.container():
-            sigma_rules_manager.render(rules)
+            sigma_rules_manager.render(rules, match_range=range_token)
 
     st.markdown("---")
 
@@ -90,31 +100,35 @@ def _fetch_threat_data() -> Dict:
         return threat_summary.get_mock_threat_data()
 
 
-def _fetch_sigma_rules() -> List[Dict]:
+def _fetch_sigma_rules(match_range: str = "24h") -> List[Dict]:
     """
     Fetch Sigma rules from Security Controller API.
+
+    Args:
+        match_range: Match-count time window (1h, 24h, 7d, 30d).
 
     Returns:
         List of Sigma rule dictionaries
     """
     try:
         client = SecurityControllerClient()
-        response = client.get_sigma_rules()
+        response = client.get_sigma_rules(match_range=match_range)
 
         if response.get('success') and response.get('status_code') == 200:
             rules = response.get('rules', [])
             logger.info(f"Fetched {len(rules)} Sigma rules from API")
 
-            # Map DDB fields to dashboard format
+            # The API now returns flat, console-shaped fields (see _to_api_rule):
+            # match_count is sourced from CloudWatch for the requested window;
+            # patterns_count is the rule's detection-selection count.
             mapped_rules = []
             for rule in rules:
-                stats = rule.get('stats', {})
                 mapped_rules.append({
                     'id': rule.get('rule_id'),
                     'name': rule.get('title', 'Unnamed Rule'),
                     'status': rule.get('status', 'stable'),
-                    'severity': rule.get('level', 'medium'),
-                    'match_count': stats.get('match_count_24h', 0),
+                    'severity': rule.get('severity', 'medium'),
+                    'match_count': rule.get('match_count', 0),
                     'pattern_count': rule.get('patterns_count', 0),
                     'description': rule.get('description', ''),
                 })

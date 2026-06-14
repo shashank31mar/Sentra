@@ -34,10 +34,13 @@ from datetime import datetime, timezone
 from typing import List, Dict, Any, Optional
 
 
+import _tenancy  # shared tenancy helpers (workstream T08)
+
 # AWS Configuration
 AWS_PROFILE = "sentra"
 AWS_REGION = "us-east-1"
 TABLE_NAME = "sentra-policies-metadata"
+TABLE_NAME_V2 = "sentra-policies-metadata-v2"
 
 
 def get_timestamp() -> str:
@@ -250,7 +253,7 @@ def seed_policies_metadata(dry_run: bool = False, force: bool = False) -> bool:
         session = boto3.Session(profile_name=AWS_PROFILE, region_name=AWS_REGION)
         s3_client = session.client("s3")
         dynamodb = session.resource("dynamodb")
-        table = dynamodb.Table(TABLE_NAME)
+        table = dynamodb.Table(_tenancy.table_name(TABLE_NAME, TABLE_NAME_V2))
 
         # Verify table exists
         table.table_status
@@ -309,7 +312,7 @@ def seed_policies_metadata(dry_run: bool = False, force: bool = False) -> bool:
         try:
             # Check if item exists (unless force mode)
             if not force:
-                response = table.get_item(Key={"policy_id": policy_id})
+                response = table.get_item(Key=_tenancy.item_key("policy_id", policy_id))
                 if "Item" in response:
                     print(
                         f"  ⚠️  Skipping {policy_id} - already exists (use --force to overwrite)"
@@ -318,7 +321,8 @@ def seed_policies_metadata(dry_run: bool = False, force: bool = False) -> bool:
                     continue
 
             # Write item
-            table.put_item(Item=item)
+            # Stamp tenant_id + composite tenant_agent_id when v2 (workstream T8)
+            table.put_item(Item=_tenancy.stamp_policy(item))
             print(f"  ✅ Written: {policy_id} ({item['agent_id']})")
             written_count += 1
 
@@ -360,7 +364,7 @@ def verify_policies_metadata() -> bool:
     try:
         session = boto3.Session(profile_name=AWS_PROFILE, region_name=AWS_REGION)
         dynamodb = session.resource("dynamodb")
-        table = dynamodb.Table(TABLE_NAME)
+        table = dynamodb.Table(_tenancy.table_name(TABLE_NAME, TABLE_NAME_V2))
 
         # Scan table to get count
         response = table.scan(Select="COUNT")
@@ -379,8 +383,7 @@ def verify_policies_metadata() -> bool:
             print(f"\nQuerying policies for payment-agent using agent-index GSI...")
             response = table.query(
                 IndexName="agent-index",
-                KeyConditionExpression="agent_id = :agent_id",
-                ExpressionAttributeValues={":agent_id": "payment-agent"},
+                KeyConditionExpression=_tenancy.agent_index_condition("payment-agent"),
             )
             payment_policies = response["Count"]
             print(f"  Payment agent policies: {payment_policies}")
@@ -388,9 +391,7 @@ def verify_policies_metadata() -> bool:
             print(f"\nQuerying active policies using status-index GSI...")
             response = table.query(
                 IndexName="status-index",
-                KeyConditionExpression="#status = :status",
-                ExpressionAttributeNames={"#status": "status"},
-                ExpressionAttributeValues={":status": "active"},
+                KeyConditionExpression=_tenancy.status_index_condition("active"),
             )
             active_policies = response["Count"]
             print(f"  Active policies: {active_policies}")

@@ -59,8 +59,10 @@ export function RiskBadge({ risk }: { risk: Risk | string | null | undefined }) 
 }
 
 const DISCOVERY: Partial<Record<DiscoveryStatus, { label: string; color: string }>> = {
+  // feature §8.1 lifecycle: not_imported → imported → managed (data flowing).
   managed: { label: 'Managed', color: '#22E58B' },
-  unmanaged: { label: 'Unmanaged', color: NEUTRAL },
+  imported: { label: 'Imported', color: '#0FFFFF' },
+  not_imported: { label: 'Not imported', color: NEUTRAL },
 }
 
 export function DiscoveryStatusBadge({ status }: { status: DiscoveryStatus | string | null | undefined }) {

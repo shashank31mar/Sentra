@@ -4,12 +4,15 @@ Sentra MVP - Agent Registry Seed Script
 
 Seeds sentra-agent-registry DynamoDB table with agent metadata.
 
-Agents:
+Agents (4 seeded; the security-controller is intentionally NOT registered as an
+agent — it is control-plane infra, hidden via visibility=internal, WS-21 T07 / K8):
 - customer-query-agent (READ-only agent, Sentra platform, secured)
 - payment-agent (WRITE-capable agent, Sentra platform, secured)
-- security-controller (orchestration agent, Sentra platform, secured)
-- bedrock-secured (Bedrock agent with Sentra validation)
-- bedrock-unsecured (Bedrock agent WITHOUT validation - demo only)
+- sentra-mvp-customer-service-agent (Bedrock agent with Sentra validation)
+- sentra-mvp-customer-service-agent-unsecured (Bedrock agent WITHOUT validation - demo only)
+
+All seeded agents carry cloud_region (agent-policy-management T11); agents added by
+other paths fall back to resolve_cloud_region at runtime.
 
 Requirements:
     pip install boto3
@@ -39,10 +42,13 @@ from decimal import Decimal
 from typing import List, Dict, Any
 
 
+import _tenancy  # shared tenancy helpers (workstream T08)
+
 # AWS Configuration
 AWS_PROFILE = "sentra"
 AWS_REGION = "us-east-1"
 TABLE_NAME = "sentra-agent-registry"
+TABLE_NAME_V2 = "sentra-agent-registry-v2"
 
 
 def get_timestamp() -> str:
@@ -88,6 +94,7 @@ def get_agent_data() -> List[Dict[str, Any]]:
             "version": "1.0.0",
             "platform": "sentra",
             "cloud_provider": "aws",  # WS-21 T04: hosting cloud (sentra=ECS on AWS)
+            "cloud_region": "us-east-1",  # agent-policy-mgmt T11: per-agent cloud identity (engine reads this, not the policy)
             "security_type": "secured",
             "visibility": "external",
             "ecs_config": {
@@ -117,6 +124,7 @@ def get_agent_data() -> List[Dict[str, Any]]:
             "version": "1.0.0",
             "platform": "sentra",
             "cloud_provider": "aws",  # WS-21 T04: hosting cloud (sentra=ECS on AWS)
+            "cloud_region": "us-east-1",  # agent-policy-mgmt T11: per-agent cloud identity (engine reads this, not the policy)
             "security_type": "secured",
             "visibility": "external",
             "ecs_config": {
@@ -156,6 +164,7 @@ def get_agent_data() -> List[Dict[str, Any]]:
             "version": "1.0.0",
             "platform": "bedrock",
             "cloud_provider": "aws",  # WS-21 T04: hosting cloud (Bedrock = AWS)
+            "cloud_region": "us-east-1",  # agent-policy-mgmt T11: per-agent cloud identity (engine reads this, not the policy)
             "security_type": "secured",
             "visibility": "external",
             "runtime_config": {
@@ -178,6 +187,7 @@ def get_agent_data() -> List[Dict[str, Any]]:
             "version": "1.0.0",
             "platform": "bedrock",
             "cloud_provider": "aws",  # WS-21 T04: hosting cloud (Bedrock = AWS)
+            "cloud_region": "us-east-1",  # agent-policy-mgmt T11: per-agent cloud identity (engine reads this, not the policy)
             "security_type": "unsecured",
             "visibility": "external",
             "runtime_config": {
@@ -247,7 +257,7 @@ def seed_agents(dry_run: bool = False, force: bool = False) -> bool:
     try:
         session = boto3.Session(profile_name=AWS_PROFILE, region_name=AWS_REGION)
         dynamodb = session.resource('dynamodb')
-        table = dynamodb.Table(TABLE_NAME)
+        table = dynamodb.Table(_tenancy.table_name(TABLE_NAME, TABLE_NAME_V2))
         
         # Verify table exists
         table.table_status
@@ -276,14 +286,14 @@ def seed_agents(dry_run: bool = False, force: bool = False) -> bool:
         try:
             # Check if item exists (unless force mode)
             if not force:
-                response = table.get_item(Key={'agent_id': agent_id})
+                response = table.get_item(Key=_tenancy.item_key('agent_id', agent_id))
                 if 'Item' in response:
                     print(f"  ⚠️  Skipping {agent_id} - already exists (use --force to overwrite)")
                     skipped_count += 1
                     continue
-            
-            # Write item
-            table.put_item(Item=agent)
+
+            # Write item (stamp tenant_id when TENANCY_V2_ENABLED — workstream T8)
+            table.put_item(Item=_tenancy.stamp_registry(agent))
             print(f"  ✅ Written: {agent_id}")
             written_count += 1
             
@@ -324,7 +334,7 @@ def verify_agents() -> bool:
     try:
         session = boto3.Session(profile_name=AWS_PROFILE, region_name=AWS_REGION)
         dynamodb = session.resource('dynamodb')
-        table = dynamodb.Table(TABLE_NAME)
+        table = dynamodb.Table(_tenancy.table_name(TABLE_NAME, TABLE_NAME_V2))
         
         # Scan table to get count
         response = table.scan(Select='COUNT')
@@ -342,9 +352,7 @@ def verify_agents() -> bool:
             print(f"\nQuerying active agents using status-index GSI...")
             response = table.query(
                 IndexName='status-index',
-                KeyConditionExpression='#status = :status',
-                ExpressionAttributeNames={'#status': 'status'},
-                ExpressionAttributeValues={':status': 'active'}
+                KeyConditionExpression=_tenancy.status_index_condition('active'),
             )
             active_count = response['Count']
             print(f"  Active agents: {active_count}")
