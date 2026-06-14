@@ -6,6 +6,7 @@ Implements in-memory caching for performance.
 
 Requirements: LLD 03 Section 3.2.1, 8.1
 """
+import asyncio
 import logging
 import time
 from typing import List, Dict, Optional
@@ -157,31 +158,34 @@ class SigmaEngine:
                     return self.rules_cache
                 raise SigmaRulesLoadError("No Sigma rules found in DynamoDB")
 
-            # Step 2: Download full rules from S3 using metadata
-            rules = []
-            for metadata in metadata_list:
+            # Step 2: Download full rules from S3 using metadata.
+            # WS24 M3.4: fetch all rule bodies CONCURRENTLY instead of a serial
+            # get_object loop. This is fan-out I/O within a single step (allowed —
+            # LLD 24 §1.2.1; distinct from the prohibited validator-pipeline gather)
+            # and only runs on a cold load / cache miss, which the singleton (M2)
+            # already made rare. One bad rule is skipped without failing the set.
+            async def _fetch_rule(metadata: Dict) -> Optional[SigmaRule]:
+                rule_id = metadata.get('rule_id', 'unknown')
+                s3_bucket = metadata.get('s3_bucket')
+                s3_key = metadata.get('s3_key')
+                if not s3_bucket or not s3_key:
+                    logger.warning(f"Rule {rule_id} missing S3 reference, skipping")
+                    return None
                 try:
-                    rule_id = metadata.get('rule_id', 'unknown')
-                    s3_bucket = metadata.get('s3_bucket')
-                    s3_key = metadata.get('s3_key')
-
-                    if not s3_bucket or not s3_key:
-                        logger.warning(f"Rule {rule_id} missing S3 reference, skipping")
-                        continue
-
-                    # Download YAML content from S3
-                    rule_obj = self.s3_client.get_object(Bucket=s3_bucket, Key=s3_key)
+                    rule_obj = await asyncio.to_thread(
+                        self.s3_client.get_object, Bucket=s3_bucket, Key=s3_key
+                    )
                     rule_content = rule_obj['Body'].read().decode('utf-8')
                     rule_data = yaml.safe_load(rule_content)
-
-                    # Parse Sigma rule format
                     sigma_rule = self._parse_sigma_rule(rule_data)
-                    rules.append(sigma_rule)
                     logger.debug(f"Loaded rule: {sigma_rule.title}")
-
+                    return sigma_rule
                 except Exception as e:
-                    logger.warning(f"Failed to load rule {metadata.get('rule_id')}: {e}")
-                    continue
+                    logger.warning(f"Failed to load rule {rule_id}: {e}")
+                    return None
+
+            fetched = await asyncio.gather(*[_fetch_rule(m) for m in metadata_list])
+            rules = [r for r in fetched if r is not None]
 
             # Step 3: Update cache
             if rules:

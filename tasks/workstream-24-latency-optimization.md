@@ -50,17 +50,17 @@
 - [ ] 3.1 Sigma cache → process/module-scoped, **tenant-aware** (system + customer rule sets).
 - [ ] 3.2 **Write-through** on rule CRUD (sync DDB + cache update) + **cross-instance invalidation** — `meta#version` row in `sentra-sigma-rules-metadata` (bumped on CRUD, keep `status='stable'` consistent) or Redis pub/sub.
 - [ ] 3.3 Add `SIGMA_RULES_CACHE_TTL_SECONDS` (new env var; not currently set) → 6h safety net. Remove orphan `SIGMA_REFRESH_INTERVAL`.
-- [ ] 3.4 Parallel cold-load of rule S3 objects (`gather` over `to_thread` — fan-out within one step, allowed; LLD §1.2.1).
-- [ ] 3.5 **Policy: cache on `resolve_policy_bundle(agent_id)`** (choke point for all 3 loads) — request-scoped memo + short TTL via the **existing WS5 cache framework** (`policy_cache_ttl_seconds`); wire dead `POLICY_CACHE_TTL_SECONDS`; remove orphan `POLICY_CACHE_TTL`.
-- [ ] 3.6 Verify all **3** policy call sites (STEP 2 Cedar, STEP 4 context, STEP 5 abuse) hit the cache.
+- [x] 3.4 Parallel cold-load of rule S3 objects (`asyncio.gather` over `to_thread` in `sigma_engine.load_rules_from_s3`). **Done.**
+- [x] 3.5 **Policy: cache on `resolve_policy_bundle(agent_id)`** via the WS5 `CacheManager`, tenant-scoped key, TTL=`policy_cache_ttl_seconds`; sync chain offloaded with `asyncio.to_thread`; invalidated by existing `cache.clear()` on every policy/binding write. **Done.**
+- [~] 3.6 Cache coverage: **STEP 4 (context) + STEP 5 (abuse) both resolve via `get_agent_policy → resolve_policy_bundle` → cached ✓.** STEP 2 Cedar uses its own module-level `_compiled_cache` for the compiled artifact; confirm whether its metadata resolve also routes through `resolve_policy_bundle` (else add). *Partial.*
 - [ ] 3.7 **(was M5)** Move `config/tool_requirements.yaml` → per-tenant write-through store, reusing 3.1/3.2 machinery. *Feature, not a latency win — done here only because it shares the cache plumbing.*
 - **Exit:** deterministic-path p99 ≤ 500ms (at documented concurrency).
 
 ### M4 — ML reorder + telemetry async + to_thread (F4/F5/F6)
-- [ ] 4.1 Move ML classifier to the **end** of the pipeline (after context + abuse). Preserve deny-overrides/signal semantics.
-- [ ] 4.2 Audit + metrics → fire-and-forget (`asyncio.create_task`) **with a retained task-set + done-callback logging exceptions** (bare create_task can be GC'd / swallow errors). Keep CloudWatch dual-write; keep DDB write prompt. Fix the false "fire-and-forget" comment in `_handle_deny`; normalize deny/allow audit↔metrics order.
-- [ ] 4.3 Wrap remaining sync boto3 hot-path calls in `asyncio.to_thread` (per-call offload, not pipeline gather; LLD §1.2.1).
-- [ ] 4.4 Verdict guard passes — assert on **final ALLOW/DENY only**, not signal-set (ML-last legitimately drops ML signals on cheap-denied requests).
+- [x] 4.1 Move ML classifier to the **end** of the pipeline (now STEP 6, after context + abuse). Deny-overrides/signal semantics preserved; final verdicts unchanged (verified by `test_validation_service`). **Done.**
+- [x] 4.2 Audit + metrics → fire-and-forget via `_fire_and_forget` (retained `_bg_tasks` set + done-callback logging exceptions). CloudWatch dual-write + DDB write retained, just async. False "fire-and-forget … never blocks" comment corrected. **Done.**
+- [~] 4.3 `to_thread` applied to the policy bundle resolve (2 DDB + 1 S3) and the sigma S3 fetches. **Remaining:** session_manager DDB calls + the telemetry boto3 (so background tasks don't touch the loop). *Partial.*
+- [~] 4.4 Verdict parity covered by `test_validation_service` (final ALLOW/DENY unchanged after ML-last). **Remaining:** the broader recorded-baseline regression set from M1.4. *Partial.*
 - **Exit:** ML-hot p99 ≤ 900ms; fewer ML invocations (cheap checks short-circuit first).
 
 ### M5 — Tenant sequence rules (F8, data-model) — *pulled forward into M3.7*

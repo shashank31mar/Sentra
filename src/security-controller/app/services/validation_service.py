@@ -12,6 +12,7 @@ Architecture:
 import time
 import secrets
 import logging
+import asyncio
 import contextvars
 from typing import Dict, List, Optional
 
@@ -40,6 +41,31 @@ async def _timed(label: str, coro):
         d = _step_timings.get()
         if d is not None:
             d[label] = round((time.perf_counter() - t) * 1000, 1)
+
+
+# Background telemetry (WS24 M4.2): audit + metrics are emitted OFF the response
+# path so the ALLOW/DENY returns immediately. Tasks are retained in a module-level
+# set (a bare create_task can be GC'd mid-flight) and a done-callback logs any
+# failure — telemetry must never surface to the caller. The CloudWatch dual-write
+# (best-practices §12.5) and the DDB signal write still run, just asynchronously;
+# crash-durability is the WS24 M7 shipper's job.
+_bg_tasks: "set" = set()
+
+
+def _fire_and_forget(coro, label: str) -> None:
+    task = asyncio.create_task(coro)
+    _bg_tasks.add(task)
+
+    def _on_done(t: "asyncio.Task") -> None:
+        _bg_tasks.discard(t)
+        try:
+            exc = t.exception()
+        except asyncio.CancelledError:
+            return
+        if exc is not None:
+            logger.warning("background %s task failed: %s", label, exc)
+
+    task.add_done_callback(_on_done)
 
 
 class ValidationService:
@@ -314,26 +340,6 @@ class ValidationService:
             return _stamp(sigma_result), signals
 
         # ============================================================
-        # STEP 3.5: ML Threat Classifier (Workstream 19 / LLD 19)
-        # ============================================================
-        # Slotted AFTER sigma deliberately: sigma is ~50ms deterministic; ML is
-        # ~600ms LLM. Running sigma first lets us short-circuit on known patterns
-        # without paying the ML latency tax (LLD 19 deviation from §3.1's
-        # parallel-gather diagram — the actual pipeline is sequential with
-        # short-circuit-on-DENY, and that's more efficient for the attack path).
-        # When the flag is off (default), this validator returns ABSTAIN with
-        # zero Bedrock cost.
-        ml_result = _capture(await _timed("ml", self.ml_classifier.validate(request)))
-        # Shadow mode (WS19 M3): the validator ran and its Signal is already in
-        # signals[] via _capture, but we MUST NOT let its DENY short-circuit the
-        # pipeline — the combined verdict has to fall back to sigma + policy
-        # alone so we can measure ML's incremental value against the real
-        # customer-facing decision. Live = should_deny respected; shadow =
-        # should_deny ignored (signal still recorded for offline analysis).
-        if ml_result.should_deny and not settings.ml_classifier_shadow_mode:
-            return _stamp(ml_result), signals
-
-        # ============================================================
         # STEP 4: Context Validator (Task 7 ✅)
         # ============================================================
         context_result = _capture(await _timed("context", self.context_validator.validate_sequence(session, request)))
@@ -348,6 +354,26 @@ class ValidationService:
         abuse_result = _capture(await _timed("abuse", self.abuse_detector.check_rate_limit(session, policy)))
         if abuse_result.should_deny:
             return _stamp(abuse_result), signals
+
+        # ============================================================
+        # STEP 6: ML Threat Classifier (Workstream 19 / LLD 19) — RUNS LAST
+        # ============================================================
+        # Moved to the end of the pipeline (WS24 M4.1): every cheaper deterministic
+        # check (trust, policy, cross-agent, sigma, context/sequence, abuse) runs and
+        # short-circuits FIRST, so the ~600ms Haiku (+ Sonnet escalation) ML cost is
+        # only paid for traffic that already cleared every cheaper gate. Flag off →
+        # ABSTAIN with zero Bedrock cost. This is the frontier-first ordering the
+        # LLD 20 §3.4 DAG formalizes; here achieved by placement. Final verdicts are
+        # unchanged vs. the old STEP-3.5 placement — only ML *invocations* drop on
+        # the cheap-deny path (so its signal legitimately disappears there; the
+        # verdict guard asserts on the final ALLOW/DENY, not the signal set).
+        ml_result = _capture(await _timed("ml", self.ml_classifier.validate(request)))
+        # Shadow mode (WS19 M3): the Signal is captured into signals[] either way,
+        # but in shadow mode its DENY MUST NOT short-circuit — the customer-facing
+        # verdict falls back to the deterministic checks so we can measure ML's
+        # incremental value. Live = should_deny respected.
+        if ml_result.should_deny and not settings.ml_classifier_shadow_mode:
+            return _stamp(ml_result), signals
 
         # All checks passed. Workstream 15: propagate platform + cloud_region
         # captured from the policy result so downstream response/audit-log code
@@ -470,16 +496,16 @@ class ValidationService:
         # *execution* metrics (did the agent's action succeed?), which belong
         # post-execution. These are *decision* metrics — what the controller
         # decided — which are correctly measured here. No post-execution emitter
-        # exists, so there is no double-count. Fire-and-forget (publisher swallows
-        # its own errors; never blocks validation).
-        await self.metrics_publisher.publish_validation_metrics(
+        # exists, so there is no double-count. Emitted OFF the response path
+        # (WS24 M4.2) — the DENY is already returning; metrics must not block it.
+        _fire_and_forget(self.metrics_publisher.publish_validation_metrics(
             decision="DENY",
             latency_ms=latency_ms,
             agent_id=request.agent_id,
             trust_score=float(updated_session['trust_score']),
             threat_type=validation_result.threat_type,
             severity=validation_result.severity,
-        )
+        ), "metrics")
 
         # Surface cross-cloud fields (agent-policy-management §2.3/C2: these are
         # AGENT-sourced — stamped from the registry by the policy engine, or by the
@@ -492,23 +518,23 @@ class ValidationService:
         if cloud_region:
             response["cloud_region"] = cloud_region
         
-        # Audit dual-write — Workstream 17. log_signals routes both
-        # DDB and CloudWatch; log_decision is now a thin back-compat wrapper.
+        # Audit dual-write — Workstream 17 (DDB + CloudWatch). Off the response
+        # path (WS24 M4.2); the dual-write still happens, just asynchronously.
         if signals:
-            await self.audit_logger.log_signals(
+            _fire_and_forget(self.audit_logger.log_signals(
                 request=request.model_dump(),
                 session=session,
                 signals=signals,
                 latency_ms=latency_ms,
-            )
+            ), "audit")
         else:
-            await self.audit_logger.log_decision(
+            _fire_and_forget(self.audit_logger.log_decision(
                 decision="DENY",
                 request=request.model_dump(),
                 session=session,
                 validation_result=validation_result.model_dump(),
                 latency_ms=latency_ms,
-            )
+            ), "audit")
 
         return response
     
@@ -547,31 +573,33 @@ class ValidationService:
             f"latency={latency_ms:.1f}ms"
         )
         
-        # Audit dual-write — Workstream 17.
+        # Audit dual-write — Workstream 17 (DDB + CloudWatch). Off the response
+        # path (WS24 M4.2); the dual-write still happens, just asynchronously.
         if signals:
-            await self.audit_logger.log_signals(
+            _fire_and_forget(self.audit_logger.log_signals(
                 request=request.model_dump(),
                 session=session,
                 signals=signals,
                 latency_ms=latency_ms,
-            )
+            ), "audit")
         else:
-            await self.audit_logger.log_decision(
+            _fire_and_forget(self.audit_logger.log_decision(
                 decision="ALLOW",
                 request=request.model_dump(),
                 session=session,
                 validation_result=None,
                 latency_ms=latency_ms,
-            )
+            ), "audit")
 
         # WS-21 T01: emit DECISION metrics at validation time (see _handle_deny
         # for the WS-9 M4 reversal rationale — decision vs execution metrics).
-        await self.metrics_publisher.publish_validation_metrics(
+        # Off the response path (WS24 M4.2).
+        _fire_and_forget(self.metrics_publisher.publish_validation_metrics(
             decision="ALLOW",
             latency_ms=latency_ms,
             agent_id=request.agent_id,
             trust_score=float(updated_session['trust_score']),
-        )
+        ), "metrics")
 
         response = {
             "decision": "ALLOW",

@@ -4,9 +4,20 @@ Unit Tests for Validation Service
 Tests the main validation pipeline orchestration.
 These are simplified integration-style tests that verify the service works correctly.
 """
+import asyncio
 import pytest
 from unittest.mock import Mock, patch, AsyncMock
 from app.api.models import ValidationRequest, ValidationResult
+
+
+async def _drain_bg():
+    """WS24 M4.2: audit + metrics are emitted off the response path via
+    fire-and-forget tasks. Await any pending ones so telemetry assertions are
+    deterministic."""
+    import app.services.validation_service as _vs
+    pending = list(_vs._bg_tasks)
+    if pending:
+        await asyncio.gather(*pending, return_exceptions=True)
 
 
 @pytest.fixture
@@ -169,7 +180,8 @@ async def test_validation_pipeline_full_allow(mock_session, sample_request):
         service.metrics_publisher.publish_validation_metrics = AsyncMock()
         
         result = await service.validate_tool_call(sample_request)
-        
+        await _drain_bg()  # WS24 M4.2: let fire-and-forget telemetry finish
+
         # Verify ALLOW decision
         assert result["decision"] == "ALLOW"
         assert result["reason"] == "All validation checks passed"
@@ -214,7 +226,8 @@ async def test_validation_pipeline_deny_at_trust_checker(mock_session, sample_re
         service.metrics_publisher.publish_validation_metrics = AsyncMock()
         
         result = await service.validate_tool_call(sample_request)
-        
+        await _drain_bg()  # WS24 M4.2: let fire-and-forget telemetry finish
+
         # Verify DENY decision
         assert result["decision"] == "DENY"
         assert result["reason"] == "Trust score too low"

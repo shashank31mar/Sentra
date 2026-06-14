@@ -7,6 +7,7 @@ Checks if agent is allowed to use the requested tool and invoke other agents.
 Requirements: LLD 03 Section 3.3, 8.1
 Updated: Task 1.7 - Hybrid DynamoDB + S3 storage
 """
+import asyncio
 import logging
 from typing import Dict, Optional
 
@@ -18,6 +19,7 @@ from app.api.models import ValidationRequest, ValidationResult
 from app.combiners import Source
 from app.config import settings
 from app.utils import tenancy
+from app.utils.cache_manager import get_cache_manager
 from app.utils.cloud import resolve_cloud_region
 from app.validators._signal_stamp import stamps
 
@@ -56,6 +58,10 @@ class PolicyEngine:
     def __init__(self):
         self.dynamodb = boto3.resource('dynamodb', region_name=settings.aws_region)
         self.s3_client = boto3.client('s3', region_name=settings.aws_region)
+        # WS24 M3.5: shared process-wide TTL+LRU cache (WS5 framework) for the
+        # resolved policy bundle — collapses the up-to-3× per-request DDB+S3
+        # loads (Cedar STEP 2 / context STEP 4 / abuse STEP 5) to one.
+        self.cache = get_cache_manager()
 
     # Tables are resolved per-call (not latched at __init__) so the
     # TENANCY_V2_ENABLED flag is honored live on the hot path (workstream T7).
@@ -196,12 +202,26 @@ class PolicyEngine:
         cloud-from-agent stamping identical to `get_agent_policy`.
 
         Raises PolicyDisabledError / PolicyNotFoundError like `get_agent_policy`.
+
+        Hot-path cache (WS24 M3.5): the ALLOW path resolves this bundle up to 3×
+        per request. The successful result is cached per (tenant, agent) for
+        `policy_cache_ttl_seconds`, so the 2 DDB reads + 1 S3 GET run once, not
+        three times. Errors are never cached. Invalidate on policy CRUD via
+        `invalidate_policy_cache`; cross-instance staleness is TTL-bounded
+        (consistent with the existing policy/agent metadata caches — fleet-wide
+        invalidation is WS24 M3.2).
         """
+        cache_key = self._bundle_cache_key(agent_id)
+        cached = self.cache.get(cache_key)
+        if cached is not None:
+            return cached
+
         try:
-            agent = self._get_agent_record(agent_id)
-            metadata = self._resolve_policy_metadata(agent_id, agent)
-            policy_data = self._load_structured_policy(agent_id, agent, metadata)
-            return policy_data, metadata, agent
+            # Offload the synchronous boto3 chain (2 DDB + 1 S3) off the event
+            # loop so concurrent validations don't serialize on it (WS24 M4.3).
+            # asyncio.to_thread copies the contextvars Context, so tenancy stays
+            # correct inside the worker thread.
+            bundle = await asyncio.to_thread(self._resolve_bundle_sync, agent_id)
         except PolicyNotFoundError:
             raise
         except ClientError as e:
@@ -210,6 +230,32 @@ class PolicyEngine:
         except Exception as e:
             logger.exception(f"Unexpected error loading policy for {agent_id}")
             raise PolicyNotFoundError(f"Unexpected error: {e}")
+
+        self.cache.set(cache_key, bundle, ttl=settings.policy_cache_ttl_seconds)
+        return bundle
+
+    def _resolve_bundle_sync(self, agent_id: str) -> tuple[Dict, Dict, Dict]:
+        """Synchronous bundle resolution (2 DDB reads + 1 S3 GET). Wrapped in
+        `asyncio.to_thread` by `resolve_policy_bundle` (WS24 M4.3)."""
+        agent = self._get_agent_record(agent_id)
+        metadata = self._resolve_policy_metadata(agent_id, agent)
+        policy_data = self._load_structured_policy(agent_id, agent, metadata)
+        return policy_data, metadata, agent
+
+    @staticmethod
+    def _bundle_cache_key(agent_id: str) -> str:
+        # Tenant-scoped to prevent cross-tenant policy bleed on the shared cache.
+        return f"policy_bundle:{tenancy.current_tenant()}:{agent_id}"
+
+    def invalidate_policy_cache(self, agent_id: Optional[str] = None) -> None:
+        """Drop cached bundle(s) so a policy change takes effect immediately on
+        this instance (other instances expire via TTL — WS24 M3.5). Pass an
+        `agent_id` to evict one agent, or omit it to evict the current tenant's
+        whole policy-bundle family (use on policy create/update/delete/bind)."""
+        if agent_id is not None:
+            self.cache.invalidate(self._bundle_cache_key(agent_id))
+        else:
+            self.cache.invalidate_prefix(f"policy_bundle:{tenancy.current_tenant()}:")
 
     async def get_agent_policy(self, agent_id: str) -> Dict:
         """
