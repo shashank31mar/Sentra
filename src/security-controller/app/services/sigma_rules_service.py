@@ -388,11 +388,35 @@ class SigmaRulesService:
             # whole `sigma_rules:` family by prefix rather than guessing keys).
             self.cache.invalidate(f"sigma_rule:{rule_id}")
             self.cache.invalidate_prefix("sigma_rules:")
+            # WS24 M3.2: a status change alters the `stable` (enforced) set. Bump
+            # the shared version row so OTHER tasks reload their enforcement cache
+            # within version_check_interval, and write-through-invalidate THIS
+            # task's enforcement cache so the change is effective immediately.
+            self._bump_enforcement_version()
             logger.info(f"Updated rule {rule_id} status to {new_status}")
             return True
         except Exception as e:
             logger.error(f"Error updating rule status: {e}")
             return False
+
+    def _bump_enforcement_version(self) -> None:
+        """Increment the shared sigma rule-set version + drop the local
+        enforcement cache (WS24 M3.2). Best-effort: a coordination failure must
+        NOT fail the CRUD write — it just falls back to TTL-bounded propagation."""
+        try:
+            from app.validators.sigma_engine import (
+                _SIGMA_VERSION_ITEM_ID,
+                get_sigma_engine,
+            )
+            self.sigma_rules_metadata_table.update_item(
+                Key={'rule_id': _SIGMA_VERSION_ITEM_ID},
+                UpdateExpression="ADD #v :one",
+                ExpressionAttributeNames={'#v': 'version'},  # 'version' is a DDB reserved word
+                ExpressionAttributeValues={':one': 1},
+            )
+            get_sigma_engine().invalidate()
+        except Exception as e:
+            logger.warning(f"sigma enforcement version bump failed (TTL fallback): {e}")
 
     async def update_rule_match_count(
         self,

@@ -8,6 +8,7 @@ Requirements: LLD 03 Section 3.2.1, 8.1
 """
 import asyncio
 import logging
+import threading
 import time
 from typing import List, Dict, Optional
 
@@ -18,9 +19,15 @@ from botocore.exceptions import ClientError
 from app.api.models import ValidationRequest, ValidationResult
 from app.combiners import Source
 from app.config import settings
+from app.utils.clients import get_clients
 from app.validators._signal_stamp import stamps
 
 logger = logging.getLogger(__name__)
+
+# WS24 M3.2: the cross-instance rule-set version lives as a single item in the
+# sigma metadata table. Any enforcement-affecting CRUD bumps it; every task polls
+# it (throttled) and reloads when it moves.
+_SIGMA_VERSION_ITEM_ID = "__sigma_version__"
 
 
 class SigmaRulesLoadError(Exception):
@@ -72,8 +79,19 @@ class SigmaEngine:
             settings, "sigma_rules_cache_ttl_seconds", 300
         )
         self.rules_cache: Optional[List[SigmaRule]] = None
-        self.cache_timestamp = 0
-        self.s3_client = boto3.client("s3", region_name=settings.aws_region)
+        self.cache_timestamp = 0.0
+        # WS24 M3.2: the rule-set version we last loaded against. A cheap,
+        # throttled get_item on the shared version row lets this task notice a
+        # rule change (made via the CRUD API on any task) within
+        # `version_check_interval`s, instead of waiting out the full TTL.
+        self.cache_version: int = -1
+        self._last_version_check: float = 0.0
+        self.version_check_interval = getattr(
+            settings, "sigma_version_check_interval_seconds", 10)
+        # WS24 M2.3: reuse pooled clients from the registry instead of building a
+        # new boto3 client/resource on every cold load.
+        self.s3_client = get_clients().s3()
+        self.dynamodb = get_clients().dynamodb_resource()
         # Emits one SigmaRuleMatches count (per RuleId) to CloudWatch on every
         # match — the real source of truth for the console's "Matches" column.
         # Lazily constructed so tests/offline paths can run without one.
@@ -93,15 +111,17 @@ class SigmaEngine:
             SigmaRulesLoadError: If DynamoDB query fails
         """
         try:
-            dynamodb = boto3.resource('dynamodb', region_name=settings.aws_region)
-            table = dynamodb.Table(settings.dynamodb_sigma_rules_metadata_table)
+            # WS24 M2.3/M4.3: reuse the pooled resource (no per-call construction)
+            # and offload the synchronous query off the event loop.
+            table = self.dynamodb.Table(settings.dynamodb_sigma_rules_metadata_table)
 
             # Query using status-index GSI to get only stable rules
-            response = table.query(
+            response = await asyncio.to_thread(
+                table.query,
                 IndexName='status-index',
                 KeyConditionExpression='#status = :status',
                 ExpressionAttributeNames={'#status': 'status'},
-                ExpressionAttributeValues={':status': 'stable'}
+                ExpressionAttributeValues={':status': 'stable'},
             )
 
             metadata_list = response.get('Items', [])
@@ -136,17 +156,26 @@ class SigmaEngine:
         try:
             current_time = time.time()
 
-            # Check if cache is valid
-            if self.rules_cache and (
-                current_time - self.cache_timestamp
-            ) < self.cache_ttl_seconds:
-                logger.debug(
-                    f"Using cached Sigma rules ({len(self.rules_cache)} rules)"
-                )
-                return self.rules_cache
+            # WS24 M3.2: serve the cache, but periodically re-check the shared
+            # version row so a rule change made on ANY task propagates here within
+            # `version_check_interval`s — without paying a DDB read every request.
+            if self.rules_cache is not None:
+                within_ttl = (current_time - self.cache_timestamp) < self.cache_ttl_seconds
+                if (current_time - self._last_version_check) < self.version_check_interval:
+                    if within_ttl:
+                        return self.rules_cache
+                else:
+                    self._last_version_check = current_time
+                    remote_version = await self._fetch_version()
+                    if remote_version == -1 and within_ttl:
+                        return self.rules_cache  # check failed → keep fresh-enough cache
+                    if remote_version == self.cache_version and within_ttl:
+                        return self.rules_cache  # unchanged → keep cache
+                    # else: version moved or TTL lapsed → reload below
 
-            # Cache miss - load from DynamoDB + S3
+            # Cache miss / stale / version bumped — reload from DynamoDB + S3
             logger.info("Loading Sigma rules from DynamoDB metadata + S3 content")
+            loaded_version = await self._fetch_version()
 
             # Step 1: Load metadata from DynamoDB
             metadata_list = await self.load_rules_metadata_from_dynamodb()
@@ -191,6 +220,7 @@ class SigmaEngine:
             if rules:
                 self.rules_cache = rules
                 self.cache_timestamp = current_time
+                self.cache_version = loaded_version  # WS24 M3.2
                 logger.info(f"Loaded {len(rules)} Sigma rules into cache (hybrid approach)")
             else:
                 logger.warning("No rules successfully loaded")
@@ -220,6 +250,32 @@ class SigmaEngine:
                 logger.warning("Using stale cache due to error")
                 return self.rules_cache
             raise SigmaRulesLoadError(f"Unexpected error: {e}")
+
+    async def _fetch_version(self) -> int:
+        """Read the shared sigma rule-set version (one cheap get_item).
+
+        Returns 0 when the version row doesn't exist yet, and -1 when the read
+        fails — on -1 the caller keeps its existing cache rather than reloading
+        on a transient error (fail-to-cache, not fail-to-reload-storm).
+        """
+        try:
+            table = self.dynamodb.Table(settings.dynamodb_sigma_rules_metadata_table)
+            resp = await asyncio.to_thread(
+                table.get_item, Key={'rule_id': _SIGMA_VERSION_ITEM_ID})
+            item = resp.get('Item')
+            return int(item['version']) if item and 'version' in item else 0
+        except Exception as e:
+            logger.warning(f"sigma version check failed (keeping cache): {e}")
+            return -1
+
+    def invalidate(self) -> None:
+        """Write-through hook (WS24 M3.2): drop the enforcement cache so the next
+        `match_rules` reloads immediately on THIS task after a rule write. Other
+        tasks converge via the version row within `version_check_interval`s."""
+        self.rules_cache = None
+        self.cache_version = -1
+        self._last_version_check = 0.0
+        logger.info("Sigma enforcement cache invalidated (write-through)")
 
     def _parse_sigma_rule(self, rule_data: Dict) -> SigmaRule:
         """
@@ -345,3 +401,23 @@ class SigmaEngine:
                 penalty=-10,
                 should_deny=True,
             )
+
+
+# --------------------------------------------------------------------------- #
+# Process-wide singleton (WS24 M3.2)
+# --------------------------------------------------------------------------- #
+# Shared by the enforcement path (ValidationService) and the CRUD service
+# (sigma_rules_service) so a rule write can WRITE-THROUGH-invalidate the live
+# enforcement cache via `get_sigma_engine().invalidate()`.
+_sigma_engine_singleton: Optional[SigmaEngine] = None
+_sigma_engine_lock = threading.Lock()
+
+
+def get_sigma_engine() -> SigmaEngine:
+    """Return the process-wide SigmaEngine (singleton)."""
+    global _sigma_engine_singleton
+    if _sigma_engine_singleton is None:
+        with _sigma_engine_lock:
+            if _sigma_engine_singleton is None:
+                _sigma_engine_singleton = SigmaEngine()
+    return _sigma_engine_singleton

@@ -106,7 +106,12 @@ class Settings(BaseSettings):
     # Sigma Rules Configuration
     sigma_rules_s3_prefix: str = "sigma_rules/llm/"
     sigma_rules_cache_ttl_seconds: int = 300  # 5 minutes
-    
+    # WS24 M3.2: how often each task polls the shared sigma version row to detect a
+    # rule change (cross-instance invalidation). 10s = fast propagation, one tiny
+    # DDB get_item per 10s per task.
+    sigma_version_check_interval_seconds: int = Field(
+        default=10, validation_alias="SIGMA_VERSION_CHECK_INTERVAL_SECONDS")
+
     # ML Threat Classifier (Workstream 19 / LLD 19)
     # Disabled by default until WS19 M2 eval harness signs off on precision/recall.
     ml_classifier_enabled: bool = Field(default=False, validation_alias="ML_CLASSIFIER_ENABLED")

@@ -102,7 +102,7 @@ class ValidationService:
         from app.validators.trust_checker import TrustChecker
         from app.validators.policy_engine import PolicyEngine
         from app.validators.cross_agent_validator import CrossAgentValidator
-        from app.validators.sigma_engine import SigmaEngine
+        from app.validators.sigma_engine import get_sigma_engine
         from app.validators.context_validator import ContextValidator
         from app.validators.abuse_detector import AbuseDetector
         from app.validators.ml_classifier import MLClassifierValidator
@@ -110,7 +110,9 @@ class ValidationService:
         self.trust_checker = TrustChecker()  # Task 4 ✅
         self.policy_engine = PolicyEngine()  # Task 5 ✅
         self.cross_agent_validator = CrossAgentValidator()  # Workstream 12 ✅
-        self.sigma_engine = SigmaEngine()  # Task 6 ✅
+        # WS24 M3.2: shared singleton so a rule write (sigma_rules_service) can
+        # write-through-invalidate this same enforcement cache.
+        self.sigma_engine = get_sigma_engine()  # Task 6 ✅
         # Workstream 15: inject policy_engine so context_validator can resolve
         # cross_cloud_dependencies from the agent's policy.
         self.context_validator = ContextValidator(policy_engine=self.policy_engine)  # Task 7 ✅ + W15

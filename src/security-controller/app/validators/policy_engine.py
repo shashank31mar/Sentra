@@ -206,10 +206,13 @@ class PolicyEngine:
         Hot-path cache (WS24 M3.5): the ALLOW path resolves this bundle up to 3×
         per request. The successful result is cached per (tenant, agent) for
         `policy_cache_ttl_seconds`, so the 2 DDB reads + 1 S3 GET run once, not
-        three times. Errors are never cached. Invalidate on policy CRUD via
-        `invalidate_policy_cache`; cross-instance staleness is TTL-bounded
-        (consistent with the existing policy/agent metadata caches — fleet-wide
-        invalidation is WS24 M3.2).
+        three times. Errors are never cached. **Invalidation today** is the blanket
+        `self.cache.clear()` that `policy_service` / `agent_service` already call on
+        every policy/binding write (which evicts this `policy_bundle:` family too);
+        `invalidate_policy_cache` below is a finer-grained alternative, available but
+        not yet wired. Cross-instance staleness is TTL-bounded (the sigma-style
+        version-row invalidation, WS24 M3.2, is now done for sigma and is the model
+        to port here).
 
         ⚠️ The returned (policy_data, metadata, agent) tree is a SHARED cache
         reference. Callers MUST treat it as READ-ONLY — mutating any of these

@@ -446,9 +446,19 @@ class TestSigmaRulesServiceUpdateStatus:
         result = await service.update_rule_status('sigma-llm-001', 'deprecated')
 
         assert result is True
-        # Wrote the new status to DDB (which the status-index GSI keys on).
-        call_args = mock_table.update_item.call_args
-        assert call_args[1]['ExpressionAttributeValues'][':status'] == 'deprecated'
+        # Wrote the new status to DDB (status update is among the update_item calls).
+        status_calls = [
+            c for c in mock_table.update_item.call_args_list
+            if c[1].get('ExpressionAttributeValues', {}).get(':status') == 'deprecated'
+        ]
+        assert len(status_calls) == 1
+        # WS24 M3.2: also bumped the shared enforcement version row (write-through
+        # cross-instance invalidation), via an ADD on the version attribute.
+        version_calls = [
+            c for c in mock_table.update_item.call_args_list
+            if 'ADD' in c[1].get('UpdateExpression', '')
+        ]
+        assert len(version_calls) == 1
         # Per-rule entry dropped + whole list family invalidated by prefix.
         mock_cache_manager.invalidate.assert_called_once_with('sigma_rule:sigma-llm-001')
         mock_cache_manager.invalidate_prefix.assert_called_once_with('sigma_rules:')

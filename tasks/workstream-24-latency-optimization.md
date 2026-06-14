@@ -41,22 +41,15 @@
 ### M2 — Singleton service + client registry (F1) — *partially DONE*
 - [x] 2.1 Construct `ValidationService` once in `app/main.py` `lifespan`; store on `app.state`. **DONE.**
 - [x] 2.2 Route `/v1/validate` resolves the singleton from `app.state` (`ValidationService()` is test-fallback only). **DONE.**
-- [ ] 2.3 Introduce a boto **client registry** (tenant-keyed factory; returns shared default today). Validators take clients from it instead of `boto3.client/resource` in `__init__`.
+- [x] 2.3 **Client registry — DONE** (`app/utils/clients.py`, `get_clients()`): tenant-keyed factory returning shared pooled clients today, with a single seam for per-tenant assume-role clients later. Wired into `sigma_engine` (replaces the per-cold-load `boto3.resource`). *Remaining (incremental, non-urgent):* migrate the other validators' `__init__` to the registry — cosmetic post-singleton.
 - [ ] 2.4 Warm **system** sigma rules + tool-requirements in `lifespan` (policy stays lazy-on-first-request; do not pre-load every tenant's policy).
 - [ ] 2.5 Concurrency check: confirm the shared singleton + clients are safe under load (boto3 clients are thread-safe; validators hold no per-request mutable state).
 - **Exit:** 0 per-request constructions ✅; sigma cache persists ✅; re-measure in M1.
 
 ### M3 — Sigma + Policy caches (F2/F3)
-> **⚠️ M3.1 + M3.2 are FORMALLY DEFERRED (not silently missing).** The singleton (M2)
-> already restored the sigma cache's *latency* benefit. What's missing is the
-> *correctness* feature: tenant scoping + cross-instance invalidation. Until it lands,
-> a sigma rule change is stale on other ECS tasks for up to the 300s TTL — an
-> accepted, time-bounded gap (NOT 6h, since M3.3 keeps the TTL at 300s). The policy
-> cache got `invalidate_policy_cache` + `cache.clear()` on writes; sigma has no
-> equivalent yet. **This is its own follow-up PR, scheduled next after the hot-path work.**
-- [ ] 3.1 Sigma cache → process/module-scoped, **tenant-aware** (system + customer rule sets). *(deferred)*
-- [ ] 3.2 **Write-through** on rule CRUD (sync DDB + cache update) + **cross-instance invalidation** — `meta#version` row in `sentra-sigma-rules-metadata` (bumped on CRUD, keep `status='stable'` consistent) or Redis pub/sub. *(deferred — correctness item, next PR)*
-- [~] 3.3 CDK config: `POLICY_CACHE_TTL_SECONDS` 10→**300** (safe — invalidated on writes); removed orphan `POLICY_CACHE_TTL` + `SIGMA_REFRESH_INTERVAL`. **Sigma TTL deliberately left at 300s** — bumping to 6h is unsafe until cross-instance invalidation (M3.2) exists. Done except the sigma-TTL bump, which is gated on M3.2.
+- [~] 3.1 Sigma cache: now shared via the **`get_sigma_engine()` singleton** and version-coordinated. **Tenant-aware caching is structurally ready but not forced** — sigma is **not** part of the v2 tenancy migration (no `sigma` logical in `tenancy`), so there is one global rule set today; per-tenant keying lands with a sigma v2 data model. *Done for the current (single-tenant) data model.*
+- [x] 3.2 **Write-through + cross-instance invalidation — DONE.** Enforcement-affecting CRUD (`update_rule_status`) bumps a shared version row (`rule_id="__sigma_version__"`, atomic `ADD`) and **write-through-invalidates** the local `SigmaEngine` (instant on the writer). Every task polls the version row **throttled (`version_check_interval`=10s)** and reloads on change — so a rule change propagates fleet-wide in ≤10s instead of waiting out the TTL. Best-effort: a coordination failure falls back to TTL, never fails the write.
+- [x] 3.3 CDK config: `POLICY_CACHE_TTL_SECONDS` 10→**300**; removed orphan `POLICY_CACHE_TTL` + `SIGMA_REFRESH_INTERVAL`. With M3.2 version-invalidation now landed, the **sigma TTL is just a periodic-full-reload safety net** (freshness is handled by the version row in ≤10s), so it can stay at 300s or be raised freely — no correctness dependency anymore. **Done** (needs `cdk deploy` to take effect).
 - [x] 3.4 Parallel cold-load of rule S3 objects (`asyncio.gather` over `to_thread` in `sigma_engine.load_rules_from_s3`). **Done.**
 - [x] 3.5 **Policy: cache on `resolve_policy_bundle(agent_id)`** via the WS5 `CacheManager`, tenant-scoped key, TTL=`policy_cache_ttl_seconds`; sync chain offloaded with `asyncio.to_thread`; invalidated by existing `cache.clear()` on every policy/binding write. **Done.**
 - [~] 3.6 Cache coverage: **STEP 4 (context) + STEP 5 (abuse) both resolve via `get_agent_policy → resolve_policy_bundle` → cached ✓.** STEP 2 Cedar uses its own module-level `_compiled_cache` for the compiled artifact; confirm whether its metadata resolve also routes through `resolve_policy_bundle` (else add). *Partial.*

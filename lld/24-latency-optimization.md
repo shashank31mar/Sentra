@@ -203,7 +203,8 @@ Every **cheap, local** check (context/sequence, abuse/rate-limit) now short-circ
 
 | Env var | Today (deployed) | Code default | Target | Notes |
 |---|---|---|---|---|
-| `SIGMA_RULES_CACHE_TTL_SECONDS` | **not set in CDK** | 300 | 21600 (6h) | This **adds a new env var**, not "300→change". Also remove orphan `SIGMA_REFRESH_INTERVAL=300` (CDK sets it; controller reads nothing). |
+| `SIGMA_RULES_CACHE_TTL_SECONDS` | **not set in CDK** | 300 | **300 (unchanged)** | The earlier 6h target is **obsolete** — M3.2's version-row invalidation now propagates rule changes in ≤10s regardless of TTL, so the TTL is only a periodic-full-reload safety net. Kept at 300s. Orphan `SIGMA_REFRESH_INTERVAL` removed. |
+| `SIGMA_VERSION_CHECK_INTERVAL_SECONDS` (new) | unset | 10 | 10 | How often each task polls the shared sigma version row (M3.2). Lower = faster propagation, more (tiny) DDB reads. |
 | `POLICY_CACHE_TTL_SECONDS` | 10 ([compute_stack:1335](../cdk/stacks/compute_stack.py#L1335)) | 300 | 300 | Currently **dead** (no reader). Remove orphan duplicate `POLICY_CACHE_TTL=10` (line 1311) to avoid wiring the wrong var. |
 | WS5 cache framework | `cache_enabled`, `max_cache_size`, `policy_cache_ttl_seconds`, `agent_metadata_cache_ttl_seconds`, `tool_registry_cache_ttl_seconds` exist in `config.py` | — | **reuse** | Policy/sigma caching is **not greenfield** — reuse this or state why bypassing. |
 | `ML_CLASSIFIER_*` | enabled, shadow off | false | unchanged | reorder only (§6) |
