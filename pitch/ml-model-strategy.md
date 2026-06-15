@@ -38,7 +38,7 @@ Incoming agent tool call / prompt
                │
                ▼
          ENFORCE POLICY
-         (OPA Rego / sequence validation)
+         (Cedar / sequence validation)
 ```
 
 A call must pass both layers before reaching the downstream system. Attackers who craft prompts that evade the content classifier are still caught by behavioral anomaly detection — and vice versa.

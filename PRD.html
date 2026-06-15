@@ -1,0 +1,953 @@
+<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><title>PRD</title><style>
+  @page { size: Letter; margin: 0.6in 0.7in; }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; }
+  body {
+    font-family: "Helvetica Neue", Helvetica, Arial, sans-serif;
+    color: #1c2330; font-size: 11px; line-height: 1.45;
+    -webkit-font-smoothing: antialiased;
+  }
+  h1 { font-size: 20px; font-weight: 800; color: #0f1b2d; margin: 0 0 4px 0; letter-spacing: -0.2px; }
+  h2 {
+    font-size: 13px; font-weight: 800; text-transform: uppercase; letter-spacing: 0.5px;
+    color: #1559c9; margin: 16px 0 6px 0; padding-bottom: 3px; border-bottom: 1px solid #d7deea;
+  }
+  h3 { font-size: 11.5px; font-weight: 800; color: #0f1b2d; margin: 12px 0 4px 0; }
+  p { margin: 0 0 6px 0; }
+  ul, ol { margin: 0 0 6px 0; padding-left: 18px; }
+  li { margin: 0 0 3px 0; }
+  strong { color: #0f1b2d; }
+  em { color: #2a3650; }
+  a { color: #1559c9; text-decoration: none; }
+  hr { border: 0; border-top: 1px solid #d7deea; margin: 12px 0; }
+  blockquote {
+    margin: 8px 0; padding: 6px 12px; border-left: 3px solid #1559c9;
+    background: #f4f7fc; color: #2a3650;
+  }
+  code {
+    font-family: "SF Mono", Menlo, Consolas, monospace; font-size: 9.5px;
+    background: #eef2f8; padding: 1px 4px; border-radius: 3px;
+  }
+  pre {
+    background: #0f1b2d; color: #e6edf6; padding: 10px 12px; border-radius: 5px;
+    overflow-x: auto; page-break-inside: avoid;
+  }
+  pre code { background: none; color: inherit; font-size: 8.6px; line-height: 1.35; padding: 0; }
+  table { border-collapse: collapse; width: 100%; margin: 6px 0 10px 0; font-size: 9.6px; page-break-inside: avoid; }
+  th, td { border: 1px solid #cfd8e8; padding: 4px 7px; text-align: left; vertical-align: top; }
+  th { background: #eef2f8; color: #0f1b2d; font-weight: 700; }
+  tr:nth-child(even) td { background: #f7f9fd; }
+</style></head><body><h1>AegionAI Guard — Product Requirements Document (PRD)</h1>
+<p><strong>Product:</strong> AegionAI Guard — the runtime safety &amp; governance layer for AI agents
+<strong>Version:</strong> 1.1
+<strong>Last Updated:</strong> 2026-06-15
+<strong>Status:</strong> Draft for Review
+<strong>Owner:</strong> Shashank Gupta (Founder/CEO)
+<strong>Companion docs:</strong> <a href="ARCHITECTURE.md">ARCHITECTURE.md</a> (the "how") · <a href="STRATEGY.md">STRATEGY.md</a> (market / GTM / roadmap) · <a href="vision.md">vision.md</a> (vision &amp; pillars) · <a href="pitch/one-pager.md">pitch/one-pager.md</a> (the "why")</p>
+<blockquote>
+<p>This PRD defines <strong>what</strong> AegionAI Guard is — the product requirements and how they map to the strategic roadmap. (Market, GTM, and business targets live in <a href="STRATEGY.md">STRATEGY.md</a>; the "how we build it" lives in <a href="ARCHITECTURE.md">ARCHITECTURE.md</a>, which references this PRD by requirement ID.)</p>
+</blockquote>
+<hr />
+<h2>Glossary (terms used throughout)</h2>
+<p><em>New readers can skip to the Overview below and refer back here.</em></p>
+<ul>
+<li><strong>PEP (checkpoint):</strong> Policy Enforcement Point — intercepts/blocks the action; runs in the customer's environment.</li>
+<li><strong>PDP (policy engine / controller):</strong> Policy Decision Point — decides allow/deny.</li>
+<li><strong>Control plane:</strong> authors / signs / distributes policy and aggregates telemetry; never on the action path.</li>
+<li><strong>Deterministic tier:</strong> tool / parameter / sequence checks (Cedar).</li>
+<li><strong>Detection layers (D1–D7):</strong> the phased defense-in-depth detectors (trajectory, indirect injection, memory integrity, taint/information-flow, output/DLP, network/egress, provenance) — see <code>lld/20</code>.</li>
+<li><strong>Phase:</strong> which moment of the agent loop a <code>/v1/validate</code> call covers — <code>request</code> (action), <code>content</code> (ingested data), <code>output</code> (emitted data), <code>memory</code> (memory write).</li>
+<li><strong>Editions:</strong> Serverless (multi-tenant cloud) / Dedicated (in-customer-VPC, managed) / Self-Managed (air-gapped).</li>
+<li><strong>Shadow mode:</strong> a detector or policy records signals without affecting the verdict.</li>
+<li><strong>Monitor mode:</strong> a seeded default policy that observes (doesn't block) so a freshly imported agent is governed without a wall of denials.</li>
+</ul>
+<hr />
+<h2>1. Overview</h2>
+<p>AegionAI Guard is the <strong>runtime safety and governance layer for AI agents</strong>. It sits where an agent's decision becomes a real action — a tool, API, or database call — and decides, in real time, whether that action may run. Unlike tools that only <em>detect and warn</em>, it <strong>enforces</strong>: it blocks unsafe actions before they execute, rolls back already-committed reversible writes, and quarantines a misbehaving agent <strong>or session</strong>.</p>
+<p>It spans a <strong>control plane</strong> (policy, trust, audit, fleet view) and an <strong>in-boundary data plane</strong> (the enforcement and detection that run inside the customer's environment for the Dedicated and Self-Managed editions) — protecting every agent across AWS, Azure, GCP, and on-prem, including cross-agent and cross-cloud.</p>
+<p><strong>Enforcement is mechanical, not advisory:</strong> on a deny, the checkpoint blocks the tool from running — it does not merely flag it. Today the checkpoint is installed by the customer at the call site (one line per tool, or via a cloud connector); a network sidecar will extend this to automatic coverage that is <strong>on by default and fully under the customer's control</strong> (turn off per agent, per tool, or globally).</p>
+<p><strong>The Kubernetes analogy — but more than a control plane.</strong> Like Kubernetes for AI agents: a control plane <em>and</em> an in-boundary data plane that together deliver policy enforcement, observability, containment, and governance across single- and multi-agent systems — multi-cloud, with cross-agent and cross-cloud containment. Cloud providers can't match this: each governs only the agents on its own cloud.</p>
+<p><strong>Why this matters (the bigger picture).</strong> Today, keeping agents safe means a human watching over them — the very thing that stops agents from being useful at scale. AegionAI Guard is the automated safeguard that does the watching, so agents can run on their own and people step in only for the rare exceptions. <strong>Our vision: make hands-off AI autonomy safe enough to trust — on any cloud.</strong></p>
+<h3>Positioning</h3>
+<p>The only platform that governs AI-agent <strong>actions</strong> across AWS, Azure, GCP, and on-prem simultaneously — with real-time enforcement (not just detection), cross-agent blast-radius containment, and a deployment model that fits regulated buyers (in-VPC and air-gapped). Cloud providers structurally cannot do this: each protects only agents on its own cloud.</p>
+<hr />
+<h2>2. Problem &amp; Context</h2>
+<p>AI agents have moved from <em>answering questions</em> to <em>taking actions</em> — moving money, changing records, sending messages — at machine speed. When an agent acts wrongly, it is not a bad answer; it is real damage, and today <strong>nothing stops the harmful action in the moment</strong>:</p>
+<ul>
+<li>An AI assistant told explicitly not to touch a production system deleted 1,000+ companies' records anyway, fabricated data, and misreported it as irreversible. (<a href="https://fortune.com/2025/07/23/ai-coding-tool-replit-wiped-database-called-it-a-catastrophic-failure/">Fortune, 2025</a>)</li>
+<li>In banking, a single agent error (double payment, wrong transfer) propagates across systems before a human notices; AmEx has begun refunding AI-agent purchase errors. (<a href="https://thefinancialbrand.com/news/payments-trends/when-ai-agents-make-incorrect-purchases-whos-responsible-197147">The Financial Brand, 2026</a>)</li>
+<li>A single hijacked agent became the entry point to breach 700+ companies at once (Drift/Salesloft). (<a href="https://www.trendmicro.com/en_us/research/25/i/ai-app-breach.html">Trend Micro, 2025</a>)</li>
+</ul>
+<p><strong>Why it isn't solved:</strong> existing tools (Lakera, CalypsoAI, HiddenLayer, Portkey-class gateways) <strong>watch and warn</strong> at the per-call level. None <em>enforce</em> at the action level across a fleet and across clouds, and none provide cross-agent containment or rollback.</p>
+<p><strong>Why now:</strong> 82% of enterprises use AI agents; only ~26–44% govern them. The EU AI Act (enforcement <strong>Aug 2, 2026</strong>) treats financial AI agents as high-risk with penalties up to 7% of global revenue. Two AI-security startups were just acquired ($300M, $180M). The market is forming now.</p>
+<hr />
+<h2>3. Goals &amp; Success Metrics</h2>
+<h3>3.1 Guiding Pillars</h3>
+<p>Three pillars guide everything we build (mirrored in <a href="vision.md">vision.md</a>). Every requirement in this document ladders up to one of them.</p>
+<h4>Pillar 1 — Stop harm before it happens</h4>
+<ul>
+<li><strong>Enforce, don't just detect</strong> — block unsafe actions before they execute, not after.</li>
+<li><strong>Defense in depth</strong> — independent layers (deterministic policy, Sigma detection, ML, trust, abuse); evading one is caught by another.</li>
+<li><strong>Contain blast radius</strong> — quarantine a misbehaving agent or session; stop cross-agent and cross-cloud cascade.</li>
+<li><strong>Continuously adapt</strong> — get better as attacks evolve, via automated red-teaming, model retraining, and retrospective re-scoring (the compounding moat).</li>
+</ul>
+<h4>Pillar 2 — Make autonomy safe</h4>
+<ul>
+<li><strong>Take the human off the hot path</strong> — handle agent decisions automatically; escalate only the genuine exceptions.</li>
+<li><strong>Always-on, low overhead</strong> — fast enough to leave on synchronously, even for money-moving actions.</li>
+<li><strong>Observability &amp; analytics</strong> — real-time visibility into threats and decisions, so humans can trust the system and oversee the exceptions.</li>
+</ul>
+<h4>Pillar 3 — Trusted on every cloud</h4>
+<ul>
+<li><strong>Multi-cloud &amp; cross-cloud</strong> — govern agents on AWS, Azure, GCP, and on-prem under one model, including cross-agent containment across clouds.</li>
+<li><strong>Deploy in the customer's boundary</strong> — in-VPC (Dedicated) or air-gapped (Self-Managed); sensitive data never leaves.</li>
+<li><strong>Regulator-ready</strong> — tamper-evident audit and compliance mapping (SOC 2, HIPAA, GDPR, EU AI Act).</li>
+</ul>
+<h3>3.2 Success Metrics</h3>
+<p><strong>North-star:</strong> <em>how many agents we protect — and how much human oversight we take off their plate</em> (the decisions we handle automatically that would otherwise need a person). These are <strong>product</strong> metrics; business/growth KPIs (ARR, customers, ACV) live in <a href="STRATEGY.md">STRATEGY.md</a>.</p>
+<p><strong>Security efficacy.</strong> <em>Defense in depth means several independent layers (policy, signature detection, machine-learning detection, trust, abuse). We track how much gets caught — and, the real point, how little gets through all of them.</em></p>
+<table>
+<thead>
+<tr>
+<th>Metric</th>
+<th>Target</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Detection rate — share of attacks we catch (all layers combined)</td>
+<td>high; tracked over time</td>
+</tr>
+<tr>
+<td>Missed-attack rate ("false negatives") — attacks that got past <em>every</em> layer</td>
+<td>near zero on known attack types</td>
+</tr>
+<tr>
+<td>False-alarm rate ("false positives") — legitimate actions wrongly blocked</td>
+<td>&lt; 2%</td>
+</tr>
+<tr>
+<td>Detector accuracy — precision, recall, and F1 score (the combined precision/recall measure), per detector</td>
+<td>measured automatically before every release; a regression blocks the release</td>
+</tr>
+<tr>
+<td>Time-to-detect / Time-to-Quarantine a compromised agent</td>
+<td>&lt; 5 seconds</td>
+</tr>
+<tr>
+<td>Cross-agent cascade prevention — share of agent-to-agent attacks contained</td>
+<td>100%</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Enforcement &amp; reliability:</strong></p>
+<table>
+<thead>
+<tr>
+<th>Metric</th>
+<th>Target</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Enforcement coverage — % of guarded actions validated pre-execution</td>
+<td>100%</td>
+</tr>
+<tr>
+<td><strong>Enforcement availability</strong> (local, fail-secure — agents never left unguarded)</td>
+<td>≥ 99.99%</td>
+</tr>
+<tr>
+<td>Control-plane availability (policy updates, dashboards, advanced detection)</td>
+<td>99.9% → 99.99%</td>
+</tr>
+<tr>
+<td>Rollback success (reversible ops)</td>
+<td>&gt; 95%</td>
+</tr>
+<tr>
+<td>Compliance report generation</td>
+<td>&lt; 5 min</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Performance</strong> (validated against the latency work — Workstream 24 / <a href="lld/24-latency-optimization.md">lld/24</a>). <em>Latency depends on how deep a check the action needs — fast for routine actions, more for the ones that need the machine-learning model.</em></p>
+<table>
+<thead>
+<tr>
+<th>Path</th>
+<th>Target (99th-percentile, "p99")</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Deterministic only — policy/signature check, no ML model invoked</td>
+<td>≤ 500 ms at load (≈ 0.6–1.2 s today)</td>
+</tr>
+<tr>
+<td>With the fast ML model (hot path)</td>
+<td>≤ 900 ms</td>
+</tr>
+<tr>
+<td>With deep-model escalation (rare, hardest cases)</td>
+<td>bounded ≤ 2.5 s; reduced in follow-up</td>
+</tr>
+<tr>
+<td>Roadmap — distilled local ML model (in-process, CPU; replaces the hosted classifier)</td>
+<td>&lt; 100 ms</td>
+</tr>
+<tr>
+<td>Roadmap — in-process local enforcement (no network round-trip)</td>
+<td>low tens of milliseconds for the deterministic path</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Adoption &amp; value (the north-star, in plain terms):</strong></p>
+<table>
+<thead>
+<tr>
+<th>Metric</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Agents protected</td>
+<td>reach — how widely we're deployed</td>
+</tr>
+<tr>
+<td><strong>Decisions handled automatically</strong> ("oversight taken off the human")</td>
+<td>the autonomy value — decisions that would otherwise need a person</td>
+</tr>
+<tr>
+<td>Harm prevented (count, and $ for money-movement)</td>
+<td>ROI</td>
+</tr>
+<tr>
+<td>Time-to-first-value (install → first enforcement)</td>
+<td>onboarding speed</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2>4. Personas</h2>
+<table>
+<thead>
+<tr>
+<th>Persona</th>
+<th>Role</th>
+<th>What they need</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>CISO / Head of AI Governance</strong></td>
+<td>Economic buyer</td>
+<td>Real-time enforcement, audit trail, compliance mapping (SOC 2, HIPAA, GDPR, EU AI Act), and a guarantee that sensitive data stays inside their boundary.</td>
+</tr>
+<tr>
+<td><strong>Platform / DevOps Engineering Lead</strong></td>
+<td>Champion</td>
+<td>Kubernetes-native experience (CRDs, Helm), easy integration, low operational burden.</td>
+</tr>
+<tr>
+<td><strong>AI/ML Engineer / Agent Developer</strong></td>
+<td>Integrator/user</td>
+<td>Low-effort integration (one wrapper per tool with the SDK today), clear reasons when an action is denied, shadow mode for safe rollout, minimal latency.</td>
+</tr>
+<tr>
+<td><strong>Fraud / Risk Lead (beachhead)</strong></td>
+<td>Buyer (financial-action agents)</td>
+<td>Stop wrong refunds/transfers instantly; quantifiable loss prevention + regulator-ready logs.</td>
+</tr>
+<tr>
+<td><strong>Compliance / Auditor</strong></td>
+<td>Consumer of output</td>
+<td>Forensic, queryable, immutable decision records.</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2>5. Key Use Cases</h2>
+<ol>
+<li><strong>Block a manipulated money-movement action.</strong> A refund/transfer agent is prompt-injected to exceed limits; AegionAI denies before execution and logs the attempt with reason.</li>
+<li><strong>Enforce required sequence.</strong> An action that must follow an approval/KYC step is blocked if the prior step didn't happen for that session.</li>
+<li><strong>Contain a compromised agent.</strong> A misbehaving agent's trust drops; it is quarantined so subsequent actions auto-deny, and cross-agent messages from it are filtered — no cascade.</li>
+<li><strong>Compensate a committed, reversible write.</strong> When a step in a multi-step flow has already run and <em>can</em> be reversed, AegionAI Guard issues its reversing action (e.g., a refund-reversal request) in last-in-first-out order. <em>Many financial actions are not reversible once settled — for those, the safeguard is prevention (blocking before execution), not rollback.</em></li>
+<li><strong>One model across clouds and runtimes.</strong> Agents on different platforms (AWS Bedrock and Azure today; GCP, on-prem, and AegionAI-hosted agents on the roadmap) are governed under one policy, trust, and audit model.</li>
+<li><strong>Compliance evidence.</strong> A regulator asks for "all DENYs in May"; the audit store answers from the compliance archive.</li>
+<li><strong>Safe rollout.</strong> A new policy/detector runs in shadow mode (records, doesn't block) until it proves out, then is promoted.</li>
+</ol>
+<hr />
+<h2>6. Scope</h2>
+<h3>In scope (the product)</h3>
+<p>AegionAI Guard <strong>acts on agent actions</strong> — it doesn't only watch them. In scope:
+- <strong>Enforcement (several kinds, not just policy):</strong> block before execution on — tool allow/deny, parameter bounds, required-sequence, threat detection (signature + machine-learning), information-flow / taint rules, output / data-loss rules, cross-agent trust, and rate/abuse limits.
+- <strong>Containment &amp; recovery:</strong> quarantine an agent or session; compensating rollback of reversible actions.
+- <strong>Detection in depth:</strong> layered detectors across the agent's loop — the action it takes, the untrusted content it ingests, the output it emits, and the memory it writes.
+- <strong>Visibility:</strong> tamper-evident audit trail, real-time threat/decision analytics, compliance reporting.
+- <strong>Onboarding &amp; management:</strong> connect cloud accounts, discover and import agents, author policies, manage the fleet — multi-tenant.
+- <strong>Deployment:</strong> the three editions below (multi-tenant cloud, in-customer-network, on-prem / air-gapped).</p>
+<h3>Out of scope (explicit non-goals)</h3>
+<ul>
+<li><strong>Not</strong> an LLM (Large Language Model) gateway/router (Portkey-class per-call routing, caching, cost tracking) — we govern <em>actions</em>, not route model calls.</li>
+<li><strong>Not</strong> a model-training or fine-tuning platform.</li>
+<li><strong>Not</strong> an identity provider — we <em>complement</em> the customer's identity system (which proves who the agent is) and their SIEM (Security Information and Event Management) system (where alerts are aggregated).</li>
+<li><strong>Not</strong> a replacement for the customer's own DLP (Data Loss Prevention) tooling — we integrate with it, and add our own redaction layer.</li>
+</ul>
+<hr />
+<h2>7. Functional Requirements</h2>
+<p>Priority: <strong>P0</strong> = MVP/now, <strong>P1</strong> = next, <strong>P2</strong> = later. Status reflects the shipping codebase as of 2026-06-15. <em>(See ARCHITECTURE.md for today-vs-roadmap detail; where status and prose disagree, status wins.)</em></p>
+<h3>7.1 Interception &amp; Enforcement (the checkpoint / PEP) — <code>lld/23</code></h3>
+<table>
+<thead>
+<tr>
+<th>ID</th>
+<th>Requirement</th>
+<th>Pri</th>
+<th>Status</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>FR-1.1</td>
+<td>Intercept every guarded agent action (tool/API/DB call) before execution</td>
+<td>P0</td>
+<td>Built (SDK, cooperative)</td>
+</tr>
+<tr>
+<td>FR-1.2</td>
+<td>One-line-per-tool SDK integration (Python)</td>
+<td>P0</td>
+<td>Built</td>
+</tr>
+<tr>
+<td>FR-1.3</td>
+<td>Fail-secure on validation failure (deny by default; configurable raise)</td>
+<td>P0</td>
+<td>Built</td>
+</tr>
+<tr>
+<td>FR-1.4</td>
+<td>Per-agent fail mode (fail-closed vs degrade)</td>
+<td>P1</td>
+<td>Roadmap</td>
+</tr>
+<tr>
+<td>FR-1.5</td>
+<td>Network sidecar interception — the interception model for the <strong>in-boundary editions (Dedicated / Self-Managed)</strong>; zero-code, framework-agnostic, non-cooperative</td>
+<td>P1</td>
+<td>Roadmap</td>
+</tr>
+<tr>
+<td>FR-1.6</td>
+<td>Non-Python SDKs (Node / Java / Go)</td>
+<td>P2</td>
+<td>Roadmap</td>
+</tr>
+<tr>
+<td>FR-1.7</td>
+<td>In-process local enforcement (<strong>Serverless</strong>) — evaluate the deterministic floor against a signed, cached policy bundle with no network round-trip, and keep enforcing if the controller is unreachable (the latency + resilience story)</td>
+<td>P1</td>
+<td>Roadmap</td>
+</tr>
+</tbody>
+</table>
+<h3>7.2 Policy Decision Engine — runtime decisions (PDP) — <code>lld/18</code>, <code>features/cedar-policy</code></h3>
+<p><em>This is the runtime engine that decides allow/deny on each action. Authoring and managing those policies is a different concern (and audience) — the </em><em>management plane</em><em>, §7.8.</em></p>
+<table>
+<thead>
+<tr>
+<th>ID</th>
+<th>Requirement</th>
+<th>Pri</th>
+<th>Status</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>FR-2.1</td>
+<td>Tool allow/deny per agent</td>
+<td>P0</td>
+<td>Built</td>
+</tr>
+<tr>
+<td>FR-2.2</td>
+<td>Parameter-bound policy (e.g., refund ≤ limit)</td>
+<td>P0</td>
+<td>Built</td>
+</tr>
+<tr>
+<td>FR-2.3</td>
+<td>Single-session sequence enforcement (required prior steps)</td>
+<td>P0</td>
+<td>Built</td>
+</tr>
+<tr>
+<td>FR-2.4</td>
+<td>Cedar as the authoritative policy engine</td>
+<td>P0</td>
+<td>Built (dev cutover; shadow→enforce)</td>
+</tr>
+<tr>
+<td>FR-2.5</td>
+<td>Evaluate <strong>versioned, signed policy bundles</strong> (the artifact the engine runs)</td>
+<td>P0/P1</td>
+<td>Built (bundle) / signing P1</td>
+</tr>
+<tr>
+<td>FR-2.6</td>
+<td><code>AgentPolicy</code> / <code>AgentTrust</code> CRDs (Kubernetes-native)</td>
+<td>P2</td>
+<td>Roadmap</td>
+</tr>
+<tr>
+<td>FR-2.7</td>
+<td>Deny-by-default combiner with explainable, prioritized decision sources</td>
+<td>P0</td>
+<td>Built</td>
+</tr>
+<tr>
+<td>FR-2.8</td>
+<td>Parallel-gather scheduler over a cost-annotated dependency graph (cheap checks short-circuit; models run in parallel) — bounds latency as detection layers grow</td>
+<td>P1</td>
+<td>Roadmap (Workstream 20.0)</td>
+</tr>
+</tbody>
+</table>
+<h3>7.3 Threat Detection (defense in depth) — <code>lld/19</code>, <code>lld/20</code></h3>
+<p><em>Detectors run across the four moments of an agent's loop, addressed via one endpoint with a <code>phase</code> field: the action it takes (<code>request</code>), untrusted content it ingests (<code>content</code>), the output it emits (<code>output</code>), and the memory it writes (<code>memory</code>). The deterministic signature floor is live; the deeper layers (D1–D7 in <code>lld/20</code>) are phased roadmap.</em></p>
+<table>
+<thead>
+<tr>
+<th>ID</th>
+<th>Requirement</th>
+<th>Pri</th>
+<th>Status</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>FR-3.1</td>
+<td>Signature (Sigma-rule) detection for injection / jailbreak — explainable, version-controlled</td>
+<td>P0</td>
+<td>Built (live floor)</td>
+</tr>
+<tr>
+<td>FR-3.2</td>
+<td>Machine-learning threat classifier (semantic) as the escalation tier</td>
+<td>P1</td>
+<td>Built (shadow / off by default, pending precision-recall sign-off)</td>
+</tr>
+<tr>
+<td>FR-3.3</td>
+<td>Shadow mode for any detector or policy (record signals, don't affect the verdict)</td>
+<td>P0</td>
+<td>Built</td>
+</tr>
+<tr>
+<td>FR-3.4</td>
+<td>Multi-phase validation surface (<code>request</code> / <code>content</code> / <code>output</code> / <code>memory</code>) — ship SDK decorators for <strong>all</strong> phases at release so signal data flows from day one (sidecar provides the same coverage in the in-boundary editions)</td>
+<td>P1</td>
+<td>Partial (<code>request</code> live) / Roadmap</td>
+</tr>
+<tr>
+<td>FR-3.5</td>
+<td>Conversation-trajectory detection — multi-turn manipulation, stateful (Layer D1)</td>
+<td>P1</td>
+<td>Roadmap</td>
+</tr>
+<tr>
+<td>FR-3.6</td>
+<td>Indirect / second-order injection detection for ingested content (retrieval documents, tool output, web pages), incl. spotlighting + taint tagging (Layer D2)</td>
+<td>P1</td>
+<td>Roadmap</td>
+</tr>
+<tr>
+<td>FR-3.7</td>
+<td>Output &amp; effect validation — data-loss / PII detection, exfiltration-channel and volume-anomaly checks; can ALLOW / DENY / <strong>REDACT</strong> / HOLD-for-human (Layer D5)</td>
+<td>P1</td>
+<td>Roadmap</td>
+</tr>
+<tr>
+<td>FR-3.8</td>
+<td>Taint tracking / information-flow control — gate actions that would act on untrusted data (Layer D4)</td>
+<td>P2</td>
+<td>Roadmap</td>
+</tr>
+<tr>
+<td>FR-3.9</td>
+<td>Long-term memory-integrity guards — anti-poisoning on memory writes (Layer D3)</td>
+<td>P2</td>
+<td>Roadmap</td>
+</tr>
+<tr>
+<td>FR-3.10</td>
+<td>Network / egress validation and provenance checks (Layers D6 / D7)</td>
+<td>P2</td>
+<td>Roadmap</td>
+</tr>
+<tr>
+<td>FR-3.11</td>
+<td>Behavioural anomaly detection (per-deployment baseline, metadata-only)</td>
+<td>P2</td>
+<td>Roadmap (design complete)</td>
+</tr>
+<tr>
+<td>FR-3.12</td>
+<td>Distilled local classifier (in-process, CPU; target &lt; 100 ms) to remove the hosted classifier's network/model latency</td>
+<td>P1</td>
+<td>Roadmap</td>
+</tr>
+<tr>
+<td>FR-3.13</td>
+<td>Input-side PII redaction — redact sensitive values before request content leaves the customer boundary</td>
+<td>P1</td>
+<td>Roadmap (in build)</td>
+</tr>
+<tr>
+<td>FR-3.14</td>
+<td>Continuous improvement — automated red-teaming, model retraining, retrospective re-scoring of past traffic</td>
+<td>P2</td>
+<td>Roadmap</td>
+</tr>
+</tbody>
+</table>
+<h3>7.4 Cross-Agent Trust &amp; Containment — <code>lld/12</code></h3>
+<table>
+<thead>
+<tr>
+<th>ID</th>
+<th>Requirement</th>
+<th>Pri</th>
+<th>Status</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>FR-4.1</td>
+<td>Per-agent trust scoring from violations</td>
+<td>P0</td>
+<td>Built (single-cloud)</td>
+</tr>
+<tr>
+<td>FR-4.2</td>
+<td>Automatic quarantine of an agent <strong>or session</strong> (subsequent actions auto-deny)</td>
+<td>P0</td>
+<td>Built (single-cloud)</td>
+</tr>
+<tr>
+<td>FR-4.3</td>
+<td>Inter-agent message filtering / privilege-escalation block</td>
+<td>P1</td>
+<td>Partial / Roadmap</td>
+</tr>
+<tr>
+<td>FR-4.4</td>
+<td>Cross-cloud trust propagation</td>
+<td>P1</td>
+<td>Demonstrated (S2)</td>
+</tr>
+<tr>
+<td>FR-4.5</td>
+<td>Cross-cloud blast-radius containment</td>
+<td>P2</td>
+<td>Roadmap</td>
+</tr>
+<tr>
+<td>FR-4.6</td>
+<td>Rate-limit / abuse detection — deny when an agent or session exceeds its policy-defined action rate (pipeline Step 5)</td>
+<td>P0</td>
+<td>Built (live)</td>
+</tr>
+</tbody>
+</table>
+<h3>7.5 Rollback / Compensation</h3>
+<table>
+<thead>
+<tr>
+<th>ID</th>
+<th>Requirement</th>
+<th>Pri</th>
+<th>Status</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>FR-5.1</td>
+<td>Per-action compensating adapters (e.g., refund reverser)</td>
+<td>P0</td>
+<td>Built (single-cloud)</td>
+</tr>
+<tr>
+<td>FR-5.2</td>
+<td>LIFO multi-step rollback within a session/conversation</td>
+<td>P0</td>
+<td>Built</td>
+</tr>
+<tr>
+<td>FR-5.3</td>
+<td>Reversibility checks (never imply irreversible can be undone)</td>
+<td>P0</td>
+<td>Built</td>
+</tr>
+<tr>
+<td>FR-5.4</td>
+<td>Expanded adapter library (more action types)</td>
+<td>P1</td>
+<td>Roadmap</td>
+</tr>
+</tbody>
+</table>
+<h3>7.6 Audit, Observability &amp; Compliance — <code>lld/17</code></h3>
+<table>
+<thead>
+<tr>
+<th>ID</th>
+<th>Requirement</th>
+<th>Pri</th>
+<th>Status</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>FR-6.1</td>
+<td>Tamper-evident audit trail of every decision, written off the response path</td>
+<td>P0</td>
+<td>Built</td>
+</tr>
+<tr>
+<td>FR-6.2</td>
+<td>Fast per-session/recent decision reads (DDB)</td>
+<td>P0</td>
+<td>Built</td>
+</tr>
+<tr>
+<td>FR-6.3</td>
+<td>Long-term compliance archive + cross-cutting queries (CloudWatch)</td>
+<td>P0</td>
+<td>Built</td>
+</tr>
+<tr>
+<td>FR-6.4</td>
+<td>SOC console / dashboard: inventory, activity, violations, decision sources</td>
+<td>P0</td>
+<td>Built</td>
+</tr>
+<tr>
+<td>FR-6.5</td>
+<td>Compliance reports (SOC2 / HIPAA / GDPR / EU AI Act) generated &lt; 5 min</td>
+<td>P2</td>
+<td>Roadmap</td>
+</tr>
+<tr>
+<td>FR-6.6</td>
+<td>Agent SBOM (models, tools, policies; signed)</td>
+<td>P2</td>
+<td>Roadmap</td>
+</tr>
+</tbody>
+</table>
+<h3>7.7 Integration &amp; Multi-Cloud Connectors — <code>lld/15</code>, <code>lld/16</code>, <code>lld/22</code>, <code>lld/23</code>, <code>features/multicloud-agent-import</code></h3>
+<p><em>Goal: make getting an agent under governance as low-friction as possible — connect an account, discover the agents, onboard them with a starter policy and an interception path.</em></p>
+<table>
+<thead>
+<tr>
+<th>ID</th>
+<th>Requirement</th>
+<th>Pri</th>
+<th>Status</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>FR-7.1</td>
+<td>AWS Bedrock connector</td>
+<td>P0</td>
+<td>Built</td>
+</tr>
+<tr>
+<td>FR-7.2</td>
+<td>Azure (OpenAI / Foundry) connector</td>
+<td>P0</td>
+<td>Built</td>
+</tr>
+<tr>
+<td>FR-7.3</td>
+<td>One policy / trust / audit model across clouds (live cross-cloud demo)</td>
+<td>P0</td>
+<td>Built</td>
+</tr>
+<tr>
+<td>FR-7.4</td>
+<td>GCP Vertex connector</td>
+<td>P1</td>
+<td>Roadmap</td>
+</tr>
+<tr>
+<td>FR-7.5</td>
+<td>Request-id correlation across connectors</td>
+<td>P0</td>
+<td>Built</td>
+</tr>
+<tr>
+<td>FR-7.6</td>
+<td>SDK packaging for low-effort install (AWS Lambda layer, Azure Functions, generic Python)</td>
+<td>P0</td>
+<td>Built</td>
+</tr>
+<tr>
+<td>FR-7.7</td>
+<td>Connect a cloud account (AWS / Azure / GCP, read-only) and <strong>discover</strong> the agents running in it</td>
+<td>P1</td>
+<td>Roadmap</td>
+</tr>
+<tr>
+<td>FR-7.8</td>
+<td>Tool introspection on import (action-group / function / tool definitions → tool list) → <strong>auto-seed a starter policy</strong></td>
+<td>P1</td>
+<td>Roadmap</td>
+</tr>
+<tr>
+<td>FR-7.9</td>
+<td>Import lifecycle tracking (<code>discovered → policy-seeded → intercepting / governed</code>)</td>
+<td>P1</td>
+<td>Roadmap</td>
+</tr>
+<tr>
+<td>FR-7.10</td>
+<td>Framework integrations (LangChain, CrewAI, MCP) for one-step instrumentation</td>
+<td>P1/P2</td>
+<td>Roadmap</td>
+</tr>
+</tbody>
+</table>
+<h3>7.8 Management Plane — agents, policies, onboarding — <code>lld/05</code>, <code>lld/11</code>, <code>features/agent-policy-management</code>, <code>features/multi-format-policy-authoring</code></h3>
+<p><em>The authoring/management side: how customers define and manage what the runtime engine (§7.2) enforces. Distinct from §7.2 — that one decides at runtime; this one is how policies and agents are created, bound, and operated.</em></p>
+<table>
+<thead>
+<tr>
+<th>ID</th>
+<th>Requirement</th>
+<th>Pri</th>
+<th>Status</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>FR-8.1</td>
+<td>Agent registry / inventory &amp; lifecycle</td>
+<td>P0</td>
+<td>Built</td>
+</tr>
+<tr>
+<td>FR-8.2</td>
+<td>Policy authoring &amp; CRUD (create/read/update/delete) APIs; bind policies to agents</td>
+<td>P0</td>
+<td>Built</td>
+</tr>
+<tr>
+<td>FR-8.3</td>
+<td>Multi-format policy authoring — structured YAML / JSON normalized to Cedar (customers don't hand-write Cedar)</td>
+<td>P0/P1</td>
+<td>Built (YAML → Cedar) / JSON first-class P1</td>
+</tr>
+<tr>
+<td>FR-8.4</td>
+<td>Default starter policy seeded in <strong>Monitor mode</strong> on import, so no agent is ever unpoliced</td>
+<td>P1</td>
+<td>Roadmap</td>
+</tr>
+<tr>
+<td>FR-8.5</td>
+<td>Authentication &amp; authorization (OIDC — OpenID Connect) for the console and APIs</td>
+<td>P0</td>
+<td>Built</td>
+</tr>
+<tr>
+<td>FR-8.6</td>
+<td>Self-service onboarding</td>
+<td>P2</td>
+<td>Roadmap</td>
+</tr>
+</tbody>
+</table>
+<h3>7.9 Deployment Models</h3>
+<table>
+<thead>
+<tr>
+<th>ID</th>
+<th>Requirement</th>
+<th>Pri</th>
+<th>Status</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>FR-9.1</td>
+<td><strong>Serverless</strong> — multi-tenant SaaS, controller in AegionAI cloud</td>
+<td>P0</td>
+<td>Built</td>
+</tr>
+<tr>
+<td>FR-9.2</td>
+<td><strong>Dedicated</strong> — single-tenant managed fleet inside customer's cloud network (VPC); only metadata leaves</td>
+<td>P1</td>
+<td>Roadmap</td>
+</tr>
+<tr>
+<td>FR-9.3</td>
+<td><strong>Self-Managed / air-gapped</strong> — customer-operated; nothing leaves</td>
+<td>P2</td>
+<td>Roadmap</td>
+</tr>
+</tbody>
+</table>
+<h3>7.10 Tenancy &amp; Agent Identity — <code>features/multicloud-agent-import</code></h3>
+<p><em>Multi-tenancy is foundational, not a later add-on: every record and lookup is scoped to the owning customer. Verified agent identity stops one caller from impersonating another agent.</em></p>
+<table>
+<thead>
+<tr>
+<th>ID</th>
+<th>Requirement</th>
+<th>Pri</th>
+<th>Status</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>FR-10.1</td>
+<td>Multi-tenant isolation — every connection, agent, policy, credential, and signal scoped to <code>tenant_id</code>; onboarding a new customer is a data operation, not a re-architecture</td>
+<td>P0</td>
+<td>In build (tenant-scoped tables; <code>TENANCY_V2</code> cutover in flight)</td>
+</tr>
+<tr>
+<td>FR-10.2</td>
+<td>Tenant-scoped APIs, data stores, and dashboards</td>
+<td>P0/P1</td>
+<td>Partial / Roadmap</td>
+</tr>
+<tr>
+<td>FR-10.3</td>
+<td><strong>Verified agent identity</strong> — per-agent credential issued at import; the controller resolves the authoritative <code>(tenant_id, agent_id)</code> from the verified credential, never from a self-asserted request field</td>
+<td>P1</td>
+<td>Roadmap (today: shared API key only — <code>agent_id</code> is self-asserted)</td>
+</tr>
+<tr>
+<td>FR-10.4</td>
+<td>Per-tenant configuration (policies, detectors, fail modes, retention)</td>
+<td>P1</td>
+<td>Partial / Roadmap</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2>8. Non-Functional Requirements</h2>
+<table>
+<thead>
+<tr>
+<th>ID</th>
+<th>Requirement</th>
+<th>Target</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>NFR-1</td>
+<td><strong>Latency</strong> — deterministic path (no ML model invoked)</td>
+<td>≤ 500 ms p99 at load (≈ 0.6–1.2 s today; Workstream 24 / <a href="lld/24-latency-optimization.md">lld/24</a>). Roadmap in-process local enforcement targets low-tens-of-ms.</td>
+</tr>
+<tr>
+<td>NFR-2</td>
+<td><strong>Latency</strong> — detection path</td>
+<td>Fast ML model ≤ 900 ms p99; deep-model escalation bounded ≤ 2.5 s. ML is invoked only on borderline cases, so routine actions take the faster deterministic path.</td>
+</tr>
+<tr>
+<td>NFR-3</td>
+<td><strong>Availability</strong> — enforcement (local, fail-secure) ≥ 99.99%; control plane</td>
+<td>99.9% → 99.99%</td>
+</tr>
+<tr>
+<td>NFR-4</td>
+<td><strong>Resilience</strong> — fail-secure</td>
+<td>Validation failure denies by default; control-plane outage never silently permits; degrade-to-cached-floor (roadmap) keeps agents running on hard rules</td>
+</tr>
+<tr>
+<td>NFR-5</td>
+<td><strong>Scalability</strong></td>
+<td>Horizontal; single agent → fleet; stateless decision path where possible</td>
+</tr>
+<tr>
+<td>NFR-6</td>
+<td><strong>Security</strong> — tenant isolation</td>
+<td>Strict isolation (Serverless); single-tenant boundary (Dedicated/Self-Managed)</td>
+</tr>
+<tr>
+<td>NFR-7</td>
+<td><strong>Data boundary</strong></td>
+<td>Redaction before egress (roadmap); Dedicated/Self-Managed keep content in-boundary; content not persisted by default</td>
+</tr>
+<tr>
+<td>NFR-8</td>
+<td><strong>Compliance</strong></td>
+<td>SOC 2 Type II (in progress); designed for HIPAA/GDPR/EU AI Act</td>
+</tr>
+<tr>
+<td>NFR-9</td>
+<td><strong>Integrity</strong></td>
+<td>Signed/versioned policies; tamper-evident audit; signing-key management/rotation</td>
+</tr>
+<tr>
+<td>NFR-10</td>
+<td><strong>Observability</strong></td>
+<td>Metrics, traces, decision-source attribution; SLO dashboards</td>
+</tr>
+<tr>
+<td>NFR-11</td>
+<td><strong>Portability</strong></td>
+<td>AWS, Azure, GCP, on-prem; no single-cloud lock-in</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2>9. Release Phasing</h2>
+<table>
+<thead>
+<tr>
+<th>Phase</th>
+<th>Theme</th>
+<th>Key requirements</th>
+<th>Outcome</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>P0 — MVP (now)</strong></td>
+<td>Enforce on single cloud, prove cross-cloud, multi-tenant foundation</td>
+<td>FR-1.1–1.3, 2.1–2.7, 3.1–3.3, 4.1/4.2/4.6, 5.1–5.3, 6.1–6.4, 7.1–7.3/7.5/7.6, 8.1–8.3/8.5, 9.1, 10.1/10.2</td>
+<td>Live demo: block injection, quarantine, rollback, cross-cloud; design-partner pilots</td>
+</tr>
+<tr>
+<td><strong>P1 — Enterprise hardening</strong></td>
+<td>Make latency, resilience, boundary, and identity real</td>
+<td>FR-1.4/1.5/1.7, 2.8, 3.4–3.7/3.12/3.13, 4.3/4.4, 5.4, 7.4/7.7–7.10, 8.4, 9.2, 10.3/10.4; NFR-1/4/6/7</td>
+<td>In-VPC Dedicated, local cached enforcement, redaction, distilled model, sidecar, Connect &amp; Import, verified agent identity; first paying enterprises; SOC 2</td>
+</tr>
+<tr>
+<td><strong>P2 — Platform &amp; scale</strong></td>
+<td>Category standard</td>
+<td>FR-2.6, 3.8–3.11/3.14, 4.5, 6.5/6.6, 8.6, 9.3; CRDs / CNCF</td>
+<td>Self-Managed / air-gapped, deep detection layers (D3/D4), compliance reports, blast-radius containment, Kubernetes CRDs</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Phases are capability tiers gated by milestones and funding — not calendar commitments.</strong> Dates and the year-by-year plan live in <a href="STRATEGY.md">STRATEGY.md</a>. (Roughly: P0 = validation, P1 = enterprise launch, P2 = category scale.)</p>
+<hr />
+<h2>10. Open Questions</h2>
+<p><em>(Business/GTM questions — open-source core, pricing, beachhead emphasis — live in <a href="STRATEGY.md">STRATEGY.md</a>. These are product-level.)</em></p>
+<ol>
+<li><strong>Verified agent-identity mechanism</strong> — the credential type and how it is issued/rotated for FR-10.3 (per-agent credential). <em>Open.</em></li>
+<li><strong>How the sidecar delivers the multi-phase features</strong> — the SDK ships decorators for all phases (FR-3.4); how the sidecar (FR-1.5) provides the same <code>content</code> / <code>output</code> / <code>memory</code> coverage in the in-boundary editions is to be worked out. <em>To discuss later.</em></li>
+</ol>
+<hr />
+<p><em>Living document. Update as requirements evolve; keep the ARCHITECTURE.md cross-references and statuses in sync.</em></p></body></html>

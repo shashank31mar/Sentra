@@ -34,6 +34,8 @@ Spending to govern AI is on track to grow from about **$5B today to ~$16B by 203
 
 We sit in front of **every action an AI agent tries to take** — and we look at far more than *"is this tool allowed?"*, which simple rules already handle. We check **what the action actually does**: the details (how much, to whom), whether the request was manipulated, and whether the required steps happened first. If it all holds up, it goes through. If not, we **block it before it runs** — and can **pause the agent**, or undo the action where it's reversible. Instantly, across every cloud, from one place. Others only warn you *after* the fact; **we stop the harm before it happens.** *(A working demo across two clouds already runs today.)*
 
+**Built for how enterprises actually buy.** Today this runs as a multi-tenant cloud service — the fastest way to start. For banks and regulated customers, we deploy the *same* enforcement **inside their own cloud network** (single-tenant, managed by us) or **on-premises / air-gapped** (they run it, nothing leaves) — so the agent's sensitive data never leaves their boundary, and our platform is never in their transaction path. That removes the three things that block enterprise security buyers: latency, reliability, and data exposure.
+
 ## Why We Win
 
 Others *can* build pieces of this — but the strongest builders won't, and the longer we run, the harder we are to catch:
@@ -54,7 +56,7 @@ Others *can* build pieces of this — but the strongest builders won't, and the 
 
 ## The Ask
 
-**We're raising $2M — and we know exactly where every dollar goes.** ~60% builds the team (a 7-person core: backend, ML, and frontend engineers plus a dedicated security/red-team lead); ~35% is cloud infrastructure across AWS, Azure, and GCP; the rest, operations. That buys **24 months of runway** to ship the third cloud, **deepen our security defenses** (threat detection + attack coverage), and convert **3 design partners into 3–5 paying enterprise customers — including one marquee financial-services name — reaching ~$500K–$1M in recurring revenue, with SOC 2 underway.** Those are the milestones that unlock a credible $4–6M seed.
+**We're raising $2M — and we know exactly where every dollar goes.** ~60% builds the team (a 7-person core: backend, ML, and frontend engineers plus a dedicated security/red-team lead); ~35% is cloud infrastructure across AWS, Azure, and GCP; the rest, operations. That buys **24 months of runway** to ship the third cloud, **harden for enterprise** — single-tenant deployment inside the customer's own cloud network plus on-prem / air-gapped options, on-device threat detection, and the resiliency to sit in front of live money movement — **deepen our security defenses** (threat detection + attack coverage), and convert **3 design partners into 3–5 paying enterprise customers — including one marquee financial-services name — reaching ~$500K–$1M in recurring revenue, with SOC 2 underway.** Those are the milestones that unlock a credible $4–6M seed.
 
 ---
 

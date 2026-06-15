@@ -1,7 +1,27 @@
-# Sentra: Vision, Mission, and Strategic Direction
+# AegionAI Guard: Vision, Mission, and Strategic Direction
 
-**Last Updated**: November 2025
+**Last Updated**: 2026-06-15
 **Status**: Draft for Refinement
+
+---
+
+## North-Star Vision
+
+**AI agents now act on their own — moving money, changing records, sending messages. AegionAI Guard checks every action an agent takes and stops the harmful ones in real time.**
+
+Today, keeping agents safe means a human watching over them — which is the very thing that stops agents from being useful at scale. AegionAI Guard is the automated safeguard that does the watching, so agents can run on their own and people step in only for the rare exceptions.
+
+**Our vision: make hands-off AI autonomy safe enough to trust — on any cloud.**
+
+### Guiding Pillars
+
+Three pillars guide everything we build:
+
+**1. Stop harm before it happens** — enforce in real time (not just detect), defense in depth, contain blast radius (quarantine an agent or session; stop cross-agent and cross-cloud cascade), and continuously adapt as attacks evolve.
+
+**2. Make autonomy safe** — take the human off the hot path (handle decisions automatically, escalate only the exceptions), stay always-on and low-overhead, and give real-time observability so humans can trust the system.
+
+**3. Trusted on every cloud** — govern agents across AWS, Azure, GCP, and on-prem under one model; deploy inside the customer's boundary (in-VPC or air-gapped); be regulator-ready (SOC 2, HIPAA, GDPR, EU AI Act).
 
 ---
 

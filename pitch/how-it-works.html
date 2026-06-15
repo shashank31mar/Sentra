@@ -1,0 +1,266 @@
+<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><title>how-it-works</title><style>
+  @page { size: Letter; margin: 0.6in 0.7in; }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; }
+  body {
+    font-family: "Helvetica Neue", Helvetica, Arial, sans-serif;
+    color: #1c2330; font-size: 11px; line-height: 1.45;
+    -webkit-font-smoothing: antialiased;
+  }
+  h1 { font-size: 20px; font-weight: 800; color: #0f1b2d; margin: 0 0 4px 0; letter-spacing: -0.2px; }
+  h2 {
+    font-size: 13px; font-weight: 800; text-transform: uppercase; letter-spacing: 0.5px;
+    color: #1559c9; margin: 16px 0 6px 0; padding-bottom: 3px; border-bottom: 1px solid #d7deea;
+  }
+  h3 { font-size: 11.5px; font-weight: 800; color: #0f1b2d; margin: 12px 0 4px 0; }
+  p { margin: 0 0 6px 0; }
+  ul, ol { margin: 0 0 6px 0; padding-left: 18px; }
+  li { margin: 0 0 3px 0; }
+  strong { color: #0f1b2d; }
+  em { color: #2a3650; }
+  a { color: #1559c9; text-decoration: none; }
+  hr { border: 0; border-top: 1px solid #d7deea; margin: 12px 0; }
+  blockquote {
+    margin: 8px 0; padding: 6px 12px; border-left: 3px solid #1559c9;
+    background: #f4f7fc; color: #2a3650;
+  }
+  code {
+    font-family: "SF Mono", Menlo, Consolas, monospace; font-size: 9.5px;
+    background: #eef2f8; padding: 1px 4px; border-radius: 3px;
+  }
+  pre {
+    background: #0f1b2d; color: #e6edf6; padding: 10px 12px; border-radius: 5px;
+    overflow-x: auto; page-break-inside: avoid;
+  }
+  pre code { background: none; color: inherit; font-size: 8.6px; line-height: 1.35; padding: 0; }
+  table { border-collapse: collapse; width: 100%; margin: 6px 0 10px 0; font-size: 9.6px; page-break-inside: avoid; }
+  th, td { border: 1px solid #cfd8e8; padding: 4px 7px; text-align: left; vertical-align: top; }
+  th { background: #eef2f8; color: #0f1b2d; font-weight: 700; }
+  tr:nth-child(even) td { background: #f7f9fd; }
+</style></head><body><h1>AegionAI — How It Works (Architecture Brief)</h1>
+<p><em>Companion to the one-pager. For technical and security reviewers. Answers the questions everyone asks: where does the decision happen, how fast, what happens if you're down, what do you see, and what's actually built today.</em></p>
+<hr />
+<h2>The one-line answer</h2>
+<p><strong>We sit at the point where an AI agent's decision becomes a real action</strong> — between the agent and the tool/API/database it's about to call. The action is checked <em>before</em> it runs. Allowed → it proceeds. Not allowed → it's blocked and logged; for already-committed multi-step writes we can also compensate (rollback), and we can pause the agent.</p>
+<pre><code>  AI agent decides: &quot;call transfer_funds(acct=X, amount=Y)&quot;
+                    │
+                    ▼
+        ┌───────────────────────────┐
+        │  CHECKPOINT (PEP)          │   ◄── SDK decorator, runs INSIDE the
+        │  intercepts the action     │       customer's environment
+        └───────────┬───────────────┘
+                    │  POST /v1/validate  ── one network round-trip (today)
+                    ▼
+        ┌───────────────────────────┐
+        │  POLICY ENGINE (PDP)       │   ◄── TODAY: server-side in the controller
+        │  Cedar policy → Sigma      │       (AegionAI cloud for Serverless;
+        │  detection (live) → ML     │        in-VPC for Dedicated/Self-Managed)
+        │  (shadow) + trust + abuse  │
+        └───────────┬───────────────┘
+            allow ──┘   └── deny → blocked + logged (+ compensate / pause)
+              ▼
+        action actually executes
+
+  ROADMAP: a local in-process deterministic tier (Cedar over a signed, cached
+  policy bundle) answers the common case with no round-trip and keeps enforcing
+  if the controller is unreachable. NOT in the shipping SDK yet.
+</code></pre>
+<h2>Vocabulary (used consistently below)</h2>
+<ul>
+<li><strong>Checkpoint (PEP — Policy Enforcement Point):</strong> the thing that intercepts and blocks/allows. <strong>Runs inside the customer's environment</strong> — today an SDK decorator (one wrapper per tool); network sidecar on the roadmap.</li>
+<li><strong>Policy engine (PDP — Policy Decision Point):</strong> decides allow/deny. <strong>Today it runs server-side in the controller</strong> — every guarded call is a <code>POST /v1/validate</code>. It evaluates, in order: <strong>Cedar policy</strong> (tool / parameter / single-session sequence), <strong>Sigma detection</strong> (live), <strong>ML classifier</strong> (shadow/off by default), <strong>cross-agent trust</strong>, and <strong>abuse/rate detection</strong>. <em>Where the controller runs depends on the edition</em> (below).</li>
+<li><strong>Control plane:</strong> authors, signs, and distributes policy and aggregates fleet telemetry — <strong>never on the action path.</strong> (Distinct from the <em>controller/PDP</em>, which <strong>is</strong> on the path today in Serverless.)</li>
+</ul>
+<blockquote>
+<p><strong>The honest split (today):</strong> the <em>enforcement point</em> is local (the SDK decorator), but the <em>decision</em> is a <strong>network call to the controller</strong> — so today every guarded action round-trips to AegionAI's cloud (Serverless), and a controller outage <strong>fail-secures</strong> (blocks). The "local in-process deterministic floor that keeps agents running on outage, with no round-trip" is the <strong>roadmap</strong> that makes the latency and resilience story true; it is <strong>not in the shipping SDK</strong>. Read any claim of "local enforcement" as: <strong>the PEP is local today; the local PDP floor is roadmap.</strong></p>
+</blockquote>
+<h2>How we intercept (two modes) — orthogonal to the editions below</h2>
+<table>
+<thead>
+<tr>
+<th>Mode</th>
+<th>What it is</th>
+<th>Code change</th>
+<th>Best for</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>SDK (today)</strong></td>
+<td>One wrapper per tool; POSTs to the controller before the tool body runs</td>
+<td>One line per tool</td>
+<td>Python agents, fast pilots, Bedrock/Azure/LangChain/MCP</td>
+</tr>
+<tr>
+<td><strong>Sidecar (roadmap)</strong></td>
+<td>Runs beside the agent, intercepts tool calls at the network level</td>
+<td>None</td>
+<td>Framework-agnostic, fleet-wide, non-cooperative enforcement</td>
+</tr>
+</tbody>
+</table>
+<p><strong>The biggest honest limitation today: SDK enforcement is cooperative.</strong> It guards every tool you <em>wrap</em> — one line each. A tool left unwrapped, or an agent that calls the raw API/SDK directly, <strong>bypasses the checkpoint.</strong> Today the guarantee that "every action goes through us" rests on developer discipline (plus coverage tooling that flags unwrapped tools in CI). The <strong>network sidecar closes this</strong> by intercepting at the network layer regardless of cooperation — which is why it's on the roadmap, not a nicety.</p>
+<p><strong>Mode ≠ edition.</strong> <em>Mode</em> is <strong>how</strong> you intercept (SDK vs sidecar). <em>Edition</em> (next) is <strong>where the controller runs</strong> (Serverless / Dedicated / Self-Managed). It's a 2×3 space and not every cell is meaningful — e.g. the network sidecar is most relevant to Dedicated/Self-Managed.</p>
+<h2>Deployment editions (where the controller runs)</h2>
+<p>The controller is the <strong>policy engine</strong> (the thing that decides). Editions differ only in where it runs:</p>
+<table>
+<thead>
+<tr>
+<th>Edition</th>
+<th>Where the decision (PDP) runs</th>
+<th>What leaves the customer boundary</th>
+<th>Status</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Serverless</strong> (multi-tenant — runs in our cloud)</td>
+<td><strong>AegionAI cloud</strong> — every guarded call round-trips</td>
+<td><strong>Prompt content</strong> (needed for Cedar + Sigma server-side) — <strong>unredacted today</strong>; redaction is roadmap — plus metadata</td>
+<td><strong>Today</strong></td>
+</tr>
+<tr>
+<td><strong>Dedicated</strong> (single-tenant — inside your own cloud network, managed by us)</td>
+<td><strong>In your VPC</strong> (the managed-OpenSearch model)</td>
+<td>Only metadata (audit + trust signals)</td>
+<td><strong>Roadmap</strong></td>
+</tr>
+<tr>
+<td><strong>Self-Managed</strong> (air-gapped — on-prem, you run it)</td>
+<td>In your own environment</td>
+<td>Nothing</td>
+<td><strong>Roadmap</strong></td>
+</tr>
+</tbody>
+</table>
+<p><strong>The local floor that removes the round-trip is roadmap (across all editions):</strong> the plan is a signed, versioned policy bundle <strong>cached next to the checkpoint</strong> so a local in-process tier answers the deterministic part (tool + parameter + single-session sequence) with <strong>no network round-trip</strong>, and <strong>keeps enforcing if the controller is unreachable</strong>. The shipping SDK does <strong>not</strong> do this yet — it round-trips to the controller for every decision. (See graceful degradation for today's actual outage behavior.)</p>
+<h2>The decision (what happens on each action)</h2>
+<ol>
+<li>The checkpoint <strong>POSTs the action</strong> — <em>agent, tool, parameters, the user's request/prompt, session id</em> — to the controller (<code>/v1/validate</code>). <em>(Roadmap: a local tier answers the deterministic part without the round-trip.)</em></li>
+<li><strong>Cedar policy first:</strong> is this agent allowed this tool? are parameters within policy? did the required prior steps happen <em>for this session</em>?</li>
+<li><strong>Detection:</strong> <strong>Sigma signatures</strong> (live) flag known injection/jailbreak patterns; the <strong>ML classifier</strong> escalates borderline cases for semantic judgment (shadow/off by default today); <strong>cross-agent trust</strong> and <strong>abuse detection</strong> also weigh in.</li>
+<li>Returns <strong>allow / deny</strong> with a reason and the deciding source. A deny can trigger <strong>quarantine</strong> (pause the agent so later actions auto-deny) or, for an <em>already-committed</em> write, a <strong>compensating rollback</strong>.</li>
+<li>Logged to a tamper-evident <strong>audit trail</strong> (off the response path). <strong>On transport failure the SDK fail-secures</strong> — DENY by default, or raises <code>SentraUnavailable</code> if the integrator set <code>fail_secure=False</code>.</li>
+</ol>
+<p><strong>On rollback, precisely:</strong> if we block <em>before</em> execution there is nothing to undo. Rollback is <strong>compensation for writes that already committed</strong> — earlier steps in a multi-step sequence, shadow-mode observations, or async paths — and only for <strong>reversible</strong> operations. It works <strong>via per-action compensating adapters</strong> (refunds today, more as we add them), with LIFO ordering — <em>not</em> a generic "undo any write" (the one-pager's Replit case is exactly the irreversible kind). Built single-cloud today.</p>
+<p><strong>On shared state (even after the roadmap local tier ships):</strong> only tool + parameter + <strong>single-session</strong> checks can be answered locally. <strong>Cross-agent</strong> trust and cross-session sequence are shared state and will still consult the controller. So the future local floor covers the single-session deterministic rules — not everything.</p>
+<blockquote>
+<p><strong>Engine status (honest):</strong> the deterministic policy engine is <strong>Cedar</strong>, in <strong>dev cutover (2026-06-13)</strong> moving shadow→enforce — real and in the path on dev, not yet a long-proven production runtime. Detection: <strong>Sigma-rule matching is live</strong> (the always-on floor); the <strong>ML classifier is shadow / disabled by default</strong>, pending an eval-harness sign-off on precision/recall (WS19). So today's <em>running</em> detection is deterministic Sigma; the ML tier is being validated before it influences verdicts.</p>
+</blockquote>
+<h2>Speed (today vs roadmap; measurement in progress)</h2>
+<p><strong>Today there is no in-process, no-network fast path.</strong> Every guarded call is <strong>one network round-trip</strong> to the controller (<code>POST /v1/validate</code>), which runs Cedar policy + Sigma detection server-side; ML is shadow/off, so it doesn't add latency. Latency is therefore at minimum the round-trip to the PDP (AegionAI cloud for Serverless; in-VPC for Dedicated). Measured p50/p99 is being instrumented; we are not publishing a number we can't yet stand behind.</p>
+<p><strong>Roadmap — what makes the latency story true:</strong>
+- <strong>In-process local Cedar</strong> over the cached policy bundle → sub-ms, <strong>no round-trip</strong> for the deterministic floor (clean traffic never leaves for a yes/no).
+- <strong>Distilled local classifier</strong> (DeBERTa/DistilBert, &lt;10ms CPU, in-process) so ML detection is on-box; target <strong>&lt;80ms end-to-end</strong>; in Dedicated it runs in-VPC.
+- <strong>ML escalation only on borderline cases</strong>, so clean traffic doesn't pay the model cost.</p>
+<p><em>"Latency scales with risk, not volume" is the target architecture, contingent on the local tier — not today's measured behavior.</em> (The earlier "sub-500ms"/"&lt;80ms" figures are roadmap targets; today's number is round-trip-bound.)</p>
+<h2>What happens if we're unreachable (graceful degradation)</h2>
+<p><strong>Today (shipping SDK): fail-secure.</strong> Every guarded call is a POST to the controller. If the controller is unreachable, the SDK <strong>fail-secure DENYs by default</strong> (the action is <strong>blocked</strong>) — or, if the integrator sets <code>fail_secure=False</code>, raises <code>SentraUnavailable</code>. <strong>There is no local cached-policy fallback today.</strong> Honest implication: a controller outage <strong>stops the guarded actions</strong> (deny) rather than letting them run unguarded. That's the <em>secure</em> default — it never silently opens the gate — but it is <strong>not</strong> "agents keep running."</p>
+<p><strong>Roadmap — what makes degradation graceful:</strong> the in-process local deterministic tier (Cedar over the signed, cached bundle) <strong>keeps enforcing the hard rules locally</strong> when the controller is unreachable — so the deterministic floor holds and agents keep running, with only the advanced detection (Sigma/ML/trust) paused until reconnect. Per-agent config then chooses <strong>fail-closed</strong> (block — the right default for money movement) vs <strong>degrade-to-floor</strong> (keep running on cached hard rules).</p>
+<ul>
+<li><strong>The policy <em>control plane</em> is never on the path</strong> (authoring/signing/distribution). What sits on the path today is the <em>decision controller (PDP)</em>; moving its deterministic floor in-process (roadmap) is precisely what takes it off the hot path.</li>
+</ul>
+<h2>Security boundary &amp; trust model  <em>(the CISO section)</em></h2>
+<p><strong>The checkpoint runs inside your boundary and is fail-secure. Today the decision is made in the controller, so request content crosses to it — which is why the strict editions move the controller into your boundary.</strong></p>
+<ul>
+<li><strong>What leaves, exactly (Serverless, today):</strong> every guarded call POSTs the action — <em>agent, tool, parameters, the user's prompt, session id</em> — to the controller, because Cedar <strong>and</strong> Sigma run <strong>server-side</strong>. So <strong>prompt content leaves the customer boundary on every call, and today it is sent unredacted</strong> — the redaction pipeline is <strong>not yet implemented</strong>. This is a material disclosure: until redaction ships (or you choose an in-VPC edition), Serverless sends raw prompt content to AegionAI's cloud. <strong>Redaction (Presidio-based) is the <em>intended</em> boundary protection, in build — not a current guarantee.</strong> <strong>Dedicated</strong> and <strong>Self-Managed</strong> keep content in your boundary.</li>
+<li><strong>Storage:</strong> action content is <strong>not persisted</strong> by default — checks are ephemeral; only audit metadata is retained, encrypted in transit and at rest, with configurable retention.</li>
+<li><strong>Subprocessor disclosure:</strong> when the ML escalation is enabled it calls a third-party LLM, which would see the (today-unredacted) prompt in Serverless — a subprocessor a CISO must vet. In Dedicated/Self-Managed the heavier model is self-hosted in-VPC, so there is no external subprocessor on the detection path.</li>
+<li><strong>Policy integrity:</strong> policy bundles are <strong>signed and versioned</strong>; the audit log is tamper-evident. A compromised control plane <strong>cannot make the SDK accept a malicious decision without a signed, versioned policy change — which is auditable.</strong> (Residual risk: the signing key itself; key management/rotation is part of treating ourselves as a high-value target.) Note the today-default is already conservative: on any failure the SDK <strong>denies</strong>, so an outage or tampering that breaks validation blocks actions rather than permitting them.</li>
+<li><strong>Policy revocation latency:</strong> when you remove a permission it takes effect at the controller immediately; cached artifacts (e.g. Sigma rules) refresh on a <strong>poll interval (~5–10s)</strong>. Tightening this — and the roadmap SDK cache's refresh/revocation window — is tracked.</li>
+<li><strong>Deployment editions (your choice):</strong> Serverless (fastest), Dedicated (data stays in your cloud), Self-Managed/air-gapped (nothing leaves) — see <a href="#deployment-editions-where-the-controller-runs">editions</a>.</li>
+<li><strong>Fits your stack:</strong> complements identity (who the agent is) and SIEM (alerts flow out); we add <em>what the action is allowed to do, enforced in real time.</em></li>
+</ul>
+<p><strong>Open items a reviewer will (rightly) raise:</strong> SDK is <strong>Python-only today</strong> (other runtimes need the sidecar or a native SDK); the latency/resilience story depends on the <strong>roadmap local tier</strong>, not the shipping SDK; redaction is <strong>not yet built</strong>; multi-tenant isolation for Serverless is asserted, with <strong>SOC 2 Type II in progress</strong>. We'd rather you see these now than discover them in diligence.</p>
+<h2>How the model improves (aligned with the ML strategy)</h2>
+<ul>
+<li><strong>Base detector:</strong> the live floor is <strong>Sigma signatures</strong> (deterministic, explainable, version-controlled); the <strong>ML classifier</strong> (Bedrock-hosted, in shadow today) adds semantic coverage; the <strong>roadmap</strong> detector is a distilled transformer (DeBERTa/DistilBert-class) fine-tuned on <strong>public adversarial datasets</strong> — no customer data required.</li>
+<li><strong>Per-deployment adaptation:</strong> the behavioural-anomaly layer builds a <strong>local baseline inside each deployment</strong>; <strong>no raw data is shared between customers</strong>. Strict editions ("nothing leaves") therefore <strong>trade away central learning by design</strong> — they improve locally, not from the fleet.</li>
+<li><strong>Optional federation (post-seed):</strong> deployments may opt into sharing <strong>gradient updates only</strong> (not data) with a global model — the standard federated pattern. This is the long-term moat, and it is <strong>opt-in</strong>.</li>
+</ul>
+<h2>Coverage today vs roadmap (honest)</h2>
+<table>
+<thead>
+<tr>
+<th></th>
+<th>Status</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>SDK checkpoint (cooperative), <strong>fail-secure on outage</strong> (DENY/raise), tamper-evident audit trail</td>
+<td><strong>Built</strong></td>
+</tr>
+<tr>
+<td>Serverless (multi-tenant): SDK → controller round-trip per call</td>
+<td><strong>Built</strong></td>
+</tr>
+<tr>
+<td>Sigma-rule detection (injection/jailbreak; explainable, version-controlled)</td>
+<td><strong>Built (live, always-on floor)</strong></td>
+</tr>
+<tr>
+<td>ML classifier escalation (Bedrock Haiku/Sonnet) for borderline cases</td>
+<td><strong>Built (shadow / off by default, pending precision-recall sign-off)</strong></td>
+</tr>
+<tr>
+<td>Tool + parameter policy, single-session sequence, trust/quarantine</td>
+<td><strong>Built (single-cloud; Cedar engine in dev cutover)</strong></td>
+</tr>
+<tr>
+<td>Abuse / rate detection on action metadata</td>
+<td><strong>Built (live)</strong></td>
+</tr>
+<tr>
+<td>Compensating rollback (per-action adapters, LIFO; refunds today)</td>
+<td><strong>Built (single-cloud)</strong></td>
+</tr>
+<tr>
+<td>AWS Bedrock + Azure connectors; live cross-cloud demo</td>
+<td><strong>Built</strong></td>
+</tr>
+<tr>
+<td><strong>In-process local Cedar tier + signed cached-policy bundle (no-round-trip floor)</strong></td>
+<td><strong>Roadmap</strong></td>
+</tr>
+<tr>
+<td><strong>Degrade-to-cached-policy on outage (agents keep running on the floor)</strong></td>
+<td><strong>Roadmap</strong></td>
+</tr>
+<tr>
+<td><strong>PII detection / redaction pipeline (Presidio-based)</strong></td>
+<td><strong>Roadmap (in build)</strong></td>
+</tr>
+<tr>
+<td>Distilled local classifier (DeBERTa/DistilBert, CPU, in-process)</td>
+<td><strong>Roadmap (hot-path target)</strong></td>
+</tr>
+<tr>
+<td>Behavioural anomaly model (Isolation Forest — distinct from live abuse detection)</td>
+<td><strong>Roadmap (design complete)</strong></td>
+</tr>
+<tr>
+<td>Dedicated single-tenant controller (in-VPC)</td>
+<td><strong>Roadmap</strong></td>
+</tr>
+<tr>
+<td>GCP connector; multi-cloud blast-radius containment</td>
+<td><strong>Roadmap</strong></td>
+</tr>
+<tr>
+<td>Network sidecar (zero-code, non-cooperative enforcement)</td>
+<td><strong>Roadmap</strong></td>
+</tr>
+<tr>
+<td>Optional federated improvement</td>
+<td><strong>Roadmap (post-seed)</strong></td>
+</tr>
+<tr>
+<td>SOC 2 Type II</td>
+<td><strong>In progress</strong></td>
+</tr>
+</tbody>
+</table>
+<p><em>"Single-cloud" means the policy/sequence/trust logic is proven within one cloud; cross-cloud </em><em>trust propagation</em><em> is demonstrated (S2 scenario), but cross-cloud </em><em>blast-radius containment</em><em> is roadmap.</em></p>
+<hr />
+<p><em>This brief is the "how"; pair it with the one-pager's "why." Where prose and the coverage table disagree, the table wins.</em></p></body></html>

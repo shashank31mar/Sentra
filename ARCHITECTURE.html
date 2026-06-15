@@ -1,0 +1,456 @@
+<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><title>ARCHITECTURE</title><style>
+  @page { size: Letter; margin: 0.6in 0.7in; }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; }
+  body {
+    font-family: "Helvetica Neue", Helvetica, Arial, sans-serif;
+    color: #1c2330; font-size: 11px; line-height: 1.45;
+    -webkit-font-smoothing: antialiased;
+  }
+  h1 { font-size: 20px; font-weight: 800; color: #0f1b2d; margin: 0 0 4px 0; letter-spacing: -0.2px; }
+  h2 {
+    font-size: 13px; font-weight: 800; text-transform: uppercase; letter-spacing: 0.5px;
+    color: #1559c9; margin: 16px 0 6px 0; padding-bottom: 3px; border-bottom: 1px solid #d7deea;
+  }
+  h3 { font-size: 11.5px; font-weight: 800; color: #0f1b2d; margin: 12px 0 4px 0; }
+  p { margin: 0 0 6px 0; }
+  ul, ol { margin: 0 0 6px 0; padding-left: 18px; }
+  li { margin: 0 0 3px 0; }
+  strong { color: #0f1b2d; }
+  em { color: #2a3650; }
+  a { color: #1559c9; text-decoration: none; }
+  hr { border: 0; border-top: 1px solid #d7deea; margin: 12px 0; }
+  blockquote {
+    margin: 8px 0; padding: 6px 12px; border-left: 3px solid #1559c9;
+    background: #f4f7fc; color: #2a3650;
+  }
+  code {
+    font-family: "SF Mono", Menlo, Consolas, monospace; font-size: 9.5px;
+    background: #eef2f8; padding: 1px 4px; border-radius: 3px;
+  }
+  pre {
+    background: #0f1b2d; color: #e6edf6; padding: 10px 12px; border-radius: 5px;
+    overflow-x: auto; page-break-inside: avoid;
+  }
+  pre code { background: none; color: inherit; font-size: 8.6px; line-height: 1.35; padding: 0; }
+  table { border-collapse: collapse; width: 100%; margin: 6px 0 10px 0; font-size: 9.6px; page-break-inside: avoid; }
+  th, td { border: 1px solid #cfd8e8; padding: 4px 7px; text-align: left; vertical-align: top; }
+  th { background: #eef2f8; color: #0f1b2d; font-weight: 700; }
+  tr:nth-child(even) td { background: #f7f9fd; }
+</style></head><body><h1>AegionAI Guard — Architecture</h1>
+<p><strong>Version:</strong> 1.0 (Draft for Review)
+<strong>Last Updated:</strong> 2026-06-15
+<strong>Owner:</strong> Shashank Gupta (Founder/CEO)
+<strong>Companion docs:</strong> <a href="PRD.md">PRD.md</a> (the "what" — requirements by ID) · <a href="vision.md">vision.md</a> (vision &amp; pillars) · <a href="STRATEGY.md">STRATEGY.md</a> (market / GTM / roadmap) · LLDs in <a href="lld/">lld/</a></p>
+<blockquote>
+<p>This document describes <strong>how</strong> we build AegionAI Guard to satisfy the requirements in the <a href="PRD.md">PRD</a>. It references requirements by ID (FR-x / NFR-x) rather than restating them. It is honest about <strong>today vs roadmap</strong> — where they differ, this doc and the PRD's status column win over any aspirational prose.</p>
+</blockquote>
+<hr />
+<h2>1. Context</h2>
+<h3>1.1 Background — the current situation</h3>
+<p>AI agents have moved from generating text to <strong>taking actions</strong> — calling tools, APIs, and databases that move money, change records, and send messages. Enterprises run these agents across more than one cloud (AWS Bedrock, Azure OpenAI/Foundry, GCP Vertex) and increasingly want them to run with little human supervision. The operational reality today:</p>
+<ul>
+<li>Agents act at machine speed; a wrong or manipulated action causes real damage before a human notices.</li>
+<li>Existing tooling <strong>detects and warns</strong> at the per-call level; nothing <strong>enforces</strong> at the action level across a fleet and across clouds.</li>
+<li>The team that must approve this (the CISO) cannot accept a design that adds latency, becomes a single point of failure, or exfiltrates sensitive data.</li>
+</ul>
+<h3>1.2 Problem statement</h3>
+<p><strong>Sit in front of every consequential agent action and decide — in real time, before it runs — whether it is allowed, across any cloud, without (a) adding unacceptable latency, (b) becoming a single point of failure, or (c) seeing data the customer won't let leave their boundary.</strong></p>
+<p>These three constraints (latency, availability, data boundary) are the architecture's hardest forcing functions; most decisions below trace back to them.</p>
+<h3>1.3 Goals &amp; Tenets</h3>
+<p>Goals are the PRD's three pillars: <strong>Stop harm before it happens · Make autonomy safe · Trusted on every cloud.</strong> The architecture is built to these <strong>tenets</strong> (design principles that break ties):</p>
+<ol>
+<li><strong>Enforcement is local; the control plane is never on the action path.</strong> The decision authority may be remote, but the <em>enforcement point</em> lives in the customer's environment.</li>
+<li><strong>Fail secure, never fail open.</strong> Any failure denies (or degrades to the cached hard-rule floor) — it never silently permits.</li>
+<li><strong>Deny-by-default, explainable.</strong> Every verdict names its deciding source and is auditable.</li>
+<li><strong>Defense in depth.</strong> Independent layers; evading one is caught by another; no single point of detection failure.</li>
+<li><strong>Latency scales with risk, not volume.</strong> Cheap deterministic checks first; expensive models only on borderline cases.</li>
+<li><strong>The data boundary is the customer's to set.</strong> What leaves is a deployment choice (edition), and sensitive values are redacted or never leave.</li>
+<li><strong>Multi-tenant and multi-cloud from the foundation</strong>, not retrofitted.</li>
+<li><strong>Honest staging.</strong> Ship deterministic floors first; layer ML and deeper detection behind shadow-then-enforce gates.</li>
+</ol>
+<h3>1.4 Requirements (by reference)</h3>
+<p>This architecture satisfies the <a href="PRD.md">PRD</a> requirements; key anchors:
+- Interception &amp; enforcement: <strong>FR-1.x</strong>; Policy decision engine: <strong>FR-2.x</strong>; Threat detection (D1–D7, phases): <strong>FR-3.x</strong>; Trust &amp; containment: <strong>FR-4.x</strong>; Rollback: <strong>FR-5.x</strong>; Audit/observability: <strong>FR-6.x</strong>; Integration &amp; connectors: <strong>FR-7.x</strong>; Management plane: <strong>FR-8.x</strong>; Deployment editions: <strong>FR-9.x</strong>; Tenancy &amp; identity: <strong>FR-10.x</strong>.
+- Non-functional: latency <strong>NFR-1/2</strong>, availability <strong>NFR-3</strong>, resilience <strong>NFR-4</strong>, scalability <strong>NFR-5</strong>, tenant isolation <strong>NFR-6</strong>, data boundary <strong>NFR-7</strong>, compliance <strong>NFR-8</strong>, integrity <strong>NFR-9</strong>, observability <strong>NFR-10</strong>, portability <strong>NFR-11</strong>.</p>
+<hr />
+<h2>2. Architecture</h2>
+<h3>2.1 System context</h3>
+<pre><code>        ┌──────────────────────── Customer environment ────────────────────────┐
+        │                                                                       │
+        │   AI agent ──▶ CHECKPOINT (PEP) ──▶ tool / API / database             │
+        │   (Bedrock,        │ intercepts          (only if ALLOWED)            │
+        │    Azure, …)       │ the action                                       │
+        └────────────────────┼──────────────────────────────────────────────────┘
+                             │ POST /v1/validate   (decision request)
+                             ▼
+        ┌──────────────── AegionAI Guard ────────────────┐     ┌─────────────────┐
+        │  CONTROLLER (PDP)  ── decides allow/deny        │     │  CONTROL PLANE  │
+        │  policy + detection + trust + abuse             │◀────│ policy authoring│
+        │                                                 │     │ signing/dist.,  │
+        │  SIGNAL STORE  (audit: DynamoDB + CloudWatch)   │     │ fleet telemetry,│
+        └──────────────────────┬──────────────────────────┘     │ SOC console     │
+                              decisions + signals                └─────────────────┘
+                                     ▼
+                          SOC console / dashboards / SIEM export
+</code></pre>
+<ul>
+<li><strong>Checkpoint (PEP)</strong> — in the customer's environment (SDK decorator today; connector interceptor; network sidecar roadmap). FR-1.x.</li>
+<li><strong>Controller (PDP)</strong> — decides each action (policy + detection + trust + abuse). Where it runs depends on the <strong>edition</strong> (§2.4).</li>
+<li><strong>Control plane</strong> — authoring, signing/distribution, fleet telemetry, console. <strong>Never on the action path</strong> (tenet 1).</li>
+<li><strong>Signal store</strong> — the audit system of record (LLD 17): DynamoDB for fast/recent reads, CloudWatch as the long-term compliance archive.</li>
+</ul>
+<h3>2.2 The decision flow (one action)</h3>
+<p>One endpoint, <code>POST /v1/validate</code>, branches on a <code>phase</code> field (<code>request</code> | <code>content</code> | <code>output</code> | <code>memory</code>; FR-3.4). For the common <code>request</code> phase:</p>
+<pre><code>checkpoint ──POST /v1/validate──▶ controller
+                                     │
+   1) cheap-deterministic frontier (≈1–5 ms each, short-circuit on DENY):
+        trust ▸ policy (Cedar: tool/param/sequence) ▸ sigma signatures
+        ▸ taint gate ▸ abuse/rate ▸ context
+                                     │  (all ALLOW?)
+   2) expensive-model fan-out IN PARALLEL (max, not sum):
+        ML classifier ▸ trajectory(D1) ▸ content/output models
+                                     │
+   3) combiner: deny-overrides + priority ──▶ ALLOW / DENY (+ reason, source)
+                                     │
+   4) async, off the response path: audit signals + metrics
+        on transport failure → FAIL-SECURE (deny / raise)
+</code></pre>
+<ul>
+<li><strong>Sigma DENY short-circuits before any model is invoked</strong> — preserving the "cheap-deny skips the ~600 ms model cost" property (tenet 5). FR-3.1.</li>
+<li><strong>The combiner</strong> is deny-overrides with explainable priority (FR-2.7); it produces the dashboard's <code>winning_source</code>.</li>
+<li><strong>Audit is fire-and-forget</strong> off the response path (FR-6.1) so the decision returns immediately.</li>
+<li>Today the pipeline is sequential short-circuit; the <strong>parallel-gather scheduler is the WS20.0 prerequisite (FR-2.8)</strong> that keeps latency bounded as layers grow (§2.6).</li>
+</ul>
+<h3>2.3 Components</h3>
+<table>
+<thead>
+<tr>
+<th>Component</th>
+<th>Role</th>
+<th>Reference</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Checkpoint / SDK</strong></td>
+<td>PEP — intercepts the action, calls the controller, enforces the verdict (fail-secure)</td>
+<td>FR-1.x, <code>lld/18</code>, <code>lld/23</code></td>
+</tr>
+<tr>
+<td><strong>Policy decision engine</strong></td>
+<td>Cedar evaluation of tool / parameter / single-session sequence</td>
+<td>FR-2.x, <code>features/cedar-policy</code>, <code>lld/18</code></td>
+</tr>
+<tr>
+<td><strong>Detectors</strong></td>
+<td>Sigma (live), ML classifier (shadow), D1–D7 layers across phases</td>
+<td>FR-3.x, <code>lld/19</code>, <code>lld/20</code></td>
+</tr>
+<tr>
+<td><strong>Trust &amp; containment</strong></td>
+<td>Per-agent/session trust, quarantine, cross-agent filtering, abuse/rate</td>
+<td>FR-4.x, <code>lld/12</code></td>
+</tr>
+<tr>
+<td><strong>Rollback coordinator</strong></td>
+<td>Per-action compensating adapters, LIFO, reversibility checks</td>
+<td>FR-5.x</td>
+</tr>
+<tr>
+<td><strong>Signal store</strong></td>
+<td>DynamoDB (fast/recent) + CloudWatch (archive); request-id correlation</td>
+<td>FR-6.x, <code>lld/17</code></td>
+</tr>
+<tr>
+<td><strong>Connectors / Import</strong></td>
+<td>Bedrock, Azure (GCP roadmap); Connect &amp; Discover → auto-seed policy</td>
+<td>FR-7.x, <code>features/multicloud-agent-import</code></td>
+</tr>
+<tr>
+<td><strong>Management plane</strong></td>
+<td>Agent registry, policy CRUD, multi-format authoring (YAML/JSON→Cedar), monitor-mode seeding</td>
+<td>FR-8.x, <code>features/agent-policy-management</code></td>
+</tr>
+<tr>
+<td><strong>Control plane / console</strong></td>
+<td>Policy signing/distribution, fleet telemetry, SOC console</td>
+<td>FR-6.4, <code>lld/21</code></td>
+</tr>
+</tbody>
+</table>
+<h3>2.4 Deployment models (where the controller runs)</h3>
+<p>The control plane is always remote and off the path; the <strong>controller (PDP)</strong> location is the edition (FR-9.x). This is the central lever for the latency/availability/boundary constraints.</p>
+<table>
+<thead>
+<tr>
+<th>Edition</th>
+<th>Controller runs</th>
+<th>What leaves the boundary</th>
+<th>Interception</th>
+<th>Status</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Serverless</strong> (multi-tenant)</td>
+<td>AegionAI cloud</td>
+<td>Prompt content (unredacted today; redaction roadmap) + metadata</td>
+<td>SDK decorator / connector + <strong>in-process local tier</strong> (roadmap, FR-1.7)</td>
+<td><strong>Today</strong></td>
+</tr>
+<tr>
+<td><strong>Dedicated</strong> (single-tenant)</td>
+<td>In the customer's VPC (managed by us)</td>
+<td>Only metadata (audit + trust)</td>
+<td>SDK + <strong>network sidecar</strong> (FR-1.5)</td>
+<td>Roadmap</td>
+</tr>
+<tr>
+<td><strong>Self-Managed</strong> (air-gapped)</td>
+<td>In the customer's environment, customer-operated</td>
+<td>Nothing</td>
+<td>SDK + sidecar</td>
+<td>Roadmap</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Honest today:</strong> in Serverless every guarded call is a network round-trip to the controller, and content leaves the boundary (Cedar + Sigma run server-side). The <strong>in-process local tier</strong> (FR-1.7) — signed cached policy evaluated locally with no round-trip — is the roadmap that delivers the latency and "keep running on outage" story. The <strong>in-VPC editions</strong> move the whole controller into the customer's boundary.</p>
+<h3>2.5 Connectivity &amp; Security</h3>
+<p><strong>(a) Interception — how the action is captured.</strong> <em>Options considered → decision.</em></p>
+<table>
+<thead>
+<tr>
+<th>Option</th>
+<th>Pros</th>
+<th>Cons</th>
+<th>Decision</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>SDK decorator</strong> (one wrapper per tool)</td>
+<td>Trivial install; precise; catches in-process tools</td>
+<td>Cooperative — unwrapped tools/raw calls bypass; Python-only today</td>
+<td><strong>Today's default</strong> (FR-1.2)</td>
+</tr>
+<tr>
+<td><strong>Connector interceptor</strong> (Bedrock action-group Lambda / Azure Function)</td>
+<td>No agent code change; cloud-native</td>
+<td>Per-cloud; catches network tool calls only</td>
+<td><strong>Built for Bedrock/Azure</strong> (FR-7.1/7.2)</td>
+</tr>
+<tr>
+<td><strong>Network sidecar</strong></td>
+<td>Zero-code, framework-agnostic, non-bypassable, default-on (customer-controllable)</td>
+<td>Needs in-boundary infra</td>
+<td><strong>Roadmap — for Dedicated/Self-Managed</strong> (FR-1.5)</td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p>Honest limitation: today's enforcement is <strong>cooperative</strong> — it guards what's wired through it. The sidecar (in-boundary editions) closes this by intercepting at the network layer, <strong>on by default and fully under the customer's control</strong> (off per agent/tool/globally).</p>
+</blockquote>
+<p><strong>(b) Agent identity — who is calling.</strong> Today the controller trusts a self-asserted <code>agent_id</code> behind a <em>shared</em> API-Gateway key — any key-holder can claim any agent (acceptable for the seeded demo; not for a real customer). Decision (FR-10.3): issue a <strong>per-agent credential at import</strong> and resolve the authoritative <code>(tenant_id, agent_id)</code> from the <em>verified</em> credential, never the request body. Credential mechanism (signed per-agent token vs cloud workload identity) is an <a href="PRD.md#10-open-questions">open question</a>.</p>
+<p><strong>(c) Tenant isolation.</strong> Every connection, agent, policy, credential, and signal is keyed by <code>tenant_id</code> (FR-10.1). <em>Options:</em> row-level tenant scoping (chosen for Serverless — <code>TENANCY_V2</code> tenant-scoped tables, cutover in flight) → single-tenant <strong>deployment</strong> isolation for Dedicated/Self-Managed (the strongest boundary). NFR-6.</p>
+<p><strong>(d) Data boundary &amp; integrity.</strong> Policy bundles are <strong>signed and versioned</strong> (NFR-9); the audit log is tamper-evident. Because enforcement is local and fail-secure, a compromised control plane <strong>cannot make the checkpoint permit a malicious action without a signed, versioned, auditable policy change</strong> (residual risk: the signing key — managed/rotated). What crosses the boundary is covered in §2.8.</p>
+<h3>2.6 Scalability</h3>
+<p>The decision path must scale from one agent to a fleet, and stay within budget as detection layers multiply (NFR-5).</p>
+<table>
+<thead>
+<tr>
+<th>Concern</th>
+<th>Approach → decision</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Layer count vs latency</strong></td>
+<td>Sequential short-circuit (today) → <strong>parallel-gather scheduler over a cost-annotated DAG</strong> (FR-2.8 / WS20.0): cheap-deterministic frontier first (short-circuits DENYs <em>before</em> any model), then expensive models in parallel — total latency <code>max(models)</code>, not <code>sum</code>. <code>fail_fast</code> (prod default) vs <code>evaluate_all</code> (shadow/forensics).</td>
+</tr>
+<tr>
+<td><strong>Round-trip cost</strong></td>
+<td>In-process policy/sigma caches (signed bundles); the in-process local tier (FR-1.7) removes the round-trip for the deterministic floor on the common ALLOW path.</td>
+</tr>
+<tr>
+<td><strong>Stateless decision path</strong></td>
+<td>Controller is a stateless, horizontally-scaled service (singleton in-process caches per task); shared state (sessions, trust, sigma version) lives in DynamoDB/Redis with version-row invalidation so a policy change propagates fleet-wide in <strong>seconds</strong>, not "up to the TTL."</td>
+</tr>
+<tr>
+<td><strong>Audit write volume</strong></td>
+<td>Off-path fire-and-forget writes; DynamoDB on-demand for fast reads + CloudWatch archive; ~rounding-error cost even at 10× MVP traffic (LLD 17).</td>
+</tr>
+<tr>
+<td><strong>Latency budgets (measured/targeted, WS24)</strong></td>
+<td>Deterministic ≤ 500 ms p99 at load; ML hot ≤ 900 ms; deep-model ≤ 2.5 s; distilled-local model &lt; 100 ms (roadmap). NFR-1/2.</td>
+</tr>
+</tbody>
+</table>
+<h3>2.7 Reliability &amp; Resiliency</h3>
+<p>Tenet 2: fail secure, never fail open. The failure matrix:</p>
+<table>
+<thead>
+<tr>
+<th>Failure</th>
+<th>What breaks</th>
+<th>What still holds</th>
+<th>Agent impact</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Control plane unreachable</strong></td>
+<td>Policy updates, dashboards, fleet telemetry pause</td>
+<td>Controller keeps deciding; cached signed policy</td>
+<td>None (control plane is off-path)</td>
+</tr>
+<tr>
+<td><strong>Controller unreachable (Serverless, today)</strong></td>
+<td>The decision call fails</td>
+<td>SDK <strong>fail-secure</strong>: DENY by default, or raise if <code>fail_secure=False</code></td>
+<td>Guarded actions <strong>blocked</strong> (secure, but not "keep running")</td>
+</tr>
+<tr>
+<td><strong>Controller unreachable (with in-process local tier, roadmap)</strong></td>
+<td>Advanced detection pauses</td>
+<td>Local deterministic floor (Cedar over cached bundle) keeps enforcing</td>
+<td>Agents <strong>keep running</strong> on the hard rules</td>
+</tr>
+<tr>
+<td><strong>ML / deep models unavailable</strong></td>
+<td>Semantic detection degrades</td>
+<td>Deterministic floor + Sigma unaffected; ML is shadow/off by default anyway</td>
+<td>Decisions on hard rules; flagged for shadow re-scan</td>
+</tr>
+<tr>
+<td><strong>Stale policy</strong></td>
+<td>Running on older bundle</td>
+<td>Versioned + signed; version-row invalidation propagates in seconds; max-staleness fail-closed for money-movement (roadmap)</td>
+<td>Bounded, configurable</td>
+</tr>
+</tbody>
+</table>
+<p>Per-agent fail mode (fail-closed vs degrade-to-floor) is configurable (FR-1.4); money-movement defaults to fail-closed. NFR-3/4.</p>
+<h3>2.8 Data, Privacy &amp; Compliance</h3>
+<p><strong>What crosses the boundary (Serverless, today, honest):</strong> every guarded call sends the action — agent, tool, parameters, the user's prompt, session id — to the controller, because Cedar and Sigma run server-side. <strong>Content leaves, unredacted today.</strong> Mitigations on the roadmap and by edition:</p>
+<ul>
+<li><strong>Input-side redaction</strong> (FR-3.13): redact PII/secrets before content leaves; the engine sees the shape, not the secrets.</li>
+<li><strong>Output-side DLP</strong> (FR-3.7 / Layer D5): detect and REDACT/HOLD sensitive data the agent is about to emit.</li>
+<li><strong>In-VPC / air-gapped editions</strong> (FR-9.2/9.3): content never leaves the customer boundary.</li>
+<li><strong>Storage:</strong> action content is <strong>not persisted</strong> by default; only audit metadata is retained (DynamoDB 90-day window + CloudWatch archive), encrypted in transit and at rest, with configurable retention. The CloudWatch dual-write is the compliance archive and is mandatory (LLD 17).</li>
+<li><strong>Subprocessor:</strong> when ML escalation is enabled it calls a hosted model (a subprocessor a CISO must vet); in-VPC editions self-host it. NFR-7.</li>
+<li><strong>Compliance:</strong> tamper-evident audit + the signal store support SOC 2 / HIPAA / GDPR / EU AI Act evidence; SOC 2 Type II in progress. NFR-8.</li>
+</ul>
+<h3>2.9 Operations</h3>
+<ul>
+<li><strong>Infrastructure as code:</strong> AWS CDK (stacks per concern — network/storage/compute/api/monitoring); see <code>cdk/</code> and best-practices §1.</li>
+<li><strong>Deploys:</strong> scripted, milestone-tagged immutable Docker images (<code>build_and_push_image.py</code>), rollback by re-tagging (best-practices §5).</li>
+<li><strong>Feature gating &amp; safe rollout:</strong> capabilities ship behind flags and <strong>shadow-then-enforce</strong> gates — <code>CEDAR_ENABLED</code>/<code>CEDAR_SHADOW_MODE</code>, <code>ML_CLASSIFIER_ENABLED</code>/<code>ML_CLASSIFIER_SHADOW_MODE</code>, <code>TENANCY_V2_ENABLED</code>, <code>fail_secure</code>, <code>fail_fast</code>/<code>evaluate_all</code>. A detector runs in shadow (records signals, no verdict effect) until its precision/recall is signed off (FR-3.3), then is promoted.</li>
+<li><strong>Observability (NFR-10):</strong> per-validator metrics, decision-source attribution, latency timing logs; the <strong>signal store</strong> powers the SOC console (per-session timeline, decision sources) and SIEM export.</li>
+<li><strong>SLOs:</strong> enforcement availability ≥ 99.99% (local, fail-secure); control-plane availability 99.9% → 99.99%; latency budgets per §2.6.</li>
+</ul>
+<h3>2.10 Metering &amp; Billing</h3>
+<p>We sit on every action, so usage is directly observable. <em>Options → leaning:</em></p>
+<table>
+<thead>
+<tr>
+<th>Basis</th>
+<th>What it counts</th>
+<th>Fit</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Per validation / action</strong></td>
+<td>Each <code>/v1/validate</code> decision</td>
+<td>Truest to value; aligns with the north-star ("actions protected"); usage-based for <strong>Serverless</strong></td>
+</tr>
+<tr>
+<td><strong>Per agent under management</strong></td>
+<td>Active governed agents</td>
+<td>Simple to forecast; good list-price anchor</td>
+</tr>
+<tr>
+<td><strong>Per deployment / subscription</strong></td>
+<td>A Dedicated/Self-Managed fleet</td>
+<td>Fits in-VPC editions (we don't meter their internal traffic)</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Leaning:</strong> usage-based (per validation, tiered) for Serverless; <strong>subscription</strong> for Dedicated/Self-Managed (the customer runs the data plane). Exact basis is an open business decision in <a href="STRATEGY.md">STRATEGY.md</a>. Metering reuses the audit pipeline (count decisions off the signal store) — no separate metering path.</p>
+<hr />
+<h2>3. Key Architecture Decisions (ADR summary)</h2>
+<table>
+<thead>
+<tr>
+<th>#</th>
+<th>Decision</th>
+<th>Why</th>
+<th>Status</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>AD-1</td>
+<td><strong>Control plane off the action path; PEP local</strong></td>
+<td>Latency, availability, no single point of failure (tenets 1–2)</td>
+<td>Today (PEP local; PDP remote in Serverless)</td>
+</tr>
+<tr>
+<td>AD-2</td>
+<td><strong>Cedar</strong> as the policy engine</td>
+<td>Fast, formally-grounded, embeddable (enables the in-process local tier)</td>
+<td>Dev cutover; shadow→enforce</td>
+</tr>
+<tr>
+<td>AD-3</td>
+<td><strong>One <code>/v1/validate</code> endpoint, <code>phase</code> field</strong></td>
+<td>Three moments = three round-trips regardless of URL count; keeps the surface small</td>
+<td>request live; content/output/memory roadmap</td>
+</tr>
+<tr>
+<td>AD-4</td>
+<td><strong>Deterministic-first, parallel models</strong> (DAG scheduler)</td>
+<td>Latency scales with risk; cheap DENY skips model cost (tenet 5)</td>
+<td>Sequential today → WS20.0 parallel-gather</td>
+</tr>
+<tr>
+<td>AD-5</td>
+<td><strong>Sigma (live) floor + ML (shadow) escalation</strong></td>
+<td>Explainable, version-controlled deterministic floor; ML behind eval gate</td>
+<td>Today</td>
+</tr>
+<tr>
+<td>AD-6</td>
+<td><strong>Edition = where the controller runs</strong></td>
+<td>The data-boundary lever; lets regulated buyers keep content in-boundary</td>
+<td>Serverless today; in-VPC roadmap</td>
+</tr>
+<tr>
+<td>AD-7</td>
+<td><strong>Verified per-agent identity over self-asserted id</strong></td>
+<td>A shared key can't prove <em>which</em> agent; required before "this policy governs your agent"</td>
+<td>Roadmap (FR-10.3)</td>
+</tr>
+<tr>
+<td>AD-8</td>
+<td><strong>Multi-tenant from the foundation</strong> (<code>tenant_id</code> keys)</td>
+<td>Onboarding customer #2 is a data op, not a re-architecture</td>
+<td>In build (TENANCY_V2)</td>
+</tr>
+<tr>
+<td>AD-9</td>
+<td><strong>Fail-secure, audit off-path, signed policy</strong></td>
+<td>Never fail open; decision returns immediately; tamper-evident</td>
+<td>Today</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2>4. Open Architecture Questions</h2>
+<p>Tracked against the PRD's <a href="PRD.md#10-open-questions">Open Questions</a>:
+1. <strong>Verified agent-identity mechanism</strong> (AD-7) — signed per-agent token vs cloud workload identity; issuance/rotation.
+2. <strong>Sidecar feature parity</strong> — how the network sidecar delivers the multi-phase (<code>content</code>/<code>output</code>/<code>memory</code>) coverage the SDK decorators provide.
+3. <strong>Distilled-local-model path</strong> — packaging the &lt; 100 ms in-process classifier (FR-3.12) for the in-VPC editions.</p>
+<hr />
+<p><em>This is the "how"; pair it with the <a href="PRD.md">PRD</a> ("what") and <a href="vision.md">vision.md</a> ("why"). Where this doc and the PRD's status column disagree, the PRD status wins.</em></p></body></html>
