@@ -1,6 +1,6 @@
 # API Spec — Cloud Connections (Connect Account Wizard)
 
-**Status:** ✅ Implemented — backend `connections_service.py` + `api/routes.py`, console wired (live + mock parity).
+**Status:** ✅ Implemented — backend `connections_service.py` + `api/routes.py`, console wired (live + mock parity). **Azure added** — service-principal connect + Cognitive Services discovery via `services/scanners/azure_scanner.py` (feature §7/§12); gcp still 409.
 **Owner:** Security Controller (`src/security-controller`) + Console (`web/console`) + CDK
 **Related:** LLD 21 §6.4 (Connections), `feature.md` §6 (Import Record group F), §11 (new API)
 **Consumed by:** `web/console` Connect Account wizard (`features/connect/ConnectAccountPage.tsx`)
@@ -35,8 +35,8 @@
 
 | Enum | Values | Notes |
 |------|--------|-------|
-| `cloud_provider` | `aws \| gcp \| azure \| unknown` | v1 ships **aws**; gcp/azure return `409 PROVIDER_NOT_AVAILABLE` on create. |
-| `connection_status` | `connecting \| connected \| error \| disconnected` | `connecting` = created, role not yet verified. `connected` = AssumeRole succeeded. `error` = last test failed (`error` field set). |
+| `cloud_provider` | `aws \| gcp \| azure \| unknown` | **aws** + **azure** are wired; **gcp** returns `409 PROVIDER_NOT_AVAILABLE` on create. |
+| `connection_status` | `connecting \| connected \| error \| disconnected` | `connecting` = created, credential not yet verified. `connected` = the live read-only probe succeeded (AWS AssumeRole / Azure SP token). `error` = last test failed (`error` field set). |
 | `scan_status` | `scanning \| idle` | mirrors `/v1/discovery/platforms`. |
 
 ## 3. The `CloudConnection` object
@@ -74,12 +74,20 @@ Create a connection and **mint the `external_id`** so the wizard can render the 
 - **200:** `CloudConnection` · **404 `NOT_FOUND`**
 
 ### 4.4 `PUT /v1/connections/{id}`
-Attach/replace the role reference after the operator deploys the CFN stack.
-- **Body:** `{ "role_arn": "arn:aws:iam::5311...:role/AegionDiscoveryRole" }`
-- **200:** updated `CloudConnection` (still `connecting` until tested) · **400 `VALIDATION_ERROR`** on a malformed ARN.
+Attach/replace the connection's credential reference after the operator sets it up.
+- **AWS body:** `{ "role_arn": "arn:aws:iam::5311...:role/AegionDiscoveryRole" }`
+- **Azure body:** `{ "azure": { "subscription_id", "tenant_id", "client_id", "secret_ref" } }`
+  — the SP's three GUIDs + a **vault reference** (Secrets Manager name/ARN) to the SP
+  client-secret. The secret itself is never sent to or stored by the platform (feature §14);
+  the projected connection echoes `azure_subscription_id` / `azure_tenant_id` / `azure_client_id`
+  only (never the secret ref).
+- **200:** updated `CloudConnection` (still `connecting` until tested) · **400 `VALIDATION_ERROR`**
+  on a malformed ARN / GUID, or attaching Azure creds to an AWS connection (and vice-versa).
 
 ### 4.5 `POST /v1/connections/{id}/test`
-Perform a live `sts:AssumeRole` with the stored `external_id` + a read-only list call to confirm scope.
+Perform a live read-only probe with the stored credentials and confirm scope —
+AWS: `sts:AssumeRole(external_id)` → `bedrock:ListAgents`; Azure: SP token →
+Cognitive Services account/deployment list.
 Flips `status` → `connected` on success (sets `connected_at`, `agents_visible`) or `error` on failure.
 - **Body (optional):** `{ "role_arn": string }` — convenience to set + test in one call.
 - **200:** `{ "ok": true,  "agents_visible": 14, "message": "AssumeRole OK · 14 agents visible" }`

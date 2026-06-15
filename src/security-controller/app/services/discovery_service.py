@@ -17,7 +17,9 @@ Lifecycle status per agent (derived, never hand-set):
 Dedupe key is `native_resource_id` (Bedrock agentId / ARN, etc.); existing rows
 that predate that field fall back to a normalized-name match.
 """
+import hashlib
 import logging
+import re
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 
@@ -38,9 +40,35 @@ NOT_IMPORTED = "not_imported"
 IMPORTED = "imported"
 MANAGED = "managed"
 
+# Hosting cloud → governing runtime/platform, used when a scanned record doesn't
+# carry an explicit `platform` (the AWS Bedrock probe omits it; the Azure scanner
+# sets it). Keeps imported registry rows' `platform` correct per cloud.
+_CLOUD_TO_PLATFORM = {"aws": "bedrock", "azure": "azure_foundry", "gcp": "vertex_ai"}
+
 
 def _now_iso() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _slug(value: str) -> str:
+    s = re.sub(r"[^a-z0-9]+", "-", (value or "").lower()).strip("-")
+    return s or "agent"
+
+
+def canonical_agent_id(tenant: str, cloud: str, native_resource_id: str) -> str:
+    """Canonical, collision-free agent id (feature §10.1):
+    ``{tenant}-{cloud}-{slug(tail)}-{hash(native)}``.
+
+    Derived from the **stable native resource id**, NOT the mutable display name
+    — Azure deployment names (``gpt-4o-mini``, ``identity``) are unique only
+    within one account, so two subscriptions could otherwise collapse to the
+    same registry key and cross-govern each other. A short hash of the full
+    native id guarantees uniqueness while a readable tail keeps it legible; both
+    are deterministic, so re-import resolves to the same id (idempotent).
+    """
+    tail = _slug(native_resource_id.rsplit("/", 1)[-1])[:40]
+    digest = hashlib.sha1(native_resource_id.encode("utf-8")).hexdigest()[:8]
+    return f"{tenant}-{cloud}-{tail}-{digest}"
 
 
 def _norm(name: Optional[str]) -> str:
@@ -293,10 +321,10 @@ class DiscoveryService:
         registry = self._registry_by_agent()
         policies = self._policies_by_agent()
         scanned_by_native = {s.get("native_resource_id"): s for s in self._scanned_agents()}
-        # Registry index by native id (incl. fallback) so we can detect "already imported".
+        # Registry index by native id — the ONLY safe dedupe key for scanned
+        # agents (a display-name match would falsely collapse two distinct
+        # deployments that share a generic name like "gpt-4o-mini").
         reg_native = {self._native_id(r, aid): aid for aid, r in registry.items()}
-        reg_name = {_norm(r.get("name") or aid): aid for aid, r in registry.items()}
-        reg_name.update({_norm(aid): aid for aid in registry})
 
         resolvable = [
             i for i in agent_ids
@@ -312,10 +340,9 @@ class DiscoveryService:
             sc = scanned_by_native.get(ident)
             pol = policies.get(ident)
 
-            # Already imported? (by native id or normalized name)
+            # Already imported? Dedupe strictly on the stable native id (and, for
+            # the legacy policy path, on the policy's own agent_id).
             existing = reg_native.get(ident)
-            if not existing and sc:
-                existing = reg_name.get(_norm(sc.get("name")))
             if not existing and ident in registry:
                 existing = ident
             if existing:
@@ -324,15 +351,21 @@ class DiscoveryService:
                 continue
 
             if sc:
-                # Imported from a live cloud scan.
-                agent_id = sc.get("name") or ident
+                # Imported from a live cloud scan (any cloud). The canonical id
+                # is derived from the STABLE native resource id, not the mutable
+                # deployment/display name (feature §10.1) — see canonical_agent_id.
                 native = ident
                 cloud = sc.get("cloud_provider") or "aws"
+                platform = sc.get("platform") or _CLOUD_TO_PLATFORM.get(cloud, "sentra")
+                display_name = sc.get("name") or native
+                agent_id = canonical_agent_id(tenancy.current_tenant(), cloud, native)
             elif pol:
-                # Legacy policy-derived import.
+                # Legacy policy-derived import (agent_id is already the policy's id).
                 agent_id = ident
                 native = ident
                 cloud = resolve_cloud_provider({"platform": "sentra"})
+                platform = "sentra"
+                display_name = pol.get("name") or agent_id
             else:
                 results.append({"discovery_id": ident, "agent_id": None,
                                 "status": "failed", "reason": "not found in scan or policy"})
@@ -341,9 +374,9 @@ class DiscoveryService:
             registry_item = {
                 "agent_id": agent_id,
                 "native_resource_id": native,
-                "name": (sc.get("name") if sc else (pol.get("name") if pol else agent_id)) or agent_id,
+                "name": display_name,
                 "status": "active",
-                "platform": "bedrock" if sc else "sentra",
+                "platform": platform,
                 "cloud_provider": cloud,
                 "security_type": "secured",
                 "visibility": "external",
@@ -353,6 +386,16 @@ class DiscoveryService:
                 "created_at": now,
                 "updated_at": now,
             }
+            # Carry placement/capability fields the scanner supplied (Azure sets
+            # region/model/framework; tools are operator-supplied later — feature
+            # §7/§15). Only stamp when present so AWS rows keep their lean shape.
+            if sc:
+                for src, dst in (("region", "cloud_region"), ("model", "foundation_model"),
+                                 ("framework", "framework")):
+                    if sc.get(src):
+                        registry_item[dst] = sc[src]
+                if sc.get("tools"):
+                    registry_item["allowed_tools"] = sc["tools"]
             tenancy.stamp_base_item(registry_item)
             self.agent_registry_table.put_item(Item=registry_item)
             imported += 1

@@ -56,11 +56,10 @@ def test_create_mints_external_id_and_scopes(svc):
     assert conn["id"].startswith("conn-aws-")
 
 
-def test_create_gcp_azure_not_available(svc):
+def test_create_gcp_not_available(svc):
     from app.services.connections_service import ProviderNotAvailable
-    for provider in ("gcp", "azure"):
-        with pytest.raises(ProviderNotAvailable):
-            svc.create_connection(provider)
+    with pytest.raises(ProviderNotAvailable):
+        svc.create_connection("gcp")
 
 
 def test_list_and_get(svc):
@@ -147,3 +146,126 @@ def test_tenant_isolation(svc):
     from app.services.connections_service import ConnectionNotFound
     with pytest.raises(ConnectionNotFound):
         svc.get_connection(theirs["id"])
+
+
+# ===========================================================================
+# Azure provider (service principal + Cognitive Services discovery — feature §7)
+# ===========================================================================
+
+# Valid-looking GUIDs for the SP triple (subscription / tenant / client id).
+_SUB = "11111111-1111-1111-1111-111111111111"
+_TEN = "22222222-2222-2222-2222-222222222222"
+_CLI = "33333333-3333-3333-3333-333333333333"
+
+
+class _FakeAzureScanner:
+    """Stands in for AzureScanner.discover so tests don't need the Azure SDK or a
+    live subscription. Mirrors the (ok, agents|None, message) contract."""
+
+    def __init__(self, ok=True, agents=None, message="ok"):
+        self._ok, self._agents, self._message = ok, agents, message
+        self.calls = []
+
+    def discover(self, creds):
+        self.calls.append(creds)
+        return self._ok, self._agents, self._message
+
+
+def _azure_agents(n):
+    return [{
+        "native_resource_id": f"/subscriptions/{_SUB}/resourceGroups/rg/providers/"
+                              f"Microsoft.CognitiveServices/accounts/acct/deployments/dep{i}",
+        "name": f"dep{i}", "status": "Succeeded", "cloud_provider": "azure",
+        "platform": "azure_foundry", "framework": "azure_openai",
+        "region": "centralus", "model": "gpt-4o-mini", "tools": [],
+    } for i in range(n)]
+
+
+def test_create_azure_mints_connecting(svc):
+    conn = svc.create_connection("azure")
+    assert conn["cloud_provider"] == "azure"
+    assert conn["status"] == "connecting"
+    assert conn["id"].startswith("conn-azure-")
+    assert conn["role_arn"] is None
+    assert conn["external_id"] is None              # AWS confused-deputy guard only
+    assert conn["aegion_principal_arn"] is None
+    assert any("CognitiveServices" in s for s in conn["scopes"])
+
+
+def test_set_azure_credentials_valid_and_invalid(svc):
+    from app.services.connections_service import InvalidRoleArn
+    conn = svc.create_connection("azure")
+    updated = svc.set_azure_credentials(
+        conn["id"], subscription_id=_SUB, tenant_id=_TEN, client_id=_CLI,
+        secret_ref="aegion/azure/acme-sp",
+    )
+    assert updated["azure_subscription_id"] == _SUB
+    assert updated["azure_client_id"] == _CLI
+    assert updated["account_ref"] == _SUB
+    # the secret reference itself is never projected to the API
+    assert "azure_secret_ref" not in updated
+
+    with pytest.raises(InvalidRoleArn):                      # malformed GUID
+        svc.set_azure_credentials(conn["id"], subscription_id="nope",
+                                  tenant_id=_TEN, client_id=_CLI, secret_ref="r")
+    with pytest.raises(InvalidRoleArn):                      # missing secret_ref
+        svc.set_azure_credentials(conn["id"], subscription_id=_SUB,
+                                  tenant_id=_TEN, client_id=_CLI, secret_ref="")
+
+
+def test_set_azure_credentials_rejected_on_aws_connection(svc):
+    from app.services.connections_service import InvalidRoleArn
+    aws = svc.create_connection("aws")
+    with pytest.raises(InvalidRoleArn):
+        svc.set_azure_credentials(aws["id"], subscription_id=_SUB, tenant_id=_TEN,
+                                  client_id=_CLI, secret_ref="r")
+
+
+def test_azure_test_without_credentials_ok_false(svc):
+    conn = svc.create_connection("azure")
+    result = svc.test_connection(conn["id"])
+    assert result["ok"] is False
+    assert "service principal" in result["message"].lower()
+
+
+def test_azure_test_flips_connected(svc):
+    conn = svc.create_connection("azure")
+    svc.set_azure_credentials(conn["id"], subscription_id=_SUB, tenant_id=_TEN,
+                              client_id=_CLI, secret_ref="aegion/azure/acme-sp")
+    svc._azure_scanner = _FakeAzureScanner(ok=True, agents=_azure_agents(3),
+                                           message="Service principal OK · 3 agents visible")
+    result = svc.test_connection(conn["id"])
+    assert result["ok"] is True and result["agents_visible"] == 3
+    refreshed = svc.get_connection(conn["id"])
+    assert refreshed["status"] == "connected"
+    assert refreshed["connected_at"] is not None
+
+
+def test_azure_scan_persists_with_placement(svc):
+    conn = svc.create_connection("azure")
+    svc.set_azure_credentials(conn["id"], subscription_id=_SUB, tenant_id=_TEN,
+                              client_id=_CLI, secret_ref="aegion/azure/acme-sp")
+    svc._azure_scanner = _FakeAzureScanner(ok=True, agents=_azure_agents(2))
+    svc.test_connection(conn["id"])
+    scan = svc.scan_connection(conn["id"])
+    assert scan["status"] == "scanning" and scan["discovered_count"] == 2
+    # cache rows carry the azure placement fields the importer relies on
+    cache = svc.discovery_cache_table.scan()["Items"]
+    assert len(cache) == 2
+    row = cache[0]
+    assert row["cloud_provider"] == "azure"
+    assert row["platform"] == "azure_foundry"
+    assert row["region"] == "centralus"
+
+
+def test_azure_test_failure_marks_error(svc):
+    conn = svc.create_connection("azure")
+    svc.set_azure_credentials(conn["id"], subscription_id=_SUB, tenant_id=_TEN,
+                              client_id=_CLI, secret_ref="aegion/azure/acme-sp")
+    svc._azure_scanner = _FakeAzureScanner(ok=False, agents=None,
+                                           message="AuthorizationFailed: SP lacks Reader")
+    result = svc.test_connection(conn["id"])
+    assert result["ok"] is False
+    refreshed = svc.get_connection(conn["id"])
+    assert refreshed["status"] == "error"
+    assert "Reader" in (refreshed["error"] or "")

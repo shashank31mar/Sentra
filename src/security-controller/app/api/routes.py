@@ -488,32 +488,60 @@ async def get_connection(connection_id: str) -> Dict:
 
 @router.put("/connections/{connection_id}")
 async def update_connection(connection_id: str, request: Dict) -> Dict:
-    """Attach/replace the role ARN after the operator deploys the stack (spec §4.4)."""
+    """Attach/replace the connection's credential reference after the operator
+    sets it up (spec §4.4).
+
+    AWS body: `{ "role_arn": "arn:aws:iam::...:role/..." }`.
+    Azure body: `{ "azure": { "subscription_id", "tenant_id", "client_id",
+    "secret_ref" } }` — the SP ids + a vault reference to the client-secret.
+    """
     from app.services.connections_service import ConnectionsService, ConnectionError
+    svc = ConnectionsService()
+    azure = request.get("azure")
     try:
-        return ConnectionsService().set_role_arn(connection_id, request.get("role_arn"))
+        if azure:
+            return svc.set_azure_credentials(
+                connection_id,
+                subscription_id=azure.get("subscription_id"),
+                tenant_id=azure.get("tenant_id"),
+                client_id=azure.get("client_id"),
+                secret_ref=azure.get("secret_ref"),
+            )
+        return svc.set_role_arn(connection_id, request.get("role_arn"))
     except ConnectionError as exc:
         raise _connection_http(exc)
 
 
 @router.post("/connections/{connection_id}/test")
 async def test_connection(connection_id: str, request: Dict = None) -> Dict:
-    """Live sts:AssumeRole + read-only probe (spec §4.5). A rejected role returns
-    200 {ok:false, message} — only an unknown connection is an HTTP error."""
+    """Live read-only probe (spec §4.5) — AWS sts:AssumeRole / Azure SP token. A
+    rejected credential returns 200 {ok:false, message}; only an unknown
+    connection is an HTTP error.
+
+    The probe does blocking, network-bound SDK calls (AssumeRole / Secrets
+    Manager / Azure list), so it runs in a threadpool to keep the event loop free.
+    """
+    from fastapi.concurrency import run_in_threadpool
     from app.services.connections_service import ConnectionsService, ConnectionError
     try:
         role_arn = (request or {}).get("role_arn")
-        return ConnectionsService().test_connection(connection_id, role_arn)
+        return await run_in_threadpool(
+            ConnectionsService().test_connection, connection_id, role_arn
+        )
     except ConnectionError as exc:
         raise _connection_http(exc)
 
 
 @router.post("/connections/{connection_id}/scan", status_code=202)
 async def scan_connection(connection_id: str) -> Dict:
-    """Trigger discovery for this connection (spec §4.6). 409 if not connected."""
+    """Trigger discovery for this connection (spec §4.6). 409 if not connected.
+
+    Re-runs the blocking provider probe + persists the inventory, so it's
+    offloaded to a threadpool (same rationale as /test)."""
+    from fastapi.concurrency import run_in_threadpool
     from app.services.connections_service import ConnectionsService, ConnectionError
     try:
-        return ConnectionsService().scan_connection(connection_id)
+        return await run_in_threadpool(ConnectionsService().scan_connection, connection_id)
     except ConnectionError as exc:
         raise _connection_http(exc)
 

@@ -208,6 +208,17 @@ class ComputeStack(Stack):
                 resources=["arn:aws:iam::*:role/Aegion*"],
             )
         )
+        # Azure discovery: the scanner resolves the SP client-secret from Secrets
+        # Manager at scan time (the connection stores a reference only — feature
+        # §14). Least-privilege: only the aegion/azure/* secret namespace.
+        self.security_controller_task_role.add_to_policy(
+            iam.PolicyStatement(
+                actions=["secretsmanager:GetSecretValue"],
+                resources=[
+                    f"arn:aws:secretsmanager:{self.region}:{self.account}:secret:aegion/azure/*"
+                ],
+            )
+        )
 
         # S3 permissions - read sigma_rules and policies, write debug_logs
         storage_stack.artifacts_bucket.grant_read(

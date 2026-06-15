@@ -6,6 +6,14 @@ import type {
   ScanResult,
 } from '../../types/api'
 
+/** Azure SP reference the operator supplies (the secret stays in their vault). */
+export interface AzureCredentialsInput {
+  subscription_id: string
+  tenant_id: string
+  client_id: string
+  secret_ref: string
+}
+
 /**
  * Cloud-account connections (connections-api-spec). Powers the Connect Account
  * wizard. Secrets never touch the browser — the connection carries a vault
@@ -20,11 +28,16 @@ export const connectionsApi = {
   create: (cloudProvider: CloudProvider) =>
     http.post<CloudConnection>('/connections', { cloud_provider: cloudProvider }),
 
-  /** Attach/replace the cross-account role reference after the stack is deployed. */
+  /** Attach/replace the cross-account role reference after the stack is deployed (AWS). */
   setRole: (id: string, roleArn: string) =>
     http.put<CloudConnection>(`/connections/${encodeURIComponent(id)}`, { role_arn: roleArn }),
 
-  /** Live AssumeRole probe. `ok:false` is a successful test with a rejecting role (not an HTTP error). */
+  /** Attach/replace the Azure service-principal reference (the SP ids + a vault secret name). */
+  setAzureCredentials: (id: string, azure: AzureCredentialsInput) =>
+    http.put<CloudConnection>(`/connections/${encodeURIComponent(id)}`, { azure }),
+
+  /** Live read-only probe (AWS AssumeRole / Azure SP token). `ok:false` is a successful
+   * test with a rejecting credential (not an HTTP error). Azure uses the stored creds (no arg). */
   test: (id: string, roleArn?: string) =>
     http.post<ConnectionTestResult>(
       `/connections/${encodeURIComponent(id)}/test`,

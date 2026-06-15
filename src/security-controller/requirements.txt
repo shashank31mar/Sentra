@@ -12,6 +12,13 @@ python-json-logger==2.0.7
 # (ECS target) with zero transitive deps — no Rust build stage, no sidecar.
 cedarpy==4.8.4
 
+# Azure read-only discovery (Multi-Cloud Agent Import — feature §7/§12).
+# Used only by app/services/scanners/azure_scanner.py, which lazy-imports them,
+# so the controller still boots if they're absent; pinned here so the deployed
+# image can scan a connected Azure subscription via a Reader service principal.
+azure-identity==1.16.1
+azure-mgmt-cognitiveservices==13.5.0
+
 # Testing dependencies (for development)
 # pytest==9.0.1
 # pytest-asyncio==1.3.0

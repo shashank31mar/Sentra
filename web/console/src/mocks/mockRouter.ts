@@ -130,20 +130,27 @@ export function resolveMock(
   }
   if (m === 'POST' && path === '/connections') {
     const cloud = (body as { cloud_provider?: string })?.cloud_provider ?? 'aws'
-    if (cloud !== 'aws') {
+    if (cloud !== 'aws' && cloud !== 'azure') {
       return { status: 409, body: { error: `${cloud} connections are not available yet`, error_code: 'PROVIDER_NOT_AVAILABLE' } }
     }
     connSeq += 1
-    const id = `conn-aws-${connSeq}`
+    const isAzure = cloud === 'azure'
+    const id = `conn-${cloud}-${connSeq}`
     const conn: CloudConnection = {
       id,
-      cloud_provider: 'aws',
+      cloud_provider: isAzure ? 'azure' : 'aws',
       status: 'connecting',
       account_ref: null,
-      external_id: `ext-${Math.random().toString(16).slice(2, 8)}`,
-      aegion_principal_arn: fx.AEGION_PRINCIPAL_ARN,
+      // Azure trusts the SP instead of a confused-deputy external id.
+      external_id: isAzure ? null : `ext-${Math.random().toString(16).slice(2, 8)}`,
+      aegion_principal_arn: isAzure ? null : fx.AEGION_PRINCIPAL_ARN,
       role_arn: null,
-      scopes: fx.AWS_DISCOVERY_SCOPES,
+      azure_subscription_id: null,
+      azure_tenant_id: null,
+      azure_client_id: null,
+      scopes: isAzure
+        ? ['Microsoft.CognitiveServices/accounts/read', 'Microsoft.CognitiveServices/accounts/deployments/read']
+        : fx.AWS_DISCOVERY_SCOPES,
       agents_visible: null,
       last_scan: null,
       connected_at: null,
@@ -160,12 +167,37 @@ export function resolveMock(
   if (m === 'PUT' && /^\/connections\/[^/]+$/.test(path)) {
     const conn = connStore.get(decodeURIComponent(path.split('/')[2]))
     if (!conn) return { status: 404, body: { error: 'connection not found', error_code: 'NOT_FOUND' } }
-    conn.role_arn = (body as { role_arn?: string })?.role_arn ?? conn.role_arn
+    const azure = (body as { azure?: Record<string, string> })?.azure
+    if (azure) {
+      conn.azure_subscription_id = azure.subscription_id ?? conn.azure_subscription_id
+      conn.azure_tenant_id = azure.tenant_id ?? conn.azure_tenant_id
+      conn.azure_client_id = azure.client_id ?? conn.azure_client_id
+      conn.account_ref = azure.subscription_id ?? conn.account_ref
+    } else {
+      conn.role_arn = (body as { role_arn?: string })?.role_arn ?? conn.role_arn
+    }
     return { status: 200, body: conn }
   }
   if (m === 'POST' && /^\/connections\/[^/]+\/test$/.test(path)) {
     const conn = connStore.get(decodeURIComponent(path.split('/')[2]))
     if (!conn) return { status: 404, body: { error: 'connection not found', error_code: 'NOT_FOUND' } }
+    if (conn.cloud_provider === 'azure') {
+      // Connected once the SP reference is attached; a client id containing
+      // "fail" simulates a rejecting / under-scoped service principal.
+      const attached = Boolean(conn.azure_client_id)
+      const ok = attached && !/fail/i.test(conn.azure_client_id ?? '')
+      if (ok) {
+        conn.status = 'connected'
+        conn.agents_visible = 9
+        conn.connected_at = nowIso()
+        conn.error = null
+        return { status: 200, body: { ok: true, agents_visible: 9, message: 'Service principal OK · 9 agents visible' } }
+      }
+      const message = attached ? 'AuthorizationFailed: service principal lacks Reader' : 'No service principal attached'
+      conn.status = 'error'
+      conn.error = message
+      return { status: 200, body: { ok: false, agents_visible: null, message } }
+    }
     const roleArn = (body as { role_arn?: string })?.role_arn
     if (roleArn) conn.role_arn = roleArn
     // A role ARN containing "fail" simulates a rejecting trust policy.

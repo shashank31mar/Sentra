@@ -14,8 +14,9 @@ import { Card } from '../../components/ui/Card'
 import { Button } from '../../components/ui/Button'
 import { ErrorState } from '../../components/ui/states'
 import { useToast } from '../../components/ui/Toast'
-import { CLOUD_OPTIONS } from './cloudCatalog'
+import { AZURE_DEFAULT_SCOPES, CLOUD_OPTIONS } from './cloudCatalog'
 import { GrantAccessCard } from './GrantAccessCard'
+import { GrantAzureAccessCard } from './GrantAzureAccessCard'
 import {
   useConnection,
   useConnections,
@@ -127,8 +128,12 @@ export function ConnectAccountPage() {
   )
 
   // Least-privilege scopes for the reassurance panel — live values once a
-  // connection exists, else the AWS defaults the role will request.
-  const scopes = connection?.scopes ?? ['bedrock:ListAgents', 'bedrock:GetAgent', 'lambda:GetFunction']
+  // connection exists, else the per-provider defaults the credential will request.
+  const scopes =
+    connection?.scopes ??
+    (connection?.cloud_provider === 'azure'
+      ? AZURE_DEFAULT_SCOPES
+      : ['bedrock:ListAgents', 'bedrock:GetAgent', 'lambda:GetFunction'])
 
   return (
     <div className="p-4 sm:p-6 lg:p-8">
@@ -212,7 +217,12 @@ export function ConnectAccountPage() {
               <ErrorState error={connectionQuery.error} onRetry={() => connectionQuery.refetch()} />
             </Card>
           )}
-          {connection && <GrantAccessCard connection={connection} />}
+          {connection &&
+            (connection.cloud_provider === 'azure' ? (
+              <GrantAzureAccessCard connection={connection} />
+            ) : (
+              <GrantAccessCard connection={connection} />
+            ))}
 
           {/* Step 3 — connect & scan */}
           {connection && (

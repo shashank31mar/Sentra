@@ -125,19 +125,66 @@ async def test_status_filter_and_connection_scope(tables):
 
 
 @pytest.mark.asyncio
-async def test_import_scanned_creates_registry_row(tables):
+async def test_import_scanned_uses_canonical_id_from_native(tables):
+    from app.services.discovery_service import canonical_agent_id
     tables["cache"].put_item(Item={"tenant_id": "default", "native_resource_id": "arn-x",
                                     "name": "new-agent", "cloud_provider": "aws"})
     out = await DiscoveryService().import_agents(["arn-x"], enforcement_mode="enforce")
     assert out["imported"] == 1
     assert out["agents"][0]["status"] == "managed"
-    row = tables["registry"].get_item(Key={"agent_id": "new-agent"}).get("Item")
+    # agent_id is canonical (native-derived), NOT the display name (feature §10.1)
+    expected = canonical_agent_id("default", "aws", "arn-x")
+    assert out["agents"][0]["agent_id"] == expected
+    row = tables["registry"].get_item(Key={"agent_id": expected}).get("Item")
     assert row is not None
     assert row["native_resource_id"] == "arn-x"        # native id stored (DA1)
+    assert row["name"] == "new-agent"                   # display name preserved
     assert row["enforcement_mode"] == "enforce"
-    # re-import is idempotent (skipped)
+    # re-import is idempotent (deduped by native id, not name)
     again = await DiscoveryService().import_agents(["arn-x"])
     assert again["agents"][0]["status"] == "skipped"
+
+
+@pytest.mark.asyncio
+async def test_import_same_name_different_native_no_collision(tables):
+    """Two Azure deployments both named 'gpt-4o-mini' in different accounts must
+    import as DISTINCT agents — the canonical id is native-derived (feature §10.1)."""
+    base = "/subscriptions/{s}/resourceGroups/rg/providers/Microsoft.CognitiveServices/accounts/{a}/deployments/gpt-4o-mini"
+    n1 = base.format(s="sub-A", a="acct1")
+    n2 = base.format(s="sub-B", a="acct2")
+    for n in (n1, n2):
+        tables["cache"].put_item(Item={"tenant_id": "default", "native_resource_id": n,
+                                        "name": "gpt-4o-mini", "cloud_provider": "azure",
+                                        "platform": "azure_foundry"})
+    out = await DiscoveryService().import_agents([n1, n2])
+    assert out["imported"] == 2                         # no false "skipped" collision
+    ids = {a["agent_id"] for a in out["agents"]}
+    assert len(ids) == 2
+
+
+@pytest.mark.asyncio
+async def test_import_azure_scanned_sets_platform_and_placement(tables):
+    """An Azure-scanned agent imports as an active azure_foundry registry row,
+    carrying the placement/capability fields the scanner supplied (feature §7)."""
+    from app.services.discovery_service import canonical_agent_id
+    native = ("/subscriptions/sub/resourceGroups/rg/providers/"
+              "Microsoft.CognitiveServices/accounts/acct/deployments/identity")
+    tables["cache"].put_item(Item={
+        "tenant_id": "default", "native_resource_id": native, "name": "acme-identity-agent",
+        "cloud_provider": "azure", "platform": "azure_foundry", "framework": "azure_openai",
+        "region": "centralus", "model": "gpt-4o-mini", "tools": ["verify_identity"],
+    })
+    out = await DiscoveryService().import_agents([native], enforcement_mode="monitor")
+    assert out["imported"] == 1 and out["agents"][0]["status"] == "managed"
+    agent_id = canonical_agent_id("default", "azure", native)
+    row = tables["registry"].get_item(Key={"agent_id": agent_id}).get("Item")
+    assert row["status"] == "active"
+    assert row["name"] == "acme-identity-agent"          # display name preserved
+    assert row["cloud_provider"] == "azure"
+    assert row["platform"] == "azure_foundry"            # derived from the scanned record
+    assert row["cloud_region"] == "centralus"
+    assert row["foundation_model"] == "gpt-4o-mini"
+    assert row["allowed_tools"] == ["verify_identity"]
 
 
 @pytest.mark.asyncio

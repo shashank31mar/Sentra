@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { connectionsApi } from '../api/connections'
+import { connectionsApi, type AzureCredentialsInput } from '../api/connections'
 import { queryKeys } from '../queryKeys'
 import type { CloudProvider } from '../../types/enums'
 import type { CloudConnection } from '../../types/api'
@@ -38,9 +38,23 @@ export function useCreateConnection() {
 export function useTestConnection(id: string) {
   const qc = useQueryClient()
   return useMutation({
-    // Set the role + probe in one call (spec §4.5 convenience body).
-    mutationFn: (roleArn: string) => connectionsApi.test(id, roleArn),
+    // AWS: set the role + probe in one call (spec §4.5 convenience body).
+    // Azure: no arg — probes the already-attached service principal.
+    mutationFn: (roleArn?: string) => connectionsApi.test(id, roleArn),
     onSuccess: () => {
+      qc.invalidateQueries({ queryKey: queryKeys.connections.detail(id) })
+      qc.invalidateQueries({ queryKey: queryKeys.connections.list() })
+    },
+  })
+}
+
+/** Attach the Azure service-principal reference (PUT), then the operator tests. */
+export function useSetAzureCredentials(id: string) {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (azure: AzureCredentialsInput) => connectionsApi.setAzureCredentials(id, azure),
+    onSuccess: (conn) => {
+      cacheConnection(qc, conn)
       qc.invalidateQueries({ queryKey: queryKeys.connections.detail(id) })
       qc.invalidateQueries({ queryKey: queryKeys.connections.list() })
     },

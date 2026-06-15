@@ -326,13 +326,17 @@ export interface CloudConnection {
   status: ConnectionStatus
   /** Human account label/alias; null until known. */
   account_ref: string | null
-  /** Minted by us; enforced in the role trust policy (confused-deputy guard). */
-  external_id: string
-  /** The principal the customer trusts in their cross-account role. */
-  aegion_principal_arn: string
-  /** Set by the operator after deploying the stack; null until then. */
+  /** Minted by us; enforced in the role trust policy (confused-deputy guard). AWS only — null for Azure. */
+  external_id: string | null
+  /** The principal the customer trusts in their cross-account role. AWS only — null for Azure. */
+  aegion_principal_arn: string | null
+  /** Set by the operator after deploying the stack; null until then. AWS only. */
   role_arn: string | null
-  /** Least-privilege read-only scopes the role grants. */
+  /** Azure service-principal reference (set after attaching creds). Absent/null for AWS. */
+  azure_subscription_id?: string | null
+  azure_tenant_id?: string | null
+  azure_client_id?: string | null
+  /** Least-privilege read-only scopes the credential grants. */
   scopes: string[]
   /** From the last successful test/scan; null until tested. */
   agents_visible: number | null

@@ -21,9 +21,10 @@ interface GrantAccessCardProps {
 export function GrantAccessCard({ connection }: GrantAccessCardProps) {
   const [roleArn, setRoleArn] = useState(connection.role_arn ?? '')
   const test = useTestConnection(connection.id)
+  // This card only renders for AWS connections, where these are always set.
   const template = buildRoleTemplate({
-    externalId: connection.external_id,
-    principalArn: connection.aegion_principal_arn,
+    externalId: connection.external_id ?? '',
+    principalArn: connection.aegion_principal_arn ?? '',
     scopes: connection.scopes,
   })
 
@@ -46,7 +47,7 @@ export function GrantAccessCard({ connection }: GrantAccessCardProps) {
         <CodeBlock code={template} filename="aegion-connect-role.yaml" />
 
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-          <CopyField label="External ID" hint="(enforced)" value={connection.external_id} />
+          <CopyField label="External ID" hint="(enforced)" value={connection.external_id ?? ''} />
           <div>
             <label
               htmlFor="role-arn"
