@@ -220,31 +220,37 @@ flowchart TB
   C --- A
 ```
 
-*Pick at most 2.* The mapping of each pair to a deployment:
+**What each property means** (running example: a *refund agent* that calls a payments API to issue a $500 refund):
 
-| You keep | You give up | Deployment |
+| Property | What it means — **✓** vs **✗** | The refund agent under the **in-VPC sidecar** |
 |---|---|---|
-| **(b) + (c)** | (a) — customer runs our compute | **in-VPC sidecar — THIS LLD** |
-| (a) + (b) | (c) — cooperative, can be bypassed | SDK / connector (no-infra) |
-| (a) + (c) | (b) — content transits our cloud | hosted egress proxy (no-infra) |
+| **(a) No customer infra** | Does AegionAI require a separate compute service (our brain/PDP) running in their account? **✓** = just a library/config, nothing new to run · **✗** = they provision and pay for our brain | **✗** — they run our brain as compute and pay for it (the price) |
+| **(b) Data stays in boundary** | Does raw content (the prompt, the API body, the `$500`, the account #) leave their cloud for ours? **✓** = never leaves · **✗** = goes to our cloud (even if redacted) | **✓** — the refund body stays in their cloud; only metadata ("DENIED: over-limit") leaves |
+| **(c) Non-bypassable** | Can the agent dodge the check (forgotten wrapper, raw call)? **✓** = still intercepted · **✗** = only if it goes through our wire | **✓** — network interception + egress lockdown; can't refund without passing |
 
-The **in-VPC sidecar exists precisely to get (b)+(c)**, at the cost of (a).
+**Which deployment keeps what** (no deployment gets all three):
 
-**Scope of this LLD: the (b)+(c) path only — infra running in the *customer's* cloud (Dedicated /
-Self-Managed).** This is the residency-bound segment (banks, healthcare, government) where the sidecar is
-unavoidable. The no-customer-infra alternatives below are **out of scope here, to be explored in a later
-doc**; listed only so the boundary of this LLD is explicit.
-
-#### 1.8.1 Alternatives that avoid in-boundary compute (deferred — not designed here)
-| Option | Mechanism | Gives up | Customer infra |
+| Deployment | (a) no customer infra | (b) data stays in boundary | (c) non-bypassable |
 |---|---|---|---|
-| **Serverless / SDK** (shipped) | `aegion-guard` calls our hosted brain per action | (b) content leaves; (c) cooperative | none |
-| **Connector** | hook the customer's existing Bedrock Lambda / Azure Function | (b) content leaves | none new |
-| **ext_authz on their existing mesh/gateway** | Envoy `ext_authz` / WASM / API-GW authorizer → our hosted brain | (b) partially (decision query leaves) | none new (if they already run a mesh) |
-| **AegionAI-hosted egress proxy (SSE-style)** | customer sets `HTTPS_PROXY` to our cloud proxy | (b) all content transits our cloud | none |
+| **In-VPC sidecar — THIS LLD** | ✗ | ✓ | ✓ |
+| Cloud-backed SDK / connector (Serverless) | ✓ | ✗ redacted content leaves | ✗ cooperative |
+| Local-only SDK (in-process deterministic floor, no egress) | ✓ | ✓ | ✗ cooperative |
+| Hosted egress proxy (SSE-style) | ✓ | ✗ content transits us | ✓ with egress lock |
 
-**Decision:** we design the **customer-infra (in-VPC) path first**; once it lands we revisit the no-infra
-options above as a separate workstream. Tracked as **D8** in §15.
+**Key reads:**
+- The **in-VPC sidecar is the only way to get (b)+(c) together** — full ML detection *and* content never leaving *and* non-bypassable — at the cost of (a). **This is why this LLD exists.**
+- **Cloud-backed SDK/connector keeps only (a)** (content leaves *and* it's cooperative). The clean **(a)+(b)** is a **local-only SDK** — just a library that decides in-process on cached deterministic rules and never calls out (no ML, bypassable).
+
+**Scope of this LLD: the (b)+(c) path only — infra in the *customer's* cloud (Dedicated / Self-Managed)**,
+the residency-bound segment (banks, healthcare, government) where the sidecar is unavoidable. The
+no-customer-infra alternatives below are **out of scope here** (a later doc); listed only to mark the boundary.
+
+#### 1.8.1 The no-infra alternatives are deferred
+The no-customer-infra rows in the matrix above — **cloud-backed SDK/connector**, **local-only SDK**, and
+**hosted egress proxy** — plus **`ext_authz` on a customer's existing mesh/gateway** (Envoy `ext_authz` /
+WASM / API-GW authorizer → our hosted brain; no *new* infra if they already run a mesh, keeps (a)+(c),
+partial (b)) are the ways to govern *without* in-boundary compute. **All are deferred** — this LLD designs
+the in-VPC (b)+(c) path; the no-infra family is a separate workstream tracked as **D8** (§15).
 
 ---
 
@@ -253,6 +259,19 @@ options above as a separate workstream. Tracked as **D8** in §15.
 The **PDP is heavy** (model weights = IP, CPU/RAM, must scale with QPS) → make it a **shared,
 horizontally-scaled fleet per VPC/account**, not one-per-agent. The **PEP is light** (capture bytes,
 call PDP, apply verdict) → it sits close to each agent. This split is assumed by all later sections.
+
+### 2.0 Vocabulary — the two enforcement tiers (read first)
+The engine has two kinds of check; the options below differ only in *where each runs*:
+
+| Tier | What it is | Cost | Needs a model? |
+|---|---|---|---|
+| **Deterministic floor** | **Cedar policy** (tool allow/deny, parameter bounds, required-sequence) + **Sigma signatures** (known injection/jailbreak patterns, regex/string) + **rate/abuse limits** | µs–ms; same input → same output; explainable | **no** |
+| **ML / deep tier** | **distilled CPU classifier** (catches *novel* attacks signatures miss, by semantics) + detection layers **D1–D7** | tens–hundreds of ms (inference) | **yes** |
+
+**Baseline → target (so the options below are concrete):**
+- **Today's shipped baseline (Serverless):** the *whole* engine runs in **AegionAI's cloud**; every guarded call is a network round-trip to us (SDK is the wire).
+- **In-VPC baseline (2A):** a **shared PDP fleet inside the customer's cloud** runs *both* tiers; the PEP only forwards. Simplest first in-VPC step.
+- **In-VPC target (2C):** the **floor runs in the PEP** (local, tens of ms, survives outage); the **ML/deep tier stays in the shared fleet** (one copy of the model, not per-agent). 2B is the only option that copies the model per agent — which we avoid.
 
 ### Option 2A — Thin PEP + shared PDP fleet (recommended baseline)
 PEP forwards to a shared in-VPC PDP service (internal NLB / mesh service).
@@ -267,79 +286,308 @@ Each sidecar embeds the full engine and weights.
 - **Cons:** N copies of weights = N× IP exposure + N× memory (distilled model × every agent); weight
   rollout touches every sidecar; expensive on serverless/limited-CPU; hardest to protect (§6).
 
-### Option 2C — Hybrid: deterministic floor in PEP, heavy model in shared fleet (recommended target)
-PEP embeds the **deterministic floor** (Cedar over a signed cached bundle + Sigma) for <tens-of-ms local
-allow/deny and "keep running on PDP outage" (FR-1.7); **escalates only borderline cases** to the shared
-PDP for ML/deep detection (FR-3.2, D1–D7).
-- **Pros:** best latency for the common path; resilient (floor survives PDP/control-plane outage);
-  weights centralized (IP + cost); escalation subset is small (matches LLD 24 "ML last").
-- **Cons:** two enforcement code paths to keep consistent; cached-bundle freshness + signature
-  verification in the PEP; partial coverage if PDP unreachable (ML pauses — acceptable, fail-secure).
+### Option 2C — Hybrid: deterministic floor in PEP, ML/deep tier in shared fleet (recommended target)
+The PEP runs the **deterministic floor only** (Cedar over a signed, cached policy bundle + Sigma + rate
+limits) for tens-of-ms local allow/deny that also **keeps enforcing if the shared fleet or control plane
+is unreachable** (FR-1.7). The **ML/deep tier stays in the shared PDP** (one model copy, not per-agent);
+the PEP **escalates only borderline cases** to it. *(Aggressive sub-variant: also run the distilled model
+in the PEP per FR-3.12 — deferred; conservative 2C keeps ML shared.)*
 
-**Lean:** start 2A for simplicity, evolve to **2C** as FR-1.7 lands. 2B only where a customer demands
-zero shared failure domain and accepts the IP/cost penalty.
+**How "borderline" is decided (deterministic routing, not a guess) — the exact PEP logic:**
+```
+v = cedar.evaluate(action)                          # tool / parameter / sequence
+if v == DENY: return DENY                            # terminal — policy blocks
+if sigma.match_blocking(action.content): return DENY # terminal — known-attack signature
+escalate = ( policy.requires_ml(action.tool)         # tool flagged high-risk
+          or action.has_untrusted_content()          # ingested doc / tool output / web page
+          or sigma.soft_flag(action.content)         # matched a non-blocking "suspicious" rule
+          or action.phase != "request" )             # content/output/memory need semantic detectors
+return ESCALATE if escalate else ALLOW               # ESCALATE → shared PDP runs ML + D1–D7
+```
+**What each check means:**
+- *Deterministic floor — gives a terminal verdict where it can* (full definitions in §2.0): **Cedar** — is
+  the tool allowed for this agent, is the parameter in bounds (e.g. refund ≤ limit), was the required prior
+  step done? **Sigma** — does the content match a *known*-attack pattern?
+- *Escalation triggers — send to ML only when no terminal verdict AND one of these fires:*
+  - **high-risk tool** (`policy.requires_ml`) — the policy marks this tool (e.g. money-movement, data
+    export) to *always* get ML, regardless of the inputs.
+  - **untrusted content** (`has_untrusted_content`) — the action carries data from an untrusted source (a
+    retrieved document, a web page, another tool's output) where a *novel* injection could hide.
+  - **soft-signal hit** (`sigma.soft_flag`) — a Sigma rule matched as *suspicious-but-not-conclusive* (flag,
+    don't block) → worth a semantic second look.
+  - **non-`request` phase** (`phase != "request"`) — the call inspects ingested content / emitted output /
+    memory writes, which need the semantic detectors (D1–D7), not just rules.
+
+The clear majority (allowed tool, in-bounds params, no untrusted content) is decided locally and never escalates.
+
+- **Pros:** best latency for the common path; resilient (floor survives a PDP/control-plane outage);
+  model centralized (IP + cost); escalation subset is small (matches LLD 24 "ML last").
+- **Cons (each unpacked):**
+  - **Two enforcement code paths to keep consistent** — the deterministic logic now runs in *two* places
+    (PEP floor *and* the PDP's full pipeline, which also has Cedar+Sigma). If they diverge (PEP caches an
+    older policy, or evaluates Cedar differently) the *same action can get different verdicts*. Mitigation:
+    ship the **identical Cedar/Sigma evaluator** in both and version + content-hash the bundle.
+  - **Cached-bundle freshness** — the PEP enforces from a **local cached copy** of the policy bundle, which
+    can go **stale** when policy changes. The dangerous case is *stale-permissive* (policy was tightened, PEP
+    still allows). This is the biggest risk of 2C and is designed out in **§2.1** below (push invalidation +
+    force-central-on-tighten), not just bounded by TTL (Time-To-Live).
+  - **Signature verification in the PEP** — the bundle is cryptographically **signed**, and the PEP verifies
+    that signature against a trusted public key before loading it, so a compromised control plane or a
+    **man-in-the-middle (MITM)** attacker **can't push an "allow-all" bundle**; unsigned/bad bundles are
+    rejected (fail-secure). The signing private key is held in a **Hardware Security Module (HSM)** — a
+    tamper-resistant device the key never leaves (AWS CloudHSM/KMS, Azure Key Vault Managed HSM, GCP Cloud
+    HSM) — in a **separate trust domain** (an isolated account/role, *not* the control-plane app), so even a
+    full control-plane breach cannot extract the key or forge a signature. Ties to threat **S4** (§7) + the
+    transparency log.
+  - **Partial coverage if PDP unreachable** — ML pauses; the floor keeps enforcing hard rules (acceptable,
+    fail-secure).
+
+**Lean:** start **2A** for simplicity (all freshness/signature/consistency handled once, centrally), evolve
+to **2C** as FR-1.7 lands. **2B** only where a customer demands zero shared failure domain and accepts the
+per-agent IP/cost penalty.
+
+### 2.1 Policy freshness & cache invalidation (the stale-policy risk)
+Only relevant to **2C** (the PEP holds a local policy cache). The risk is asymmetric:
+- **Stale-permissive (dangerous):** policy was *tightened* (e.g. "block this tool after an incident") but the
+  PEP still runs the old bundle and **ALLOWs** what should now be denied. This is the real security hole.
+- **Stale-restrictive (benign):** old bundle blocks something now allowed — an availability annoyance,
+  fail-secure in spirit, not a breach.
+
+**We do not fetch per call**, and the always-current authority is the **in-VPC shared PDP** (in the
+customer's own cloud), so a refresh is a cheap *local* hop — never a per-call round-trip to AegionAI.
+Freshness is layered:
+
+| Mechanism | What it does | Closes which gap |
+|---|---|---|
+| **1. Push invalidation (primary)** | the in-VPC PDP keeps a persistent channel to the control plane and receives new-bundle pushes; each PEP subscribes to the in-VPC PDP → `bundle vN available` reaches PEPs in ~sub-second–seconds | normal propagation lag |
+| **2. Force-central-on-tighten** | on a *tightening*, the control plane flags the affected tools **"must escalate"** until **every** PEP acks vN; a stale PEP then **routes those actions to the always-current in-VPC PDP** instead of deciding locally | **the stale-permissive window** — tightening is effective *immediately*, before the floor cache catches up |
+| **3. Short TTL backstop + reject-on-expiry** | TTL (Time-To-Live) bounds worst-case staleness if push is down; an expired bundle is rejected → PEP fails-secure (deny / force-central) | push-channel outage |
+| **4. Version monitoring** | every PEP reports its bundle version on heartbeat (§12); alert if any lags the current version beyond the staleness SLO | silent drift / a stuck PEP |
+
+**Net:** push is fast, **force-central makes a tightening take effect instantly**, TTL + fail-secure bound
+the worst case — cache performance and outage-resilience **without** a stale-permissive hole and without
+per-call fetches. *Open knob (D-fresh):* the exact staleness SLO and default TTL — see §15.
 
 ---
 
 ## 3. Networking — traffic flow in the customer VPC, and TLS
 
-### 3.1 How the PEP is inserted (interception mechanism) — 3 options
+### 3.1 How an agent's traffic is made to go through us
+
+**The goal, in one line:** when an onboarded agent calls a tool or API, that call must hit our checkpoint
+(the **PEP**) **before** it runs. Two things make this hard: agents run on many platforms (Kubernetes, ECS,
+EC2, Lambda…), and a **hijacked** agent may actively try to skip us. We solve it by borrowing two
+battle-tested industry patterns, then adding one backstop.
+
+#### Step 1 — attach a checkpoint to the agent (the "wire"). Two proven patterns:
+
+- **Wire A — in-process auto-instrumentation (the *Datadog / New Relic* pattern).**
+  - *What it is:* a small library loads **before** the agent's code (Java `-javaagent`, Python preload like
+    `ddtrace-run`, Node `--require`) and automatically hooks the HTTP / tool-call libraries — so every call
+    is captured with **no per-call code changes** (registration happens on the agent's "first line," for free).
+  - *Why we'd use it:* the **richest** view — it sees **in-process** tool calls and content, and can capture
+    results for rollback; lowest-friction to adopt (one startup flag).
+  - *The catch:* it runs **inside the agent's own process**. A hijacked agent can spawn a subprocess, use an
+    un-hooked path, or have the model write code that goes around it. **Great coverage, but NOT a hard
+    security boundary** — this is the *cooperative* wire.
+- **Wire B — transparent network capture (the *Istio / service-mesh* pattern).**
+  - *What it is:* run the checkpoint as a **separate proxy next to the agent** and use OS-level rules
+    (`iptables`) to **redirect all the agent's network traffic into it** — the agent doesn't cooperate or
+    even know. On Kubernetes the proxy is auto-installed by an **admission webhook** (a hook Kubernetes calls
+    when a new agent starts); on other platforms we attach it per-platform (§3.1.1).
+  - *Why we'd use it:* the agent **can't bypass it** — capture is *outside* the agent's process, at the
+    network level. This is the real **security boundary**.
+  - *The catch:* it sees **network traffic only** (not in-process calls), and for encrypted traffic it needs
+    §3.3 to read the body. The strong auto-install (admission webhook) is **Kubernetes-only**.
+
+> We ship **both** wires and they compose: **Wire A** for rich in-process coverage and easy onboarding;
+> **Wire B** for the can't-be-bypassed boundary. (Same as the SDK-vs-network-sidecar split in §1.3 — now
+> named after the tools they're modelled on.)
+
+#### Step 2 — make it a *guarantee*: the egress chokepoint (even Istio needs this)
+- *What it is:* route the governed agents' outbound traffic so the **only way out is through our checkpoint**,
+  and **deny by default** anything that arrives without a known, validated identity.
+- *Why a hijacked agent can't skip it (the key point):* the chokepoint is **not something the agent chooses
+  to call** — it's the **only network route out**, enforced by the **VPC route table** (controlled by the
+  cloud admin, *not* the workload). The segment's route sends `0.0.0.0/0` to the egress firewall and there is
+  **no direct internet route** (no IGW/NAT). So even a fully hijacked agent that ignores its wire and opens a
+  raw socket to `evil.com` is **still routed to the chokepoint by the infrastructure** — it cannot route
+  around it. *(How "deny" works there: the egress firewall is **default-deny** — only flows from an
+  identified, validated governed agent to an allowed destination pass; anything else matches no allow-rule
+  and is dropped.)*
+- *What's ours vs. commodity (important — we are not reselling a firewall):* the **routing + a generic
+  egress firewall (AWS Network Firewall / Azure Firewall / GCP Secure Web Proxy) is commodity plumbing the
+  customer already has.** It only does coarse IP/domain allow-deny. **What we build is the agent-aware
+  decision** (Cedar + Sigma + ML + identity + trust + rollback) that the chokepoint enforces — either we
+  *are* the egress proxy the routing points to, or the customer's firewall **calls out to us for the
+  verdict** (ext_authz). The firewall enforces; **we decide**.
+- *Scoped, not blanket:* we do **not** route the whole account through us. Onboarded agents go into a
+  **dedicated segment** (a subnet) whose route sends *its* egress through the checkpoint; all other traffic
+  routes normally. → smaller blast radius, lighter security review, scoped latency/cost.
 
 ```mermaid
-flowchart TB
-  subgraph optA["3A Explicit proxy - HTTPS_PROXY env"]
-    a1["Agent"] -->|proxy env| ap["PEP proxy"] --> aout["tool / API"]
+flowchart LR
+  subgraph SEG["Governed segment (route table forces egress to chokepoint)"]
+    AG["Agent + wire (A or B)"]
+    PEP["PEP checkpoint"]
+    AG --> PEP
   end
-  subgraph optB["3B Transparent redirect (iptables / eBPF)"]
-    b1["Agent"] -->|netns redirect| bp["PEP proxy"] --> bout["tool / API"]
-  end
-  subgraph optC["3C Mesh sidecar (Envoy in pod)"]
-    c1["Agent container"] -->|localhost| cp["Envoy sidecar PEP"] --> cout["tool / API"]
-  end
+  PEP --> CHK["Egress chokepoint (commodity firewall)<br/>only route out; default-deny; asks us for verdict"]
+  CHK -->|validated by us| NET["internet / tool / API"]
+  CHK -. "unvalidated or unknown: DENY" .-> X["blocked"]
+  AG -. "raw socket tries to skip wire - still routed here" .-> CHK
 ```
 
-| Option | Mechanism | Pros | Cons | Cloud reality |
-|---|---|---|---|---|
-| **3A Explicit proxy** | set `HTTPS_PROXY`/`HTTP_PROXY` (or SDK transport) so the agent dials the PEP | works **everywhere incl. Fargate** (no privilege); simple; agent-scoped | **cooperative-ish** (app can ignore env / hardcode); not non-bypassable alone | only viable option on **Fargate** (no NET_ADMIN) |
-| **3B Transparent redirect** | `iptables`/`nftables` REDIRECT or eBPF in the agent's netns/node | truly **non-bypassable** for that netns; zero app change | needs **NET_ADMIN / privileged**; **eBPF blocked on Fargate & GKE DPv2** | EKS-EC2 / AKS / GKE-Standard nodes only |
-| **3C Mesh sidecar** | Envoy as a pod sidecar (Istio-style), localhost interception | non-bypassable within pod; rich L7; reuses CNCF tooling | per-pod overhead; sidecar injection plumbing; not for serverless | EKS/AKS/GKE; **Cloud Run/ACA multi-container** can host it |
+#### Step 3 — know the checkpoint is actually there (three-way reconciliation)
+Three lists, each answering a different question:
+- **Discovered** — every agent the **cloud APIs** say exists (pods / tasks / functions / instances) = *what is
+  running.*
+- **Onboarded** — agents registered in the **AegionAI control-plane registry** (from import, FR-7.7–7.9) =
+  *what should be governed.*
+- **Live check-ins** — wires that **announced themselves and heartbeat** = *what is actually guarded right now.*
 
-**Non-bypass is a *customer-side* contract, not a sidecar property.** True non-bypass requires **egress
-lockdown**: security-group/NSG/firewall rules that force *all* agent egress through the PEP, else the
-agent opens a direct socket and escapes (§7). We must require and verify this, or "non-bypassable" is
-marketing.
+*Registration mechanism:* on startup the wire makes an authenticated `POST /v1/register` (then periodic
+`/v1/heartbeat`) call, authenticated by its **workload identity** (§3.5: SPIFFE SVID / IRSA token), carrying
+`(tenant_id, agent_id, instance_id, version)`. No heartbeat ⇒ the guard is down or missing.
 
-### 3.2 Traffic selection — which flows we act on
-We only see governed-agent traffic (routed in via 3A/3B/3C). Within that we classify:
-- **Source identity:** mTLS client cert / SPIFFE id / pod label / source subnet → `(tenant_id, agent_id)`
-  (FR-10.3; never trust a self-asserted field).
-- **Destination:** known tool / MCP / LLM / DB endpoints (allowlist).
-- **Protocol shape:** MCP JSON-RPC, OpenAI/Bedrock/Vertex API schema, SQL-over-wire, tool-call envelope.
-- **Default for unmatched governed egress:** configurable **monitor (pass+log)** → **enforce (deny)**;
-  unmatched *non-governed* traffic is pass-through untouched.
+```mermaid
+flowchart LR
+  DISC["Discovered (cloud APIs): what is running"] --> R{reconcile}
+  ONB["Onboarded (CP registry): what should be governed"] --> R
+  LIVE["Live check-ins (register/heartbeat): actually guarded now"] --> R
+  R -->|"discovered minus onboarded"| S["Shadow agents nobody onboarded - flag"]
+  R -->|"onboarded minus live"| B["Guard missing or broken - alert; chokepoint denies"]
+```
+*Why it's necessary:* the CP registry tells us what to expect, the cloud APIs tell us what's really running,
+and the check-ins prove the guard actually loaded — an onboarded agent whose wire failed to load looks fine
+in the registry but is only caught by the missing check-in. *(On Kubernetes a **validating admission
+webhook** can also reject an unguarded agent at deploy time; off-K8s we rely on detect + chokepoint-deny.)*
 
-### 3.3 TLS — what we need to terminate, and what we do not
+#### Why each step exists (one line each)
+- **Wire** → so we can **see and act on** the action (and, with Wire A, see in-process calls).
+- **Chokepoint + deny-by-default** → so **nothing reaches the outside without passing us**, even if a wire is missing.
+- **Segment scoping** → so we inspect **only onboarded agents**, not the whole company's traffic.
+- **Registration + reconciliation** → so we **know** which agents are guarded and catch the ones that aren't.
 
-This is the pivotal networking choice. Almost all agent egress is HTTPS; to read **parameters/content**
-the PEP must terminate TLS.
+#### Catches (so no reviewer is misled)
+- Wire A (in-process) is **bypassable by a hostile agent** → never rely on it alone as the boundary.
+- The strong **auto-install (admission webhook) is Kubernetes-only**; other platforms are detect-fast +
+  chokepoint-deny, not block-at-birth.
+- The chokepoint needs the **customer to set the routing**, and **Lambdas must be VPC-attached** or they keep
+  their own way out.
+- Encrypted traffic: Wire B sees the destination but needs **§3.3** to read the body.
+- The customer owns their cloud, so nothing is 100% against a malicious admin → we **attest** the
+  webhook/routing are in place and alert on change (§12). Defense in depth, not an absolute.
 
-| Option | What we see | What it costs |
-|---|---|---|
-| **3T-A MITM termination** (proxy CA installed in agent trust store; SSL-bump/Envoy) | full L7: URL, headers, **body/parameters** | a **per-tenant MITM CA private key** in the VPC = crown-jewel liability; **breaks cert-pinned** clients; clients can detect the proxy |
-| **3T-B Metadata-only passthrough** (no termination) | SNI / destination host, ports, byte volume, timing — **not** body | safe, no CA, no breakage; **cannot do parameter-bound policy or content detection at the network layer** → relies on SDK for content |
-| **3T-C Hybrid** (metadata by default; **opt-in MITM per destination/tenant**; SDK for content) | metadata everywhere + content where MITM or SDK is enabled | two paths; per-destination CA scoping; clearest data-boundary story |
+#### 3.1.1 How Wire B attaches, per platform
+A **variant** = the concrete way we physically insert the network-capture proxy into the agent's path. We
+need several because **no single attach method works on every platform** (clouds restrict different things,
+§13) — on a full K8s node you'd use 3B/3C, on Fargate you're forced to 3A, on Lambda you use the extension.
 
-**What we need from TLS, explicitly:**
-- **Need to terminate** when: parameter-bound policy (refund ≤ limit), content/injection detection, DLP
-  on request bodies — i.e., any check on *what's inside* the call.
-- **Do NOT need to terminate** for: tool allow/deny by destination, egress allowlist, rate/abuse, volume
-  anomaly, cross-agent topology — these run on **metadata/SNI** alone.
-- **Never** intercept the **PEP↔PDP** and **data-plane↔control-plane** channels by MITM — those are our
-  own **mTLS** with pinned certs.
+| Variant | How it attaches | Best where | Catch |
+|---|---|---|---|
+| **3A Explicit proxy** | set `HTTPS_PROXY` so the agent dials the PEP | **anywhere incl. Fargate** (no privilege) | cooperative-ish (app can ignore the env var) |
+| **3B Transparent redirect** | `iptables`/eBPF redirect in the agent's network namespace | EKS-EC2 / AKS / GKE-Standard | needs privilege; **eBPF blocked on Fargate & GKE Dataplane V2** |
+| **3C Mesh sidecar** | Envoy as a sidecar container (Istio-style) | EKS / AKS / GKE; Cloud Run / ACA multi-container | per-pod overhead; not for Lambda |
 
-**Lean:** **3T-C** — metadata-only as the safe default (covers a large slice with no CA risk), content
-coverage via the **SDK/connector** (already plaintext at the app layer), MITM only where a customer
-explicitly accepts it for a specific destination. This keeps the dangerous CA out of most deployments.
+**Serverless agents (Lambda / Functions) can't host a sidecar** — they use an in-execution-environment
+extension instead:
+
+```mermaid
+flowchart LR
+  subgraph ENV["AWS Lambda execution environment (one per function)"]
+    FN["Agent function code"]
+    EXT["PEP = Runtime API proxy extension<br/>layer; intercepts events + egress"]
+    FN -->|tool call| EXT
+  end
+  EXT -->|"validate, then forward on ALLOW"| API["tool / API"]
+  EXT -. "DENY: block + return error" .-> FN
+```
+
+- **AWS Lambda → Runtime API proxy extension** (a layer; Rust/Go binary) that hooks the Lambda Runtime API to
+  intercept/**block** the function's calls and route its egress — **no function code change** (AWS-documented).
+- **GCP Cloud Run → 3C mesh sidecar** (Cloud Run supports multi-container).
+- **Azure Functions → Wire A (SDK) or the connector** (no clean extension-proxy equivalent).
+
+#### 3.1.2 Alternatives considered
+- **eBPF / kernel capture (Cilium, Pixie):** capture at the kernel — most transparent, language-agnostic.
+  *Catch:* needs privileged/kernel access → **blocked on Fargate & GKE Dataplane V2**.
+- **Traffic mirroring (AWS VPC Traffic Mirroring / GCP Packet Mirroring):** copies traffic for **observation
+  only**. *Catch:* can't block inline; Azure's vNet TAP is immature.
+- **Ride the customer's existing egress proxy/firewall (§3.3, option 3T-D):** reuse what regulated orgs
+  already run. *Catch:* depends on them already having it.
+
+### 3.2 Traffic selection — deciding which connections to act on
+A workload makes many outbound connections — some are agent *actions* we govern (a payment API call), many
+are noise (package downloads, DNS, telemetry). "Traffic selection" answers, **per connection: (i) is this
+from a governed agent, and (ii) is it an action we enforce on?** Four steps:
+
+1. **Only governed agents reach the PEP at all.** We route *only* the agents we govern through the PEP (via
+   3A/3B/3C). A workload the customer hasn't onboarded never touches us.
+2. **Identify *who* is calling** — from signals the caller can't forge: a workload-identity credential
+   (mTLS client cert / SPIFFE ID, §3.5), a pod label / Kubernetes service account, or — weakest, fallback
+   only — source IP/subnet. This resolves to `(tenant_id, agent_id)` (FR-10.3; never a self-asserted field).
+3. **Identify *what* it's doing** — by **destination** (the host/endpoint, e.g. `api.stripe.com/refunds`,
+   matched against a known tool/API/LLM/DB list) and **protocol shape** (MCP JSON-RPC, OpenAI/Bedrock/Vertex
+   API, SQL-over-wire, tool-call envelope).
+4. **Decide whether to act** — matched governed tool → run the policy/floor (§2); a governed agent making an
+   *unrecognized* call → configurable **monitor (log+allow)** by default, tightening to **deny** as
+   confidence grows; non-governed traffic that slipped through → pass through untouched.
+
+**Example:** a refund agent opens two connections — one to `api.stripe.com/refunds` (a recognized payment
+tool → enforce policy) and one to `pypi.org` to fetch a library (not a governed action → pass through). The
+PEP acts on the first and ignores the second.
+
+### 3.3 TLS — what we must decrypt, and *who* decrypts it
+Almost all agent egress is **HTTPS (encrypted)**. To check **parameters/content** (refund ≤ limit, injection
+in the body) *someone* must **decrypt** the call; to check only destination/volume, nobody needs to.
+
+**What "MITM" means, plainly, and why it's risky.** To decrypt HTTPS at a proxy, the proxy **pretends to be
+the destination**: it presents its *own* certificate to the agent, signed by a **CA (Certificate Authority)
+the agent is configured to trust**, decrypts, inspects, then re-encrypts onward to the real site. That's a
+deliberate **man-in-the-middle (MITM)**. Three costs:
+- **The CA private key is a crown jewel.** Whoever holds it can impersonate *any* website to those agents —
+  if it leaks, an attacker can MITM the customer's traffic at will. A per-tenant CA key in the VPC is a
+  serious thing to secure and rotate.
+- **It breaks certificate pinning.** Some clients/SDKs "pin" the exact cert they expect and will **refuse**
+  the proxy's substitute cert → the connection fails. Many cloud SDKs and security-sensitive APIs pin.
+- **It's detectable.** The agent can tell it's talking to a proxy cert, not the real site.
+
+**The realization that changes the calculus (verified across all three clouds):** large/regulated customers
+usually **already run outbound TLS inspection** at a central egress point, *with their own internal CA
+already trusted by every workload*:
+- **AWS** — Network Firewall egress TLS inspection (decrypt → inspect → re-encrypt; NAT-GW + PrivateLink).
+- **Azure** — **Azure Firewall Premium** TLS inspection (clients must trust the org Root/Intermediate CA).
+- **GCP** — **Secure Web Proxy (SWP)** and/or **Cloud NGFW Enterprise** (HTTP CONNECT explicit proxy, L7
+  inspection; certs via Certificate Authority Service + Certificate Manager).
+- Or a third-party egress proxy (Squid SSL-bump, Zscaler).
+
+In those environments **the CA and the MITM already exist and are the customer's responsibility** — so we
+don't have to become a new CA; we **consume what they already decrypt** (3T-D).
+
+| Option | Who decrypts | We see body? | CA liability |
+|---|---|---|---|
+| **3T-A We MITM (our CA)** | our PEP, our CA in the agent trust store | yes | **we hold the CA** — highest |
+| **3T-B Metadata-only** | nobody (passthrough) | no — SNI/destination/volume only | none |
+| **3T-C Hybrid: metadata + SDK for content** | the SDK, at the app layer (already plaintext) | yes, via SDK | none at the network layer |
+| **3T-D Ride the customer's existing egress inspection** | the customer's egress firewall/proxy (their CA) | yes, from their decrypted feed | **customer's, not ours** |
+
+**"Even inside the same infra, don't we still need the body (redacted)?"** Yes — to run parameter-bound
+policy or content detection the PDP needs the **decrypted** body (redaction happens *after* decryption,
+before anything leaves the boundary). The question is never "encrypted vs not" *inside* the boundary — it's
+**who terminates the TLS**: our CA (3T-A), the app/SDK (3T-C), or the customer's existing egress proxy (3T-D).
+
+**"With 3T-C we can't do anything" — not true.** With metadata + SDK, 3T-C still does **tool allow/deny,
+egress allowlist, rate/abuse, volume anomaly, identity, cross-agent topology** at the network layer **and**
+full content checks (parameter bounds, injection, DLP) **via the SDK** (which sees plaintext for free). The
+*only* gap is reading the body of a call from an agent that has **neither SDK nor MITM** — exactly what 3T-A
+or 3T-D fills.
+
+**Never MITM our own channels** (PEP↔PDP, data-plane↔control-plane) — those are our mTLS with pinned certs (§3.5).
+
+**Lean:** default **3T-B/3T-C** (metadata + SDK; no CA we own). Where a customer needs network-layer content
+*without* the SDK, prefer **3T-D (ride their existing egress inspection)** over **3T-A (our own CA)** — most
+regulated buyers already run egress TLS inspection, so we consume it rather than become a new CA liability.
 
 ### 3.4 Where the brain sits, and how things connect
 
@@ -365,18 +613,73 @@ sequenceDiagram
   participant PEP
   participant PDP
   participant CP as Control Plane
-  Note over PEP,CP: bootstrap (once): mTLS enroll + attestation, pull signed bundle + weights
-  Agent->>PEP: outbound action (TLS)
-  PEP->>PEP: classify; deterministic floor (cached, FR-1.7)
-  alt clear allow/deny locally
-    PEP-->>Agent: enforce verdict (<tens of ms)
-  else borderline → escalate
-    PEP->>PDP: /v1/validate (metadata or redacted content)
-    PDP-->>PEP: decision + reason + source + action
+  Agent->>PEP: outbound action over TLS
+  PEP->>PEP: classify and run cached deterministic floor
+  alt clear allow or deny locally
+    PEP-->>Agent: enforce verdict in tens of ms
+  else borderline - escalate per 2C routing
+    PEP->>PDP: validate request
+    PDP-->>PEP: decision reason source action
     PEP-->>Agent: enforce verdict
   end
-  PEP-->>CP: async metadata/signal (off hot path)
+  PEP-->>CP: async metadata off hot path
 ```
+
+> **Escalation (per action) vs. refresh (per policy change) — two different "go to PDP" events, don't
+> conflate them:** *Escalation* is decided **per request** by the §2C routing logic (high-risk tool /
+> untrusted content / soft-flag / non-`request` phase) — **not** by any timer. *Bundle refresh* is the
+> §2.1 freshness mechanism (push + TTL backstop) and happens **per policy change**, asynchronously, off
+> the request path. A request never waits on a TTL.
+
+### 3.5 Authentication & identity (every hop)
+Every hop is **mutually authenticated** and uses **no static long-lived secrets**. Three trust boundaries:
+
+**3.5.1 Agent → PEP (which agent is this?).** The PEP must bind each call to an authentic
+`(tenant_id, agent_id)` — **never a self-asserted field** (FR-10.3). Sources, strongest first:
+- **Workload identity (preferred):** the agent presents a **SPIFFE SVID** (Secure Production Identity
+  Framework For Everyone — a short-lived X.509 cert, auto-rotated, issued by **SPIRE**) or a cloud workload
+  identity (Kubernetes ServiceAccount token, AWS IRSA); the PEP verifies it via mTLS.
+- **Platform identity:** pod label / service account from the orchestrator — trustworthy *because* the PEP
+  was injected by admission control (§3.1).
+- **Network identity (fallback only):** source IP/subnet — weak, supplements the above.
+
+**3.5.2 PEP ↔ PDP (in-VPC, hot path) — mutual TLS.** Both sides present and verify certificates via
+**SPIFFE/SPIRE**: SPIRE issues short-lived SVIDs to PEP and PDP; Envoy/our proxy consume them through the
+**SDS (Secret Discovery Service)** API; certs auto-rotate and are never written to disk. This stops a rogue
+in-VPC workload from impersonating the PDP (and feeding fake "ALLOW" verdicts) or impersonating a PEP.
+
+**3.5.3 Data plane ↔ AegionAI control plane (the uplink).** Two phases:
+- **Bootstrap / enrollment (once), with no pre-shared secret** — the data plane proves identity using
+  **cloud workload identity federation (OIDC — OpenID Connect)**: **AWS IRSA** (IAM Roles for Service
+  Accounts), **Azure Workload Identity**, or **GKE Workload Identity** mint a cloud-signed OIDC token, which
+  the data plane exchanges with the control plane for a **per-tenant client certificate** + bootstrap token.
+  (SPIRE can itself act as the OIDC issuer.) Optional **attestation** (TEE measurement, §6) gates this for
+  high-assurance tenants.
+- **Steady state — mTLS** with the per-tenant cert (auto-rotated). The control plane authenticates the data
+  plane and binds it to `tenant_id`; the data plane authenticates the control plane via a **pinned** server
+  cert **and** independently **verifies every policy bundle's signature** (§2C), so even a spoofed control
+  plane can't push an "allow-all".
+
+**3.5.4 Human / API access.** Console + management APIs use **OIDC + RBAC** (FR-8.5), federated to the
+customer's IdP (Identity Provider).
+
+```mermaid
+sequenceDiagram
+  participant DP as Data Plane
+  participant Cloud as Cloud IdP
+  participant CP as AegionAI Control Plane
+  participant SPIRE
+  DP->>Cloud: request workload-identity token
+  Cloud-->>DP: signed OIDC token
+  DP->>CP: present OIDC token plus optional attestation
+  CP-->>DP: per-tenant mTLS cert plus bootstrap token
+  SPIRE-->>DP: short-lived SVIDs auto-rotated
+  DP->>CP: mTLS with cert and verify signed bundles
+```
+
+**Principles:** mutual auth on every hop; **no static long-lived secrets** (workload-identity federation +
+short-lived SVIDs); auto-rotation; tenant binding from a **verified** credential, never a request field;
+least-privilege per credential. *(Open: exact SVID lifetime + rotation cadence — D9, §15.)*
 
 ---
 
@@ -729,21 +1032,33 @@ Per-VPC/region fleet health; version skew across the fleet; model/score drift vs
 | Serverless container sidecar | **Fargate**: sidecar ✓ but **no eBPF / NET_ADMIN / GPU**; **Lambda**: no sidecar | **Container Apps / App Service**: sidecar ✓; **Functions**: no sidecar | **Cloud Run**: multi-container sidecar ✓ (≤10, shared netns); GKE ✓ |
 | Transparent redirect (iptables) | EC2 nodes ✓; Fargate ✗ | AKS nodes ✓ | GKE Standard ✓ |
 | **Custom eBPF interception** | EC2 ✓; **Fargate ✗** | AKS (Cilium managed) — limited | **GKE Dataplane V2 forbids custom eBPF** |
-| Explicit proxy (HTTPS_PROXY) | ✓ (only option on Fargate) | ✓ | ✓ |
+| Explicit proxy (HTTPS_PROXY) | ✓ (only option on Fargate) | ✓ (Container Apps via UDR → Azure Firewall) | ✓ (note: GKE proxy `httpsProxy` field needs `http://` scheme) |
+| **Serverless-agent interception** | **Lambda Runtime API proxy extension** (layer, no code change) | Functions → SDK/connector | Cloud Run → 3C mesh sidecar |
+| **Egress TLS inspection to ride (3T-D)** | **Network Firewall** egress TLS inspection | **Azure Firewall Premium** (client trusts org CA) | **Secure Web Proxy** / **Cloud NGFW Enterprise** (CAS + Cert Manager) |
+| **Workload identity (auth, §3.5)** | **IRSA** (IAM Roles for Service Accounts) | **Entra Workload Identity** federation | **GKE Workload Identity** |
 | Traffic mirroring (observe) | VPC Traffic Mirroring **GA** | vNet TAP **Preview**, limited regions, no filtering | Packet Mirroring **GA** |
 | Private CP connectivity | **PrivateLink** | **Private Link** | **Private Service Connect** (all same-cloud only) |
 | CPU confidential computing | **Nitro Enclaves** (no GPU TEE) | Confidential VM/Containers (most mature) | Confidential VM (AMD SEV, weak attestation) |
 | GPU confidential computing | ✗ | **Preview (H100)** | ✗ |
 
+*All rows verified against vendor docs / current write-ups (June 2026); sources in §16. Cross-cloud
+constant: **SPIFFE/SPIRE** is the portable workload-identity + mTLS standard (Istio, Cilium, Linkerd all
+build on it), so PEP↔PDP mTLS (§3.5.2) is identical on all three clouds; only the **bootstrap** identity
+provider differs (IRSA / Entra WI / GKE WI).*
+
 ### 13.2 Per-cloud implications
 - **AWS**: full power on **EKS-EC2/ECS-EC2** (redirect/eBPF/mesh all viable; Nitro Enclave for 6B).
-  **Fargate forces explicit-proxy (3A) only** — no transparent capture, no eBPF, no NET_ADMIN; document
-  this clearly. Lambda agents → SDK/connector, never sidecar.
-- **Azure**: strongest **confidential** story (6B), Container Apps/App Service support sidecars; AKS+Cilium
-  for L7. vNet TAP too immature to rely on → don't build on mirroring here.
+  **Fargate forces explicit-proxy (3A) only** — no transparent capture, no eBPF, no NET_ADMIN. **Lambda
+  agents** → use the **Lambda Runtime API proxy extension** (3.1.1) or SDK/connector, never a sidecar.
+  Auth bootstrap via **IRSA**; ride **Network Firewall** egress TLS inspection for 3T-D.
+- **Azure**: strongest **confidential** story (6B); **Container Apps/App Service** support sidecars, egress
+  controlled via **UDR → Azure Firewall** (note: Container Apps' Envoy edge terminates TLS at its boundary);
+  AKS+Cilium for L7. Auth via **Entra Workload Identity**; ride **Azure Firewall Premium** for 3T-D. vNet
+  TAP too immature → don't build on mirroring here.
 - **GCP**: Cloud Run multi-container makes the **mesh-sidecar (3C)** clean for serverless-ish workloads;
-  **GKE Dataplane V2 blocks custom eBPF** → use Envoy sidecar / explicit proxy, not custom eBPF; CVM is
-  CPU-only with weaker attestation (temper 6B claims).
+  **GKE Dataplane V2 blocks custom eBPF** → use Envoy sidecar / explicit proxy. Auth via **GKE Workload
+  Identity**; ride **Secure Web Proxy / Cloud NGFW Enterprise** for 3T-D. CVM is CPU-only with weaker
+  attestation (temper 6B claims).
 
 ### 13.3 Portability principle
 Pick mechanisms available on **all three**: **explicit proxy (3A)** + **mesh sidecar (3C)** as the
@@ -771,13 +1086,15 @@ effect-capture. Sell them as complementary, not either/or.
 | # | Decision | Options | Lean |
 |---|---|---|---|
 | D1 | PEP/PDP topology | 2A thin+shared / 2B fat / 2C hybrid | **2C** (2A first) |
-| D2 | Interception mechanism | 3A explicit / 3B redirect-eBPF / 3C mesh | **3A+3C portable; 3B as optimization** |
+| D2 | Interception placement | host-agnostic **egress chokepoint** (base) vs per-workload **adapter** (3A explicit / 3B redirect-eBPF / 3C mesh / Lambda extension) | **chokepoint as the general base; adapters for richer coverage where available** |
 | D3 | TLS handling | 3T-A MITM / 3T-B metadata-only / 3T-C hybrid | **3T-C** |
 | D4 | Weights packaging | 5A baked / 5B pull-at-startup / 5C streamed | **5B (+5A air-gap)** |
 | D5 | IP protection | 6A encrypt / 6B TEE / 6C obfusc-split | **6A floor + 6B opt-in + tiering** |
 | D6 | Metering | 10A CP / 10B signed-ledger / 10C license | **10A (Dedicated) + 10B/10C (air-gap)** |
 | D7 | CP connectivity | private link per cloud / public mTLS | **private where available; CP per cloud** |
 | D8 | No-in-boundary-compute alternatives (§1.8.1) | Serverless-SDK / connector / ext_authz on existing mesh / hosted egress proxy | **deferred — separate workstream after the in-VPC path lands** |
+| D9 | Workload-identity stack (§3.5) | self-hosted **SPIFFE/SPIRE** / native per-cloud (IRSA · Entra WI · GKE WI) / hybrid | **SPIFFE/SPIRE portable core + native bootstrap per cloud** |
+| D-fresh | Policy cache staleness (§2.1) | exact TTL + staleness SLO; push-channel transport | **push primary + force-central-on-tighten; TTL/SLO TBD** |
 
 **These are explicitly unresolved — to be re-evaluated together before build.** D8 is intentionally
 out of scope for this LLD (see §1.8) and revisited later.
@@ -801,6 +1118,12 @@ out of scope for this LLD (see §1.8) and revisited later.
 - Private connectivity: [AWS PrivateLink for SaaS](https://aws.amazon.com/blogs/networking-and-content-delivery/extend-saas-capabilities-across-aws-accounts-using-aws-privatelink-support-for-vpc-resources)
 - Confidential computing GPU status: [Azure confidential GPUs](https://thomasvanlaere.com/posts/2025/03/azure-confidential-computing-confidential-gpus-and-ai/), [Nitro Enclaves](https://aws.amazon.com/confidential-computing/)
 - TLS interception patterns: [Squid SSL-Bump](https://wiki.squid-cache.org/ConfigExamples/Intercept/SslBumpExplicit), Envoy egress TLS.
+- **Egress TLS inspection to ride (3T-D):** [AWS Network Firewall egress TLS inspection](https://aws.amazon.com/blogs/security/tls-inspection-configuration-for-encrypted-egress-traffic-and-aws-network-firewall/) · [Azure Firewall Premium TLS inspection](https://learn.microsoft.com/en-us/azure/firewall/premium-features) (and [cert requirements](https://learn.microsoft.com/en-us/azure/firewall/premium-certificates)) · [GCP Cloud NGFW TLS inspection](https://docs.cloud.google.com/firewall/docs/about-tls-inspection) + [Secure Web Proxy](https://cloud.google.com/security/products/secure-web-proxy)
+- **Lambda agent interception:** [AWS Lambda Runtime API proxy extension](https://aws.amazon.com/blogs/compute/enhancing-runtime-security-and-governance-with-the-aws-lambda-runtime-api-proxy-extension/)
+- **Auth / workload identity (§3.5):** [SPIFFE/SPIRE concepts](https://spiffe.io/docs/latest/spire-about/spire-concepts/) · [Azure Entra Workload Identity federation](https://learn.microsoft.com/en-us/entra/workload-id/workload-identity-federation) · service-mesh mTLS (Istio/Linkerd/Cilium all build on SPIFFE)
+- **Non-bypass / admission control:** [Kubernetes admission webhooks](https://kubernetes.io/docs/reference/access-authn-authz/admission-controllers/); Istio note that it "cannot securely enforce all egress flows through the gateway"
+- **Native agent governance (validation):** [Amazon Bedrock AgentCore Policy → Cedar](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/policy.html) — AWS intercepts every tool call at the boundary, NL→Cedar (AWS-only; confirms our model + the cross-cloud gap)
+- **Container Apps / Cloud Run egress:** [ACA outbound via UDR/Azure Firewall](https://learn.microsoft.com/en-us/azure/container-apps/user-defined-routes) · [Securing ACA egress](https://techcommunity.microsoft.com/blog/azurepaasblog/securing-network-egress-in-azure-container-apps/3915548)
 
 ---
 *Draft for review. Per LLD standards: update HLD/ADR/flow/demo on changes; no option here is final until §15 is resolved.*
