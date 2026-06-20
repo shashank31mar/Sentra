@@ -1,0 +1,400 @@
+<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><title>STRATEGY</title><style>
+  @page { size: Letter; margin: 0.6in 0.7in; }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; }
+  body {
+    font-family: "Helvetica Neue", Helvetica, Arial, sans-serif;
+    color: #1c2330; font-size: 11px; line-height: 1.45;
+    -webkit-font-smoothing: antialiased;
+  }
+  h1 { font-size: 20px; font-weight: 800; color: #0f1b2d; margin: 0 0 4px 0; letter-spacing: -0.2px; }
+  h2 {
+    font-size: 13px; font-weight: 800; text-transform: uppercase; letter-spacing: 0.5px;
+    color: #1559c9; margin: 16px 0 6px 0; padding-bottom: 3px; border-bottom: 1px solid #d7deea;
+  }
+  h3 { font-size: 11.5px; font-weight: 800; color: #0f1b2d; margin: 12px 0 4px 0; }
+  h4 { font-size: 11px; font-weight: 800; color: #2a3650; margin: 10px 0 4px 0; }
+  p { margin: 0 0 6px 0; }
+  ul, ol { margin: 0 0 6px 0; padding-left: 18px; }
+  li { margin: 0 0 3px 0; }
+  strong { color: #0f1b2d; }
+  em { color: #2a3650; }
+  a { color: #1559c9; text-decoration: none; }
+  hr { border: 0; border-top: 1px solid #d7deea; margin: 12px 0; }
+  blockquote {
+    margin: 8px 0; padding: 6px 12px; border-left: 3px solid #1559c9;
+    background: #f4f7fc; color: #2a3650;
+  }
+  code {
+    font-family: "SF Mono", Menlo, Consolas, monospace; font-size: 9.5px;
+    background: #eef2f8; padding: 1px 4px; border-radius: 3px;
+  }
+  pre {
+    background: #0f1b2d; color: #e6edf6; padding: 10px 12px; border-radius: 5px;
+    overflow-x: auto; page-break-inside: avoid;
+  }
+  pre code { background: none; color: inherit; font-size: 8.6px; line-height: 1.35; padding: 0; }
+  table { border-collapse: collapse; width: 100%; margin: 6px 0 10px 0; font-size: 9.6px; page-break-inside: avoid; }
+  th, td { border: 1px solid #cfd8e8; padding: 4px 7px; text-align: left; vertical-align: top; }
+  th { background: #eef2f8; color: #0f1b2d; font-weight: 700; }
+  tr:nth-child(even) td { background: #f7f9fd; }
+  /* mermaid diagrams */
+  pre.mermaid {
+    background: #fbfcfe; color: inherit; border: 1px solid #e2e8f3; border-radius: 6px;
+    padding: 12px; text-align: center; page-break-inside: avoid;
+  }
+  pre.mermaid svg { max-width: 100%; height: auto; }
+</style></head><body><h1>AegionAI Guard — Strategy, GTM &amp; Market Analysis</h1>
+<p><strong>Version:</strong> 1.1
+<strong>Last Updated:</strong> 2026-06-19
+<strong>Status:</strong> Draft for Review
+<strong>Owner:</strong> Shashank Gupta (Founder/CEO)
+<strong>Companion docs:</strong> <a href="../PRD.md">PRD.md</a> (the "what") · <a href="../vision.md">vision.md</a> (vision &amp; pillars) · <a href="../lld/ARCHITECTURE.md">ARCHITECTURE.md</a> (the "how") · <a href="one-pager.md">pitch/one-pager.md</a> (the "why")</p>
+<blockquote>
+<p><strong>The single strategy doc.</strong> Part I is the strategy (the investor read, ~3 pages). Part II is the market &amp; industry analysis that backs it (evidence, named targets, sources). Decisions live in Part I; Part II only supplies facts. The PRD stays product-only and references this doc for anything business/growth.</p>
+</blockquote>
+<hr />
+<h1>PART I — STRATEGY</h1>
+<h2>1. Market &amp; Why Now</h2>
+<ul>
+<li><strong>TAM (Total Addressable Market):</strong> AI-governance spend ~$5B (2026) → ~$16B (2030); the cloud-agnostic, fleet-level slice (our segment) grows from ~$0.9B (2025) to ~$5.8B by 2030 at ~45% CAGR (Compound Annual Growth Rate); near-term beachhead (money-moving agents) ~$500M. (<a href="https://www.forrester.com/blogs/ai-governance-software-spend-will-see-30-cagr-from-2024-to-2030/">Forrester</a>, <a href="https://www.gartner.com/en/newsroom/press-releases/2026-02-17-gartner-global-ai-regulations-fuel-billion-dollar-market-for-ai-governance-platforms">Gartner</a>, <a href="https://www.marketsandmarkets.com/Market-Reports/ai-agents-market-15761548.html">MarketsandMarkets</a>; beachhead bottoms-up. Corroboration + full sourcing in Appendix.)</li>
+<li><strong>Adoption gap:</strong> ~82% of enterprises use AI agents; only ~26–44% govern them; ~31% have an agent in production.</li>
+<li><strong>The pain is here:</strong> prompt-injection attacks rose <strong>340% year-over-year</strong> (<a href="https://www.helpnetsecurity.com/2026/06/11/owasp-prompt-injection-ai-security-failures/">OWASP 2026</a>); 2026 saw real autonomous-agent damage (Replit deleting a production database; the LiteLLM supply-chain backdoor; Claude Code hijacked for espionage — see Appendix B). <strong>88% of organizations report AI-agent security incidents; only 22% treat agents as identity-bearing entities</strong> (<a href="https://www.okta.com/blog/ai/okta-ispm-ai-security/">Okta</a>).</li>
+<li><strong>Regulatory tailwind (multi-year, not a single cliff):</strong> EU AI Act transparency duties apply Aug 2026; high-risk obligations (credit scoring, insurance pricing) phase in to <strong>Dec 2027</strong> (provisional Digital Omnibus); the up-to-7%-of-revenue penalty regime still raises the cost of an ungoverned agent. <em>We anchor "why now" on the incidents above, not on one date.</em></li>
+<li><strong>Market signal:</strong> two AI-security startups recently acquired ($300M, $180M); analysts call <strong>runtime/control "the decisive battleground"</strong> (<a href="https://www.prnewswire.com/news-releases/ai-systems-security-market-to-rise-from-zero-to-nearly-8-b-by-2030-according-to-delloro-group-roughly-60-vendors-racing-to-secure-enterprise-ai-models-agents-and-workflows-302761017.html">Dell'Oro</a>).</li>
+<li><strong>Sales reality:</strong> enterprise cycle 90–180 days, ACV $100K–$500K; to close in a quarter, start outreach the prior quarter.</li>
+</ul>
+<h2>2. Positioning &amp; Moat</h2>
+<p><strong>Positioning:</strong> the only platform that governs AI-agent <strong>actions</strong> across AWS, Azure, GCP, and on-prem simultaneously — real-time enforcement (not just detection), cross-agent blast-radius containment, and a deployment model regulated buyers can accept (in-VPC, air-gapped). Cloud providers structurally can't match this — each protects only agents on its own cloud.</p>
+<p><strong>Why we win / defensibility:</strong>
+- <strong>Cloud giants are structurally blocked</strong> — they won't guard agents on a rival's cloud.
+- <strong>Standards &amp; lock-in</strong> — as companies write their agent rules in our format and build on top, switching cost compounds every month (the Kubernetes / Stripe path).
+- <strong>Cross-cloud threat-data moat</strong> — only a cross-cloud platform sees multi-cloud attack patterns; every agent protected compounds the lead.
+- <strong>On-prem / air-gapped permanence</strong> — regulated buyers structurally can't use a single-cloud or pure-SaaS competitor.
+- <strong>Patent pending</strong> on the core approach.</p>
+<p><strong>What we're building this round (gaps we're closing):</strong> a larger adversarial attack-pattern corpus and continuous red-teaming; formal-verification depth; enterprise trust/brand and SOC 2 (System and Organization Controls); and deeper detection coverage.</p>
+<h2>3. Value Floor vs. Ceiling — and the in-boundary intelligence model</h2>
+<p>The three questions a skeptical buyer or investor asks: <em>what if they never enforce? can you still give insights when data stays in our cloud? do compliance certs change the game?</em> Answers below.</p>
+<p><strong>Value floor — what we're worth even with enforcement OFF.</strong> "Never enforce" is not binary. Enforcement splits in two: a <strong>deterministic floor</strong> (block prod-delete, refund &gt; limit, require KYC-first — near-zero false positives) that <em>almost every customer turns on</em>, and <strong>probabilistic layers</strong> (ML, anomaly, trajectory) that sit in monitor for months. The realistic worst case is "enforce the floor, monitor the rest" — which is fine, because the floor is where the highest-blast-radius prevention lives. Even at <em>zero</em> enforcement we still deliver a standalone product:
+- <strong>Cross-cloud agent inventory + governance</strong> — the only single pane across AWS/Azure/GCP/on-prem; cloud providers can't (each sees only its own).
+- <strong>Tamper-evident audit + compliance reporting</strong> — EU AI Act / SOC 2 is a <em>buy-regardless-of-enforcement</em> trigger.
+- <strong>Risk quantification</strong> — "your agents <em>attempted</em> N unsafe money-moves this month your current controls missed" (the confidence-to-enforce counterfactual).
+- <strong>Detection + SIEM feed.</strong></p>
+<p><strong>Value ceiling.</strong> Enforcement + rollback + cross-agent containment is what makes us category-defining and premium-priced; pure-monitor competes closer to the detect-and-warn point tools (thinner moat). So: <strong>monitor is the floor and the landing motion; enforcement is the ceiling and the premium.</strong> Don't let the floor become the ceiling — the <a href="../PRD.md">confidence-to-enforce engine</a> is the machine that walks customers up that path.</p>
+<p><strong>In-boundary intelligence model.</strong> Keeping data in the customer's cloud (Dedicated / Self-Managed) does <strong>not</strong> cost per-customer insight — the data plane runs in their cloud and produces <em>their</em> dashboards/audit; only metadata leaves. What it costs is the naive raw-content pooling a pure-SaaS rival uses to train a global model. We recover that the proven way: <strong>telemetry up, intelligence down</strong> — de-identified signals/signatures flow to the control plane, and signatures + model updates push back to every boundary ("saw this injection at one bank → all customers protected in minutes," no raw content moving; the CrowdStrike pattern). Plus <strong>opt-in/Serverless tiers</strong> feed the global model and the regulated tier receives the resulting intelligence. The flywheel runs on <strong>metadata + signatures, not content</strong> — leaner than a hoover-everything competitor, but the boundary model is a <em>selling point</em> to exactly our buyer, not only a cost.</p>
+<p><strong>Compliance certs — unlock, not accelerant.</strong> SOC 2 Type II + HIPAA clear <em>procurement</em> (make us eligible), they don't close deals on their own. The real lever: <strong>certs + redaction + DPA open the Serverless edition to more buyers (incl. some bank workloads)</strong> — the lower-friction, higher-margin path — instead of forcing the heavyweight in-VPC install. Caveat: a cert does <strong>not</strong> override a data-residency mandate (residency-bound workloads still need Dedicated/air-gapped). Bonus: our own certs are a credibility proof point for the compliance value we sell <em>to</em> customers.</p>
+<h2>4. Go-to-Market — the ladder</h2>
+<p><strong>Land where it's easy today; climb to the regulated summit.</strong> Our deployment editions <em>are</em> the ladder: Serverless (today) → Dedicated/in-VPC (P1) → Self-Managed/air-gapped (P2), gated by SOC 2 and verified agent identity.</p>
+<ul>
+<li><strong>Stage 0 — land now (Serverless): software / DevOps / infrastructure &amp; automation agents.</strong> The easiest entry <em>and</em> the best fit for what ships today: their actions — delete prod, deploy code, run infrastructure — map directly onto our deterministic policy engine; the buyer is platform engineering (our champion); cycles are weeks; SaaS is acceptable. (Plus <strong>opportunistic e-commerce refund-fraud</strong> for fast cash.) <em>Goal: 3–5 design partners → paying, reference logos, start SOC 2 Type II.</em></li>
+<li><strong>Stage 1 — the headline beachhead (Serverless → Dedicated): fintech / payments.</strong> Six-figure ACV, money-moving actions, the cleanest ROI and the regulatory audit story we lead the pitch with. Prioritize multi-cloud early adopters.</li>
+<li><strong>Stage 2 — regulated, higher ACV (Dedicated; SOC 2 Type II + verified identity + compliance reports):</strong> insurance, regional banks / WealthTech, legal &amp; corporate compliance.</li>
+<li><strong>Stage 3 — the summit &amp; structural moats (Self-Managed / air-gapped):</strong> top-tier banks, healthcare systems, government / defense.</li>
+</ul>
+<p><strong>Why this order:</strong> banking has the biggest ACV but is <em>product-gated</em> — it needs in-VPC deployment + SOC 2 Type II + verified identity, all on the roadmap. So we land where today's product already wins (infra/automation), earn the credentials, then climb. The <strong>financial-action story stays the headline narrative</strong> (cleanest ROI + regulatory pull); infra/automation is how we <em>land first</em>. Full per-industry analysis, named targets, and scorecard: <strong>Appendix A &amp; C.</strong></p>
+<p><strong>Buyer map:</strong>
+- <strong>Economic buyer:</strong> CISO / Head of AI Governance (approves; rarely champions).
+- <strong>Champion:</strong> Platform / DevOps Engineering Lead (Kubernetes-native is familiar; drives bottom-up adoption).
+- <strong>The unlock:</strong> the emerging <strong>"Head of AI Platform / VP AI Engineering"</strong> who owns both deployment and security — lead bottom-up via platform engineering, close top-down with the CISO.
+- <strong>Beachhead buyer:</strong> platform/SRE lead (Stage 0); Fraud/Risk lead at financial-action companies (Stage 1).</p>
+<h2>5. Competitive Landscape</h2>
+<ul>
+<li><strong>Cloud giants (AWS AgentCore, Azure, Google):</strong> structurally won't govern agents on a rival's cloud; AgentCore is AWS-only by architecture. The cross-cloud position is ours.</li>
+<li><strong>AI gateways (Portkey $18M Series A, LiteLLM):</strong> govern LLM <em>calls</em>, not agent <em>actions</em>. Portkey's stated goal is agent governance (~12–18 months out) but <strong>SaaS-only, not Kubernetes-native / on-prem</strong> — that's our differentiator.</li>
+<li><strong>AI-security point tools (Lakera→Check Point, CalypsoAI→F5, CrowdStrike, Palo Alto):</strong> detect &amp; warn, sell to the CISO, no enforcement-at-the-action depth.</li>
+<li><strong>Identity (Okta Auth0 for AI Agents, CyberArk, Microsoft Entra Agent ID):</strong> secure <em>who the agent is</em> — <strong>complementary</strong> to <em>what the action may do</em>. Partners, not competitors (and validation of our verified-agent-identity requirement).</li>
+<li><strong>Agent-platform vendors (Decagon, Sierra, UiPath, Harvey):</strong> potential customers <em>and</em> potential self-builders; selling to the <strong>enterprises that deploy them</strong> is the cleaner motion. Incumbents bundle governance only for their own platform — the same structural gap as the cloud giants.</li>
+</ul>
+<p>(Full competitive detail: Appendix D.)</p>
+<h2>6. 5-Year Roadmap</h2>
+<p>Aligns to the PRD's P0/P1/P2 phasing and the GTM ladder. Detailed year-by-year targets and actions: <a href="customer/5-year-roadmap.md">pitch/customer/5-year-roadmap.md</a>.</p>
+<table>
+<thead>
+<tr>
+<th>Year</th>
+<th>Theme</th>
+<th>ARR</th>
+<th>Customers</th>
+<th>Avg ACV</th>
+<th>Key milestone</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>2026 (Y1)</td>
+<td>Revenue validation (Stage 0 → 1)</td>
+<td>$0.5–1M</td>
+<td>3–5</td>
+<td>~$150K</td>
+<td>First paying customers (infra/automation + fintech); SOC 2 initiated; patent prosecution</td>
+</tr>
+<tr>
+<td>2027 (Y2)</td>
+<td>Enterprise launch</td>
+<td>$3–5M</td>
+<td>15–20</td>
+<td>$200–250K</td>
+<td>Multi-cloud GA, in-VPC (Dedicated), SOC 2 Type II, Series A</td>
+</tr>
+<tr>
+<td>2028 (Y3)</td>
+<td>Category leadership</td>
+<td>$12–18M</td>
+<td>50–75</td>
+<td>$200–300K</td>
+<td>CRDs / CNCF, automated red-teaming, vertical editions, Series B</td>
+</tr>
+<tr>
+<td>2029 (Y4)</td>
+<td>Market expansion</td>
+<td>$35–50M</td>
+<td>150–200</td>
+<td>$200–300K</td>
+<td>Marketplaces, channel, FedRAMP, global compliance</td>
+</tr>
+<tr>
+<td>2030 (Y5)</td>
+<td>Category standard</td>
+<td>$75–100M</td>
+<td>300–400</td>
+<td>$200–300K</td>
+<td>Agent-policy standard; exit optionality</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Product↔phase mapping:</strong> Y1 ≈ PRD <strong>P0</strong> (enforce single-cloud, prove cross-cloud, multi-tenant); Y2 ≈ PRD <strong>P1</strong> (enterprise hardening — Dedicated, local cached enforcement, redaction, distilled model, sidecar, verified identity); Y3+ ≈ PRD <strong>P2</strong> (Self-Managed / air-gapped, compliance reports, blast-radius containment, CRDs).</p>
+<h2>7. Business KPIs &amp; The Ask</h2>
+<p><em>(Product/efficacy metrics live in <a href="../PRD.md">PRD.md</a> §3.2. These are the business/growth KPIs.)</em></p>
+<table>
+<thead>
+<tr>
+<th>KPI</th>
+<th>What it tracks</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>ARR</td>
+<td>Recurring revenue (trajectory above)</td>
+</tr>
+<tr>
+<td>Customers / design partners</td>
+<td>Logos signed; marquee FS name</td>
+</tr>
+<tr>
+<td>Average ACV</td>
+<td>Deal size by segment ($100K–$500K band)</td>
+</tr>
+<tr>
+<td>Net revenue retention (NRR)</td>
+<td>Expansion within accounts</td>
+</tr>
+<tr>
+<td>Pipeline / win rate</td>
+<td>GTM efficiency</td>
+</tr>
+<tr>
+<td>SOC 2 status</td>
+<td>Type II milestone (in progress)</td>
+</tr>
+<tr>
+<td>Runway</td>
+<td>Months remaining vs raise plan</td>
+</tr>
+</tbody>
+</table>
+<p><strong>The Ask:</strong> raising <strong>$5M for ~30 months runway</strong> → ship the third cloud, harden for enterprise (Dedicated + self-managed, on-device detection, resiliency, verified identity), convert 3 design partners into 3–5 paying enterprises incl. one marquee financial-services name, reach <strong>~$500K–$1M ARR</strong>, SOC 2 Type II underway. ($5M ≈ $165K/month for a ~8-person team; full breakdown in Appendix C.) This is the seed; the milestones unlock a credible Series A.</p>
+<h2>8. Open Questions</h2>
+<ol>
+<li><strong>Open-source core?</strong> — OSS agent-policy spec + basic engine (HashiCorp / Snyk playbook) vs closed.</li>
+<li><strong>Pricing — price points &amp; tiers (the rework).</strong> The <em>basis</em> is decided: <strong>per governed agent</strong> (tiered), never per-action; infra bundled for Serverless, customer-borne for Dedicated/Self-Managed (see ARCHITECTURE §2.10). Open: the exact prices, volume tiers, and Dedicated managed-service premium — see <code>pricing-model.md</code>.</li>
+<li><strong>Security co-founder / advisor</strong> — named security leadership for enterprise/bank procurement credibility.</li>
+</ol>
+<p><em>(Resolved: beachhead = financial-action headline with infra/automation as the Stage-0 land, B2C-fraud opportunistic; product name = AegionAI Guard.)</em></p>
+<hr />
+<h1>PART II — APPENDIX: Market &amp; Industry Analysis (June 2026)</h1>
+<p><em>Evidence behind Part I. Our value proposition is real-time enforcement of consequential agent </em><em>actions</em><em>, so an industry scores well when agents are adopted, take </em><em>irreversible/expensive</em><em> actions, face regulatory/operational pressure, the buyer is reachable, and it fits what we ship today (deterministic policy) vs. roadmap (in-VPC, identity, compliance reports).</em></p>
+<h2>Appendix A — Industry deep dives (with named targets)</h2>
+<h3>A.1 Software / DevOps / Infrastructure &amp; Automation  ★ easiest + best product fit (Stage 0 lead)</h3>
+<ul>
+<li><strong>Adoption:</strong> highest of any segment. Coding agents: <strong>Cursor ~$1.2B ARR</strong>, <strong>Cognition/Devin $1B raise @ $26B valuation</strong>, Replit Agent; enterprise adopters incl. <strong>Goldman Sachs, Mercedes-Benz</strong> (<a href="https://www.marktechpost.com/2026/06/10/ai-coding-agents-development-platforms-2026/">MarkTechPost</a>, <a href="https://www.techtimes.com/articles/317354/20260529/ai-coding-agents-cognitions-26b-raise-bets-agent-first-architecture-beats-ide-tools.htm">TechTimes</a>). RPA/automation: <strong>UiPath, Automation Anywhere, ServiceNow, Salesforce Agentforce, Microsoft, Moveworks</strong> (<a href="https://www.kore.ai/blog/best-ai-workflow-automation-tools">Kore.ai</a>).</li>
+<li><strong>Consequential actions:</strong> the most irreversible/highest-blast-radius — <code>terraform destroy</code>, <code>kubectl delete</code>, drop database, push to prod, modify IAM, run shell. (Every incident in Appendix B is this category.)</li>
+<li><strong>Regulatory:</strong> low–medium (SOC 2, SOX IT general controls). Pressure is <strong>operational risk</strong>, not a compliance deadline.</li>
+<li><strong>Ease of entry:</strong> <strong>easiest</strong> — buyer is platform engineering / DevOps / SRE (our champion); decides in weeks; SaaS acceptable.</li>
+<li><strong>Fit:</strong> <strong>excellent</strong> — maps directly onto the deterministic policy engine we ship today + rollback + quarantine; minimal roadmap dependency.</li>
+<li><strong>Targets:</strong> enterprises/scale-ups running Devin/Cursor/Claude Code/Replit in CI/CD; UiPath/Automation Anywhere/ServiceNow deployers. Agent-builders (Cognition, Anysphere, Replit, UiPath) are potential <strong>partners</strong>; the cleaner first customers are the enterprises operating these agents internally.</li>
+</ul>
+<h3>A.2 Fintech / Payments (non-bank)  ★ headline narrative (Stage 1)</h3>
+<ul>
+<li><strong>Adoption:</strong> very high — <strong>Stripe Agent SDK</strong> (virtual cards + spending guardrails; expects <strong>700+ agentic startups</strong>), <strong>Brex Financial Ops Agents</strong>, <strong>Ramp</strong> finance agents — the "bank the bots" race (<a href="https://lex.substack.com/p/ai-ramp-and-stripe-race-to-bank-the">Fintech Blueprint</a>, <a href="https://www.aicerts.ai/news/financial-ops-agents-brexs-engine-for-agentic-commerce/">AI CERTs</a>).</li>
+<li><strong>Consequential actions:</strong> money movement — refunds, transfers, payouts, card issuance. Instant cash loss + legal exposure (cleanest ROI).</li>
+<li><strong>Regulatory:</strong> high (KYC/AML, PCI-DSS, SOX) — they need our audit trail.</li>
+<li><strong>Ease of entry:</strong> medium — faster than banks; SOC 2 wanted, not always blocking for design partners.</li>
+<li><strong>Targets:</strong> <strong>Brex, Ramp, Mercury</strong>, neobanks, payment service providers, lending platforms, agentic-commerce startups on Stripe's Agent SDK.</li>
+</ul>
+<h3>A.3 Customer Support / E-commerce  (Stage 0 opportunistic)</h3>
+<ul>
+<li><strong>Adoption:</strong> high, already executing money actions — <strong>Decagon ($4.5B valuation)</strong> and <strong>Sierra ($15.8B valuation, $950M Series C)</strong> run autonomous refunds, subscription changes, account updates (<a href="https://quiq.com/blog/decagon-vs-intercom/">Quiq</a>).</li>
+<li><strong>Consequential actions:</strong> medium — refunds/credits, account changes (refund-fraud exposure is the concrete ROI).</li>
+<li><strong>Regulatory:</strong> low. <strong>Ease:</strong> easy (fast, SaaS) — but lower ACV and dilutes the enterprise-security identity.</li>
+<li><strong>Targets:</strong> e-commerce/marketplaces deploying Decagon/Sierra; food-delivery &amp; marketplace platforms with refund-fraud pain.</li>
+</ul>
+<h3>A.4 Insurance  (Stage 2 fast-follow)</h3>
+<ul>
+<li><strong>Adoption:</strong> maturing on actions — <strong>Lemonade's "AI Jim"</strong> processes ~40% of claims instantly, 96% of first-notice-of-loss without humans, 55% fully automated (<a href="https://www.trixlyai.com/blog/our-blog-1/agentic-ai-insurance-lemonade-case-study-28">Trixly</a>); McKinsey calls agentic AI a <strong>$1.2–2T opportunity for insurers by 2030</strong> (<a href="https://hexaware.com/blogs/agentic-ai-in-insurance-transforming-the-industry-with-enterprise-ai/">Hexaware</a>). Broad adoption still early (~7% scaled).</li>
+<li><strong>Consequential actions:</strong> high — claims payouts, underwriting/pricing, eligibility.</li>
+<li><strong>Regulatory:</strong> high — EU AI Act lists insurance pricing as high-risk; state regulators.</li>
+<li><strong>Targets:</strong> <strong>Lemonade, Root</strong>, digital-first insurtechs; claims-automation arms of traditional carriers.</li>
+</ul>
+<h3>A.5 Banking / Capital Markets  ★ biggest ACV, hardest entry (Stage 2/3 summit)</h3>
+<ul>
+<li><strong>Adoption:</strong> high in production (~47%); HSBC/Citi/UBS/DBS/ING report 20–40% cost cuts (<a href="https://www.kore.ai/blog/ai-agents-in-finance-banking-12-proven-use-cases-2026">Kore.ai</a>).</li>
+<li><strong>Consequential actions:</strong> extreme — transfers, lending, treasury, trading.</li>
+<li><strong>Regulatory:</strong> heaviest — model-risk governance (US SR 11-7), SOX, KYC/AML, EU AI Act credit scoring, vendor-risk reviews, pen-test evidence.</li>
+<li><strong>Ease of entry:</strong> hardest — 120–180+ day cycles and they require <strong>in-boundary deployment + SOC 2 Type II + verified identity</strong>, all roadmap → <strong>product-gated</strong>, not just sales-gated.</li>
+<li><strong>Targets (later):</strong> regional banks and WealthTech first, then top-tier (Goldman already runs Cursor — a platform-eng-side wedge).</li>
+</ul>
+<h3>A.6 Healthcare / Clinical  (Stage 3 later)</h3>
+<ul>
+<li><strong>Adoption:</strong> highest <em>usage</em> (~68%) but lowest <em>production</em> (~18%). <strong>Abridge</strong> has <strong>150+ health-system contracts</strong>, moving into billing codes, lab orders, payer–provider mediation (<a href="https://medcitynews.com/2026/06/abridge-clinical-ai/">MedCity News</a>); <strong>Penn Medicine</strong> deploying clinical agents; <strong>Hippocratic AI</strong>, Suki, Notable (<a href="https://www.keragon.com/blog/ai-agent-companies">Keragon</a>).</li>
+<li><strong>Consequential actions:</strong> rising (orders, billing, labs) but strong human-in-the-loop caps autonomy.</li>
+<li><strong>Regulatory:</strong> very high (HIPAA; emergency triage high-risk). <strong>Ease:</strong> high friction. The <strong>on-prem/air-gapped moat</strong> is the real play.</li>
+</ul>
+<h3>A.7 Legal / Professional Services  (Stage 2/3 adjacent)</h3>
+<ul>
+<li><strong>Adoption:</strong> fast &amp; autonomous — <strong>Harvey (~$11B valuation)</strong> runs 25,000 agents, 400,000 daily queries, autonomous end-to-end drafting; <strong>Legora ($5.5B)</strong>, Relativity aiR, DISCO Cecilia (<a href="https://blog.platinumids.com/blog/legal-ai-billion-dollar-arms-race-2026">PlatinumIDS</a>).</li>
+<li><strong>Consequential actions:</strong> med–high — drafting/filing legal documents (malpractice, privilege risk).</li>
+<li><strong>Fit:</strong> good — sequence/approval gates, audit, privileged-data exfil prevention.</li>
+<li><strong>Targets:</strong> Harvey/Legora ecosystems; corporate legal &amp; compliance.</li>
+</ul>
+<h3>A.8 Government / Defense  (Stage 3 long-term moat)</h3>
+<ul>
+<li><strong>Adoption:</strong> growing — <strong>Palantir $1B government contract (2026)</strong>, Maven, <strong>FedStart</strong> path to FedRAMP High / DoD Impact Level 5; federal agent networks autonomously coordinate mission actions (<a href="https://www.military.com/feature/2026/03/22/pentagon-expands-palantirs-role-ai-contract.html">Military.com</a>).</li>
+<li><strong>Consequential actions:</strong> extreme (mission systems). <strong>Regulatory:</strong> maximum (FedRAMP, IL5, ITAR, CMMC, air-gap). <strong>Ease:</strong> very hard — fully gated on our Self-Managed edition.</li>
+<li><strong>Targets (long-term):</strong> Palantir FedStart ecosystem; defense primes; federal agencies.</li>
+</ul>
+<h2>Appendix B — Incident evidence (the "why now")</h2>
+<p>Prompt-injection up <strong>340% YoY</strong>, fastest-growing attack category (<a href="https://www.helpnetsecurity.com/2026/06/11/owasp-prompt-injection-ai-security-failures/">OWASP</a>). 2026 incidents, mostly infra/coding/automation agents:
+- <strong>Replit (2025):</strong> coding agent deleted a production database despite "change nothing," fabricated records, lied that rollback was impossible.
+- <strong>LiteLLM supply chain (Mar 2026):</strong> autonomous bot pushed backdoored LiteLLM to PyPI — ~47,000 downloads in ~3 hours (<a href="https://beam.ai/agentic-insights/ai-agent-security-breaches-2026-lessons">beam.ai</a>).
+- <strong>Microsoft Semantic Kernel RCE (2026):</strong> one prompt → host-level remote code execution (<a href="https://www.microsoft.com/en-us/security/blog/2026/05/07/prompts-become-shells-rce-vulnerabilities-ai-agent-frameworks/">Microsoft</a>).
+- <strong>Cursor (CVE-2026-22708) &amp; ModelScope MS-Agent (CVE-2026-2256):</strong> allowlist/denylist bypasses turned approved dev commands into payload carriers.
+- <strong>Claude Code espionage (GTG-1002, Sep 2025):</strong> state-sponsored group hijacked coding agents to attack ~30 defense/energy/tech targets, AI handling 80–90% of operations.</p>
+<h2>Appendix C — Cross-industry matrix &amp; funding</h2>
+<table>
+<thead>
+<tr>
+<th>Industry</th>
+<th>Adoption</th>
+<th>Consequential actions</th>
+<th>Regulatory</th>
+<th>Ease of entry</th>
+<th>ACV</th>
+<th>Fit (today)</th>
+<th>Stage</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Software / DevOps / Automation</strong></td>
+<td>Very high</td>
+<td><strong>Extreme</strong></td>
+<td>Low–med</td>
+<td><strong>Easiest</strong></td>
+<td>Moderate</td>
+<td><strong>Excellent</strong></td>
+<td><strong>0 — lead</strong></td>
+</tr>
+<tr>
+<td><strong>Fintech / Payments</strong></td>
+<td>Very high</td>
+<td>High ($)</td>
+<td>High</td>
+<td>Medium</td>
+<td>Six-figure</td>
+<td>Excellent</td>
+<td><strong>1 — expand</strong></td>
+</tr>
+<tr>
+<td><strong>Customer Support / E-commerce</strong></td>
+<td>High</td>
+<td>Medium</td>
+<td>Low</td>
+<td>Easy</td>
+<td>Lower</td>
+<td>Good</td>
+<td>0 — opportunistic</td>
+</tr>
+<tr>
+<td><strong>Insurance</strong></td>
+<td>Maturing</td>
+<td>High</td>
+<td>High</td>
+<td>Med–high</td>
+<td>$200–400K</td>
+<td>Strong</td>
+<td><strong>2 — fast-follow</strong></td>
+</tr>
+<tr>
+<td><strong>Banking / Capital Markets</strong></td>
+<td>High</td>
+<td>Extreme</td>
+<td><strong>Very high</strong></td>
+<td><strong>Hardest</strong></td>
+<td>$300K–1.5M</td>
+<td>Excellent (gated)</td>
+<td><strong>2/3 — summit</strong></td>
+</tr>
+<tr>
+<td><strong>Healthcare / Clinical</strong></td>
+<td>Usage high, prod low</td>
+<td>Rising</td>
+<td>Very high</td>
+<td>High friction</td>
+<td>$200–400K</td>
+<td>Moderate</td>
+<td>3 — later</td>
+</tr>
+<tr>
+<td><strong>Legal / Prof. services</strong></td>
+<td>Fast</td>
+<td>Med–high</td>
+<td>Medium</td>
+<td>Medium</td>
+<td>Mod–high</td>
+<td>Good</td>
+<td>2/3 — adjacent</td>
+</tr>
+<tr>
+<td><strong>Government / Defense</strong></td>
+<td>Growing</td>
+<td>Extreme</td>
+<td><strong>Max</strong></td>
+<td>Very hard</td>
+<td>Very high</td>
+<td>Strong (gated)</td>
+<td>3 — long-term</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Funding detail — $5M over ~30 months</strong> (~$165K/month average burn):
+- <strong>Team (~$2.0–2.5M):</strong> ~8-person core — founder, security/red-team lead, ~4–5 engineers (backend / ML / frontend for the cross-cloud, in-VPC, and sidecar build), product, and an enterprise GTM hire.
+- <strong>Infrastructure (~$0.8–1.2M):</strong> 3-cloud + <strong>GPU</strong> for self-hosted models and the in-VPC / air-gapped editions.
+- <strong>Compliance (~$0.2M):</strong> SOC 2 Type II + HIPAA + pen tests.
+- <strong>Go-to-market (~$0.5M):</strong> enterprise sales, conferences, design-partner support.
+- Plus <strong>patent prosecution, tooling/ops, and buffer.</strong></p>
+<p><em>The earlier $3M plan was thin once GPU infrastructure for self-hosted models, dual certifications, and enterprise GTM are funded; $5M buys ~30 months with proper cushion to convert design partners and reach SOC 2 + HIPAA. This is the seed round — the milestones unlock a credible Series A.</em></p>
+<h2>Appendix D — Buyer &amp; competitive notes</h2>
+<ul>
+<li><strong>Buyer mismatch is the gap:</strong> security buyers (CISO) and platform buyers (engineering) rarely co-purchase. The unlock is the emerging <strong>Head of AI Platform / VP AI Engineering</strong>. Lead bottom-up via platform engineering; close top-down with the CISO.</li>
+<li><strong>Identity vendors</strong> (Okta Auth0 for AI Agents, GA Apr 30 2026; CyberArk; Microsoft Entra Agent ID) secure <em>who the agent is</em> — complementary partners, and validation of our verified-agent-identity requirement.</li>
+<li><strong>Agent-platform vendors</strong> (Decagon, Sierra, UiPath, Harvey) are customers <em>and</em> potential self-builders (UiPath already markets governance) — sell to the enterprises that deploy them.</li>
+<li><strong>Portkey</strong> ($18M Series A) will build agent governance in ~12–18 months — SaaS-only, not Kubernetes-native / on-prem; our enforcement depth + cross-cloud + in-boundary deployment is the wedge.</li>
+<li><strong>Incumbents</strong> (UiPath, ServiceNow, Microsoft, cloud providers) bundle governance only for their own platform — none govern a rival's agents cross-platform. That structural gap is our opening.</li>
+</ul>
+<h2>Sources</h2>
+<p>Market: <a href="https://www.forrester.com/blogs/ai-governance-software-spend-will-see-30-cagr-from-2024-to-2030/">Forrester</a> · <a href="https://www.gartner.com/en/newsroom/press-releases/2026-02-17-gartner-global-ai-regulations-fuel-billion-dollar-market-for-ai-governance-platforms">Gartner</a> · <a href="https://www.marketsandmarkets.com/Market-Reports/ai-agents-market-15761548.html">MarketsandMarkets</a> · <a href="https://www.prnewswire.com/news-releases/ai-systems-security-market-to-rise-from-zero-to-nearly-8-b-by-2030-according-to-delloro-group-roughly-60-vendors-racing-to-secure-enterprise-ai-models-agents-and-workflows-302761017.html">Dell'Oro</a> · <a href="https://www.grandviewresearch.com/industry-analysis/enterprise-agentic-ai-market-report">Grand View</a> · <a href="https://www.warmly.ai/p/blog/ai-agents-statistics">warmly.ai</a>
+Incidents/identity: <a href="https://www.helpnetsecurity.com/2026/06/11/owasp-prompt-injection-ai-security-failures/">OWASP via Help Net Security</a> · <a href="https://beam.ai/agentic-insights/ai-agent-security-breaches-2026-lessons">beam.ai breaches</a> · <a href="https://www.microsoft.com/en-us/security/blog/2026/05/07/prompts-become-shells-rce-vulnerabilities-ai-agent-frameworks/">Microsoft Security (RCE)</a> · <a href="https://www.okta.com/blog/ai/okta-ispm-ai-security/">Okta</a>
+Industry: <a href="https://www.marktechpost.com/2026/06/10/ai-coding-agents-development-platforms-2026/">coding agents — MarkTechPost</a> · <a href="https://www.techtimes.com/articles/317354/20260529/ai-coding-agents-cognitions-26b-raise-bets-agent-first-architecture-beats-ide-tools.htm">Cognition $26B — TechTimes</a> · <a href="https://www.kore.ai/blog/best-ai-workflow-automation-tools">RPA — Kore.ai</a> · <a href="https://lex.substack.com/p/ai-ramp-and-stripe-race-to-bank-the">Stripe/Ramp/Brex — Fintech Blueprint</a> · <a href="https://quiq.com/blog/decagon-vs-intercom/">Decagon/Sierra — Quiq</a> · <a href="https://www.trixlyai.com/blog/our-blog-1/agentic-ai-insurance-lemonade-case-study-28">Lemonade — Trixly</a> · <a href="https://hexaware.com/blogs/agentic-ai-in-insurance-transforming-the-industry-with-enterprise-ai/">insurance $1.2–2T — Hexaware</a> · <a href="https://www.kore.ai/blog/ai-agents-in-finance-banking-12-proven-use-cases-2026">banking — Kore.ai</a> · <a href="https://medcitynews.com/2026/06/abridge-clinical-ai/">Abridge — MedCity News</a> · <a href="https://blog.platinumids.com/blog/legal-ai-billion-dollar-arms-race-2026">Harvey/Legora — PlatinumIDS</a> · <a href="https://www.military.com/feature/2026/03/22/pentagon-expands-palantirs-role-ai-contract.html">Palantir — Military.com</a> · <a href="https://www.gibsondunn.com/eu-ai-act-omnibus-agreement-postponed-high-risk-deadlines-and-other-key-changes/">EU AI Act — Gibson Dunn</a></p>
+<hr />
+<p><em>Single source of truth for strategy. Keep ARR/phase rows in sync with the PRD's release phasing.</em></p></body></html>

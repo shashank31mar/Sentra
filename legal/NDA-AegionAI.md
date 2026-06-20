@@ -1,0 +1,91 @@
+# MUTUAL NON-DISCLOSURE AGREEMENT
+
+This Mutual Non-Disclosure Agreement (this "**Agreement**"), dated as of ________________, 20___ (the "**Effective Date**"), is entered into by and between **AegionAI LLC** (the "**Company**") and the party named on the signature page hereof (the "**Contracting Party**"). The Company and the Contracting Party are at times referred to herein individually as a "**Party**" and collectively as the "**Parties**".
+
+**WHEREAS**, the Company wishes to engage the Contracting Party to review, evaluate, test and/or provide technical feedback on the Company's software, source code, architecture, models, designs and related materials (the "**Potential Business Relationship**"), and in connection therewith, the Parties desire to share certain information that is non-public, confidential or proprietary in nature.
+
+**NOW, THEREFORE**, in consideration of the mutual covenants, terms and conditions set forth herein, the Parties agree as follows:
+
+## 1. Confidential Information
+
+For purposes of this Agreement the term "**Confidential Information**" means all of a Party's non-public, confidential or proprietary information, including, without limitation, financial forecasts, strategies, historical financial data, budgets or other business information, trade secrets, know-how, ideas, inventions, processes, techniques, software/programs, designs, schematics, technical data, source code, artificial intelligence, cloud computing, machine learning, quantum computing, blockchain, non-fungible tokens, or formulae, disclosed prior to, on or after the Effective Date, by such Party (the "**Disclosing Party**") to the other Party (the "**Recipient**") or such Party's affiliates, or to any of Recipient's or such Recipient's affiliates' employees, officers, directors, partners, shareholders, agents, attorneys, accountants, advisors, consultants, or representatives, as applicable (collectively, "**Representatives**"), whether disclosed orally or disclosed or accessed in written, electronic or other form or media, and whether or not marked, designated or otherwise identified as "confidential," together with any and all analysis, compilations, studies, reports or other documents using any Confidential Information prepared by the Recipient or any of such Recipient's Representatives. Except as required by applicable federal, state or local law or regulation, the term "Confidential Information" as used in this Agreement shall not include information that (a) at the time of disclosure is, or thereafter becomes, generally available to and known by the public other than as a result of, directly or indirectly, any violation of this Agreement by the Recipient or any of such Recipient's Representatives; (b) at the time of disclosure is, or thereafter becomes, available to the Recipient on a non-confidential basis from a third-party source, provided that such third party is not and was not prohibited from disclosing such Confidential Information to the Recipient by a legal, fiduciary or contractual obligation to the Disclosing Party; (c) was known by or in the possession of the Recipient or such Recipient's Representatives, as established by documentary evidence, prior to being disclosed by or on behalf of the Disclosing Party pursuant to this Agreement; or (d) was or is independently developed by the Recipient, as established by documentary evidence, without reference to or use of, in whole or in part, any of the Disclosing Party's Confidential Information.
+
+## 2. Recipient Obligations
+
+The Recipient shall: (a) protect and safeguard the confidentiality of all Confidential Information with at least the same degree of care as the Recipient would protect its own Confidential Information, but in no event with less than a commercially reasonable degree of care; (b) not use the Confidential Information, or permit it to be accessed or used, for any purpose other than the Potential Business Relationship or any related transactions between the Parties, or otherwise in any manner to the Disclosing Party's detriment, including without limitation, to reverse engineer, disassemble, decompile or design around the Disclosing Party's proprietary services, products and/or confidential intellectual property; (c) not disclose any Confidential Information to any person or entity, except to such Recipient's Representatives who: (i) need to know the Confidential Information to assist the Recipient, or act on its behalf, in relation to the Potential Business Relationship or to exercise its rights under the Agreement; (ii) are informed by the Recipient of the confidential nature of the Confidential Information; and (iii) are subject to confidentiality duties or obligations to the Recipient that are no less restrictive than the terms and conditions of this Agreement; and (d) be responsible for any breach of this Agreement caused by any of such Recipient's Representatives. Except as required by applicable federal, state or local law or regulation, or otherwise as agreed to in writing by the Disclosing Party, the Recipient shall not, nor permit any of its Representatives to, disclose to any person: (A) that the Confidential Information has been made available to such Recipient's Representatives, or that it has inspected any portion of the Confidential Information; (B) that discussions or negotiations may be, or are, underway between the Parties regarding the Confidential Information or the Potential Business Relationship, including the status thereof; or (C) any terms, conditions or other arrangements that are being discussed or negotiated in relation to the Confidential Information or the Potential Business Relationship.
+
+## 3. Required Disclosure
+
+Any Disclosure by the Recipient or such Recipient's Representatives of any of the Disclosing Party's Confidential Information pursuant to applicable federal, state or local law, regulation or a valid order issued by a court or governmental agency of competent jurisdiction (a "**Legal Order**") shall be subject to the terms of this Section. Prior to making any such disclosure, the Recipient shall make commercially reasonable efforts to provide the Disclosing Party with: (a) prompt written notice of such requirement so that the Disclosing Party may seek, at its sole cost and expense, a protective order or other remedy; and (b) reasonable assistance, at the Disclosing Party's sole cost and expense, in opposing such disclosure or seeking a protective order or other limitations on disclosure. If, after providing such notice and assistance as required herein, the Recipient remains subject to a Legal Order to disclose any Confidential Information, the Recipient (or such Recipient's Representatives or other persons to whom such Legal Order is directed) shall disclose no more than that portion of the Confidential Information which, on the advice of the Recipient's legal counsel, such Legal Order specifically requires the Recipient to disclose and, upon the Disclosing Party's request, shall use commercially reasonable efforts to obtain assurances from the applicable court or agency that such Confidential Information will be afforded confidential treatment.
+
+## 4. Non-Circumvention
+
+The Contracting Party hereby agrees for himself or herself, and his or her Representatives, that they will not, directly or indirectly, contact, deal with or otherwise become involved with any individuals, entities or parties introduced, directly or indirectly, by or through the Company, any of its Representatives and/or any other associated parties in connection with or relating to the Potential Business Relationship during the term of this Agreement without the prior written consent of the Company (exercisable in its sole discretion).
+
+## 5. Return or Destruction of Confidential Information
+
+At any time during or after the term of this Agreement, at the Disclosing Party's written request, within two (2) days of being so requested, the Recipient and such Recipient's Representatives shall return to the Disclosing Party all copies, whether in written, electronic or other form or media, of the Confidential Information, or, at the Recipient's option, destroy all such copies and certify in writing to the Disclosing Party that all Confidential Information has been destroyed. In addition, the Recipient shall also destroy all copies of any notes created by the Recipient or such Recipient's Representatives and certify in writing to the Disclosing Party that such copies have been destroyed. The Recipient shall also certify that the Recipient has permanently erased from all electronic storage media under its or any of such Recipient's Representatives' control any excerpts of Confidential Information contained therein, provided, however, that the Recipient may retain one (1) copy of the Confidential Information to be used solely for archival records or as may be required by applicable law or regulation. Any Confidential Information that is not returned or destroyed (including, without limitation, any oral Confidential Information) shall remain confidential, subject to the terms of this Agreement.
+
+## 6. Term and Termination
+
+The term of this Agreement shall commence on the Effective Date and shall expire two (2) years from the Effective Date, provided that either Party may terminate this Agreement at any time by providing ten (10) days prior written notice to the other Party. Notwithstanding anything to the contrary herein, each Party's rights, covenants, agreements, duties and obligations set forth under this Agreement shall survive any expiration or termination of this Agreement for a period of three (3) years from the date of such expiration or termination, even after the return or destruction of Confidential Information by the Recipient, provided, however, that each Party's rights and obligations hereunder with respect to Confidential Information that constitutes a trade secret within the meaning thereof under applicable law shall survive for as long as such information remains a trade secret under such applicable law.
+
+## 7. No Representations or Warranties; No Transfer of Rights, Title or Interest
+
+Neither the Disclosing Party nor any of such Disclosing Party's Representatives makes any representation or warranty, expressed or implied, as to the accuracy or completeness of the Confidential Information disclosed to the Recipient hereunder. Neither the Disclosing Party nor any of such Disclosing Party's Representatives shall be liable to the Recipient or any of such Recipient's Representatives relating to or resulting from the Recipient's use of any of the Confidential Information or any errors therein or omissions therefrom. Each Party hereby retains its entire right, title and interest, including all intellectual property rights, in and to all of its Confidential Information. Any disclosure of such Confidential Information hereunder shall not be construed as an assignment, grant, option, license or other transfer of any such right, title or interest whatsoever to the Recipient or any of such Recipient's Representatives.
+
+## 8. No Other Obligation
+
+The Parties agree that neither Party shall be under any legal obligation of any kind whatsoever, or otherwise be obligated to enter into any business or contractual relationship, investment, or transaction, by virtue of this Agreement, except for the matters specifically agreed to herein. Either Party may at any time, at its sole discretion with or without cause, terminate discussions and negotiations with the other Party, in connection with the Potential Business Relationship or otherwise.
+
+## 9. Remedies
+
+Each Party acknowledges and agrees that money damages might not be a sufficient remedy for any breach or threatened breach of this Agreement by such Party or its Representatives. Therefore, in addition to all other remedies available at law (which neither Party waives by the exercise of any rights hereunder), the non-breaching Party shall be entitled to seek specific performance and injunctive and other equitable relief as a remedy for any such breach or threatened breach, and the Parties hereby waive any requirement for the securing or posting of any bond or the showing of actual monetary damages in connection with such claim.
+
+## 10. Governing Law, Jurisdiction and Venue
+
+This Agreement shall be governed by and construed in accordance with the internal laws of the State of ________________ without giving effect to any choice or conflict of law provision or rule (whether of the State of ________________ or any other jurisdiction) that would cause the application of laws of any jurisdiction other than those of the State of ________________. Any legal suit, action or proceeding arising out of or related to this Agreement or the matters contemplated hereunder shall be instituted exclusively in the federal courts of the United States or the courts of the State of ________________, and each Party irrevocably submits to the exclusive jurisdiction of such courts in any such suit, action or proceeding and waives any objection based on improper venue or forum non conveniens. Service of process, summons, notice or other document by mail to such Party's address set forth herein shall be effective service of process for any suit, action or other proceeding brought in any such court.
+
+## 11. Notices
+
+All notices, requests, consents, claims, demands, waivers and other communications hereunder shall be in writing and shall be deemed to have been given: (a) when delivered by hand (with written confirmation of receipt); (b) when received by the addressee if sent by a nationally recognized overnight courier (receipt requested); (c) on the date sent by facsimile or e-mail of a PDF document (with confirmation of transmission) if sent during normal business hours of the recipient, and on the next business day if sent after normal business hours of the recipient; or (d) on the third day after the date mailed, by certified or registered mail, return receipt requested, postage prepaid. Such communications must be sent to the respective parties at the addresses set forth herein (or to such other address that may be designated by a Party from time to time in accordance with this Section).
+
+## 12. Entire Agreement; Amendment; Assignment; Waiver
+
+This Agreement constitutes the sole and entire agreement of the Parties with respect to the subject matter contained herein, and supersedes all prior and contemporaneous understandings, agreements, representations and warranties, both written and oral, with respect to such subject matter. If any term or provision of this Agreement is invalid, illegal or unenforceable in any jurisdiction, such invalidity, illegality or unenforceability shall not affect any other term or provision of this Agreement or invalidate or render unenforceable such term or provision in any other jurisdiction. This Agreement may only be amended, modified or supplemented by an agreement in writing signed by each Party hereto. Neither Party may assign any of its rights or delegate any of its obligations hereunder without the prior written consent of the other Party. Any purported assignment in violation of this Section shall be null and void. No assignment shall relieve the assigning Party of any of its obligations hereunder. This Agreement is for the sole benefit of the Parties hereto and their respective successors and permitted assigns and nothing herein, express or implied, is intended to or shall confer upon any other person or entity any legal or equitable right, benefit or remedy of any nature whatsoever under or by reason of this Agreement. No waiver by any Party of any of the provisions hereof shall be effective unless explicitly set forth in writing and signed by the Party so waiving.
+
+## 13. Counterparts
+
+This Agreement may be executed in separate counterparts, each of which will be an original and all of which together shall constitute one and the same agreement binding on all the parties hereto. Counterparts may be delivered via facsimile, electronic mail (including pdf or any electronic signature complying with the U.S. Federal ESIGN Act of 2000, e.g. www.docusign.com) or other transmission method and any counterpart so delivered shall be deemed to have been duly and validly delivered and be valid and effective for all purposes.
+
+**IN WITNESS WHEREOF**, the Parties have executed this Agreement as an instrument under seal to be effective as of the Effective Date.
+
+<br>
+
+**AEGIONAI LLC**
+
+By: ______________________________
+
+Name: ____________________________
+
+Title: ____________________________
+
+Address: __________________________
+
+____________________________________
+
+<br>
+
+**CONTRACTING PARTY**
+
+By: ______________________________
+
+Name: ____________________________
+
+Address: __________________________
+
+____________________________________
+
+Signed: ___________________________
+
+Date: _____________________________

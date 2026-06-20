@@ -1,13 +1,13 @@
 # AegionAI Guard — Product Requirements Document (PRD)
 
 **Product:** AegionAI Guard — the runtime safety & governance layer for AI agents
-**Version:** 1.1
-**Last Updated:** 2026-06-15
+**Version:** 1.2
+**Last Updated:** 2026-06-19
 **Status:** Draft for Review
 **Owner:** Shashank Gupta (Founder/CEO)
-**Companion docs:** [ARCHITECTURE.md](ARCHITECTURE.md) (the "how") · [STRATEGY.md](STRATEGY.md) (market / GTM / roadmap) · [vision.md](vision.md) (vision & pillars) · [pitch/one-pager.md](pitch/one-pager.md) (the "why")
+**Companion docs:** [ARCHITECTURE.md](lld/ARCHITECTURE.md) (the "how") · [STRATEGY.md](pitch/STRATEGY.md) (market / GTM / roadmap) · [vision.md](vision.md) (vision & pillars) · [pitch/one-pager.md](pitch/one-pager.md) (the "why")
 
-> This PRD defines **what** AegionAI Guard is — the product requirements and how they map to the strategic roadmap. (Market, GTM, and business targets live in [STRATEGY.md](STRATEGY.md); the "how we build it" lives in [ARCHITECTURE.md](ARCHITECTURE.md), which references this PRD by requirement ID.)
+> This PRD defines **what** AegionAI Guard is — the product requirements and how they map to the strategic roadmap. (Market, GTM, and business targets live in [STRATEGY.md](pitch/STRATEGY.md); the "how we build it" lives in [ARCHITECTURE.md](lld/ARCHITECTURE.md), which references this PRD by requirement ID.)
 
 ---
 
@@ -54,7 +54,7 @@ AI agents have moved from *answering questions* to *taking actions* — moving m
 
 **Why it isn't solved:** existing tools (Lakera, CalypsoAI, HiddenLayer, Portkey-class gateways) **watch and warn** at the per-call level. None *enforce* at the action level across a fleet and across clouds, and none provide cross-agent containment or rollback.
 
-**Why now:** 82% of enterprises use AI agents; only ~26–44% govern them. The EU AI Act (enforcement **Aug 2, 2026**) treats financial AI agents as high-risk with penalties up to 7% of global revenue. Two AI-security startups were just acquired ($300M, $180M). The market is forming now.
+**Why now:** 82% of enterprises use AI agents; only ~26–44% govern them. The EU AI Act adds regulatory pressure — transparency duties from Aug 2026, with high-risk financial obligations (credit scoring, insurance pricing) phasing in to Dec 2027 (provisional Digital Omnibus); penalties reach 7% of global revenue. Two AI-security startups were acquired in 2025 ($300M, $180M). Above all, the *incidents are already here* (see the architecture brief and STRATEGY) — the market is forming now.
 
 ---
 
@@ -82,7 +82,7 @@ Three pillars guide everything we build (mirrored in [vision.md](vision.md)). Ev
 
 ### 3.2 Success Metrics
 
-**North-star:** *how many agents we protect — and how much human oversight we take off their plate* (the decisions we handle automatically that would otherwise need a person). These are **product** metrics; business/growth KPIs (ARR, customers, ACV) live in [STRATEGY.md](STRATEGY.md).
+**North-star:** *how many agents we protect — and how much human oversight we take off their plate* (the decisions we handle automatically that would otherwise need a person). These are **product** metrics; business/growth KPIs (ARR, customers, ACV) live in [STRATEGY.md](pitch/STRATEGY.md).
 
 **Security efficacy.** *Defense in depth means several independent layers (policy, signature detection, machine-learning detection, trust, abuse). We track how much gets caught — and, the real point, how little gets through all of them.*
 
@@ -171,7 +171,12 @@ AegionAI Guard **acts on agent actions** — it doesn't only watch them. In scop
 
 ## 7. Functional Requirements
 
-Priority: **P0** = MVP/now, **P1** = next, **P2** = later. Status reflects the shipping codebase as of 2026-06-15. *(See ARCHITECTURE.md for today-vs-roadmap detail; where status and prose disagree, status wins.)*
+Priority tracks the **GTM ladder** in [STRATEGY.md](pitch/STRATEGY.md):
+- **P0 = what Stage 0 needs to land *today*** — software / DevOps / **infrastructure & automation** agents (their highest-blast-radius actions map directly onto our deterministic engine), plus cross-cloud proof and the multi-tenant foundation.
+- **P1 = Stage 1 (fintech / payments) + the first regulated buyers** — in-VPC deployment, verified identity, redaction, distilled model, compliance reports.
+- **P2 = the Stage 2/3 climb** (banks, healthcare, government) — Self-Managed / air-gapped, deep detection, Kubernetes CRDs.
+
+Status reflects the shipping codebase. *(See [ARCHITECTURE.md](lld/ARCHITECTURE.md) for today-vs-roadmap detail; where status and prose disagree, status wins.)*
 
 ### 7.1 Interception & Enforcement (the checkpoint / PEP) — `lld/23`
 | ID | Requirement | Pri | Status |
@@ -199,7 +204,7 @@ Priority: **P0** = MVP/now, **P1** = next, **P2** = later. Status reflects the s
 | FR-2.8 | Parallel-gather scheduler over a cost-annotated dependency graph (cheap checks short-circuit; models run in parallel) — bounds latency as detection layers grow | P1 | Roadmap (Workstream 20.0) |
 
 ### 7.3 Threat Detection (defense in depth) — `lld/19`, `lld/20`
-*Detectors run across the four moments of an agent's loop, addressed via one endpoint with a `phase` field: the action it takes (`request`), untrusted content it ingests (`content`), the output it emits (`output`), and the memory it writes (`memory`). The deterministic signature floor is live; the deeper layers (D1–D7 in `lld/20`) are phased roadmap.*
+*Detectors run across the four moments of an agent's loop, addressed via one endpoint with a `phase` field: the action it takes (`request`), untrusted content it ingests (`content` — text **and images**), the output it emits (`output`), and the memory it writes (`memory`). The deterministic signature floor is live; the deeper layers (D1–D7 in `lld/20`) are phased roadmap.*
 
 | ID | Requirement | Pri | Status |
 |---|---|---|---|
@@ -217,6 +222,7 @@ Priority: **P0** = MVP/now, **P1** = next, **P2** = later. Status reflects the s
 | FR-3.12 | Distilled local classifier (in-process, CPU; target < 100 ms) to remove the hosted classifier's network/model latency | P1 | Roadmap |
 | FR-3.13 | Input-side PII redaction — redact sensitive values before request content leaves the customer boundary | P1 | Roadmap (in build) |
 | FR-3.14 | Continuous improvement — automated red-teaming, model retraining, retrospective re-scoring of past traffic | P2 | Roadmap |
+| FR-3.15 | Multimodal / image threat detection — fraudulent or manipulated images (e.g., fake refund/damage or insurance-claim photos), adversarial images, and image-borne prompt injection (the B2C-fraud and claims-fraud surface) | P1/P2 | Roadmap |
 
 ### 7.4 Cross-Agent Trust & Containment — `lld/12`
 | ID | Requirement | Pri | Status |
@@ -243,8 +249,9 @@ Priority: **P0** = MVP/now, **P1** = next, **P2** = later. Status reflects the s
 | FR-6.2 | Fast per-session/recent decision reads (DDB) | P0 | Built |
 | FR-6.3 | Long-term compliance archive + cross-cutting queries (CloudWatch) | P0 | Built |
 | FR-6.4 | SOC console / dashboard: inventory, activity, violations, decision sources | P0 | Built |
-| FR-6.5 | Compliance reports (SOC2 / HIPAA / GDPR / EU AI Act) generated < 5 min | P2 | Roadmap |
+| FR-6.5 | Compliance reports (SOC 2 / HIPAA / GDPR / EU AI Act) generated < 5 min — gates the Stage-2 regulated buyers (insurance, regional banks) | P1 | Roadmap |
 | FR-6.6 | Agent SBOM (models, tools, policies; signed) | P2 | Roadmap |
+| FR-6.7 | Push decisions / alerts to the customer's SIEM / SOAR / ITSM (Splunk, Sentinel, Chronicle, PagerDuty, Jira) — first-class signal export; how we're useful in monitor/detect mode before they trust us to enforce (complements, doesn't replace, their SIEM) | P1 | Roadmap |
 
 ### 7.7 Integration & Multi-Cloud Connectors — `lld/15`, `lld/16`, `lld/22`, `lld/23`, `features/multicloud-agent-import`
 *Goal: make getting an agent under governance as low-friction as possible — connect an account, discover the agents, onboard them with a starter policy and an interception path.*
@@ -260,7 +267,7 @@ Priority: **P0** = MVP/now, **P1** = next, **P2** = later. Status reflects the s
 | FR-7.7 | Connect a cloud account (AWS / Azure / GCP, read-only) and **discover** the agents running in it | P1 | Roadmap |
 | FR-7.8 | Tool introspection on import (action-group / function / tool definitions → tool list) → **auto-seed a starter policy** | P1 | Roadmap |
 | FR-7.9 | Import lifecycle tracking (`discovered → policy-seeded → intercepting / governed`) | P1 | Roadmap |
-| FR-7.10 | Framework integrations (LangChain, CrewAI, MCP) for one-step instrumentation | P1/P2 | Roadmap |
+| FR-7.10 | Framework integrations (LangChain, CrewAI, MCP) for one-step instrumentation — eases Stage-0/1 adoption (these agents are framework-based) | P1 | Roadmap |
 
 ### 7.8 Management Plane — agents, policies, onboarding — `lld/05`, `lld/11`, `features/agent-policy-management`, `features/multi-format-policy-authoring`
 *The authoring/management side: how customers define and manage what the runtime engine (§7.2) enforces. Distinct from §7.2 — that one decides at runtime; this one is how policies and agents are created, bound, and operated.*
@@ -273,6 +280,8 @@ Priority: **P0** = MVP/now, **P1** = next, **P2** = later. Status reflects the s
 | FR-8.4 | Default starter policy seeded in **Monitor mode** on import, so no agent is ever unpoliced | P1 | Roadmap |
 | FR-8.5 | Authentication & authorization (OIDC — OpenID Connect) for the console and APIs | P0 | Built |
 | FR-8.6 | Self-service onboarding | P2 | Roadmap |
+| FR-8.7 | Learned policy proposals — observe real traffic, infer the legitimate per-agent/per-workflow baseline, and propose / refine policies so customers don't hand-author from scratch (generates the context model that makes enforcement safe to turn on; pairs with continuous self-red-teaming, FR-3.14) | P1 | Roadmap |
+| FR-8.8 | Industry packs — pre-built policy / detector / compliance bundles per vertical (fintech: txn limits + KYC sequence + SOX; healthcare: PHI-egress + HIPAA; infra/DevOps: no-prod-delete + change-window). Content on the existing engine; the "one solution, any industry" land motion | P1/P2 | Roadmap |
 
 ### 7.9 Deployment Models
 | ID | Requirement | Pri | Status |
@@ -291,6 +300,15 @@ Priority: **P0** = MVP/now, **P1** = next, **P2** = later. Status reflects the s
 | FR-10.3 | **Verified agent identity** — per-agent credential issued at import; the controller resolves the authoritative `(tenant_id, agent_id)` from the verified credential, never from a self-asserted request field | P1 | Roadmap (today: shared API key only — `agent_id` is self-asserted) |
 | FR-10.4 | Per-tenant configuration (policies, detectors, fail modes, retention) | P1 | Partial / Roadmap |
 
+### 7.11 Safe Enforcement Adoption — crossing monitor → enforce
+*The leap from observing to blocking is the hardest step for a buyer (false-positive risk, hot-path liability). These requirements make that crossing measurable and gradual — the machine that walks a customer up from the monitor floor to full enforcement. Builds on shadow/monitor modes (FR-3.3, FR-8.4).*
+
+| ID | Requirement | Pri | Status |
+|---|---|---|---|
+| FR-11.1 | Confidence-to-enforce counterfactual — per policy / detector / agent over a window: what *would* have been blocked, the false-positive rate, and the exact legitimate actions a flip to enforce would have broken | P1 | Roadmap |
+| FR-11.2 | Graduated enforcement rollout — promote a policy/detector from monitor to enforce on a canary slice (e.g., 1% → 10% → 100% of sessions), with automatic rollback to monitor if the false-positive rate spikes | P1 | Roadmap |
+| FR-11.3 | First-class denial explanation + human override / appeal — operator-facing "why this was blocked" with evidence, and an audited per-case override / HOLD-for-human path (complements engine-level decision-source attribution FR-2.7 and output HOLD FR-3.7) | P1 | Roadmap |
+
 ---
 
 ## 8. Non-Functional Requirements
@@ -303,8 +321,8 @@ Priority: **P0** = MVP/now, **P1** = next, **P2** = later. Status reflects the s
 | NFR-4 | **Resilience** — fail-secure | Validation failure denies by default; control-plane outage never silently permits; degrade-to-cached-floor (roadmap) keeps agents running on hard rules |
 | NFR-5 | **Scalability** | Horizontal; single agent → fleet; stateless decision path where possible |
 | NFR-6 | **Security** — tenant isolation | Strict isolation (Serverless); single-tenant boundary (Dedicated/Self-Managed) |
-| NFR-7 | **Data boundary** | Redaction before egress (roadmap); Dedicated/Self-Managed keep content in-boundary; content not persisted by default |
-| NFR-8 | **Compliance** | SOC 2 Type II (in progress); designed for HIPAA/GDPR/EU AI Act |
+| NFR-7 | **Data boundary** | **Serverless trust model:** redact sensitive values before egress (FR-3.13) **and** process content ephemerally — **no content retention by default**, so only redacted/transient data is ever in our cloud. Dedicated / Self-Managed keep content fully in-boundary. |
+| NFR-8 | **Compliance & certifications** (required, gating) | We pursue the **full certification set** — we can't predict which regulated data a customer brings, so all are eventual requirements; *timing* follows demand. **Urgent / near-term: SOC 2 Type II + HIPAA** (in progress). **Fast-follow:** ISO 27001; **PCI-DSS** if card data. **Readiness (audit supports the evidence):** GDPR, EU AI Act. **Later / government:** FedRAMP. Certifications + redaction + a DPA unlock Serverless for most customers and many bank workloads; residency-bound workloads use the in-VPC / air-gapped editions (a certification does **not** override a data-residency mandate). |
 | NFR-9 | **Integrity** | Signed/versioned policies; tamper-evident audit; signing-key management/rotation |
 | NFR-10 | **Observability** | Metrics, traces, decision-source attribution; SLO dashboards |
 | NFR-11 | **Portability** | AWS, Azure, GCP, on-prem; no single-cloud lock-in |
@@ -315,17 +333,17 @@ Priority: **P0** = MVP/now, **P1** = next, **P2** = later. Status reflects the s
 
 | Phase | Theme | Key requirements | Outcome |
 |---|---|---|---|
-| **P0 — MVP (now)** | Enforce on single cloud, prove cross-cloud, multi-tenant foundation | FR-1.1–1.3, 2.1–2.7, 3.1–3.3, 4.1/4.2/4.6, 5.1–5.3, 6.1–6.4, 7.1–7.3/7.5/7.6, 8.1–8.3/8.5, 9.1, 10.1/10.2 | Live demo: block injection, quarantine, rollback, cross-cloud; design-partner pilots |
-| **P1 — Enterprise hardening** | Make latency, resilience, boundary, and identity real | FR-1.4/1.5/1.7, 2.8, 3.4–3.7/3.12/3.13, 4.3/4.4, 5.4, 7.4/7.7–7.10, 8.4, 9.2, 10.3/10.4; NFR-1/4/6/7 | In-VPC Dedicated, local cached enforcement, redaction, distilled model, sidecar, Connect & Import, verified agent identity; first paying enterprises; SOC 2 |
-| **P2 — Platform & scale** | Category standard | FR-2.6, 3.8–3.11/3.14, 4.5, 6.5/6.6, 8.6, 9.3; CRDs / CNCF | Self-Managed / air-gapped, deep detection layers (D3/D4), compliance reports, blast-radius containment, Kubernetes CRDs |
+| **P0 — Land Stage 0** (software / DevOps / infra & automation; prove cross-cloud) | Deterministic enforcement that fits today's highest-blast-radius agents; multi-tenant foundation | FR-1.1–1.3, 2.1–2.7, 3.1–3.3, 4.1/4.2/4.6, 5.1–5.3, 6.1–6.4, 7.1–7.3/7.5/7.6, 8.1–8.3/8.5, 9.1, 10.1/10.2 | Block destructive infra/code actions, quarantine, rollback, cross-cloud demo; 3–5 design partners → paying |
+| **P1 — Stage 1 (fintech/payments) + first regulated** | Make latency, resilience, data-boundary, identity, and compliance real — and make enforcement safe to turn on | FR-1.4/1.5/1.7, 2.8, 3.4–3.7/3.12/3.13, 4.3/4.4, 5.4, 6.5/6.7, 7.4/7.7–7.10, 8.4/8.7/8.8, 9.2, 10.3/10.4, 11.1–11.3; NFR-1/4/6/7/8 | In-VPC Dedicated, local cached enforcement, redaction, distilled model, sidecar, Connect & Import, verified agent identity, compliance reports, SIEM export, confidence-to-enforce + graduated rollout, learned policy proposals, industry packs; **SOC 2 Type II + HIPAA**; first paying enterprises |
+| **P2 — Stage 2/3 climb** (banks, healthcare, government) | Category standard + the strictest deployments | FR-2.6, 3.8–3.11/3.14, 4.5, 6.6, 8.6/8.8, 9.3; CRDs / CNCF | Self-Managed / air-gapped, deep detection layers (D3/D4), blast-radius containment, Kubernetes CRDs, agent SBOM |
 
-**Phases are capability tiers gated by milestones and funding — not calendar commitments.** Dates and the year-by-year plan live in [STRATEGY.md](STRATEGY.md). (Roughly: P0 = validation, P1 = enterprise launch, P2 = category scale.)
+**Phases are capability tiers gated by milestones and funding — not calendar commitments**, and map to the [STRATEGY.md](pitch/STRATEGY.md) GTM ladder: **P0 → Stage 0** (infra/automation land + cross-cloud proof), **P1 → Stage 1** (fintech) + first regulated, **P2 → Stage 2/3** (banks, healthcare, government).
 
 ---
 
 ## 10. Open Questions
 
-*(Business/GTM questions — open-source core, pricing, beachhead emphasis — live in [STRATEGY.md](STRATEGY.md). These are product-level.)*
+*(Business/GTM questions — open-source core, pricing, beachhead emphasis — live in [STRATEGY.md](pitch/STRATEGY.md). These are product-level.)*
 
 1. **Verified agent-identity mechanism** — the credential type and how it is issued/rotated for FR-10.3 (per-agent credential). *Open.*
 2. **How the sidecar delivers the multi-phase features** — the SDK ships decorators for all phases (FR-3.4); how the sidecar (FR-1.5) provides the same `content` / `output` / `memory` coverage in the in-boundary editions is to be worked out. *To discuss later.*

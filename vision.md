@@ -93,7 +93,7 @@ When this vision is realized:
 
 ### How This Works (Kubernetes Analogy)
 
-| **Kubernetes Concept** | **Sentra Equivalent** | **Purpose** |
+| **Kubernetes Concept** | **AegionAI Guard Equivalent** | **Purpose** |
 |------------------------|----------------------|-------------|
 | Pod | Agent | Unit of runtime execution |
 | Deployment | Agent Definition | Desired state with policies |
@@ -284,7 +284,7 @@ Focus on proving that a Kubernetes-style control plane can solve the security an
 
 ### vs. Existing Security Players
 
-| **Capability** | **Lakera / CalypsoAI / HiddenLayer** | **Sentra** |
+| **Capability** | **Lakera / CalypsoAI / HiddenLayer** | **AegionAI Guard** |
 |----------------|--------------------------------------|------------|
 | Prompt Injection Defense | ✅ Detection | ✅ Detection + **Automatic Blocking** |
 | Tool/API Guardrails | ✅ Monitoring | ✅ **Pre-execution Enforcement** |
@@ -300,7 +300,7 @@ Focus on proving that a Kubernetes-style control plane can solve the security an
 
 ### vs. AWS Bedrock AgentCore
 
-| **Capability** | **AWS Bedrock AgentCore** | **Sentra** |
+| **Capability** | **AWS Bedrock AgentCore** | **AegionAI Guard** |
 |----------------|---------------------------|------------|
 | Managed Runtime | ✅ AWS-hosted | ✅ **Hybrid: Cloud + On-Prem** |
 | Identity & Access | ✅ Cognito/Okta integration | ✅ **Policy-driven RBAC** |
@@ -453,9 +453,9 @@ Focus on proving that a Kubernetes-style control plane can solve the security an
 - **Rollback Success Rate**: % of unsafe actions successfully reversed
 
 ### Technical Metrics
-- **Latency Overhead**: Policy check latency (target: < 50ms p99)
+- **Latency Overhead**: deterministic path ≤ 500ms p99 at load today (≈0.6–1.2s pre-optimization); sub-100ms target with the distilled local model
 - **False Positive Rate**: % of legitimate actions blocked (target: < 2%)
-- **System Availability**: Uptime of control plane (target: 99.9%)
+- **Availability**: enforcement ≥ 99.99% (local, fail-secure — agents never left unguarded); control plane 99.9% → 99.99%
 - **Cascade Prevention Rate**: % of multi-agent attacks contained (target: 100%)
 
 ### Business Metrics

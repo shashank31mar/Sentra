@@ -18,7 +18,7 @@ AI agents have gone from *answering questions* to *taking actions* on their own 
 
 ## Why Now
 
-**82%** of companies already use AI agents — but only **44%** have any rules governing what those agents can do. Banks and insurers are furthest ahead, which is exactly where a wrong action moves money. New European law (effective **August 2026**) treats these financial AI agents as high-risk and can fine companies up to **7% of global revenue.** And the money is already moving: two AI-security startups were just bought for **$300M** and **$180M.**
+**82%** of companies already use AI agents — but only **44%** have any rules governing what those agents can do. Banks and insurers are furthest ahead, which is exactly where a wrong action moves money. New European law is raising the stakes — AI-transparency duties from **August 2026** and high-risk financial obligations phasing in through **2027**, with penalties up to **7% of global revenue.** And the money is moving: two AI-security startups were bought in 2025 for **$300M** and **$180M.**
 
 ## Why It Isn't Solved
 
@@ -27,14 +27,14 @@ AI agents have gone from *answering questions* to *taking actions* on their own 
 
 ## Market
 
-Spending to govern AI is on track to grow from about **$5B today to ~$16B by 2030.** Within that, governing agents that run across more than one cloud — our space — reaches **~$5.8B by 2030, growing ~45% a year.** We start in a focused **~$500M near-term slice: agents that handle money** — where thousands of companies will each spend six figures a year to keep their agents safe.
+Spending to govern AI is on track to grow from about **$5B today to ~$16B by 2030.** Within that, governing agents that run across more than one cloud — our segment — grows from **~$0.9B (2025) to ~$5.8B by 2030, ~45% a year.** We start in a focused **~$500M near-term slice: agents that handle money** — where thousands of companies will each spend six figures a year to keep their agents safe.
 *Sources: [Forrester](https://www.forrester.com/blogs/ai-governance-software-spend-will-see-30-cagr-from-2024-to-2030/) (AI governance software, ~30% CAGR) · [Gartner](https://www.gartner.com/en/newsroom/press-releases/2026-02-17-gartner-global-ai-regulations-fuel-billion-dollar-market-for-ai-governance-platforms) (AI governance platforms) · [MarketsandMarkets](https://www.marketsandmarkets.com/Market-Reports/ai-agents-market-15761548.html) (AI-agent market, ~46% CAGR). Beachhead sizing is bottoms-up.*
 
 ## Solution
 
 We sit in front of **every action an AI agent tries to take** — and we look at far more than *"is this tool allowed?"*, which simple rules already handle. We check **what the action actually does**: the details (how much, to whom), whether the request was manipulated, and whether the required steps happened first. If it all holds up, it goes through. If not, we **block it before it runs** — and can **pause the agent**, or undo the action where it's reversible. Instantly, across every cloud, from one place. Others only warn you *after* the fact; **we stop the harm before it happens.** *(A working demo across two clouds already runs today.)*
 
-**Built for how enterprises actually buy.** Today this runs as a multi-tenant cloud service — the fastest way to start. For banks and regulated customers, we deploy the *same* enforcement **inside their own cloud network** (single-tenant, managed by us) or **on-premises / air-gapped** (they run it, nothing leaves) — so the agent's sensitive data never leaves their boundary, and our platform is never in their transaction path. That removes the three things that block enterprise security buyers: latency, reliability, and data exposure.
+**Built for how enterprises actually buy.** Today this runs as a multi-tenant cloud service — the fastest way to start. For banks and regulated customers, we deploy the *same* enforcement **inside their own cloud network** (single-tenant, managed by us) or **on-premises / air-gapped** (they run it, nothing leaves) — so the agent's sensitive data never leaves their boundary, and our control plane never sits in their critical path. Integration today is a one-line SDK wrapper per tool, with a zero-code network sidecar on the roadmap. That removes the three things that block enterprise security buyers: latency, reliability, and data exposure.
 
 ## Why We Win
 
@@ -47,16 +47,16 @@ Others *can* build pieces of this — but the strongest builders won't, and the 
 
 ## Go-to-Market
 
-1. **Start — agents that handle money.** Fintech and payment companies are putting AI agents in charge of refunds, transfers, and lending. When one acts wrongly it's an instant loss *and* a legal problem — so they'll pay to prevent it. Stopping one bad transaction pays for us, and we hand them the audit trail regulators now require. These are fast-moving companies whose engineers can decide in weeks — and we're already in early discovery with several enterprises, including a top-10 US bank, to confirm fit.
+1. **Start — agents that handle money.** Fintech and payment companies are putting AI agents in charge of refunds, transfers, and lending. When one acts wrongly it's an instant loss *and* a legal problem — so they'll pay to prevent it. Stopping one bad transaction pays for us, and we hand them the audit trail regulators now require. These are fast-moving companies whose engineers can decide in weeks.
 2. **Expand — big companies running agents on more than one cloud.** The gap no cloud provider will ever close, because none will protect agents on a rival's cloud. **This is the position only we can hold — and our vision: the single platform that protects every AI agent, on any cloud, from harm.**
 
 ## Team
 
-**Shashank Gupta — Founder & CEO.** IIT graduate; at Amazon, drove a cross-org observability initiative spanning ~100 engineers across two orgs for a **$4B-revenue** service — the same problem one layer up: intercepting and governing actions at fleet scale. Filed the patent (pending) and built the working prototype. **Hiring a security lead with this round.**
+**Shashank Gupta — Founder & CEO.** IIT graduate; at Amazon, drove a cross-org observability initiative spanning ~100 engineers across two orgs for a **$4B-revenue** service — the same problem one layer up: intercepting and governing actions at fleet scale. Filed a provisional patent and built the working prototype. **Hiring a security lead with this round.**
 
 ## The Ask
 
-**We're raising $2M — and we know exactly where every dollar goes.** ~60% builds the team (a 7-person core: backend, ML, and frontend engineers plus a dedicated security/red-team lead); ~35% is cloud infrastructure across AWS, Azure, and GCP; the rest, operations. That buys **24 months of runway** to ship the third cloud, **harden for enterprise** — single-tenant deployment inside the customer's own cloud network plus on-prem / air-gapped options, on-device threat detection, and the resiliency to sit in front of live money movement — **deepen our security defenses** (threat detection + attack coverage), and convert **3 design partners into 3–5 paying enterprise customers — including one marquee financial-services name — reaching ~$500K–$1M in recurring revenue, with SOC 2 underway.** Those are the milestones that unlock a credible $4–6M seed.
+**We're raising $5M — and we know exactly where every dollar goes.** ~45% builds the team (a ~8-person core: backend, ML, and frontend engineers, a dedicated security/red-team lead, product, and enterprise go-to-market); ~30% is cloud + **GPU** infrastructure across AWS, Azure, and GCP (self-hosted models for the in-VPC / air-gapped editions); the rest, **compliance certification (SOC 2 Type II)**, go-to-market, and operations. That buys **30 months of runway** to ship the third cloud, **harden for enterprise** — single-tenant deployment inside the customer's own cloud network plus on-prem / air-gapped options, on-device threat detection, and the resiliency to sit in front of live money movement — **deepen our security defenses** (threat detection + attack coverage), and convert **3 design partners into 3–5 paying enterprise customers — including one marquee financial-services name — reaching ~$500K–$1M in recurring revenue, with SOC 2 Type II underway.** Those are the milestones that unlock a credible **Series A**.
 
 ---
 
