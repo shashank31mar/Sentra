@@ -538,6 +538,29 @@ from a governed agent, and (ii) is it an action we enforce on?** Four steps:
 tool → enforce policy) and one to `pypi.org` to fetch a library (not a governed action → pass through). The
 PEP acts on the first and ignores the second.
 
+#### 3.2.1 From tool names to endpoints — the binding, and two policy levels
+Policy is written about a **tool** (`issue_refund`), but the PEP sees an **endpoint**
+(`POST api.stripe.com/v1/refunds`). The customer does **not** type URLs — we resolve the **tool → endpoint
+binding** from three sources:
+- **Import-time introspection (primary):** a tool definition usually *includes its endpoint* — Bedrock
+  action-group **OpenAPI schema** / Lambda ARN, the **MCP manifest** (`tool → server/endpoint`), OpenAI/Azure
+  function schemas, the LangChain tool object. So `issue_refund` resolves to `POST /refunds` + the `amount`
+  field automatically (FR-7.8).
+- **Wire A observes it at runtime:** the in-process wire sits *at the tool boundary* and sees both the tool
+  name **and** the outgoing HTTP call → it **tags the network call with the logical tool** and teaches the
+  mapping to the network layer.
+- **Learned association (Monitor mode):** observed traffic links a tool to the destinations it hits (FR-8.7).
+
+This gives **two policy levels**, both supported:
+- **Tool-level (logical)** — "`issue_refund` ≤ $1000." Needs the binding (introspection or Wire A).
+- **Endpoint-level (physical)** — "allow `POST api.stripe.com/refunds`, deny other egress." Maps to traffic
+  **directly, no binding needed** — this is **FR-2.9**, the primitive the network path / chokepoint enforces.
+
+**The gap (be explicit):** a **generic "make an HTTP request" tool** where the agent builds the URL at
+runtime *can't* be pre-bound. Wire A still tags it in-process; **network-only (Wire B / chokepoint) falls
+back to endpoint-level rules (FR-2.9)** — coarser, but non-bypassable. Precise *tool-level* policy on such
+tools needs Wire A.
+
 ### 3.3 TLS — what we must decrypt, and *who* decrypts it
 Almost all agent egress is **HTTPS (encrypted)**. To check **parameters/content** (refund ≤ limit, injection
 in the body) *someone* must **decrypt** the call; to check only destination/volume, nobody needs to.

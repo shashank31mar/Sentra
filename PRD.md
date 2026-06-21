@@ -1,7 +1,7 @@
 # AegionAI Guard — Product Requirements Document (PRD)
 
 **Product:** AegionAI Guard — the runtime safety & governance layer for AI agents
-**Version:** 1.2
+**Version:** 1.3
 **Last Updated:** 2026-06-19
 **Status:** Draft for Review
 **Owner:** Shashank Gupta (Founder/CEO)
@@ -154,7 +154,7 @@ Three pillars guide everything we build (mirrored in [vision.md](vision.md)). Ev
 
 ### In scope (the product)
 AegionAI Guard **acts on agent actions** — it doesn't only watch them. In scope:
-- **Enforcement (several kinds, not just policy):** block before execution on — tool allow/deny, parameter bounds, required-sequence, threat detection (signature + machine-learning), information-flow / taint rules, output / data-loss rules, cross-agent trust, and rate/abuse limits.
+- **Enforcement (several kinds, not just policy):** block before execution on — tool allow/deny, **destination/egress allow-deny**, parameter bounds, required-sequence, threat detection (signature + machine-learning), information-flow / taint rules, output / data-loss rules, cross-agent trust, and rate/abuse limits.
 - **Containment & recovery:** quarantine an agent or session; compensating rollback of reversible actions.
 - **Detection in depth:** layered detectors across the agent's loop — the action it takes, the untrusted content it ingests, the output it emits, and the memory it writes.
 - **Visibility:** tamper-evident audit trail, real-time threat/decision analytics, compliance reporting.
@@ -202,6 +202,7 @@ Status reflects the shipping codebase. *(See [ARCHITECTURE.md](lld/ARCHITECTURE.
 | FR-2.6 | `AgentPolicy` / `AgentTrust` CRDs (Kubernetes-native) | P2 | Roadmap |
 | FR-2.7 | Deny-by-default combiner with explainable, prioritized decision sources | P0 | Built |
 | FR-2.8 | Parallel-gather scheduler over a cost-annotated dependency graph (cheap checks short-circuit; models run in parallel) — bounds latency as detection layers grow | P1 | Roadmap (Workstream 20.0) |
+| FR-2.9 | **Endpoint/destination-level egress policy** — allow/deny an agent's outbound calls by **destination** (host / path / port / protocol), independent of any tool→endpoint binding. The deterministic primitive the network path and the egress chokepoint enforce (deny-by-default egress; exfiltration/SSRF floor) when a logical tool can't be resolved (generic HTTP tools, dynamic URLs, non-SDK agents). Complements tool-level FR-2.1. | P1 | Roadmap |
 
 ### 7.3 Threat Detection (defense in depth) — `lld/19`, `lld/20`
 *Detectors run across the four moments of an agent's loop, addressed via one endpoint with a `phase` field: the action it takes (`request`), untrusted content it ingests (`content` — text **and images**), the output it emits (`output`), and the memory it writes (`memory`). The deterministic signature floor is live; the deeper layers (D1–D7 in `lld/20`) are phased roadmap.*
@@ -334,7 +335,7 @@ Status reflects the shipping codebase. *(See [ARCHITECTURE.md](lld/ARCHITECTURE.
 | Phase | Theme | Key requirements | Outcome |
 |---|---|---|---|
 | **P0 — Land Stage 0** (software / DevOps / infra & automation; prove cross-cloud) | Deterministic enforcement that fits today's highest-blast-radius agents; multi-tenant foundation | FR-1.1–1.3, 2.1–2.7, 3.1–3.3, 4.1/4.2/4.6, 5.1–5.3, 6.1–6.4, 7.1–7.3/7.5/7.6, 8.1–8.3/8.5, 9.1, 10.1/10.2 | Block destructive infra/code actions, quarantine, rollback, cross-cloud demo; 3–5 design partners → paying |
-| **P1 — Stage 1 (fintech/payments) + first regulated** | Make latency, resilience, data-boundary, identity, and compliance real — and make enforcement safe to turn on | FR-1.4/1.5/1.7, 2.8, 3.4–3.7/3.12/3.13, 4.3/4.4, 5.4, 6.5/6.7, 7.4/7.7–7.10, 8.4/8.7/8.8, 9.2, 10.3/10.4, 11.1–11.3; NFR-1/4/6/7/8 | In-VPC Dedicated, local cached enforcement, redaction, distilled model, sidecar, Connect & Import, verified agent identity, compliance reports, SIEM export, confidence-to-enforce + graduated rollout, learned policy proposals, industry packs; **SOC 2 Type II + HIPAA**; first paying enterprises |
+| **P1 — Stage 1 (fintech/payments) + first regulated** | Make latency, resilience, data-boundary, identity, and compliance real — and make enforcement safe to turn on | FR-1.4/1.5/1.7, 2.8/2.9, 3.4–3.7/3.12/3.13, 4.3/4.4, 5.4, 6.5/6.7, 7.4/7.7–7.10, 8.4/8.7/8.8, 9.2, 10.3/10.4, 11.1–11.3; NFR-1/4/6/7/8 | In-VPC Dedicated, local cached enforcement, redaction, distilled model, sidecar, Connect & Import, verified agent identity, compliance reports, SIEM export, confidence-to-enforce + graduated rollout, learned policy proposals, industry packs; **SOC 2 Type II + HIPAA**; first paying enterprises |
 | **P2 — Stage 2/3 climb** (banks, healthcare, government) | Category standard + the strictest deployments | FR-2.6, 3.8–3.11/3.14, 4.5, 6.6, 8.6/8.8, 9.3; CRDs / CNCF | Self-Managed / air-gapped, deep detection layers (D3/D4), blast-radius containment, Kubernetes CRDs, agent SBOM |
 
 **Phases are capability tiers gated by milestones and funding — not calendar commitments**, and map to the [STRATEGY.md](pitch/STRATEGY.md) GTM ladder: **P0 → Stage 0** (infra/automation land + cross-cloud proof), **P1 → Stage 1** (fintech) + first regulated, **P2 → Stage 2/3** (banks, healthcare, government).
