@@ -6,9 +6,18 @@
 > may run in-boundary (Dedicated/Self-Managed) or in AegionAI's cloud (Serverless hybrid).
 > "AegionAI Guard" is the customer-facing brand; "Sentra" is the internal control-plane codename.
 
-**Version**: 0.2 (draft for review — multiple options open per §15 Decision Register)
-**Last Updated**: 2026-06-19
+**Version**: 0.3 (draft for review — multiple options open per §15 Decision Register)
+**Last Updated**: 2026-06-22
 **Status**: Draft — design exploration; **no option is final**. Sections present 2–3 candidates with trade-offs.
+**v0.3 changes** (Sr-PE review): §1.8 — content-ML on the non-cooperative path is conditional on 3T-D, and
+preventive-only/no-rollback made explicit; §1.7 + new §8.1.1 — per-tool fail-mode reconciled with fail-secure
+(D-failmode); §1.4 — redaction-recall measurement plan; §2C — single shared evaluator crate; §2.1 — force-central
+thundering-herd bound; §3.1 — admission-webhook `failurePolicy` (D-webhook); §7.3 — non-bypass narrowed + residual
+paths; new §7.4 — egress-routing change management; §8.3 — in-VPC latency budget; §9.1 — stateful-detector state
+model; §9.2 — illustrative sizing table; §10.2 — air-gapped metering is entitlement-based; §14 — protocol-coverage
+reality (HTTP-framed vs DB/bus/streaming). **R1 residuals:** §8.3 in-VPC RTT target ceiling (≤5 ms p99,
+placeholder); §9.2 QPS/agent flagged as a variable to characterize; new **D-escalation** register row
+(escalation fraction as the one cross-cutting unknown).
 **v0.2 changes**: added §1.3 brain/wires concept primer + PEP explainer; §1.4 metadata classification;
 disambiguated serverless-edition vs serverless-hosted-agent; §3.4 multi-account brain placement;
 §4.6 onboarding prerequisites/effort; tenets → list (+ progressive-onboarding); simplified triangle.
@@ -26,6 +35,7 @@ FR-3.13 (input-side redaction), FR-9.2/9.3 (Dedicated/Self-Managed), FR-10.3 (ve
 FR-11.1–11.3 (safe enforcement adoption), NFR-1/2/3/4/6/7/11.
 
 ## Table of Contents
+0. Glossary (acronyms used throughout)
 1. Overview & Overall Approach
 2. The PEP / PDP Split (the load-bearing decision)
 3. Networking — how traffic flows in the customer VPC, and TLS
@@ -42,6 +52,31 @@ FR-11.1–11.3 (safe enforcement adoption), NFR-1/2/3/4/6/7/11.
 14. Coverage Reality (what the sidecar does and does not see)
 15. Decision Register (open calls to settle)
 16. Cross-References & Sources
+17. FAQ
+
+---
+
+## Glossary (acronyms used throughout)
+
+| Term | Expansion / meaning |
+|---|---|
+| **PEP** | Policy Enforcement Point — the "wire" that captures an action and enforces the verdict (sidecar / SDK / connector) |
+| **PDP** | Policy Decision Point — the "brain": Cedar + Sigma + distilled model + detectors that returns allow/deny |
+| **CA** | Certificate Authority — issuer of TLS certificates; trusting a CA means trusting everything it signs |
+| **MITM** | Man-in-the-Middle — a proxy that terminates TLS to read the body ("break-and-inspect"); see §3.3 |
+| **TLS / mTLS** | Transport Layer Security (HTTPS encryption); **m**TLS = both sides authenticate each other |
+| **SNI** | Server Name Indication — the destination hostname, visible even on an encrypted connection |
+| **HSM / KMS** | Hardware Security Module / Key Management Service — where private keys live and never leave |
+| **SPIFFE / SVID / SPIRE** | Workload-identity standard / its short-lived X.509 cert / the issuer implementation |
+| **SDS** | Secret Discovery Service — Envoy API that delivers rotating certs without writing them to disk |
+| **IRSA** | IAM Roles for Service Accounts — AWS workload identity for pods |
+| **OIDC** | OpenID Connect — token-based identity federation used at enrollment |
+| **TEE / SKR** | Trusted Execution Environment (confidential computing) / Secure Key Release into it |
+| **eBPF** | in-kernel packet/syscall interception (Cilium, Pixie); blocked on some managed platforms |
+| **UDR** | User-Defined Route (Azure) — routes egress through a firewall |
+| **DLP** | Data Loss Prevention — detecting/masking sensitive data leaving the boundary |
+| **A2A / MCP** | Agent-to-Agent messaging / Model Context Protocol (tool-manifest standard) |
+| **FR / NFR** | Functional / Non-Functional Requirement (from the PRD) |
 
 ---
 
@@ -91,7 +126,7 @@ Read this before the deep-dive; everything later assumes this model.
 3. **ALLOW** → let the action proceed; **DENY** → block it and return an error;
 4. (optional) capture the result on ALLOW for rollback (effect-capture; SDK only).
 
-**Why more than one wire if the brain is already in the customer's account?** Because **no single wire
+**Why more than one wire if the brain is already in the customer's account? (FAQ-1)** Because **no single wire
 reaches everything** (see §14): the network sidecar can't see *in-process* tool calls, in-process
 multi-agent handoffs, content behind un-terminated TLS, or rollback handles — and it can't attach to a
 **serverless-hosted agent** at all. The SDK/connector cover those gaps. **None of them run the model** —
@@ -140,8 +175,17 @@ The data-boundary promise ("only metadata leaves" for in-VPC editions) rests on 
 wherever it runs — **always gets the content it needs within its trust zone**:
 - **In-VPC:** the brain has the **full prompt/request/response locally**; only metadata crosses to us.
 - **Serverless:** the brain is in our cloud, so the prompt **does** go there — **redacted**. Redaction is
-  **format-preserving** (masks secrets/PII, **keeps the attack-relevant text**) so injection/jailbreak
-  detection still works. Redaction protects the *cross-boundary hop*; **it never starves the detector.**
+  **format-preserving** (masks secrets/PII, aims to **keep the attack-relevant text**) so injection/jailbreak
+  detection still works. Redaction protects the *cross-boundary hop*.
+  > **Honest caveat — "keeps the attack-relevant text" is an assumption to *measure*, not a given.** You cannot
+  > reliably know what is attack-relevant *before* classification — masking PII/secrets could strip the very
+  > token a novel injection rides on (the claim is otherwise circular). This is the load-bearing assumption for
+  > the serverless content path, so it is **validated, not asserted**: we measure **detector recall on redacted
+  > vs. raw** inputs (red-team + adversarial corpus) and **gate releases on the recall-delta staying within
+  > tolerance**. *Failure mode if redaction strips signal:* recall drops → a recall-delta alarm flags it, and
+  > the in-VPC editions (no cross-boundary hop, no redaction for the engine, §1.5) are the mitigation for
+  > tenants who can't accept the risk. This is a **Serverless-edition** concern; the in-VPC scope of this LLD
+  > never redacts for the engine — it has the plaintext locally.
 
 ### 1.5 Editions context (from ARCHITECTURE §2.4)
 | Edition | Brain (PDP) runs | What leaves boundary | Primary PEP (wire) | This LLD |
@@ -195,7 +239,12 @@ flowchart LR
 (NFR-7). Self-Managed: nothing leaves; artifacts are side-loaded.
 
 ### 1.7 Design tenets
-- **Fail-secure, never fail-open** — any failure denies, or degrades to the cached deterministic floor; it never silently permits.
+- **Fail-secure by default, with an explicit per-tool fail-mode knob** — by default any failure denies or
+  degrades to the cached deterministic floor, never silently permitting. But fail-secure on an
+  availability-critical path (a payments/refund agent) means a *PDP/control-plane outage stops the business* —
+  and high-risk tools (`requires_ml`) are exactly the ones that can't fall back to the floor. So fail-mode is a
+  **per-tool, customer-owned** decision (§8.1.1, D-failmode); some customers will require fail-open on named
+  availability-critical tools and own that residual risk. We default secure and make the exception explicit, not silent.
 - **Deny-by-default** — explicit allow only.
 - **The data boundary is the customer's to set** — what leaves is an edition choice (§1.5).
 - **Signed / verified everything** — policy, weights, binaries; tamper-evident audit.
@@ -237,8 +286,19 @@ flowchart TB
 | Local-only SDK (in-process deterministic floor, no egress) | ✓ | ✓ | ✗ cooperative |
 | Hosted egress proxy (SSE-style) | ✓ | ✗ content transits us | ✓ with egress lock |
 
-**Key reads:**
-- The **in-VPC sidecar is the only way to get (b)+(c) together** — full ML detection *and* content never leaving *and* non-bypassable — at the cost of (a). **This is why this LLD exists.**
+**Key reads (lead with the boundary):**
+- **(b)+(c) at the network layer is metadata + the deterministic floor by default; content-level ML is *conditional*.**
+  Full ML detection needs the decrypted body, and the *non-cooperative network path doesn't have it*: our TLS lean is
+  metadata-only (3T-B) or SDK-for-content (3T-C, which is cooperative → not (c)). On a *network-only, non-cooperative*
+  agent — the exact case the sidecar exists for — content-level ML is reachable **only when the customer already runs
+  egress TLS inspection we ride (3T-D)**, or via our own MITM (3T-A, last resort, breaks on pinned certs). So the clean
+  **(b)+(c)+content-ML** quadrant is the **exception** (requires 3T-D), not the default sidecar outcome; the default is
+  **(b)+(c) over metadata + the deterministic floor**, with content-ML coming from the SDK (cooperative) or 3T-D.
+- The **in-VPC sidecar is the only way to get (b)+(c) together at all** — content never leaving *and* non-bypassable —
+  at the cost of (a). **This is why this LLD exists**; just don't oversell content-ML on the non-cooperative path (above).
+- **Network enforcement is preventive-only — no rollback.** The sidecar blocks *before* an action runs; it has **no
+  effect-capture handle** (§14), so once the refund is **ALLOWED** the $500 is gone and the sidecar **cannot undo it**.
+  Rollback needs the SDK. Don't sell network-sidecar rollback.
 - **Cloud-backed SDK/connector keeps only (a)** (content leaves *and* it's cooperative). The clean **(a)+(b)** is a **local-only SDK** — just a library that decides in-process on cached deterministic rules and never calls out (no ML, bypassable).
 
 **Scope of this LLD: the (b)+(c) path only — infra in the *customer's* cloud (Dedicated / Self-Managed)**,
@@ -326,7 +386,10 @@ The clear majority (allowed tool, in-bounds params, no untrusted content) is dec
   - **Two enforcement code paths to keep consistent** — the deterministic logic now runs in *two* places
     (PEP floor *and* the PDP's full pipeline, which also has Cedar+Sigma). If they diverge (PEP caches an
     older policy, or evaluates Cedar differently) the *same action can get different verdicts*. Mitigation:
-    ship the **identical Cedar/Sigma evaluator** in both and version + content-hash the bundle.
+    ship a **single shared evaluator crate/library** — one compiled artifact for the Cedar+Sigma floor,
+    **content-hash- and version-pinned**, linked into *both* the PEP and the PDP — **not two implementations
+    kept in lockstep by discipline** (Sigma regex-engine differences alone would otherwise drift verdicts) —
+    and version + content-hash the policy bundle it loads.
   - **Cached-bundle freshness** — the PEP enforces from a **local cached copy** of the policy bundle, which
     can go **stale** when policy changes. The dangerous case is *stale-permissive* (policy was tightened, PEP
     still allows). This is the biggest risk of 2C and is designed out in **§2.1** below (push invalidation +
@@ -367,6 +430,13 @@ Freshness is layered:
 **Net:** push is fast, **force-central makes a tightening take effect instantly**, TTL + fail-secure bound
 the worst case — cache performance and outage-resilience **without** a stale-permissive hole and without
 per-call fetches. *Open knob (D-fresh):* the exact staleness SLO and default TTL — see §15.
+
+**Thundering-herd guard (D-fresh).** A tightening usually fires *during an incident*, so force-central routes a
+burst of affected-tool traffic to the central in-VPC PDP **exactly when it's least able to absorb it**. Bound it:
+**pre-scale the PDP on a tighten event** (the control plane signals expected load *before* flipping the flag) and
+**rate-limit / shed the central fallback to the deterministic floor** rather than queue unboundedly — so a
+tightening can't self-inflict a latency cliff. The **affected-tool QPS** (assumed a small subset of total traffic)
+is the sizing input here and must be measured (§9.2); exact bound is open (D-fresh, §15).
 
 ---
 
@@ -473,6 +543,12 @@ webhook** can also reject an unguarded agent at deploy time; off-K8s we rely on 
 - Wire A (in-process) is **bypassable by a hostile agent** → never rely on it alone as the boundary.
 - The strong **auto-install (admission webhook) is Kubernetes-only**; other platforms are detect-fast +
   chokepoint-deny, not block-at-birth.
+- The admission webhook is itself an **availability/coverage single point — its `failurePolicy` is a real
+  decision**: `Fail` blocks *all* in-scope pod scheduling during a webhook outage (an availability incident);
+  `Ignore` lets pods launch **unguarded** during the outage (a coverage hole). **Lean: `Ignore` + the
+  three-way reconciliation backstop (Step 3) + chokepoint deny-by-default** — an unguarded pod is caught
+  within seconds and can't egress ungoverned, trading a brief detect-window for not blocking the customer's
+  deploys. Revisit `Fail` for high-assurance tenants. Tracked as **D-webhook (§15)**.
 - The chokepoint needs the **customer to set the routing**, and **Lambdas must be VPC-attached** or they keep
   their own way out.
 - Encrypted traffic: Wire B sees the destination but needs **§3.3** to read the body.
@@ -537,30 +613,46 @@ tool → enforce policy) and one to `pypi.org` to fetch a library (not a governe
 PEP acts on the first and ignores the second.
 
 **Both *who* and *what* are set up once at onboarding and resolved per request** — identification is not
-magic, it's a registry built at onboarding and consulted at runtime. The lifecycle:
+magic; it is a registry built at onboarding and consulted at runtime. Two diagrams follow: first **who does
+what at onboarding** (actors in columns), then **how a single request is resolved at runtime**.
+
+**Onboarding — once per agent (who does what):**
+
+```mermaid
+sequenceDiagram
+  participant Admin as Customer Admin
+  participant Cloud as Cloud APIs
+  participant CP as AegionAI Control Plane
+  participant DP as In-VPC PEP/PDP
+  Admin->>CP: grant read-only discovery role
+  CP->>Cloud: list agents (pods / tasks / functions)
+  Cloud-->>CP: running workloads
+  Admin->>DP: attach wire + provision workload identity (SPIFFE / IRSA)
+  CP->>CP: register binding credential to (tenant_id, agent_id)
+  CP->>Cloud: introspect tool defs (OpenAPI / MCP / function schema)
+  Cloud-->>CP: tool name to endpoint to param schema
+  CP->>CP: build tool catalog and sign bundle
+  CP->>DP: ship signed bundle (identity binding + catalog + policy)
+```
+
+**Runtime — per request (how one call is resolved):**
 
 ```mermaid
 flowchart TB
-  subgraph SETUP["Onboarding - once per agent"]
-    direction TB
-    C1["Discover agent via cloud APIs"]
-    C2["Attach wire and provision workload identity"]
-    C3["Register credential to tenant and agent in CP registry"]
-    C4["Introspect tools to build catalog - name, endpoint, params"]
-    C5["Sign and ship bundle to in-VPC PEP and PDP"]
-    C1 --> C2 --> C3 --> C5
-    C1 --> C4 --> C5
-  end
-  subgraph RUN["Runtime - per request"]
-    direction TB
-    R1["PEP verifies caller mTLS credential"]
-    R2["resolve tenant and agent from the binding"]
-    R3["resolve tool - Wire A name, or Wire B endpoint match"]
-    R4["apply tool policy, or endpoint-level FR-2.9, or monitor if unknown"]
-    R1 --> R2 --> R3 --> R4
-  end
-  SETUP --> RUN
+  A["Agent opens outbound connection"] --> V["PEP verifies caller mTLS credential"]
+  V -->|valid| W["resolve (tenant_id, agent_id) from the binding"]
+  V -->|invalid or unknown| DENY["deny (fail-secure)"]
+  W --> T{"resolve tool"}
+  T -->|"Wire A: tool name directly"| POL["apply tool policy (§2 floor)"]
+  T -->|"Wire B: match endpoint to catalog"| POL
+  T -->|"no catalog match"| FB{"endpoint-level rule? (FR-2.9)"}
+  FB -->|yes| POL
+  FB -->|no| MON["monitor + flag for classification (FR-8.4)"]
 ```
+
+*The onboarding sequence above is the authoritative "who does what"; §3.2.1 (who) and §3.2.2 (what) detail
+each step. Deployment-level rollout (connect → deploy → graduated enforce) is a separate concern — see §4.2,
+not repeated here.*
 
 #### 3.2.1 Identifying the agent (who)
 *Set up once at onboarding:*
@@ -607,55 +699,73 @@ back to endpoint-level rules (FR-2.9)** — coarser, but non-bypassable. Precise
 tools needs Wire A.
 
 ### 3.3 TLS — what we must decrypt, and *who* decrypts it
-Almost all agent egress is **HTTPS (encrypted)**. To check **parameters/content** (refund ≤ limit, injection
-in the body) *someone* must **decrypt** the call; to check only destination/volume, nobody needs to.
+Almost all agent egress is **HTTPS (encrypted)**. The rule of thumb:
+- to check only the **destination / volume** (which host, how much data) — **nobody** decrypts; the visible
+  metadata (SNI, destination IP, byte counts) is enough.
+- to check **parameters / content** (refund ≤ limit, injection in the body) — **someone must decrypt** the
+  call first.
 
-**What "MITM" means, plainly, and why it's risky.** To decrypt HTTPS at a proxy, the proxy **pretends to be
-the destination**: it presents its *own* certificate to the agent, signed by a **CA (Certificate Authority)
-the agent is configured to trust**, decrypts, inspects, then re-encrypts onward to the real site. That's a
-deliberate **man-in-the-middle (MITM)**. Three costs:
-- **The CA private key is a crown jewel.** Whoever holds it can impersonate *any* website to those agents —
-  if it leaks, an attacker can MITM the customer's traffic at will. A per-tenant CA key in the VPC is a
-  serious thing to secure and rotate.
-- **It breaks certificate pinning.** Some clients/SDKs "pin" the exact cert they expect and will **refuse**
-  the proxy's substitute cert → the connection fails. Many cloud SDKs and security-sensitive APIs pin.
-- **It's detectable.** The agent can tell it's talking to a proxy cert, not the real site.
+Inside the boundary the engine always needs the decrypted body to run content checks (redaction happens
+*after* decryption, before anything leaves — see FAQ-2). So the real question is never "encrypted vs not";
+it is **who terminates the TLS** — covered by the four options in §3.3.4.
 
-**The realization that changes the calculus (verified across all three clouds):** large/regulated customers
-usually **already run outbound TLS inspection** at a central egress point, *with their own internal CA
-already trusted by every workload*:
-- **AWS** — Network Firewall egress TLS inspection (decrypt → inspect → re-encrypt; NAT-GW + PrivateLink).
-- **Azure** — **Azure Firewall Premium** TLS inspection (clients must trust the org Root/Intermediate CA).
-- **GCP** — **Secure Web Proxy (SWP)** and/or **Cloud NGFW Enterprise** (HTTP CONNECT explicit proxy, L7
-  inspection; certs via Certificate Authority Service + Certificate Manager).
-- Or a third-party egress proxy (Squid SSL-bump, Zscaler).
+#### 3.3.1 What TLS interception ("MITM") actually means
+To read an HTTPS body, a proxy has to **terminate the agent's TLS connection and open a fresh one to the
+real site** — i.e. it sits in the middle. Step by step:
+1. the agent opens an HTTPS connection believing it is talking to, say, `api.stripe.com`;
+2. the proxy answers instead, presenting **its own certificate** for `api.stripe.com`, signed by a
+   **Certificate Authority (CA)** the agent has been configured to trust;
+3. the proxy decrypts the request, inspects (and optionally redacts) it;
+4. the proxy re-encrypts and forwards it to the real `api.stripe.com`, then relays the response back.
 
-In those environments **the CA and the MITM already exist and are the customer's responsibility** — so we
-don't have to become a new CA; we **consume what they already decrypt** (3T-D).
+This is a deliberate **man-in-the-middle (MITM)** — also called "break-and-inspect." It is the standard
+mechanism every enterprise egress proxy uses (Zscaler, Palo Alto, AWS Network Firewall, GCP NGFW).
 
+#### 3.3.2 The three costs of running the MITM yourself
+1. **The CA private key becomes a crown jewel.** Whoever holds it can impersonate *any* site to those
+   agents; if it leaks, an attacker can MITM the customer's traffic at will. It must be secured and rotated
+   like a root secret.
+2. **It breaks certificate pinning.** Some clients/SDKs pin the exact cert they expect and will **refuse**
+   the proxy's substitute → the connection fails. Many cloud SDKs and security-sensitive APIs pin.
+3. **It is detectable.** The agent can tell it is talking to a proxy cert, not the real site.
+
+#### 3.3.3 Who creates the CA, who holds the key, and why we ride the customer's (FAQ-4, FAQ-5, FAQ-6)
+**In our recommended model we run no CA and hold no CA private key.** Two cases:
+- **Default (3T-D — ride the customer's existing inspection):** large/regulated customers usually
+  **already run outbound TLS inspection** at a central egress point, *with their own internal CA already
+  trusted by every workload*. We create nothing and hold no key — we **consume their already-decrypted
+  feed**. This is standard enterprise practice; riding it asks the customer for **nothing new**. Where it
+  already exists:
+  - **AWS** — Network Firewall egress TLS inspection (decrypt → inspect → re-encrypt; NAT-GW + PrivateLink).
+  - **Azure** — Azure Firewall Premium TLS inspection (clients must trust the org Root/Intermediate CA).
+  - **GCP** — Secure Web Proxy (SWP) and/or Cloud NGFW Enterprise (certs via Certificate Authority Service + Certificate Manager).
+  - Or a third-party egress proxy (Squid SSL-bump, Zscaler, Palo Alto).
+- **Fallback (3T-A — we MITM):** if a customer has no existing inspection and still wants network-layer
+  content, the CA should be minted in the **customer's own private-CA service** (AWS Private CA / Azure Key
+  Vault Managed HSM / GCP Certificate Authority Service). The **private key stays in the customer's
+  KMS/HSM** — per-tenant, short-lived, scoped to named destinations, never exported, **never in AegionAI's
+  cloud**. The **customer admin** installs the public CA cert into the agents' trust store.
+
+> **On "a per-tenant CA in the VPC":** a CA key does **not** live "in a VPC" — it lives in a regional,
+> account-scoped **KMS / HSM / private-CA service**, not a VPC resource, so there is no "CA-per-VPC" limit.
+> Clouds cap CAs by **per-account/per-region service quota** (adjustable), not by VPC.
+
+> **Never MITM our own channels** (PEP↔PDP, data-plane↔control-plane) — those are our own mTLS with pinned
+> certs (§3.5).
+
+#### 3.3.4 The four options
 | Option | Who decrypts | We see body? | CA liability |
 |---|---|---|---|
-| **3T-A We MITM (our CA)** | our PEP, our CA in the agent trust store | yes | **we hold the CA** — highest |
-| **3T-B Metadata-only** | nobody (passthrough) | no — SNI/destination/volume only | none |
+| **3T-B Metadata-only** | nobody (passthrough) | no — SNI / destination / volume only | none |
 | **3T-C Hybrid: metadata + SDK for content** | the SDK, at the app layer (already plaintext) | yes, via SDK | none at the network layer |
 | **3T-D Ride the customer's existing egress inspection** | the customer's egress firewall/proxy (their CA) | yes, from their decrypted feed | **customer's, not ours** |
+| **3T-A We MITM (fallback only)** | our PEP, via a CA in the agent trust store | yes | CA key in the **customer's** KMS/HSM — avoid unless 3T-C/3T-D unavailable |
 
-**"Even inside the same infra, don't we still need the body (redacted)?"** Yes — to run parameter-bound
-policy or content detection the PDP needs the **decrypted** body (redaction happens *after* decryption,
-before anything leaves the boundary). The question is never "encrypted vs not" *inside* the boundary — it's
-**who terminates the TLS**: our CA (3T-A), the app/SDK (3T-C), or the customer's existing egress proxy (3T-D).
-
-**"With 3T-C we can't do anything" — not true.** With metadata + SDK, 3T-C still does **tool allow/deny,
-egress allowlist, rate/abuse, volume anomaly, identity, cross-agent topology** at the network layer **and**
-full content checks (parameter bounds, injection, DLP) **via the SDK** (which sees plaintext for free). The
-*only* gap is reading the body of a call from an agent that has **neither SDK nor MITM** — exactly what 3T-A
-or 3T-D fills.
-
-**Never MITM our own channels** (PEP↔PDP, data-plane↔control-plane) — those are our mTLS with pinned certs (§3.5).
-
-**Lean:** default **3T-B/3T-C** (metadata + SDK; no CA we own). Where a customer needs network-layer content
-*without* the SDK, prefer **3T-D (ride their existing egress inspection)** over **3T-A (our own CA)** — most
-regulated buyers already run egress TLS inspection, so we consume it rather than become a new CA liability.
+#### 3.3.5 Lean
+Default **3T-B / 3T-C** (metadata + SDK; no CA we own). Where a customer needs network-layer content
+*without* the SDK, prefer **3T-D** (ride their existing egress inspection) over **3T-A**. We become a CA
+only as a last resort, and even then the key lives in the customer's KMS/HSM — **we are never a new CA
+liability**. (What 3T-C alone already covers without any MITM: FAQ-3.)
 
 ### 3.4 Where the brain sits, and how things connect
 
@@ -690,7 +800,7 @@ sequenceDiagram
     PDP-->>PEP: decision reason source action
     PEP-->>Agent: enforce verdict
   end
-  PEP-->>CP: async metadata off hot path
+  PEP-->>CP: metadata via durable store-and-forward, off hot path (§8.4)
 ```
 
 > **Escalation (per action) vs. refresh (per policy change) — two different "go to PDP" events, don't
@@ -785,7 +895,10 @@ flowchart LR
    We make this opt-in and per-destination, and loudly document the trade-off.
 5. **Policy binding**: starter policy auto-seeded in **Monitor mode** (FR-8.4) so nothing is ever
    unpoliced and no wall of denials on day one.
-6. **Console**: SOC dashboard shows discovered agents, decisions, counterfactual "what would block."
+6. **Console — provided by AegionAI, nothing to configure**: the SOC dashboard (discovered agents,
+   decisions, counterfactual "what would block") is delivered by the **AegionAI platform** — hosted by us
+   for Serverless/Dedicated, or run in-boundary for air-gapped Self-Managed. The customer just logs in;
+   this is not a customer build/config step.
 
 ### 4.4 Day-2 experience
 - **Promotion**: graduated rollout UI (FR-11.2) with auto-rollback on FP spike.
@@ -922,27 +1035,59 @@ attested, unmodified data plane. A tampered image fails attestation → no key �
 ### 7.1 Posture summary
 The data plane is a high-value asset in someone else's environment, on the critical path. Posture:
 least-privilege, signed-everything, fail-secure, defense-in-depth, separate trust domains, no raw-content
-retention.
+retention. **Two boundaries stated up front, not buried:** (1) the network PEP is **preventive-only** — it
+blocks *before* an action runs but has **no effect-capture handle, so it cannot roll back an action it
+ALLOWED** (§14); rollback requires the SDK. (2) Non-bypass is **scoped and conditional** (§7.3).
 
 ### 7.2 Threat / failure-point matrix (every point + mitigation)
-| # | Failure / threat point | Impact | Mitigation |
+| # | Failure / threat point | Impact | Mitigation (plain English) |
 |---|---|---|---|
-| S1 | **MITM CA private key stolen** (3T-A) | attacker impersonates any site to agents | avoid by default (3T-C metadata-only); when used: per-tenant short-lived CA in **KMS/HSM**, never egress, scoped to named destinations, rotation, monitoring |
-| S2 | **Agent bypasses PEP** (direct socket) | unguarded action | **egress lockdown** (SG/NSG/firewall force-through), CI flags unwrapped tools, anomaly on unexpected direct egress; default-deny governed-agent egress not via PEP |
-| S3 | **PEP/PDP compromised** (elevated caps) | tamper verdicts, read content | drop caps (seccomp/AppArmor); NET_ADMIN only where unavoidable; TEE (6B); minimal image (§5.1) |
-| S4 | **Malicious/compromised control plane** pushes "allow-all" | mass permit | **policy-signing key in separate trust domain (HSM/dual-control)**; PEP verifies signature; **transparency log** of pushes; fail-secure floor (a CP can't forge a valid bundle) |
-| S5 | **Weight/binary supply-chain tamper** | backdoored detection | cosign signatures + SBOM; attestation-gated key release (6B); pinned digests; admission control |
-| S6 | **DoS on `/v1/validate` or proxy** | latency blowup / outage | per-agent rate/abuse limits, bounded queues, backpressure; **degrade to cached floor**; never fail-open |
-| S7 | **Plaintext content exposure** (post-TLS-termination, or to AegionAI operator) | confidentiality breach | **in-boundary redaction (FR-3.13)**, no content retention (NFR-7), least-privilege operator + access audit; in-VPC editions keep content local |
-| S8 | **Tenant cross-talk** (shared PDP fleet) | data leak across teams | strict `tenant_id` scoping (FR-10.1); per-tenant cert; optionally per-tenant PDP for hard isolation |
-| S9 | **Identity spoofing** (agent claims another's id) | privilege escalation | verified identity from mTLS/SPIFFE, never self-asserted field (FR-10.3) |
-| S10 | **Stale/rolled-back policy** served | enforce old rules | bundle version + freshness check; reject expired bundles; alert on staleness |
-| S11 | **Update channel MITM** | bad image/weights | mTLS pinned; signature verify; private link where available |
-| S12 | **Audit tampering** | lost forensics | tamper-evident (hash-chained) audit, written off the hot path (FR-6.1) |
+| S1 | **MITM CA private key stolen** (3T-A) | attacker can impersonate *any* site to the agents | **Prefer to hold no CA at all:** default to metadata-only (3T-C) or ride the customer's existing TLS inspection (3T-D), so there is no key of ours to steal. If we must decrypt ourselves (3T-A), the CA is created and kept in the **customer's** key vault (KMS/HSM), is short-lived, valid only for a named list of destinations, rotated regularly, and alerted on use (§3.3.3). |
+| S2 | **Agent bypasses the PEP** by opening a direct socket | an action goes out ungoverned | **Lock the network so the only way out is through us:** the firewall / security-group rules drop any governed-agent traffic that didn't pass the PEP (deny-by-default egress). We also flag tools that were never wrapped and alarm on any unexpected direct egress. |
+| S3 | **PEP/PDP container compromised** | attacker tampers with verdicts or reads content | **Give the container as little power as possible:** strip OS privileges (run it in a locked-down sandbox — seccomp/AppArmor), grant low-level network rights only where unavoidable, run a tiny image with no shell (§5.1), and optionally inside a hardware-encrypted enclave (TEE, §6.2). |
+| S4 | **Malicious/compromised control plane** pushes an "allow-all" policy | mass permit | **The PEP only trusts *signed* policy, and the signature can't be forged:** the signing key lives in a separate locked vault (HSM, requires two-person control) that even a full control-plane breach can't reach; the PEP checks the signature before loading; every push is written to a tamper-evident log; if anything is off, the PEP falls back to its safe local rules (§2C). |
+| S5 | **Weights/binary tampered in the supply chain** | backdoored detection | **Verify everything before it runs:** images and weights are cryptographically signed and ship with a parts-list (SBOM); the key that decrypts the weights is released only to an unmodified, attested instance (§6.3); image versions are pinned by exact digest and checked at startup. |
+| S6 | **Flood of requests** (DoS) on the validate endpoint / proxy | latency spike or outage | **Shed load safely, never open the gate:** per-agent rate limits, bounded queues with backpressure, and — if the heavy ML path is swamped — fall back to the fast local rules. It degrades; it never fails open. |
+| S7 | **Plaintext content exposed** after TLS is terminated (or to an AegionAI operator) | confidentiality breach | **Strip sensitive data and keep content local:** redact secrets/PII inside the boundary before anything leaves (FR-3.13), never store raw content (NFR-7), and limit + audit operator access. In the in-VPC editions content never leaves the customer's cloud at all. |
+| S8 | **One tenant sees another's data** on the shared PDP fleet | cross-tenant leak | **Hard-separate tenants:** every record is tagged and filtered by tenant id (FR-10.1), each tenant has its own certificate, and customers needing physical isolation can run a PDP dedicated to them. |
+| S9 | **Identity spoofing** (an agent claims to be another) | privilege escalation | **Identity comes from a verified credential, never a self-claimed field:** the PEP reads the agent's identity from its mTLS/SPIFFE certificate, which can't be forged (FR-10.3). |
+| S10 | **Stale / rolled-back policy** served | old, too-loose rules get enforced | **Track versions and refuse stale bundles:** each bundle is versioned and freshness-checked, expired bundles are rejected (fail-secure), and we alert if any PEP lags the current version (§2.1). |
+| S11 | **Update channel intercepted** (MITM) | bad image/weights delivered | **Authenticated, signed, private delivery:** updates travel over mutually-authenticated TLS with pinned certs, every artifact's signature is verified, and we use private cloud links where available. |
+| S12 | **Audit/telemetry/metering records lost or tampered** | lost forensics / missed billing | **Durable, tamper-evident, off the hot path:** records are hash-chained (any tampering is detectable) and written to a **local durable buffer first, then shipped with retry until the destination acknowledges** (store-and-forward, §8.4) — so nothing is lost even if the uplink or AegionAI is down. Written off the request path so it never slows a verdict (FR-6.1). |
 
-### 7.3 Non-bypass is conditional (state it plainly)
-The sidecar is "non-bypassable" **only with egress lockdown enforced**. Without it, it is a strong
-default, not a guarantee. This must be a documented deployment requirement and verified at onboarding.
+### 7.3 Non-bypass is conditional and *scoped* (state it plainly)
+The precise claim is: **non-bypassable for direct internet egress from the governed segment, given egress
+lockdown enforced.** Without egress lockdown it is a strong default, not a guarantee — a documented deployment
+requirement, verified at onboarding and attested (§12). Even *with* lockdown, default-deny on `0.0.0.0/0` to the
+chokepoint does **not by itself** cover the residual exfil/bypass paths below — a hijacked agent doesn't need a
+raw internet socket, it needs **any reachable hop that egresses**. Enumerate them as known gaps and close each:
+
+| Residual path | Why default-deny-to-chokepoint misses it | Mitigation |
+|---|---|---|
+| **DNS-based exfil** | data tunnelled in DNS queries to the resolver, not a blocked socket | route DNS through the chokepoint / inspect resolver logs; deny direct `:53` egress |
+| **VPC-internal lateral movement** | agent calls a *different* in-VPC service that then egresses on its behalf | the egressing service must itself be governed or in a deny-egress segment; micro-segmentation |
+| **VPC endpoints / PrivateLink to cloud services** | traffic to S3/etc. never hits the internet route, so the `0.0.0.0/0` rule doesn't apply | endpoint policies + govern the cloud-service calls (connector/SDK), not just internet egress |
+| **Peered / Transit-Gateway networks** | a peered network may offer its own egress | peering routes must also point at the chokepoint, or the peer must be deny-egress |
+
+The sidecar's guarantee is **bounded to direct internet egress from the governed segment**; the paths above are
+the customer's network-architecture responsibility, called out here so the claim is not oversold.
+
+### 7.4 Egress-routing reconfiguration — change management (the biggest single ask)
+Re-pointing a regulated VPC's egress route at our chokepoint is the **largest change-management item in the
+whole design** — it touches production network plumbing under strict change control. It gets its own
+rollout/rollback/risk handling, **not** a config line item (§4.3 item 3):
+- **Staged rollout:** apply to a **pilot subnet** with a handful of agents first; verify every expected
+  destination still reaches (destination-reachability **synthetic canary**, §12.2) before widening
+  segment-by-segment.
+- **Rollback:** the route change is a single declarative artifact (Terraform/Helm-managed route table); a
+  one-step revert restores direct egress. Keep the prior route table versioned; **rehearse the revert** before go-live.
+- **Blast radius:** scoped to the **governed segment only** (§3.1) — a bad route black-holes only onboarded
+  agents, not the whole account, and only until reverted.
+- **Risk if misapplied:** an over-broad route black-holes legitimate egress (availability); forgetting the
+  lockdown half leaves a direct path (coverage). Both are caught by reconciliation (§3.1) + the
+  destination-reachability canary **before enforce is turned on**.
+- **Customer ownership:** the customer's network team owns and approves the change through their normal CAB; we
+  provide the artifact, the pilot plan, and the revert — we **cannot and do not mutate their routes silently**.
 
 ---
 
@@ -954,11 +1099,33 @@ default, not a guarantee. This must be a documented deployment requirement and v
 | **PDP unreachable** (PEP up) | escalations fail | **cached deterministic floor (FR-1.7)** keeps enforcing; ML pauses | agents keep running on hard rules (secure) |
 | **PEP down** (3A explicit proxy) | agent egress fails (proxy unreachable) | health-checked PEP, multiple replicas, connection retry; fail-mode config | fail-secure (block) or degrade per `fail_mode` |
 | **PEP down** (3C sidecar) | pod can't egress | readiness gating, restart, keep old until new healthy | brief local block; recovers |
-| **Control plane unreachable** | no policy/weight updates, no telemetry uplink | run on last **signed cached** bundle+weights; buffer telemetry; never open | enforcement continues on cached state |
+| **Control plane unreachable** | no policy/weight updates, no telemetry uplink | run on last **signed cached** bundle+weights; **durable spool** buffers telemetry/audit/metering (§8.4); never open | enforcement continues on cached state; records drain on recovery |
 | **Bad image rollout** | fleet-wide outage | **ring + canary rollout, auto-rollback on SLO breach**, signed digests | blast radius capped to canary |
 | **Bad weights/policy** | mass FP or FN | **shadow → graduated promote (FR-11.2)**, auto-rollback; data hot-reload independent of binary | revert in seconds, no restart |
 | **Overload** | latency blowup | bounded queues + backpressure + fail-secure; autoscale | graceful degrade, never open |
 | **Clock/cert expiry** | mTLS breaks | cert auto-rotation, expiry alerts, grace window | uninterrupted |
+
+### 8.1.1 Per-tool fail-mode — the availability-vs-security decision (D-failmode)
+§1.7's "fail-secure by default" and the `fail_mode` config (§4.3/§8.1) must be reconciled honestly: for a
+business-critical agent, **fail-secure during a PDP/control-plane outage stops the business**, and the tools
+that hurt most are exactly the ones the cached floor can't save. A high-risk tool is flagged `requires_ml`
+(§2C) → it **always escalates** → when the PDP is unreachable there is **no local verdict** for it, so
+fail-secure **blocks** it. That is a blast-radius event our *own* outage triggers. So fail-mode is **per-tool,
+not global**:
+
+| Tool class | Floor can decide alone? | Default on PDP-unreachable | Customer override |
+|---|---|---|---|
+| Low/medium-risk (no `requires_ml`) | yes — Cedar+Sigma terminal | **floor decides** (no outage impact) | rarely needed |
+| **High-risk (`requires_ml`: money-movement, data-export)** | **no — defined to need ML** | **fail-secure = DENY** (business stops) | **opt-in fail-open on named tools**, customer owns residual risk |
+
+- We **default secure** on every tool; the high-risk fail-open is **opt-in, per-named-tool, audited**, and the
+  **residual-risk owner is the customer** (documented and signed off at onboarding).
+- Mitigations that shrink the dilemma before anyone picks fail-open: **PDP HA + multi-AZ** (make "unreachable"
+  rare); a **degraded-floor verdict** for some high-risk tools (e.g. tighter Cedar bounds that hold without ML)
+  so they aren't *all* hard-blocked; force-central staleness handling (§2.1) keeps the *floor* current.
+
+This is the #1 thing an enterprise architecture review pushes on — surfaced here as an **open decision
+(D-failmode, §15)** rather than buried under a blanket "security wins" tenet.
 
 ### 8.2 Update strategy (decouple data from binary)
 - **Hot-reload** (no restart): policy bundles, Sigma rules, weights, thresholds, fail-mode.
@@ -975,25 +1142,76 @@ flowchart LR
   RAMP --> DONE["v2 serving; drain v1"]
 ```
 
-### 8.3 SLOs (inherited)
+### 8.3 SLOs (inherited) & the in-VPC latency budget
 Enforcement availability (local, fail-secure) ≥ 99.99% — always returns a *safe* decision; control-plane
-99.9%→99.99%. Latency budgets per [LLD 24](24-latency-optimization.md) / NFR-1/2.
+99.9%→99.99%. The full latency model lives in [LLD 24](24-latency-optimization.md); the load-bearing numbers for
+*this* (in-VPC) path are stated here, since **latency is the adoption risk** for an inline proxy:
+
+| Path | What dominates | Rough budget (in-VPC) |
+|---|---|---|
+| **Common path — floor decides locally** | Cedar+Sigma over cached bundle, **no network hop** | **single-digit–tens of ms**; no PEP→PDP RTT |
+| **Escalated — high-risk / untrusted content** | PEP→PDP **in-VPC RTT** (same-VPC/peering, low single-digit ms) + **distilled-CPU-model inference** (tens–hundreds of ms) | **dominated by inference** |
+
+**Reading the budget:** the in-VPC path runs the *distilled CPU model*, not the cloud LLM tier, so LLD 24's
+published p99 targets (≤500 ms deterministic, **≤900 ms ML-hot**, ≤2.5 s Sonnet-escalation) **size the cloud/
+Serverless path** and are a *ceiling* the in-VPC distilled path is expected to beat, not a like-for-like budget.
+LLD 24 does **not** separately publish the in-VPC PEP→PDP RTT — **target ceiling ≤ 5 ms p99** (same-VPC /
+peering, mTLS) as a placeholder; **fold the measured RTT back in when LLD 24 M1 runs**.
+
+**Assumption to validate (not yet measured — LLD 24 M1 instruments escalation rate):** only a **small minority**
+of calls escalate (allowed tool + in-bounds params + no untrusted content decides locally, §2C). The added p99 on
+*always-escalate* high-risk tools is therefore the inference time above **on every call** for those tools; the
+common-path p99 is the floor only. If the escalation fraction turns out high, in-VPC RTT + inference become the
+binding budget and the fleet must be re-sized (§9.2).
+
+### 8.4 Telemetry, audit & metering delivery durability (store-and-forward)
+Verdicts are returned on the hot path; the **records about them** — audit, telemetry, metering — must reach
+AegionAI (or the customer's SIEM) **without loss even if the uplink or AegionAI is down**. Fire-and-forget
+async drops data on any outage, so delivery is **durable store-and-forward**, not best-effort:
+1. **Write locally first.** Each record is appended to a **local durable buffer** (an append-only spool on
+   an encrypted volume) *before* it is acknowledged — surviving process crash, restart, and uplink loss.
+2. **Ship with retry.** A separate shipper drains the spool to the control plane (or, air-gapped, to the
+   customer's SIEM) with backoff; a record is removed only after the destination **acknowledges** it
+   (**at-least-once** delivery). The hot-path verdict never waits on this.
+3. **Dedupe on ingest.** Because delivery is at-least-once, every record carries an idempotency id and the
+   receiving side dedupes (§11.4) — at-least-once + dedupe ≈ exactly-once in effect.
+4. **Bounded, with an explicit overflow policy.** The spool is disk-bounded. On a sustained outage,
+   **audit and metering records take priority** (back-pressure or alert rather than drop — they are
+   compliance/billing-critical); low-value operational telemetry may be sampled or shed oldest-first. The
+   policy is configurable; the default **never silently drops audit or metering**. *(Open knob — D-spool,
+   §15: exact spool size, transport, and whether audit may degrade under extreme disk pressure.)*
+5. **Air-gapped / Self-Managed.** No uplink — the spool is exported to the customer's own sink (their SIEM)
+   and metering is the signed local ledger (§10.1, option 10B); same durability, different destination.
+
+This is the pattern mature log/metric shippers use (Fluent Bit / Vector / OpenTelemetry Collector file
+buffers). It backs **S12** (audit), **§10** (metering), and the "buffer telemetry" line in §8.1.
 
 ---
 
 ## 9. Scalability
 
 ### 9.1 Scaling model
-- **PDP fleet**: stateless workers behind an internal LB; **horizontal autoscale** on QPS / queue depth /
-  CPU; distilled CPU model scales cheaply and horizontally (ARCHITECTURE §2.6). GPU only for
+- **PDP fleet**: **stateless *compute* workers** behind an internal LB — the per-request verdict runs from
+  in-memory floor + model and needs **no shared state**, which is what lets workers **horizontally autoscale**
+  on QPS / queue depth / CPU (distilled CPU model scales cheaply, ARCHITECTURE §2.6). GPU only for
   escalation/offline re-scoring, **opt-in**.
 - **PEP**: scales with the agent workload (per-pod/per-node); near-zero marginal cost.
 - **Cascade**: cheap deterministic floor short-circuits; ML runs only on the borderline subset
   (LLD 24 "ML last"); FR-2.8 parallel-gather bounds latency as layers grow.
+- **Stateful detectors are off the verdict's critical path (best-effort, eventually-consistent) — so
+  "stateless" holds.** The per-request verdict is computed from local in-memory state (floor + model); that's
+  what makes the workers stateless. Detectors that need *shared* state — session correlation and validation
+  signals ([LLD 17](17-validation-signal-store.md)), cross-agent anomaly/topology — read/write an **external
+  store**, not local memory. Per LLD 17 that store sits **off the hot path behind a bounded (~200 ms) timeout**:
+  on a slow or unavailable store the detector **degrades to best-effort and the verdict still returns** on
+  floor+model — it **never blocks the response or forces a fail-secure on its own** (LLD 17 degradation model).
+  So: hot path = stateless floor+ML (no external-store dependency); shared-state detectors are
+  eventually-consistent and fail-degraded. (Live cross-agent *topology* as shared state is future work, not on
+  the v1 hot path.)
 - **Multi-region/cloud**: data planes co-located with agents per region/cloud; control plane aggregates
   fleet-wide (and must be present per cloud for private connectivity, §3.4).
 
-### 9.2 Capacity & the "no compute on CX side" problem (Q8)
+### 9.2 Capacity & the "no compute on CX side" problem (FAQ-7)
 - **Never require GPU for baseline** — distilled CPU model is the default (FR-3.12).
 - **Degradation tiers** when CPU is also constrained:
   1. deterministic floor only (Cedar+Sigma) — cheap, always available;
@@ -1003,8 +1221,21 @@ Enforcement availability (local, fail-secure) ≥ 99.99% — always returns a *s
 - **No in-VPC compute at all → route the account to the Serverless edition** (SDK→our cloud) or a
   deterministic-only Dedicated install. Architecture↔GTM coupling: "no compute" picks an edition, it
   doesn't break the product.
-- **Sizing**: requests/limits per QPS; if the customer caps resources, **backpressure + fail-secure**,
-  never crash.
+- **Sizing (illustrative — validate via load test, LLD 24 M1):** the PDP is the only sized component (the PEP
+  is near-zero marginal cost). Order-of-magnitude for procurement — distilled CPU model, conservative:
+
+  | Fleet | Governed agents | Aggregate action QPS (assumed) | PDP footprint (CPU model, w/ headroom) |
+  |---|---|---|---|
+  | Small | ~25 | ~50 QPS | ~2–4 vCPU / 8 GB (2 replicas, HA) |
+  | Medium | ~250 | ~500 QPS | ~8–16 vCPU / 32 GB (autoscaled) |
+  | Large | ~2,500 | ~5,000 QPS | ~40–80 vCPU / 128 GB+ (autoscaled, multi-AZ) |
+
+  Drivers: **escalation fraction** (most calls stop at the cheap floor, §8.3), per-inference cost of the
+  distilled model, and target p99. The table assumes a flat **~2 action-QPS/agent**, but **QPS/agent is itself a
+  variable** — it swings widely by agent type (a chatty orchestration agent vs. a once-a-day batch agent), so it
+  is something the load test must **characterize, not a constant**. **These are planning placeholders, not
+  commitments** — the real curve comes from the LLD 24 load test. If the customer caps resources below the curve,
+  **backpressure + fail-secure**, never crash.
 
 ---
 
@@ -1031,6 +1262,12 @@ GPU opt-in is *their* infra cost, surfaced for transparency, not our line item.
 Usage ledger is hash-chained and signed by the data plane's enrolled key; the control plane reconciles;
 material drift between license entitlement and reported usage raises a commercial flag, not an outage.
 
+**Air-gapped metering is entitlement-based — say so plainly.** In a customer-controlled, no-uplink environment
+(10B) the customer exports the signed ledger, so reported **usage is advisory**: we can detect tampering of the
+hash-chain but cannot *compel* the export. The **real enforcement is the signed license cap (10C)** —
+entitlement, not measured usage. Commercial should treat the 10B ledger as **reconciliation input, not a trusted
+usage source**, for air-gapped tenants.
+
 ---
 
 ## 11. APIs
@@ -1049,7 +1286,8 @@ Grouped by channel. (Contracts sketched; full schemas to follow the chosen optio
 - `POST /v1/attest` — attestation evidence → authorize key release (6B).
 - `GET /v1/policy/bundle?since=` — pull signed, versioned policy bundle (deterministic floor).
 - `GET /v1/weights/manifest` + signed artifact fetch — model weights ref + integrity.
-- `POST /v1/telemetry` (batch) — metadata, decisions, signals (off hot path, no content).
+- `POST /v1/telemetry` (batch) — metadata, decisions, signals (off hot path, **durable store-and-forward
+  with at-least-once + dedupe, §8.4**, no content).
 - `POST /v1/usage` — signed metering ledger (§10).
 - `POST /v1/heartbeat` — liveness + version + coverage stats (no-data detection, §12).
 
@@ -1136,17 +1374,28 @@ make the baseline depend on Fargate-forbidden or GKE-DPv2-forbidden features.
 ---
 
 ## 14. Coverage Reality (what the sidecar sees / misses)
-| Action type | Network PEP | Needs SDK/connector |
-|---|---|---|
-| Agent → external API / DB / tool (network) | ✓ | — |
-| Agent → LLM (network, TLS) | ✓ (metadata; body only if 3T-A) | content via SDK |
-| Agent → agent over network (A2A / bus) | ✓ | — |
-| **In-process tool call** (local fn/subprocess/file) | ✗ (no packet) | ✓ |
-| **In-process multi-agent handoff** (LangGraph/CrewAI in one process) | ✗ | ✓ |
-| **Effect-capture for rollback** (side-effect handle) | ✗ (sees bytes, not app handles) | ✓ |
 
-**Coverage = union of modes.** Sidecar = non-bypassable for **network egress**; SDK = in-process +
-effect-capture. Sell them as complementary, not either/or.
+**Lead with the boundary.** The network PEP is an **L7 HTTP(S) proxy** and is **preventive-only (no rollback,
+§1.8/§7.1)**. A "✓" below means *the PEP can act on the connection*; **content-level** action ("inspect the
+body") additionally requires the PEP to **parse that wire protocol** *and* to see plaintext (TLS terminated,
+3T-A/3T-D). **v1 parses HTTP/1.1 + HTTP/2 (incl. gRPC framing) and TLS metadata (SNI/SDS)**; non-HTTP wire
+protocols are **metadata-only until a parser ships**.
+
+| Action type | Network PEP | Caveat (protocol / depth) | Needs SDK/connector |
+|---|---|---|---|
+| Agent → external **HTTP(S)** API / tool | ✓ | full for HTTP-framed; body only if TLS terminated (3T-A/3T-D) | — |
+| Agent → **DB** (Postgres/MySQL/… wire protocol) | ✓ *metadata only* | a generic L7 HTTP proxy **does not speak the DB wire protocol** → destination/volume only, **no query inspection** in v1 | content/query via SDK |
+| Agent → LLM (network, TLS) | ✓ (metadata; body only if 3T-A/3T-D) | **streaming (SSE/chunked)**: buffer→latency or stream-inspect→complexity | content via SDK |
+| Agent → agent **over HTTP** (A2A) | ✓ | HTTP-framed | — |
+| Agent → agent **over a bus** (Kafka / NATS) | ✗ *not HTTP* | non-HTTP wire protocol — **not parsed in v1** | ✓ |
+| **gRPC / websockets** | ✓ *framing only* | metadata + gRPC framing; deep body inspection of streams is **TBD** | content via SDK |
+| **In-process tool call** (local fn/subprocess/file) | ✗ (no packet) | — | ✓ |
+| **In-process multi-agent handoff** (LangGraph/CrewAI in one process) | ✗ | — | ✓ |
+| **Effect-capture for rollback** (side-effect handle) | ✗ (sees bytes, not app handles) | **preventive-only; no undo** | ✓ |
+
+**Coverage = union of modes.** Sidecar = non-bypassable for **HTTP-framed network egress** (metadata for
+non-HTTP protocols), preventive-only; SDK = in-process + content for any protocol + effect-capture. Sell them
+as complementary, not either/or.
 
 ---
 
@@ -1155,14 +1404,18 @@ effect-capture. Sell them as complementary, not either/or.
 |---|---|---|---|
 | D1 | PEP/PDP topology | 2A thin+shared / 2B fat / 2C hybrid | **2C** (2A first) |
 | D2 | Interception placement | host-agnostic **egress chokepoint** (base) vs per-workload **adapter** (3A explicit / 3B redirect-eBPF / 3C mesh / Lambda extension) | **chokepoint as the general base; adapters for richer coverage where available** |
-| D3 | TLS handling | 3T-A MITM / 3T-B metadata-only / 3T-C hybrid | **3T-C** |
+| D3 | TLS handling | 3T-B metadata-only / 3T-C hybrid / 3T-D ride customer inspection / 3T-A our MITM (fallback) | **3T-C default; 3T-D when network-layer content needed; 3T-A last resort** |
 | D4 | Weights packaging | 5A baked / 5B pull-at-startup / 5C streamed | **5B (+5A air-gap)** |
 | D5 | IP protection | 6A encrypt / 6B TEE / 6C obfusc-split | **6A floor + 6B opt-in + tiering** |
 | D6 | Metering | 10A CP / 10B signed-ledger / 10C license | **10A (Dedicated) + 10B/10C (air-gap)** |
 | D7 | CP connectivity | private link per cloud / public mTLS | **private where available; CP per cloud** |
 | D8 | No-in-boundary-compute alternatives (§1.8.1) | Serverless-SDK / connector / ext_authz on existing mesh / hosted egress proxy | **deferred — separate workstream after the in-VPC path lands** |
 | D9 | Workload-identity stack (§3.5) | self-hosted **SPIFFE/SPIRE** / native per-cloud (IRSA · Entra WI · GKE WI) / hybrid | **SPIFFE/SPIRE portable core + native bootstrap per cloud** |
-| D-fresh | Policy cache staleness (§2.1) | exact TTL + staleness SLO; push-channel transport | **push primary + force-central-on-tighten; TTL/SLO TBD** |
+| D-fresh | Policy cache staleness (§2.1) | exact TTL + staleness SLO; push-channel transport; **force-central thundering-herd bound** (pre-scale vs rate-limit-to-floor) + affected-tool QPS assumption | **push primary + force-central (pre-scale + shed-to-floor); TTL/SLO/QPS TBD** |
+| D-spool | Spool overflow policy on sustained outage (§8.4) | (a) back-pressure/alert and never drop audit+metering; (b) also let audit degrade gracefully under extreme disk pressure; spool size + reuse Fluent Bit/Vector/OTel vs build | **default: never silently drop audit/metering; exact size + transport TBD** |
+| D-failmode | Per-tool fail-mode on PDP/control-plane outage (§8.1.1) | (a) fail-secure everywhere; (b) per-named-tool **opt-in fail-open** on availability-critical high-risk tools, customer owns residual risk; (c) degraded-floor verdict for some high-risk tools | **default fail-secure; fail-open opt-in per named tool, customer-owned + audited — per-tenant list TBD** |
+| D-webhook | K8s admission webhook `failurePolicy` (§3.1) | `Fail` (block unguarded pods → availability risk) vs `Ignore` (allow → coverage hole) | **`Ignore` + reconciliation backstop + chokepoint-deny — don't block customer deploys; revisit `Fail` for high-assurance tenants** |
+| D-escalation | **Escalation fraction** — the single cross-cutting unknown that drives latency (§8.3), sizing (§9.2), and the thundering-herd bound (§2.1) | measure via LLD 24 M1; characterize per agent type, not one global constant | **assumed a small minority today; measure before committing latency/sizing/herd numbers** |
 
 **These are explicitly unresolved — to be re-evaluated together before build.** D8 is intentionally
 out of scope for this LLD (see §1.8) and revisited later.
@@ -1192,6 +1445,52 @@ out of scope for this LLD (see §1.8) and revisited later.
 - **Non-bypass / admission control:** [Kubernetes admission webhooks](https://kubernetes.io/docs/reference/access-authn-authz/admission-controllers/); Istio note that it "cannot securely enforce all egress flows through the gateway"
 - **Native agent governance (validation):** [Amazon Bedrock AgentCore Policy → Cedar](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/policy.html) — AWS intercepts every tool call at the boundary, NL→Cedar (AWS-only; confirms our model + the cross-cloud gap)
 - **Container Apps / Cloud Run egress:** [ACA outbound via UDR/Azure Firewall](https://learn.microsoft.com/en-us/azure/container-apps/user-defined-routes) · [Securing ACA egress](https://techcommunity.microsoft.com/blog/azurepaasblog/securing-network-egress-in-azure-container-apps/3915548)
+
+---
+
+## 17. Frequently Asked Questions (FAQ)
+Recurring questions raised in review, collected here and referenced inline as "(FAQ-N)".
+
+**FAQ-1 — Why more than one wire if the brain is already in the customer's account?**
+Because no single wire reaches everything (§14). The network sidecar can't see *in-process* tool calls,
+in-process multi-agent handoffs, content behind un-terminated TLS, or rollback handles — and it can't attach
+to a serverless-hosted agent at all. The SDK and connector cover those gaps. None of them run the model;
+they all feed the same brain (PDP). See §1.3.
+
+**FAQ-2 — Inside the same boundary, don't we still need the decrypted body?**
+Yes. To run parameter-bound policy (refund ≤ limit) or content detection, the PDP needs the **decrypted**
+body; redaction happens *after* decryption, before anything leaves the boundary. The question is never
+"encrypted vs not" inside the boundary — it is **who terminates the TLS**: the customer's existing egress
+proxy (3T-D), the app/SDK (3T-C), or our CA (3T-A). See §3.3.
+
+**FAQ-3 — With 3T-C (metadata + SDK) can we really not do anything at the network layer?**
+No — 3T-C is strong. At the network layer it still does **tool allow/deny, egress allowlist, rate/abuse
+limits, volume anomaly, identity, and cross-agent topology**, *and* full content checks (parameter bounds,
+injection, DLP) **via the SDK** (which sees plaintext for free). The only gap is reading the body of a call
+from an agent that has **neither SDK nor MITM** — exactly what 3T-A or 3T-D fills. See §3.3.4.
+
+**FAQ-4 — Who creates and gives the CA certificate?**
+In the default model (3T-D) the **customer's own PKI team** — they already run an internal CA trusted by all
+workloads, so we create nothing. Only in the 3T-A fallback is a CA minted for inspection, and best practice
+is to mint it in the **customer's** private-CA service and have the customer admin install the public cert
+into the agents' trust store. See §3.3.3.
+
+**FAQ-5 — Who holds the CA private key in our model?**
+Ideally no one on our side: default 3T-D means we hold **no CA key at all**. In the 3T-A fallback the private
+key lives in the **customer's KMS/HSM** (per-tenant, short-lived, scoped, never exported, never in AegionAI's
+cloud). Our own service-to-service keys are short-lived SPIRE SVIDs, never written to disk (§3.5). See §3.3.3.
+
+**FAQ-6 — Is riding the customer's internal CA standard practice? Any "CAs per VPC" limit?**
+Yes — outbound break-and-inspect with an internal root CA pre-trusted on every endpoint is standard
+enterprise practice (Zscaler, Palo Alto, AWS Network Firewall, GCP NGFW/SWP). There is no "CA-per-VPC" limit
+because a CA is **not** a VPC resource; clouds cap CAs by **per-account/per-region service quota**
+(adjustable). See §3.3.3.
+
+**FAQ-7 — What if the customer has no spare compute to run the brain in their account?**
+The product still works (§9.2): degrade to deterministic-floor-only, or escalate borderline cases to the
+Serverless edition / control plane for the heavy model (re-adds egress — a data-boundary trade-off the
+customer accepts), or route that account to the Serverless edition entirely. "No compute" picks an edition;
+it doesn't break the product.
 
 ---
 *Draft for review. Per LLD standards: update HLD/ADR/flow/demo on changes; no option here is final until §15 is resolved.*
