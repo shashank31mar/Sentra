@@ -88,5 +88,8 @@
       "WebFetch(domain:www.craw.in)",
       "WebFetch(domain:www.eccu.edu)"
     ]
+  },
+  "enabledPlugins": {
+    "sentra@claude-skills": true
   }
 }
