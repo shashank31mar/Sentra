@@ -140,7 +140,14 @@ cdk/cdk.context.json
 # ===================================
 # Claude/AI Assistant Files
 # ===================================
-.claude/
+# Ignore local Claude state, but share project skills/agents/settings in git.
+# (Use .claude/* — not .claude/ — so children can be re-included below.)
+.claude/*
+!.claude/skills/
+!.claude/agents/
+!.claude/settings.json
+# Keep machine-local settings out of git
+.claude/settings.local.json
 
 # ===================================
 # CDK Output at root level

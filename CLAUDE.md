@@ -2,6 +2,15 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## Working Style & Token Discipline
+
+- **Chat replies are terse.** Lead with the answer; drop filler and preamble. This applies to conversation only — documents, LLDs, and deliverables keep their normal depth and polish.
+- **Never reproduce file/doc contents back into chat.** Reference `file:line` (clickable) instead of pasting sections.
+- **Revise docs with Edit, not full rewrites** — saves output tokens and avoids re-reading the whole file each turn.
+- **Don't front-load docs into the main thread.** To gather context across many/large docs, dispatch a subagent (see the `/brief` skill) and pull back only a digest; keep big bodies out of the main conversation, which re-bills them as cache-read every turn.
+- **Batch independent tool calls** into one turn; keep dependent calls sequential.
+- Reserve extended thinking ("think hard") for genuinely hard review/architecture judgment, not routine turns.
+
 ## Project Overview
 
 **Sentra** - A Kubernetes-style runtime control plane for autonomous AI agents, providing orchestration, security, and governance at scale.
