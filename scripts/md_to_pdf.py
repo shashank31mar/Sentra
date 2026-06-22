@@ -4,14 +4,18 @@
 Usage:
     python scripts/md_to_pdf.py pitch/how-it-works.md
 
-Produces <name>.html and <name>.pdf next to the source. Supports ```mermaid```
+Produces <name>.pdf next to the source. The transient HTML intermediate Chrome
+needs is written to the system temp dir (never next to the source) and deleted
+afterward, so no .html ever lands in the repo. Supports ```mermaid```
 fenced blocks (rendered to SVG via a locally-bundled mermaid.js + Chrome's
 virtual-time budget). Keeps the repo's "styled HTML -> Chrome --print-to-pdf"
 convention. Multi-page output is fine for longer docs.
 """
+import os
 import re
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 import markdown
@@ -136,17 +140,26 @@ def main() -> int:
         f"<title>{src.stem}</title><style>{CSS}</style>{mermaid_head}</head><body>{body}</body></html>"
     )
 
-    html_path = src.with_suffix(".html")
     pdf_path = src.with_suffix(".pdf")
-    html_path.write_text(html, encoding="utf-8")
+    # The HTML is a throwaway intermediate for Chrome. Write it to the system
+    # temp dir (never next to the source) so no .html ever lands in the repo,
+    # even if this process is interrupted before cleanup.
+    fd, tmp_html = tempfile.mkstemp(suffix=".html", prefix=f"{src.stem}-")
+    html_path = Path(tmp_html)
+    with os.fdopen(fd, "w", encoding="utf-8") as fh:
+        fh.write(html)
 
     cmd = [CHROME, "--headless", "--disable-gpu", "--no-pdf-header-footer"]
     if mermaid_blocks:
         # let mermaid's JS render to SVG before the PDF snapshot is taken
         cmd.append("--virtual-time-budget=20000")
     cmd += [f"--print-to-pdf={pdf_path}", html_path.as_uri()]
-    subprocess.run(cmd, check=True, capture_output=True)
-    print(f"wrote {html_path.name} and {pdf_path.name}"
+    try:
+        subprocess.run(cmd, check=True, capture_output=True)
+    finally:
+        # the HTML is only an intermediate for Chrome; never leave it behind
+        html_path.unlink(missing_ok=True)
+    print(f"wrote {pdf_path.name}"
           + (f" ({len(mermaid_blocks)} mermaid diagram(s))" if mermaid_blocks else ""))
     return 0
 
