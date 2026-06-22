@@ -524,12 +524,10 @@ from a governed agent, and (ii) is it an action we enforce on?** Four steps:
 
 1. **Only governed agents reach the PEP at all.** We route *only* the agents we govern through the PEP (via
    3A/3B/3C). A workload the customer hasn't onboarded never touches us.
-2. **Identify *who* is calling** — from signals the caller can't forge: a workload-identity credential
-   (mTLS client cert / SPIFFE ID, §3.5), a pod label / Kubernetes service account, or — weakest, fallback
-   only — source IP/subnet. This resolves to `(tenant_id, agent_id)` (FR-10.3; never a self-asserted field).
-3. **Identify *what* it's doing** — by **destination** (the host/endpoint, e.g. `api.stripe.com/refunds`,
-   matched against a known tool/API/LLM/DB list) and **protocol shape** (MCP JSON-RPC, OpenAI/Bedrock/Vertex
-   API, SQL-over-wire, tool-call envelope).
+2. **Identify *who* is calling** — resolve the connection to `(tenant_id, agent_id)` from a credential the
+   caller can't forge. **How this is set up and resolved is detailed in §3.2.1.**
+3. **Identify *what* it's doing** — resolve the connection to a **logical tool** (and its policy) or, failing
+   that, to a **destination**. **How the tool/endpoint is resolved is detailed in §3.2.2.**
 4. **Decide whether to act** — matched governed tool → run the policy/floor (§2); a governed agent making an
    *unrecognized* call → configurable **monitor (log+allow)** by default, tightening to **deny** as
    confidence grows; non-governed traffic that slipped through → pass through untouched.
@@ -538,18 +536,65 @@ from a governed agent, and (ii) is it an action we enforce on?** Four steps:
 tool → enforce policy) and one to `pypi.org` to fetch a library (not a governed action → pass through). The
 PEP acts on the first and ignores the second.
 
-#### 3.2.1 From tool names to endpoints — the binding, and two policy levels
+**Both *who* and *what* are set up once at onboarding and resolved per request** — identification is not
+magic, it's a registry built at onboarding and consulted at runtime. The lifecycle:
+
+```mermaid
+flowchart TB
+  subgraph SETUP["Onboarding - once per agent"]
+    direction TB
+    C1["Discover agent via cloud APIs"]
+    C2["Attach wire and provision workload identity"]
+    C3["Register credential to tenant and agent in CP registry"]
+    C4["Introspect tools to build catalog - name, endpoint, params"]
+    C5["Sign and ship bundle to in-VPC PEP and PDP"]
+    C1 --> C2 --> C3 --> C5
+    C1 --> C4 --> C5
+  end
+  subgraph RUN["Runtime - per request"]
+    direction TB
+    R1["PEP verifies caller mTLS credential"]
+    R2["resolve tenant and agent from the binding"]
+    R3["resolve tool - Wire A name, or Wire B endpoint match"]
+    R4["apply tool policy, or endpoint-level FR-2.9, or monitor if unknown"]
+    R1 --> R2 --> R3 --> R4
+  end
+  SETUP --> RUN
+```
+
+#### 3.2.1 Identifying the agent (who)
+*Set up once at onboarding:*
+- The wire is attached and the agent's workload gets a **workload identity** — a **SPIFFE SVID** (issued by
+  SPIRE) or a cloud identity (**AWS IRSA** / pod ServiceAccount) (§3.5.1).
+- At enrollment we **register the binding `credential → (tenant_id, agent_id)`** in the control-plane
+  registry (FR-10.3, per-agent credential) and ship it to the in-VPC PEP/PDP in the **signed bundle**.
+
+*Resolved per request:*
+- The PEP reads the caller's credential off the **mTLS** connection, **verifies** it, and looks up the
+  binding → `(tenant_id, agent_id)`. **Never** a self-asserted request field.
+- Fallbacks where no workload identity exists: **pod label / ServiceAccount** (trustworthy *because* the PEP
+  was admission-injected, §3.1), then **source IP/subnet** (weak — supplements only).
+
+#### 3.2.2 Identifying the tool/endpoint (what) — the binding, the catalog, two policy levels
 Policy is written about a **tool** (`issue_refund`), but the PEP sees an **endpoint**
-(`POST api.stripe.com/v1/refunds`). The customer does **not** type URLs — we resolve the **tool → endpoint
-binding** from three sources:
-- **Import-time introspection (primary):** a tool definition usually *includes its endpoint* — Bedrock
-  action-group **OpenAPI schema** / Lambda ARN, the **MCP manifest** (`tool → server/endpoint`), OpenAI/Azure
-  function schemas, the LangChain tool object. So `issue_refund` resolves to `POST /refunds` + the `amount`
-  field automatically (FR-7.8).
-- **Wire A observes it at runtime:** the in-process wire sits *at the tool boundary* and sees both the tool
-  name **and** the outgoing HTTP call → it **tags the network call with the logical tool** and teaches the
-  mapping to the network layer.
-- **Learned association (Monitor mode):** observed traffic links a tool to the destinations it hits (FR-8.7).
+(`POST api.stripe.com/v1/refunds`). The customer does **not** type URLs — we build the **tool → endpoint
+binding** at onboarding and consult it at runtime.
+
+*Set up once at import:*
+- **Introspect** the agent's tool definitions (FR-7.8) → build a per-agent **tool catalog**: each tool's
+  **name ↔ endpoint (host/path/method) ↔ parameter schema**. Sources: Bedrock action-group **OpenAPI** /
+  Lambda ARN, the **MCP manifest**, OpenAI/Azure function schemas, the LangChain tool registry. So
+  `issue_refund` resolves to `POST /refunds` + the `amount` field automatically.
+- Store the catalog in the CP registry; ship it to the PEP/PDP in the signed bundle → the PEP holds a local
+  **`endpoint → tool → policy`** lookup table.
+
+*Resolved per request:*
+- **Wire A** knows the **tool name directly** (it intercepts at the tool boundary) → look up policy; it also
+  records the endpoint it hit, **refining the catalog** for the network layer.
+- **Wire B / network** has only **destination + protocol shape** → match against the catalog's endpoint
+  patterns → resolve the tool, or fall back to **endpoint-level policy (FR-2.9)** for dynamic/unknown URLs.
+- **No catalog match** → **Monitor + flag** for classification (FR-8.4); learned association then proposes a
+  binding (FR-8.7).
 
 This gives **two policy levels**, both supported:
 - **Tool-level (logical)** — "`issue_refund` ≤ $1000." Needs the binding (introspection or Wire A).
