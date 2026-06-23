@@ -74,6 +74,66 @@ class Settings(BaseSettings):
     )
 
     # ------------------------------------------------------------------
+    # Multi-Tenancy runtime identity (LLD-26 / WS-A, WS-D)
+    # ------------------------------------------------------------------
+    # Tenant registry + operator↔tenant membership (WS-D D1) and the per-agent
+    # asymmetric credential store (WS-A A1). All three are net-new, born
+    # tenant-scoped tables; they sit empty (and unread on the hot path) until
+    # identity is rolled out, so adding them is regression-free.
+    dynamodb_tenants_table: str = Field(
+        default="sentra-tenants", validation_alias="TENANTS_TABLE"
+    )
+    dynamodb_tenant_members_table: str = Field(
+        default="sentra-tenant-members", validation_alias="TENANT_MEMBERS_TABLE"
+    )
+    dynamodb_agent_credentials_table: str = Field(
+        default="sentra-agent-credentials", validation_alias="AGENT_CREDENTIALS_TABLE"
+    )
+    # Per-tenant quota counters (WS-E E2b). Write-sharded; rows auto-expire via TTL.
+    dynamodb_quota_counters_table: str = Field(
+        default="sentra-quota-counters", validation_alias="QUOTA_COUNTERS_TABLE"
+    )
+    # Hot-path RPS quota enforcement (WS-E E2b) — OFF by default (founder-gated,
+    # LLD-26 §9.3). On → a write-sharded per-validate counter (fail-open). Leave
+    # off until there are paying tenants with contractual limits.
+    quota_enforcement_enabled: bool = Field(
+        default=False, validation_alias="QUOTA_ENFORCEMENT_ENABLED"
+    )
+
+    # Fleet-wide rollout CEILING for runtime agent identity (LLD-26 §7.2).
+    # `off` → /v1/validate never resolves a JWT (byte-identical to pre-26).
+    # `shadow` → verify + log resolved tid, but DO NOT route onto it.
+    # `enforce` → route onto the verified tid; uncredentialed → fail-secure.
+    # Effective mode = min(this ceiling, the tenant row's `identity_mode`), so a
+    # tenant never rises above the fleet ceiling. Default `off` — no regression.
+    tenant_identity_mode: str = Field(
+        default="off", validation_alias="TENANT_IDENTITY_MODE"
+    )
+    # Dedicated / Self-Managed single-tenant pin (LLD-26 §3.6). When set, the
+    # verified token is still checked but set_current_tenant() always gets this
+    # value, and a tid-mismatch is a hard error. Empty = multi-tenant (default).
+    tenant_pin: str = Field(default="", validation_alias="TENANT_PIN")
+    # Public-key cache (WS-A A3.1). TTL is a *second* revocation budget alongside
+    # token lifetime, so keep it short (≤60s). The revoked-since shared signal is
+    # refreshed at most once per `revoked_since_refresh_seconds`.
+    credential_cache_ttl_seconds: int = Field(
+        default=60, validation_alias="CREDENTIAL_CACHE_TTL_SECONDS"
+    )
+    credential_cache_max_size: int = Field(
+        default=5000, validation_alias="CREDENTIAL_CACHE_MAX_SIZE"
+    )
+    credential_negative_cache_ttl_seconds: int = Field(
+        default=10, validation_alias="CREDENTIAL_NEGATIVE_CACHE_TTL_SECONDS"
+    )
+    revoked_since_refresh_seconds: int = Field(
+        default=10, validation_alias="REVOKED_SINCE_REFRESH_SECONDS"
+    )
+    # JWT clock-skew leeway (seconds); matters with ≤15-min agent tokens.
+    jwt_clock_skew_seconds: int = Field(
+        default=60, validation_alias="JWT_CLOCK_SKEW_SECONDS"
+    )
+
+    # ------------------------------------------------------------------
     # Cloud Connections (Connect-Account wizard — connections-api-spec.md)
     # ------------------------------------------------------------------
     # Born tenant-scoped (PK tenant_id) — no v1/v2 flag split (it's a net-new

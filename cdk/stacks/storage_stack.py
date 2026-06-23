@@ -851,6 +851,100 @@ class StorageStack(Stack):
             )
 
         # ============================================================
+        # Multi-Tenancy: registry, membership & agent credentials (LLD-26)
+        #   WS-D D1 — sentra-tenants, sentra-tenant-members (+ GSI)
+        #   WS-A A1 — sentra-agent-credentials (+ kid-index GSI)
+        # All three are net-new, born tenant-scoped, and unread on the hot path
+        # until identity rollout — additive, regression-free. RETAIN: these hold
+        # the tenant registry + the public keys that establish agent identity;
+        # losing them strands every tenant.
+        # ============================================================
+        tenancy_cfg = dynamodb_config.get("multitenancy", {})
+
+        # sentra-tenants — PK tenant_id (immutable slug). The `identity_mode`
+        # attribute on each row is the authoritative per-tenant rollout control
+        # (WS-A/WS-B read it); no GSI — lookups are by tenant_id.
+        self.tenants_table = dynamodb.Table(
+            self,
+            "TenantsTable",
+            table_name=tenancy_cfg.get("tenants_table_name", "sentra-tenants"),
+            partition_key=dynamodb.Attribute(name="tenant_id", type=dynamodb.AttributeType.STRING),
+            billing_mode=dynamodb.BillingMode.PAY_PER_REQUEST,
+            point_in_time_recovery=True,
+            removal_policy=RemovalPolicy.RETAIN,
+        )
+
+        # sentra-tenant-members — PK operator_sub / SK tenant_id (membership pair).
+        # GSI tenant-members-index (PK tenant_id) lists all operators in a tenant
+        # for the members-admin screen (WS-C).
+        self.tenant_members_table = dynamodb.Table(
+            self,
+            "TenantMembersTable",
+            table_name=tenancy_cfg.get("tenant_members_table_name", "sentra-tenant-members"),
+            partition_key=dynamodb.Attribute(name="operator_sub", type=dynamodb.AttributeType.STRING),
+            sort_key=dynamodb.Attribute(name="tenant_id", type=dynamodb.AttributeType.STRING),
+            billing_mode=dynamodb.BillingMode.PAY_PER_REQUEST,
+            point_in_time_recovery=True,
+            # Pending invites are time-boxed rows (operator_sub = `_invite#<token>`)
+            # carrying a `ttl`; real membership rows omit it and never expire.
+            time_to_live_attribute="ttl",
+            removal_policy=RemovalPolicy.RETAIN,
+        )
+        self.tenant_members_table.add_global_secondary_index(
+            index_name="tenant-members-index",
+            partition_key=dynamodb.Attribute(name="tenant_id", type=dynamodb.AttributeType.STRING),
+            projection_type=dynamodb.ProjectionType.ALL,
+        )
+
+        # sentra-agent-credentials — PK tenant_id / SK key_id ({agent_id}#{kid}).
+        # GSI kid-index (PK kid) is the ONE pre-tenant lookup that establishes the
+        # tenant at verify time; kid is a globally-unique UUID so no hot partition.
+        self.agent_credentials_table = dynamodb.Table(
+            self,
+            "AgentCredentialsTable",
+            table_name=tenancy_cfg.get("agent_credentials_table_name", "sentra-agent-credentials"),
+            partition_key=dynamodb.Attribute(name="tenant_id", type=dynamodb.AttributeType.STRING),
+            sort_key=dynamodb.Attribute(name="key_id", type=dynamodb.AttributeType.STRING),
+            billing_mode=dynamodb.BillingMode.PAY_PER_REQUEST,
+            point_in_time_recovery=True,
+            removal_policy=RemovalPolicy.RETAIN,
+        )
+        self.agent_credentials_table.add_global_secondary_index(
+            index_name="kid-index",
+            partition_key=dynamodb.Attribute(name="kid", type=dynamodb.AttributeType.STRING),
+            projection_type=dynamodb.ProjectionType.ALL,
+        )
+
+        # sentra-quota-counters — per-tenant write-sharded RPS counters (WS-E E2b).
+        # PK tenant_id / SK counter_key (`_rps#{window}#{shard}`); rows auto-reap
+        # via the `ttl` attribute. DESTROY: pure ephemeral rate state, no value lost.
+        self.quota_counters_table = dynamodb.Table(
+            self,
+            "QuotaCountersTable",
+            table_name=tenancy_cfg.get("quota_counters_table_name", "sentra-quota-counters"),
+            partition_key=dynamodb.Attribute(name="tenant_id", type=dynamodb.AttributeType.STRING),
+            sort_key=dynamodb.Attribute(name="counter_key", type=dynamodb.AttributeType.STRING),
+            billing_mode=dynamodb.BillingMode.PAY_PER_REQUEST,
+            time_to_live_attribute="ttl",
+            point_in_time_recovery=False,
+            removal_policy=RemovalPolicy.DESTROY,
+        )
+
+        for _logical, _table in {
+            "tenants": self.tenants_table,
+            "tenant-members": self.tenant_members_table,
+            "agent-credentials": self.agent_credentials_table,
+            "quota-counters": self.quota_counters_table,
+        }.items():
+            CfnOutput(
+                self,
+                f"{_logical.replace('-', ' ').title().replace(' ', '')}TableName",
+                value=_table.table_name,
+                description=f"DynamoDB table name for {_logical} (multi-tenancy, LLD-26)",
+                export_name=f"{naming_config.get('prefix', 'sentra-mvp')}-{_logical}-table-name",
+            )
+
+        # ============================================================
         # ECR Repositories (Task 9 - moved from Compute Stack)
         # ============================================================
         ecr_config = config.get("compute", {}).get("ecr", {})
@@ -1006,4 +1100,16 @@ class StorageStack(Stack):
             self.policies_metadata_table_v2,
             self.session_context_table_v2,
             self.validation_signal_store_v2.table,
+        ]
+
+    # Multi-Tenancy Table Properties (LLD-26 — WS-D D1 / WS-A A1)
+    @property
+    def multitenancy_tables(self) -> list:
+        """tenants / tenant-members / agent-credentials `dynamodb.Table`
+        constructs, for IAM grants (read+write incl. their GSIs)."""
+        return [
+            self.tenants_table,
+            self.tenant_members_table,
+            self.agent_credentials_table,
+            self.quota_counters_table,
         ]

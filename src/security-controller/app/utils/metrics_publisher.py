@@ -88,18 +88,44 @@ class MetricsPublisher:
             # Add deny rate metric for DENY decisions
             if decision == "DENY":
                 deny_dimensions = [{'Name': 'AgentId', 'Value': agent_id}]
-                
+
                 # Add threat_type dimension if available
                 if threat_type:
                     deny_dimensions.append({'Name': 'ThreatType', 'Value': threat_type})
-                
+
                 metrics.append({
                     'MetricName': 'DenyRate',
                     'Value': 1,
                     'Unit': 'None',
                     'Dimensions': deny_dimensions
                 })
-            
+
+            # Tenant-dimensioned metrics (LLD-26 §9.1 / WS-E E1). Emitted ALONGSIDE
+            # the AgentId-keyed streams above so existing dashboards keep working;
+            # per-tenant dashboards become a `tenant_id` filter, not a new pipeline.
+            # `tenant_id` is the request's resolved tenant (the `current_tenant()`
+            # contextvar) — `default` until identity rollout, then the real tid.
+            try:
+                from app.utils import tenancy
+                tid = tenancy.current_tenant()
+                metrics.append({
+                    'MetricName': 'Decisions',
+                    'Value': 1,
+                    'Unit': 'Count',
+                    'Dimensions': [
+                        {'Name': 'tenant_id', 'Value': tid},
+                        {'Name': 'verdict', 'Value': decision},
+                    ],
+                })
+                metrics.append({
+                    'MetricName': 'ValidateLatency',
+                    'Value': latency_ms,
+                    'Unit': 'Milliseconds',
+                    'Dimensions': [{'Name': 'tenant_id', 'Value': tid}],
+                })
+            except Exception:  # noqa: BLE001 — never let a metric tag block validation
+                pass
+
             self.cloudwatch.put_metric_data(
                 Namespace=self.namespace,
                 MetricData=metrics

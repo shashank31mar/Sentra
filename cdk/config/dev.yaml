@@ -19,7 +19,17 @@ environment: "dev"
 # false → controller reads/writes the v1 tables (today). Flip to true only
 # after the migration script has copied v1→v2 under tenant=default and the
 # write-freeze cutover (workstream T09) is ready.
-tenancy_v2_enabled: false
+# CUTOVER 2026-06-23: migrate_tenancy.py copied v1→v2 under tenant=default
+# (registry/policies/sessions/signals). Data-plane tenant-scoping now LIVE under
+# the single `default` tenant. Rollback: set false + cdk deploy.
+tenancy_v2_enabled: true
+
+# Multi-tenancy runtime identity rollout CEILING (LLD-26 §7.2). off → /v1/validate
+# never resolves a JWT (pre-26). shadow → verify+log presented JWTs, do NOT route
+# (no-token traffic still allowed). enforce → route verified tid; tokenless DENY
+# (needs ~100% credential coverage + SDK JWT signing/LLD-23 first — DO NOT raise
+# to enforce until the background agents sign tokens, or they will be denied).
+tenant_identity_mode: shadow
 
 # Cedar authorization engine (feature: cedar-policy). Rollout: shadow first
 # (both true → Cedar runs alongside, legacy verdict stays live, discrepancies

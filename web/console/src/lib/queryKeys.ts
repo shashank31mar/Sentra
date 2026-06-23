@@ -4,6 +4,9 @@ import type { MetricsRange, TimeseriesBucket } from '../types/enums'
 export const queryKeys = {
   auth: {
     me: () => ['auth', 'me'] as const,
+    // Server-derived tenant + role + memberships (LLD-26 GET /v1/me). Distinct
+    // from `me()` (the cosmetic /whoami identity).
+    context: () => ['auth', 'context'] as const,
   },
   metrics: {
     overview: (range: MetricsRange) => ['metrics', 'overview', range] as const,

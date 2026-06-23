@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import {
   IconCheck,
@@ -27,6 +27,7 @@ import {
 import { ApiException } from '../../lib/http'
 import { importPath } from '../../app/routes'
 import type { CloudProvider } from '../../types/enums'
+import type { CloudConnection } from '../../types/api'
 
 type StepId = 1 | 2 | 3
 const STEPS: { id: StepId; label: string }[] = [
@@ -95,13 +96,45 @@ export function ConnectAccountPage() {
 
   const current: StepId = !connection ? 1 : connection.status === 'connected' ? 3 : 2
 
+  // Connected accounts keyed by provider — drives the per-tile "Connected"
+  // badge and the resume-to-review shortcut (bug: a connected Bedrock account
+  // showed no status on the picker).
+  const connectedByProvider = useMemo(() => {
+    const map = new Map<CloudProvider, CloudConnection>()
+    for (const c of connections.data?.connections ?? []) {
+      if (c.status === 'connected') map.set(c.cloud_provider, c)
+    }
+    return map
+  }, [connections.data])
+
+  // (Re)choose the cloud in the wizard. Switching clouds abandons the
+  // half-set-up record so the picker never gets stuck on the first choice
+  // (bug: couldn't pick Azure after AWS and vice versa). A fully-connected
+  // account is kept — switching just clears the local selection.
   const chooseCloud = (provider: CloudProvider) => {
-    if (connectionId || create.isPending) return
+    if (create.isPending || remove.isPending) return
+    if (connection?.cloud_provider === provider) return // already selected
+    const abandoned = connectionId
+    const wasConnected = connection?.status === 'connected'
+    setConnectionId(null)
+    create.reset()
+    if (abandoned && !wasConnected) remove.mutate(abandoned)
     create.mutate(provider, {
       onSuccess: (conn) => setConnectionId(conn.id),
       onError: (err) =>
         toastError(err instanceof ApiException ? err.message : 'Could not start a connection.'),
     })
+  }
+
+  // Tile click: resume an already-connected account (→ review), else (re)choose
+  // the cloud in the wizard.
+  const onChooseTile = (provider: CloudProvider) => {
+    const connected = connectedByProvider.get(provider)
+    if (connected && connected.id !== connection?.id) {
+      navigate(importPath(connected.id))
+      return
+    }
+    chooseCloud(provider)
   }
 
   const connectAndScan = () => {
@@ -168,22 +201,35 @@ export function ConnectAccountPage() {
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
             {CLOUD_OPTIONS.map((opt) => {
               const selected = connection?.cloud_provider === opt.provider
+              const isConnected = connectedByProvider.has(opt.provider)
               const Icon = opt.icon
               return (
                 <button
                   key={opt.provider}
                   type="button"
-                  disabled={!opt.available || Boolean(connectionId) || create.isPending}
-                  onClick={() => chooseCloud(opt.provider)}
+                  // Only disabled while a create/abandon is in flight or the
+                  // provider isn't shipped yet — so operators can freely switch
+                  // clouds and click into an already-connected account.
+                  disabled={!opt.available || create.isPending || remove.isPending}
+                  onClick={() => onChooseTile(opt.provider)}
                   className="relative text-left p-4 rounded-2xl transition-colors disabled:cursor-not-allowed enabled:hover:border-cyan/40 enabled:cursor-pointer"
                   style={{
                     background: selected ? 'rgba(15,255,255,0.06)' : 'var(--color-surface-2)',
-                    border: `1px solid ${selected ? 'rgba(15,255,255,0.4)' : 'var(--color-line)'}`,
+                    border: `1px solid ${
+                      selected
+                        ? 'rgba(15,255,255,0.4)'
+                        : isConnected
+                          ? 'rgba(34,229,139,0.4)'
+                          : 'var(--color-line)'
+                    }`,
                     opacity: opt.available ? 1 : 0.55,
                   }}
                 >
-                  {selected && (
-                    <span className="absolute top-3 right-3 h-5 w-5 rounded-full bg-cyan grid place-items-center">
+                  {(selected || isConnected) && (
+                    <span
+                      className="absolute top-3 right-3 h-5 w-5 rounded-full grid place-items-center"
+                      style={{ background: selected ? '#0FFFFF' : '#22E58B' }}
+                    >
                       <IconCheck size={12} className="text-[#010B13]" />
                     </span>
                   )}
@@ -193,12 +239,14 @@ export function ConnectAccountPage() {
                   <span
                     className="mt-2 inline-block text-[9px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded font-mono"
                     style={
-                      opt.available
-                        ? { color: '#22E58B', background: 'rgba(34,229,139,0.1)', border: '1px solid rgba(34,229,139,0.25)' }
-                        : { color: '#8DA2AE', background: 'rgba(255,255,255,0.04)', border: '1px solid var(--color-line)' }
+                      isConnected
+                        ? { color: '#22E58B', background: 'rgba(34,229,139,0.16)', border: '1px solid rgba(34,229,139,0.4)' }
+                        : opt.available
+                          ? { color: '#22E58B', background: 'rgba(34,229,139,0.1)', border: '1px solid rgba(34,229,139,0.25)' }
+                          : { color: '#8DA2AE', background: 'rgba(255,255,255,0.04)', border: '1px solid var(--color-line)' }
                     }
                   >
-                    {opt.available ? 'Available' : 'Coming soon'}
+                    {isConnected ? 'Connected' : opt.available ? 'Available' : 'Coming soon'}
                   </span>
                 </button>
               )

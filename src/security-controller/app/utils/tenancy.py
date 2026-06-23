@@ -54,6 +54,42 @@ from app.config import settings
 # Reserved tenant every grandfathered/demo row migrates under (workstream §1.1).
 DEFAULT_TENANT = "default"
 
+# Reserved system tenants (LLD-26 §3.7, §6.2). None of these may be minted as a
+# customer tenant_id — tenant creation rejects them (WS-D D4).
+#   _unverified — audit bucket for requests with no proven tenant (WS-A A4).
+#   _platform   — Sentra-staff cross-tenant support capability (WS-D §6.3).
+UNVERIFIED_TENANT = "_unverified"
+PLATFORM_TENANT = "_platform"
+# `_revocation` is the PK of the revoked-since epoch row in the credentials table
+# (credentials_service). Reserve it too so a tenant can never collide with it
+# (already unreachable via the slug rules, but defense-in-depth).
+REVOCATION_PSEUDO_TENANT = "_revocation"
+RESERVED_TENANT_IDS = frozenset(
+    {DEFAULT_TENANT, UNVERIFIED_TENANT, PLATFORM_TENANT, REVOCATION_PSEUDO_TENANT}
+)
+
+# Runtime-identity rollout ladder (LLD-26 §7.2). Ordered so `min()` over the
+# index gives the more-conservative of two modes.
+IDENTITY_MODES = ("off", "shadow", "enforce")
+
+
+def effective_identity_mode(tenant_mode: Optional[str]) -> str:
+    """The mode actually in force for a tenant = the *more conservative* of the
+    fleet-wide env ceiling (``TENANT_IDENTITY_MODE``) and the tenant row's
+    ``identity_mode`` (LLD-26 §7.2). A tenant can never rise above the ceiling;
+    the ceiling can cap every tenant at ``shadow`` (incident) or ``off`` (kill).
+    Unknown values fail closed to ``off``."""
+    ceiling = (settings.tenant_identity_mode or "off").lower()
+    tenant = (tenant_mode or "off").lower()
+    ci = IDENTITY_MODES.index(ceiling) if ceiling in IDENTITY_MODES else 0
+    ti = IDENTITY_MODES.index(tenant) if tenant in IDENTITY_MODES else 0
+    return IDENTITY_MODES[min(ci, ti)]
+
+
+def is_reserved_tenant(tenant_id: str) -> bool:
+    """True if ``tenant_id`` is a reserved system id that no customer may hold."""
+    return tenant_id in RESERVED_TENANT_IDS
+
 # Composite GSI / base partition attribute names (v2 only).
 AGENT_GSI_PK = "tenant_agent_id"          # {tenant}#{agent_id}
 DECISION_DATE_GSI_PK = "tenant_decision_date"  # {tenant}#{YYYY-MM-DD}

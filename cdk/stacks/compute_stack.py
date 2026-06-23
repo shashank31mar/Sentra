@@ -195,6 +195,15 @@ class ComputeStack(Stack):
         for _v2_table in storage_stack.tenancy_v2_tables:
             _v2_table.grant_read_write_data(self.security_controller_task_role)
 
+        # Multi-tenancy registry, membership & agent credentials (LLD-26).
+        # grant_read_write_data covers the base tables AND their GSIs
+        # (tenant-members-index, kid-index) — DDB grants apply to the table and
+        # all its indexes. Granted now so the issuance/verify paths and the
+        # onboarding APIs work without a second deploy; the tables sit empty and
+        # unread on the hot path until TENANT_IDENTITY_MODE is raised.
+        for _mt_table in storage_stack.multitenancy_tables:
+            _mt_table.grant_read_write_data(self.security_controller_task_role)
+
         # Cloud Connections (Connect-Account wizard — connections-api-spec.md).
         storage_stack.connections_table.grant_read_write_data(self.security_controller_task_role)
         # Discovery cache (feature §8.1) — scan persists what it lists here.
@@ -1337,6 +1346,17 @@ def handler(event, context):
                     # Cloud Connections (Connect-Account wizard).
                     "CONNECTIONS_TABLE": storage_stack.connections_table.table_name,
                     "DISCOVERY_CACHE_TABLE": storage_stack.discovery_cache_table.table_name,
+                    # Multi-tenancy (LLD-26). Table names always present; the
+                    # rollout ceiling defaults OFF so the verify path is inert
+                    # (byte-identical to pre-26) until raised to shadow/enforce
+                    # per-tenant via the sentra-tenants row's identity_mode.
+                    "TENANTS_TABLE": storage_stack.tenants_table.table_name,
+                    "TENANT_MEMBERS_TABLE": storage_stack.tenant_members_table.table_name,
+                    "AGENT_CREDENTIALS_TABLE": storage_stack.agent_credentials_table.table_name,
+                    "TENANT_IDENTITY_MODE": str(config.get("tenant_identity_mode", "off")).lower(),
+                    "QUOTA_COUNTERS_TABLE": storage_stack.quota_counters_table.table_name,
+                    # Hot-path RPS quota enforcement (WS-E E2b) — founder-gated, off.
+                    "QUOTA_ENFORCEMENT_ENABLED": str(config.get("quota_enforcement_enabled", False)).lower(),
                     # Cache Configuration (Workstream 5, Task 1)
                     "CACHE_ENABLED": "true",
                     "AGENT_METADATA_CACHE_TTL_SECONDS": "60",

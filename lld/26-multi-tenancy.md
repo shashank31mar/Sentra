@@ -1,8 +1,8 @@
 # LLD 26: Multi-Tenancy (Umbrella)
 
-**Version**: 1.2
+**Version**: 1.4
 **Last Updated**: 2026-06-23
-**Status**: Approved (design) — kiro 2nd-pass build-time refinements applied (v1.2)
+**Status**: Approved (design) — v1.4 kiro code-grounded review applied: brownfield `default` population resolved (§10), delimiter-safe `tid` prefix check (§3.3/§3.4), canonical-id `{…}-{hash}` format corrected, `verify_alb_oidc` + `GET /v1/me` flagged for LLD-08 sync (§11.2). v1.3: Streamlit decommission, role-conditional UI (§5.4) + platform-admin console (§5.5), §3.5 diagram + `status` enum fixes
 **Prerequisites**: [06-data-model-v2.md](06-data-model-v2.md), [08-authentication-and-alb-architecture.md](08-authentication-and-alb-architecture.md), [17-validation-signal-store.md](17-validation-signal-store.md), [18-deterministic-enforcement.md](18-deterministic-enforcement.md), [23-sentra-guard-sdk.md](23-sentra-guard-sdk.md)
 **Implements**: PRD FR-10.1, FR-10.2 ([PRD.md:299-300](../PRD.md))
 
@@ -52,8 +52,8 @@ This LLD closes that gap. The load-bearing mechanism is a **per-agent asymmetric
 | Runtime identity (`current_tenant()`) | **No** — hardcoded `"default"`, nothing sets it | JWT `tid` claim | WS-A |
 | `sentra-agent-credentials` (public keys) | **Table does not exist** | New table + verify step | WS-A |
 | S3 policy artifacts | Implicit (agent_id is tenant-prefixed) | Explicit `tenants/{tid}/…` prefix | WS-B |
-| Dashboard (Streamlit) | **No** — reads global tables + legacy `sentra-policies` | Session-derived tenant filter | WS-C |
-| Web console (`web/console`) | **No** — `tenantOf()` cosmetic only | Server-derived tenant on every call | WS-C |
+| Dashboard (Streamlit, `src/dashboard`) | **No** — reads global tables + legacy `sentra-policies` | **Decommissioned** — superseded by `web/console` as the product UI; code + CDK teardown is a follow-up infra PR (§5.3) | WS-C |
+| Web console (`web/console`) — **the product UI** | **No** — `tenantOf()` cosmetic only | Server-derived tenant on every call + role-conditional rendering (§5.4) | WS-C |
 | Operator auth (Cognito/ALB) | Authenticated, **not** tenant-bound | Operator↔tenant membership + roles | WS-D |
 | Platform-global tables (sigma-rules, tool-registry) | **No** — intentional | Stays global (documented) | WS-B |
 | Tenant lifecycle (signup, registry, RBAC) | **None** | New `sentra-tenants` + `sentra-tenant-members` | WS-D |
@@ -144,14 +144,14 @@ This is the largest new build and the one that converts the system from "default
 header:  { "alg": "ES256", "kid": "<uuid>", "typ": "JWT" }
 claims:  {
   "iss": "aegion-guard",
-  "sub": "<canonical agent_id>",      # {tenant_id}-{cloud}-{slug}
+  "sub": "<canonical agent_id>",      # {tenant_id}-{cloud}-{slug}-{hash}  (canonical_agent_id appends an 8-char native-resource hash)
   "tid": "<tenant_id>",               # authoritative tenant
   "iat": ..., "exp": ...,             # short-lived, see 3.5
   "aud": "sentra-controller"
 }
 ```
 
-`tid` MUST equal the `tenant_id` on the credential row found by `kid`, and MUST be a prefix of `sub` (canonical-id scheme). Either check failing ⇒ reject.
+`tid` MUST equal the `tenant_id` on the credential row found by `kid`, and MUST be a **delimited** prefix of `sub` — `sub.startswith(tid + "-")`, never a bare `startswith(tid)` (a short tenant id `t_01` would otherwise falsely match `t_01hxyz-…`; this is a tenant-isolation check and must not lean on ULID collision-improbability). Either check failing ⇒ reject.
 
 ### 3.4 Verify + Wiring (the gap-closer)
 
@@ -180,7 +180,7 @@ async def resolve_tenant_from_jwt(request) -> TenantContext:
         return TenantContext.unverified(claimed_tenant_id=cred.tenant_id)  # bad sig/exp → §3.7
     if claims["tid"] != cred.tenant_id:              # bind token↔key
         return TenantContext.tampered(claimed_tenant_id=cred.tenant_id)    # §8 IDENTITY_TAMPERED
-    if not claims["sub"].startswith(claims["tid"]):  # canonical-id prefix
+    if not claims["sub"].startswith(claims["tid"] + "-"):  # canonical-id prefix — DELIMITED (not a bare prefix)
         return TenantContext.mismatch()                                    # §8 IDENTITY_MISMATCH
     return TenantContext(tenant_id=claims["tid"], agent_id=claims["sub"])
 ```
@@ -213,17 +213,17 @@ sequenceDiagram
     D->>D: decode header → kid
     D->>C: get_by_kid(kid)
     alt no key / revoked / bad sig
-        C-->>D: ∅
+        C-->>D: (none)
         D-->>API: TenantContext.unverified
         API-->>A: 200 DENY (IDENTITY_UNVERIFIED, fail-secure)
         Note over API: audit row keyed to _unverified bucket (§3.7)
     else verified
         C-->>D: public_key, tenant_id
         D->>D: verify ES256 (credential window + skew)
-        alt tid≠cred.tenant_id
+        alt tid != cred.tenant_id
             D-->>API: tampered
             API-->>A: 200 DENY (IDENTITY_TAMPERED)
-        else tid⊄sub OR body.agent_id≠sub
+        else tid not-in sub OR body.agent_id != sub
             D-->>API: mismatch
             API-->>A: 200 DENY (IDENTITY_MISMATCH)
         else identity bound
@@ -330,7 +330,9 @@ Isolation is a security boundary, so it gets an explicit **negative**-test suite
 
 ## 5. Dashboard & Web-Console Scoping — WS-C
 
-Today both UI surfaces are tenant-blind: the Streamlit dashboard reads global tables directly (including legacy `sentra-policies` via [dashboard/config/settings.py](../src/dashboard/config/settings.py)), and the web console's `tenantOf()` only derives a **cosmetic** label from the email domain ([web/console/src/lib/auth.ts:53-58](../web/console/src/lib/auth.ts)).
+**Surface map (three UIs, only one is the product):** [`web/console`](../web/console/src) is the product SOC console (React/Vite SPA, API-backed via `/v1/*`, behind ALB Cognito) and the canonical operator UI this section scopes. [`src/dashboard`](../src/dashboard) is the legacy Streamlit internal/demo dashboard, now **decommissioned** in favour of `web/console` (§5.3). [`frontend`](../frontend) is the public marketing site (GoDaddy static) and is out of scope here — it has no tenant data path.
+
+Today the console is tenant-blind: its `tenantOf()` only derives a **cosmetic** label from the email domain ([web/console/src/lib/auth.ts:53-58](../web/console/src/lib/auth.ts)); the (legacy) Streamlit dashboard read global tables directly, including `sentra-policies` via [dashboard/config/settings.py](../src/dashboard/config/settings.py).
 
 ### 5.1 Target
 - **No UI reads DynamoDB directly.** Both consoles call the management APIs, which are tenant-scoped server-side via the WS-D operator dependency. This deletes the dashboard's direct-DDB client and its dependence on legacy `sentra-policies` (which is then decommissioned, §4.1).
@@ -362,8 +364,22 @@ sequenceDiagram
     API-->>B: tenant-scoped data only
 ```
 
-### 5.3 Streamlit Migration
-The Streamlit app is internal/demo-grade. WS-C task: replace its `services/dynamodb_client.py` direct reads with API calls carrying the operator session, OR (if it stays internal-admin-only) pin it behind an admin role that may pass `X-Aegion-Tenant` explicitly. Either way, the legacy `sentra-policies` reader is removed.
+### 5.3 Streamlit Decommission
+**Decision (v1.3):** the Streamlit app (`src/dashboard`) is retired in favour of `web/console`, which now covers every Streamlit tab (`overview, agents, threats, audit, policies, quarantine, topology, connect, discovery, import`) and is API-backed and tenant-scopable per §5.1–5.2. No tenancy work is invested in Streamlit.
+
+Streamlit is currently wired into the deployment (its own ECR repo, `DashboardTaskRole`, the `dashboard_tg` target group, and — load-bearing — the **public ALB's default listener action**, with `web/console` layered on top as a host-based rule, [cdk/stacks/compute_stack.py:859-896](../cdk/stacks/compute_stack.py#L859-L896)). Removing it therefore requires **rewiring the ALB default action to `web/console`** and deleting the dashboard ECR repo, task role, target group, Cognito callback entries, and `docker/` build. Because that is a deploy-affecting infra change, the code + CDK teardown is tracked as a **separate follow-up infra PR**, not part of this docs change. Until that PR lands, Streamlit stays deployed behind Cognito as-is (no new tenancy features); `web/console` is the surface customers use.
+
+### 5.4 Role-Conditional Console UI
+Server-side `require_role` (§6.3) is the authority — but the console must also **render to the operator's role**, not just return 403s, so viewers never see actions they cannot take. WS-C task on `web/console`:
+- The membership `role` resolved in §5.2 is returned to the client (e.g. on a `GET /v1/me` / session bootstrap) and held in app context.
+- UI gates by role: `viewer` gets read-only views (no create/edit/delete/rotate controls, members screen hidden); `editor` sees import + policy CRUD but not member management or tenant delete; `admin`/`owner` see member management; only `owner` sees **Delete tenant**. This mirrors the RBAC matrix in §6.3.
+- Client gating is **UX only, never the boundary** — every mutation is still authorized server-side by `require_role`, so a tampered client gains nothing. The multi-tenant **tenant switcher** (§5.1) renders only for operators with more than one membership.
+
+### 5.5 Platform-Admin (Internal Ops) Console
+Sentra staff need a cross-tenant operational view that no customer operator can see. This is a distinct surface gated by the reserved `_platform` capability (§6.3), **not** a tenant role:
+- **Scope:** tenants onboarded (count, plan, status, created_at), per-tenant threats blocked / validate volume / DENY rate, quota headroom (§9.3), credential health (active/revoked keys, agents pending first `/v1/validate`), and onboarding funnel state.
+- **Data path:** reads the same tenant-dimensioned CloudWatch metrics (§9.1 — every custom metric carries a `tenant_id` dimension) and the `sentra-tenants` / `sentra-tenant-members` registries; **aggregate, cross-tenant** queries are allowed *only* for `_platform` principals, and every cross-tenant read is audited under both `_platform` and the target tenant (§6.3).
+- **Build:** a `_platform`-only section of `web/console` (preferred — one codebase, role-gated routes) rather than a separate app. Sequenced under WS-D/WS-E; not on the WS-A→D cutover critical path.
 
 ---
 
@@ -379,7 +395,7 @@ Folded in at implementable depth (no separate LLD). Onboarding cannot work witho
 |---|---|---|
 | `tenant_id` (**PK**) | S | Immutable slug; reserved values rejected (`default` legacy-only, `_unverified` system) |
 | `display_name` | S | Customer name |
-| `status` | S | `active` \| `suspended` \| `deleting` |
+| `status` | S | Lifecycle state: `active` \| `suspended` \| `deleting` (purge in progress, §6.4) \| `purged` (terminal tombstone — row retained so the immutable `tenant_id` can never be re-minted, §6.4) |
 | `plan` | S | `trial` \| `dedicated` \| `enterprise` (informs quotas, §9.3) |
 | `identity_mode` | S | Per-tenant rollout state `off` \| `shadow` \| `enforce` — the authoritative control the §7 per-tenant flip writes (env `TENANT_IDENTITY_MODE` is only a fleet-wide ceiling) |
 | `created_at`, `created_by` | N/S | |
@@ -543,11 +559,14 @@ All CloudWatch custom metrics gain a `tenant_id` dimension once §3 lands: `Deci
 ## 10. Open Questions
 
 > **Resolved since v1.0:** the shadow-mode bootstrap hazard (was Q#1) is resolved in §7.1.2 — credentials must exist before an agent's data flips to its real tenant, and uncredentialed agents stay on the legacy path; no brick, no exposure. No longer open.
+>
+> **Resolved in v1.3 (was Q#2 — Streamlit's fate):** decommission in favour of `web/console`; the code + CDK teardown (incl. rewiring the ALB default action) is a follow-up infra PR (§5.3). No longer open.
 
 1. **Token + cache revocation latency.** Token TTL (≤15 min) and key-cache TTL (≤60s, §3.6) together bound revocation lag. Is that acceptable for the regulated-buyer story, or do `dedicated` plans need a per-request online revocation check? *(Affects FR-10 compliance posture.)*
-2. **Streamlit's fate (§5.3).** Decommission in favor of `web/console`, or keep as internal admin behind `_platform` role? Determines how much WS-C invests in it.
-3. **Platform-admin cross-tenant access (§6.3).** Confirm the audit/consent model for Sentra staff accessing a customer tenant (SOC2 / customer contract requirement).
-4. **`default` tenant retirement.** Post-cutover, is any legitimate traffic still legitimately `"default"` (e.g., the demo orchestrator), or can `"default"` be frozen to read-only? *(Cleanup, not blocking.)*
+2. **Platform-admin cross-tenant access (§6.3, §5.5).** Confirm the audit/consent model for Sentra staff accessing a customer tenant (SOC2 / customer contract requirement).
+3. **`default` tenant retirement.** Post-cutover, is any legitimate traffic still legitimately `"default"` (e.g., the demo orchestrator), or can `"default"` be frozen to read-only? *(Cleanup, not blocking.)*
+
+> **Resolved (2026-06-23) — brownfield `default` population.** Every existing agent is `default-…` and `agent_id` is immutable (registry PK / binding key / S3 path / signal partition), so there is **no in-place migration** into a real tenant. Decision: the current `default` population is **disposable dev/demo data** — agents are **re-imported under their real tenant** (minting new canonical ids) and the `default` records are **frozen read-only then purged**; **no cascade re-key migration is built**. Tracked as a build task in [tasks/26-multi-tenancy/ws-b-data-plane-scoping.md](../tasks/26-multi-tenancy/ws-b-data-plane-scoping.md) (B9). The demo orchestrator must be re-pointed or retired before the freeze.
 
 ---
 
@@ -563,8 +582,8 @@ All CloudWatch custom metrics gain a `tenant_id` dimension once §3 lands: `Deci
 ### 11.2 Sibling Docs to Update (consistency checklist)
 - [ ] [ARCHITECTURE.md](ARCHITECTURE.md) — add the tenant-boundary block diagram (§2.2) and the two trust roots (§2.1).
 - [ ] [PRD.md](../PRD.md) — flip FR-10.1/10.2 status note to point at this LLD; add `sentra-agent-credentials`, `sentra-tenants`, `sentra-tenant-members` to the data-store list.
-- [ ] [06-data-model-v2.md](06-data-model-v2.md) — add the three new tables (§3.2, §6.1) and the S3 explicit-prefix decision (§4.3).
-- [ ] [08-authentication-and-alb-architecture.md](08-authentication-and-alb-architecture.md) — add the operator↔tenant membership resolution (§5.2) and agent-JWT verify (§3.4).
+- [x] [06-data-model-v2.md](06-data-model-v2.md) — added the three new tables (§2.6), the `-v2` tenant keys note (§1.3), and the explicit S3 tenant-prefix decision (§1.4). *(v2.1, 2026-06-23)*
+- [x] [08-authentication-and-alb-architecture.md](08-authentication-and-alb-architecture.md) — added §6.5 (operator↔tenant resolution §5.2, agent-JWT verify §3.4, **net-new `verify_alb_oidc` app-layer auth**, **`GET /v1/me`**), plus Non-Goals + §13.1 supersede notes. *(v2.1, 2026-06-23)*
 - [ ] [17-validation-signal-store.md](17-validation-signal-store.md) — note the `_unverified` audit-tenant bucket (§3.7).
 - [ ] [23-sentra-guard-sdk.md](23-sentra-guard-sdk.md) — SDK holds the private key, signs the JWT, silent refresh (§3.6).
 - [ ] [features/multicloud-agent-import/feature.md](../features/multicloud-agent-import/feature.md) — add a pointer line: tenancy design is now canonical in LLD-26.

@@ -14,6 +14,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pythonjsonlogger import jsonlogger
 
 from app.api import routes
+from app.api import tenancy_routes
 from app.config import settings
 
 # Configure structured JSON logging
@@ -74,6 +75,9 @@ app.add_middleware(
 
 # Include API routes
 app.include_router(routes.router)
+# Multi-tenancy control plane (LLD-26): tenants, members, invites, credentials,
+# GET /v1/me. Mounted under the same /v1 prefix.
+app.include_router(tenancy_routes.router)
 
 
 @app.get("/")
