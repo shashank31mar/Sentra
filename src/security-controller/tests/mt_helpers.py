@@ -126,3 +126,10 @@ def create_mt_tables(ddb) -> None:
         }],
         BillingMode="PAY_PER_REQUEST",
     )
+    # sentra-identity-fallback (WS-B B1): PK agent_id, tenant_id as attribute.
+    ddb.create_table(
+        TableName=settings.dynamodb_identity_fallback_table,
+        KeySchema=[{"AttributeName": "agent_id", "KeyType": "HASH"}],
+        AttributeDefinitions=[{"AttributeName": "agent_id", "AttributeType": "S"}],
+        BillingMode="PAY_PER_REQUEST",
+    )

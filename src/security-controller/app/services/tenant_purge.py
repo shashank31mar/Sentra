@@ -45,6 +45,10 @@ _DDB_STORES = [
     ("cloud-connections", "dynamodb_connections_table", "tenant_id", "id", False),
     ("discovery-cache", "dynamodb_discovery_cache_table", "tenant_id", "native_resource_id", False),
     ("agent-credentials", "dynamodb_agent_credentials_table", "tenant_id", "key_id", False),
+    # identity-fallback (WS-B B1): PK is `agent_id` (self-asserted) with `tenant_id`
+    # stored as a plain attribute, so it can't be queried by tenant → scan+filter
+    # (composite=True) and delete by the single PK (sk=None).
+    ("identity-fallback", "dynamodb_identity_fallback_table", "agent_id", None, True),
 ]
 
 
@@ -157,7 +161,8 @@ def _purge_ddb_store_inner(table, tenant_id, pk, sk, composite) -> int:
         items = resp.get("Items", [])
         with table.batch_writer() as batch:
             for item in items:
-                batch.delete_item(Key={pk: item[pk], sk: item[sk]})
+                key = {pk: item[pk]} if sk is None else {pk: item[pk], sk: item[sk]}
+                batch.delete_item(Key=key)
                 deleted += 1
         start_key = resp.get("LastEvaluatedKey")
         if not start_key:

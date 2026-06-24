@@ -930,11 +930,27 @@ class StorageStack(Stack):
             removal_policy=RemovalPolicy.DESTROY,
         )
 
+        # sentra-identity-fallback — residual uncredentialed-agent legacy-fallback
+        # window (WS-B B1). PK agent_id (self-asserted) with tenant_id as a plain
+        # attribute; rows auto-reap past their deadline via `ttl`. DESTROY: pure
+        # transitional ramp state, no durable value.
+        self.identity_fallback_table = dynamodb.Table(
+            self,
+            "IdentityFallbackTable",
+            table_name=tenancy_cfg.get("identity_fallback_table_name", "sentra-identity-fallback"),
+            partition_key=dynamodb.Attribute(name="agent_id", type=dynamodb.AttributeType.STRING),
+            billing_mode=dynamodb.BillingMode.PAY_PER_REQUEST,
+            time_to_live_attribute="ttl",
+            point_in_time_recovery=False,
+            removal_policy=RemovalPolicy.DESTROY,
+        )
+
         for _logical, _table in {
             "tenants": self.tenants_table,
             "tenant-members": self.tenant_members_table,
             "agent-credentials": self.agent_credentials_table,
             "quota-counters": self.quota_counters_table,
+            "identity-fallback": self.identity_fallback_table,
         }.items():
             CfnOutput(
                 self,
@@ -1112,4 +1128,5 @@ class StorageStack(Stack):
             self.tenant_members_table,
             self.agent_credentials_table,
             self.quota_counters_table,
+            self.identity_fallback_table,
         ]

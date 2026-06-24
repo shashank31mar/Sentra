@@ -144,6 +144,62 @@ def compose(tenant: str, value: str) -> str:
 
 
 # --------------------------------------------------------------------------- #
+# S3 policy-object layout (LLD-26 §4.3 / WS-B B3)
+# --------------------------------------------------------------------------- #
+# Legacy (implicit): policies/agents/{agent_id}/v{n}.{ext} — isolation holds
+#   ONLY because the canonical agent_id carries the tenant prefix.
+# Explicit per-tenant: tenants/{tenant_id}/policies/agents/{agent_id}/v{n}.{ext}
+#   — moves isolation from implicit to explicit and makes the future IAM
+#   session-tag scoping (s3:prefix = tenants/${tenant_id}/*) a config change,
+#   not a re-key. Gated on `s3_explicit_tenant_prefix` AND v2 (tenant must be
+#   real). Reads dual-read across both layouts (see policy_s3_read_candidates).
+_POLICY_LEAF_PREFIX = "policies/agents"
+
+
+def _explicit_policy_prefix_enabled() -> bool:
+    """Explicit prefixing only means something once tenancy is on — under v1 the
+    only tenant is the implicit one, so there is no real tenant_id to key by."""
+    return v2_enabled() and bool(settings.s3_explicit_tenant_prefix)
+
+
+def _tenant_s3_prefix(tenant: str) -> str:
+    return f"tenants/{tenant}/"
+
+
+def policy_s3_object_key(agent_id: str, version: str, *, ext: str = "yaml",
+                         tenant: Optional[str] = None) -> str:
+    """Compose the S3 object key for a policy artifact (the structured ``.yaml``
+    source or, with ``ext='cedar'``, its co-artifact). Explicit per-tenant layout
+    when enabled, else the legacy implicit layout (byte-identical to today)."""
+    leaf = f"{_POLICY_LEAF_PREFIX}/{agent_id}/v{version}.{ext}"
+    if _explicit_policy_prefix_enabled():
+        return _tenant_s3_prefix(tenant or current_tenant()) + leaf
+    return leaf
+
+
+def policy_s3_read_candidates(stored_key: str, *, tenant: Optional[str] = None) -> list:
+    """Ordered keys to try when reading a policy object during the B3 migration
+    window. The metadata ``s3_key`` is authoritative, so it is tried first; the
+    alternate-prefix variant is the fallback so a read succeeds whether the object
+    has been re-keyed yet or not (and after a flag rollback). Order preserved, no
+    duplicates."""
+    t = tenant or current_tenant()
+    candidates = [stored_key]
+    explicit = _tenant_s3_prefix(t)
+    if stored_key.startswith(explicit):
+        candidates.append(stored_key[len(explicit):])           # explicit → legacy
+    elif stored_key.startswith(_POLICY_LEAF_PREFIX + "/"):
+        candidates.append(explicit + stored_key)                # legacy → explicit
+    # de-dup while preserving order
+    seen, out = set(), []
+    for k in candidates:
+        if k not in seen:
+            seen.add(k)
+            out.append(k)
+    return out
+
+
+# --------------------------------------------------------------------------- #
 # Table-name resolution
 # --------------------------------------------------------------------------- #
 def table_name(logical: str) -> str:

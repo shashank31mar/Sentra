@@ -49,7 +49,15 @@ PROFILE = os.environ.get("AWS_PROFILE", "sentra")
 
 # --------------------------------------------------------------------------- packaging
 def build_zip() -> bytes:
-    """Bundle handler + SDK + common into a Lambda deployment zip (in memory)."""
+    """Bundle handler + SDK + common into a Lambda deployment zip (in memory).
+
+    Also bundles the data-plane identity signing deps (``PyJWT[crypto]``) as
+    **Linux/cp312 wheels** so the agent can mint ES256 tokens under a tenant in
+    ``enforce`` (LLD-26 WS-A). Pure-.py vendoring is not enough: ``cryptography``
+    /``cffi`` are compiled wheels and must match the Lambda runtime (Amazon Linux
+    x86_64, python3.12). The lazy import in ``aegion_guard.identity`` means these
+    are only loaded when identity env is configured — a non-signing deploy is
+    unaffected if they're absent."""
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
         z.write(HANDLER, "lambda_handler.py")
@@ -58,9 +66,38 @@ def build_zip() -> bytes:
                 if "__pycache__" in p.parts:
                     continue
                 z.write(p, f"{arc_root}/{p.relative_to(pkg_root)}")
+        _bundle_identity_deps(z)
     data = buf.getvalue()
     print(f"  ✓ packaged Lambda zip ({len(data) // 1024} KB)")
     return data
+
+
+def _bundle_identity_deps(z: "zipfile.ZipFile") -> None:
+    """pip-download PyJWT[crypto] as Linux/cp312 wheels and add them to the zip."""
+    import subprocess
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as td:
+        try:
+            subprocess.run(
+                [sys.executable, "-m", "pip", "install", "--target", td,
+                 "--only-binary=:all:", "--platform", "manylinux2014_x86_64",
+                 "--implementation", "cp", "--python-version", "3.12",
+                 "PyJWT[crypto]"],
+                check=True, capture_output=True, text=True,
+            )
+        except subprocess.CalledProcessError as exc:  # pragma: no cover
+            print("  ✗ failed to bundle identity deps:\n" + (exc.stderr or exc.stdout))
+            raise
+        root = pathlib.Path(td)
+        for p in root.rglob("*"):
+            if not p.is_file() or "__pycache__" in p.parts or p.suffix == ".pyc":
+                continue
+            if p.name.startswith(("PyJWT-", "cryptography-", "cffi-", "pycparser-")) and \
+                    p.parent.name.endswith(".dist-info"):
+                continue  # skip metadata noise; keep the importable packages
+            z.write(p, str(p.relative_to(root)))
+    print("  ✓ bundled identity signing deps (PyJWT[crypto], linux/cp312)")
 
 
 # --------------------------------------------------------------------------- AWS helpers
@@ -135,6 +172,29 @@ def deploy(create: bool) -> int:
         "SENTRA_API_BASE": api_base, "SENTRA_API_KEY": api_key,
         "AEGION_DEMO_BACKEND": "ddb",  # AWS_REGION is auto-populated by the Lambda runtime
     }}
+
+    # WS-A data-plane identity (LLD-26): when the deployer's environment carries the
+    # agent's tenant + kid + private key, pass them through so the agent SIGNS its
+    # validate calls (ES256). The SDK lazy-loads PyJWT[crypto] (bundled by build_zip)
+    # only when these are set, so a non-signing deploy is byte-identical to before.
+    # Provision first to populate them, e.g.:
+    #   python -m aegion_guard.provision --agent-id acme-payments-agent \
+    #     --tenant-id acme --register --api-base "$SENTRA_API_BASE" \
+    #     --header "x-amzn-oidc-data: <operator token>"
+    #   export SENTRA_TENANT_ID=acme SENTRA_AGENT_KID=<kid> \
+    #     SENTRA_AGENT_PRIVATE_KEY="$(cat acme-payments-agent.key)"
+    _tid = os.environ.get("SENTRA_TENANT_ID")
+    _kid = os.environ.get("SENTRA_AGENT_KID")
+    _pk = os.environ.get("SENTRA_AGENT_PRIVATE_KEY")  # PEM literal (Lambda has no writable FS for a key file)
+    if _tid and _kid and _pk:
+        env["Variables"].update({
+            "SENTRA_TENANT_ID": _tid,
+            "SENTRA_AGENT_KID": _kid,
+            "SENTRA_AGENT_PRIVATE_KEY": _pk,
+        })
+        print(f"  ✓ identity signing enabled (tenant={_tid}, kid={_kid[:8]}…)")
+    else:
+        print("  · identity signing NOT configured (set SENTRA_TENANT_ID/KID/PRIVATE_KEY to enable)")
 
     # 4. Create / update the Lambda.
     try:

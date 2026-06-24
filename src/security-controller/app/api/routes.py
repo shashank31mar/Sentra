@@ -103,8 +103,26 @@ async def validate_tool_call(request: ValidationRequest, http_request: Request) 
         request.context["claimed_tenant_id"] = ctx.claimed_tenant_id
 
     if ctx.should_deny:
-        # ENFORCE + not cleanly verified → fail-secure DENY, audited under the
-        # reserved `_unverified` tenant (never the claimed tenant or `default`).
+        # ENFORCE + not cleanly verified. Active spoofing — IDENTITY_TAMPERED (key
+        # reuse) / IDENTITY_MISMATCH — is ALWAYS a hard fail-secure DENY (§8). Only
+        # a genuinely uncredentialed agent (state=unverified) is eligible for the
+        # WS-B B1 residual legacy-fallback window: a time-boxed, alarmed grace ramp
+        # so flipping a tenant to enforce before 100% credential coverage doesn't
+        # brick a not-yet-onboarded agent. Default-off (window=0 → immediate DENY).
+        if ctx.state == "unverified":
+            from app.services.fallback_service import consider_fallback
+            decision = await consider_fallback(request.agent_id, ctx.claimed_tenant_id)
+            if decision.allow:
+                request.context["identity_state"] = "legacy_fallback"
+                request.context["fallback_deadline_ms"] = decision.deadline_ms
+                logger.warning(
+                    "identity legacy-fallback: agent=%s state=%s deadline_ms=%s "
+                    "(uncredentialed agent riding legacy path on borrowed time)",
+                    request.agent_id, decision.state, decision.deadline_ms,
+                )
+                return await validation_service.validate_tool_call(request)
+        # No window (disabled/expired) or non-unverified → fail-secure DENY, audited
+        # under the reserved `_unverified` tenant (never the claimed tenant or `default`).
         return await _identity_deny(request, ctx.reason or "IDENTITY_UNVERIFIED")
 
     if ctx.should_route:

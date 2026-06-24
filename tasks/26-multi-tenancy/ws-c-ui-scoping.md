@@ -1,7 +1,7 @@
 # WS-C: Dashboard & Web-Console Scoping
 
 **Parent LLD**: [lld/26-multi-tenancy.md](../../lld/26-multi-tenancy.md) §5
-**Status**: 🟡 Partial (2026-06-24, 8a34abd) — DONE: C1 server-derived tenant (`useMe`, `tenantOf()` display-only), tenant switcher (`X-Aegion-Tenant`), C2 role-conditional UI (`rbac.ts`). PENDING: residual uncredentialed-agent list (needs WS-B B1 window), C3 Streamlit decommission (separate infra PR).
+**Status**: 🟡 Partial (2026-06-24) — DONE: C1 server-derived tenant (`useMe`, `tenantOf()` display-only), tenant switcher (`X-Aegion-Tenant`), C2 role-conditional UI (`rbac.ts`); **residual uncredentialed-agent list — backend ready** (`GET /v1/identity/residual-agents`, tenant-scoped, from WS-B B1). PENDING: console wiring of the residual list to that endpoint; C3 Streamlit decommission (separate infra PR).
 **Owner**: TBD
 
 ## Dependencies

@@ -1394,6 +1394,13 @@ def handler(event, context):
                     "QUOTA_COUNTERS_TABLE": storage_stack.quota_counters_table.table_name,
                     # Hot-path RPS quota enforcement (WS-E E2b) — founder-gated, off.
                     "QUOTA_ENFORCEMENT_ENABLED": str(config.get("quota_enforcement_enabled", False)).lower(),
+                    # Residual uncredentialed-agent legacy-fallback window (WS-B B1).
+                    # Window defaults 0 (disabled → enforce denies uncredentialed
+                    # agents immediately); raise during a per-tenant enforce flip.
+                    "IDENTITY_FALLBACK_TABLE": storage_stack.identity_fallback_table.table_name,
+                    "IDENTITY_FALLBACK_WINDOW_SECONDS": str(config.get("identity_fallback_window_seconds", 0)),
+                    # Explicit per-tenant S3 policy prefix (WS-B B3) — default off.
+                    "S3_EXPLICIT_TENANT_PREFIX": str(config.get("s3_explicit_tenant_prefix", False)).lower(),
                     # Cache Configuration (Workstream 5, Task 1)
                     "CACHE_ENABLED": "true",
                     "AGENT_METADATA_CACHE_TTL_SECONDS": "60",

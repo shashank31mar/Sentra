@@ -116,6 +116,20 @@ async def list_credentials(
     }
 
 
+@router.get("/identity/residual-agents")
+async def list_residual_agents(
+    ctx: OperatorContext = Depends(resolve_operator_tenant),
+) -> Dict:
+    """Agents in this tenant currently riding the WS-B B1 legacy-fallback window
+    (uncredentialed, enforce-flipped, on borrowed time). The console surfaces this
+    so operators onboard or retire them before the window closes (LLD-26 §7.1.2 /
+    WS-C C2). Read-only; any role may view."""
+    from app.services.fallback_service import get_fallback_store
+
+    residual = get_fallback_store().list_residual(ctx.tenant_id)
+    return {"tenant_id": ctx.tenant_id, "residual_agents": residual, "count": len(residual)}
+
+
 @router.post("/agents/{agent_id}/credentials/{kid}/rotate")
 async def rotate_credential(
     agent_id: str,

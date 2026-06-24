@@ -269,6 +269,33 @@ class MetricsPublisher:
             logger.exception(f"Failed to publish error metric (non-blocking): {e}")
             # Don't raise - metrics publishing should not block operations
 
+    async def publish_identity_fallback_metric(self, state: str, tenant_id: str):
+        """Residual uncredentialed-agent legacy-fallback window (LLD-26 / WS-B B1).
+
+        ``state`` ∈ {opened, active, expired}. ``opened``/``active`` should be
+        ALARMED — they mean enforce is letting an uncredentialed agent ride the
+        legacy path on borrowed time; ``expired`` means the window closed to a hard
+        DENY. Fire-and-forget; never blocks validate.
+        """
+        try:
+            self.cloudwatch.put_metric_data(
+                Namespace=self.namespace,
+                MetricData=[
+                    {
+                        'MetricName': 'IdentityFallback',
+                        'Value': 1,
+                        'Unit': 'Count',
+                        'Dimensions': [
+                            {'Name': 'State', 'Value': state},
+                            {'Name': 'tenant_id', 'Value': tenant_id or '_unknown'},
+                        ],
+                    }
+                ],
+            )
+            logger.debug("Published identity-fallback metric: %s tenant=%s", state, tenant_id)
+        except Exception as e:  # noqa: BLE001 — metrics never block validate
+            logger.warning("Failed to publish identity-fallback metric (non-blocking): %s", e)
+
     # ============================================================
     # Workstream 11: Policy CRUD Metrics
     # ============================================================

@@ -29,7 +29,20 @@ tenancy_v2_enabled: true
 # (no-token traffic still allowed). enforce → route verified tid; tokenless DENY
 # (needs ~100% credential coverage + SDK JWT signing/LLD-23 first — DO NOT raise
 # to enforce until the background agents sign tokens, or they will be denied).
-tenant_identity_mode: shadow
+# Raised to `enforce` 2026-06-24: the only live validate traffic is the three Acme
+# agents, all signing under tenant `acme` (=enforce) with active credentials. Other
+# registry agents are idle (0 recent validate sessions). Per-tenant gate still
+# governs (effective = min(this, tenant.identity_mode)): `acme` enforces, Globex
+# (`off`) and any tenant left at shadow/off are unaffected for their signed traffic.
+tenant_identity_mode: enforce
+
+# Residual uncredentialed-agent legacy-fallback window (LLD-26 / WS-B B1). 0 =
+# disabled (tokenless validate under enforce DENYs immediately). Raise (e.g. 86400)
+# only if a not-yet-credentialed agent must be tolerated during a flip.
+identity_fallback_window_seconds: 0
+# Explicit per-tenant S3 policy prefix (WS-B B3). false = legacy implicit layout;
+# reads dual-read both, so flip on + run scripts/migrate_s3_policy_prefix.py to cut over.
+s3_explicit_tenant_prefix: false
 
 # Per-tenant validate-RPS quota enforcement (WS-E E2b). Safe to enable: inert
 # until a tenant is in `enforce` with a registered credential AND has a

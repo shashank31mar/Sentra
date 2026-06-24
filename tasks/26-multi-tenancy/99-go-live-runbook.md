@@ -61,6 +61,49 @@ Pre-req: AWS creds (profile `sentra`, `us-east-1`; `ada cred update --once`).
 7. **Verify enforce**: signed calls ALLOW/route; an unsigned call from that tenant
    DENYs `IDENTITY_UNVERIFIED`, audited under `_unverified`.
 
+## Acme demo agents — light up signing under tenant `acme` (WS-B / acme migration)
+
+The three Acme agents already exist under tenant `acme` with **active credentials**
+(verified live: `sentra-agent-credentials` has all three). The remaining step is to
+make them actually *sign*. Each agent's flat id (`acme-payments-agent`, …) is a
+delimited prefix of tenant `acme` (`acme-` == `tenant + "-"`), so it passes the
+controller's canonical-id check with **no re-key**.
+
+1. **Provision (rotates a fresh keypair, keeps old valid):**
+   ```sh
+   python demo-agents/registration/provision_acme_identity.py \
+     --api-base "$SENTRA_API_BASE" --header "x-amzn-oidc-data: <operator token>"
+   ```
+   Writes private keys + `.identity.env` under `./.identity/` (mode 600) and prints
+   the per-agent deploy env.
+2. **Redeploy with the printed env** — the deploy paths are now wired to pass it
+   through (inert if unset, so a non-signing deploy is unchanged):
+   - AWS Lambda: `SENTRA_TENANT_ID/KID/PRIVATE_KEY` → `deploy_payments_agent.py`.
+   - Azure: same trio → `azd up` (threaded through `infra/main.bicep` →
+     `identitySettings` app-settings).
+3. **Verify in shadow**, then flip `acme` to enforce (below) once all three show
+   `identity_state=verified`.
+
+## New WS-B flags (default-off — no behavior change until set)
+
+| Flag (env) | Default | Effect when set |
+|---|---|---|
+| `S3_EXPLICIT_TENANT_PREFIX` | `false` | New policy writes use `tenants/{tid}/policies/agents/…`; reads dual-read both layouts. Run `scripts/migrate_s3_policy_prefix.py` (then `--delete-old` after confirming reads). |
+| `IDENTITY_FALLBACK_WINDOW_SECONDS` | `0` (disabled → immediate DENY) | Residual uncredentialed-agent grace window during a per-tenant enforce flip; alarmed (`IdentityFallback`), expires to DENY. Set e.g. `86400` during the flip, drive to `0` as coverage → 100%. |
+
+Both need the `sentra-identity-fallback` table deployed (`cdk deploy <StorageStack>`,
+added this change). Residual list for ops: `GET /v1/identity/residual-agents`.
+
+## Brownfield `default` discard (B9) — inventory now, purge gated
+
+```sh
+python scripts/migrate_brownfield.py inventory --out default_inventory.json   # safe, read-only
+# attach default_inventory.json to the sign-off, then ONLY with explicit go:
+python scripts/migrate_brownfield.py purge --confirm-no-customer-data         # IRREVERSIBLE
+```
+Live inventory (2026-06-24) shows **0 credentials under `default`** — consistent
+with the "dev data" premise, but the purge still requires the explicit sign-off.
+
 ## Rollback
 
 - Per-tenant: `PATCH identity_mode` back to `shadow`/`off` (propagates ≤ 30 s, the

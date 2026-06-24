@@ -178,7 +178,10 @@ class PolicyEngine:
             raise PolicyNotFoundError(
                 f"Policy metadata missing S3 reference for agent {agent_id}"
             )
-        policy_obj = self.s3_client.get_object(Bucket=s3_bucket, Key=s3_key)
+        # B3 dual-read: try the stored key, fall back to the alternate prefix
+        # layout during the migration window.
+        from app.utils.s3_policy_store import get_policy_object
+        policy_obj = get_policy_object(self.s3_client, s3_bucket, s3_key)
         policy_content = policy_obj['Body'].read().decode('utf-8')
         policy_data = yaml.safe_load(policy_content)
 

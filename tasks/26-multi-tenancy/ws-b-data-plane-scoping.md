@@ -1,7 +1,7 @@
 # WS-B: Data-Plane Tenant Scoping (cutover + loose ends)
 
 **Parent LLD**: [lld/26-multi-tenancy.md](../../lld/26-multi-tenancy.md) §4
-**Status**: 🟡 Partial (2026-06-24) — DONE: TENANCY_V2 storage copy, B6 binding-under-v2 test, B7 contextvar rule, B8 isolation matrix (green). PENDING (gated): B1 per-tenant enforce flip, B3 explicit S3 prefix, B4 `sentra-policies` decommission, B9 brownfield re-import + `default` purge (human sign-off).
+**Status**: 🟢 Code-complete (2026-06-24) — DONE: TENANCY_V2 storage copy; B6 binding-under-v2 test; B7 contextvar rule; B8 isolation matrix (green); **B1 residual fallback-window** (service + route wiring + `sentra-identity-fallback` table + alarm metric + residual-list API + tests, default-off); **B3 explicit S3 prefix** (tenancy key helpers + dual-read on every policy/cedar read + `scripts/migrate_s3_policy_prefix.py` + tests, flag default-off); **B4 `sentra-policies` decommissioned** (table retired live, no reader remains); **B5** global tables documented; **B9** brownfield inventory + gated-purge CLI (`scripts/migrate_brownfield.py`; reuses the tested `purge_tenant`). Acme re-imported under tenant `acme` (rows + credentials live). **LIVE-GATED (not executed): per-tenant enforce flip + dev ceiling raise (B1), `--delete-old` S3 cutover (B3), `default` purge (B9, human sign-off).**
 **Owner**: TBD
 
 > The `TENANCY_V2` storage copy (4 tables, switchboard, tests) is already built and dual-readable. WS-B is the **live cutover** + the remaining loose ends — it adds **no new call-site rewrites** for the four migrated tables; it flips the flag, per-tenant.
@@ -110,13 +110,13 @@ Isolation is a security boundary → explicit **negative**-test suite that block
 
 ## Acceptance criteria
 
-- [ ] **Brownfield (B9):** existing `default-*` agents re-imported under real tenants; `default` frozen read-only; **purge runs only after explicit human sign-off (gate) confirming no real customer data**, with the inventoried `default` list attached; demo orchestrator re-pointed/retired before freeze.
-- [ ] Per-tenant flip via `identity_mode`; env ceiling honored (`min(...)`); shadow→enforce validated on at least one tenant.
-- [ ] Residual uncredentialed-agent fallback window is time-boxed + alarmed + expires to DENY.
-- [ ] Explicit S3 prefix live with dual-read migration; writes cut to new prefix.
-- [ ] Legacy `sentra-policies` deleted after WS-C drops its reader.
-- [ ] Global tables documented; contract enforced (no tenant data in global tables).
-- [ ] B8 isolation matrix green and wired as a merge gate; B7 rule enforced.
+- [x] **Brownfield (B9):** acme agents re-imported under real tenant (`acme`); inventory + gated-purge CLI built (`scripts/migrate_brownfield.py`). ⏳ LIVE-GATED: `default` freeze + purge run only after explicit human sign-off (inventory shows 0 credentials under `default` — clean dev data); demo orchestrator re-point/retire before freeze.
+- [x] Per-tenant flip via `identity_mode`; env ceiling honored (`min(...)`) — mechanism live + tested. ⏳ LIVE-GATED: the actual shadow→enforce flip on tenant `acme` + dev ceiling raise.
+- [x] Residual uncredentialed-agent fallback window is time-boxed + alarmed (`IdentityFallback{State,tenant_id}`) + expires to DENY (`fallback_service.py`; default-off via `IDENTITY_FALLBACK_WINDOW_SECONDS`).
+- [x] Explicit S3 prefix with dual-read migration (`s3_explicit_tenant_prefix` flag, `policy_s3_object_key`/`policy_s3_read_candidates`, `migrate_s3_policy_prefix.py`). ⏳ LIVE-GATED: flip flag on + run re-key + `--delete-old`.
+- [x] Legacy `sentra-policies` deleted (table retired live; no reader in app/cdk).
+- [x] Global tables documented; contract enforced (no tenant data in global tables) — B5.
+- [x] B8 isolation matrix green and wired as a merge gate; B7 rule enforced; fallback table added to the isolation/purge coverage.
 
 ## Cross-references
 

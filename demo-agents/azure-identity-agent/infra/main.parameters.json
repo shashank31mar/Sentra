@@ -3,6 +3,9 @@
   "contentVersion": "1.0.0.0",
   "parameters": {
     "sentraApiBase": { "value": "${SENTRA_API_BASE}" },
-    "sentraApiKey": { "value": "${SENTRA_API_KEY}" }
+    "sentraApiKey": { "value": "${SENTRA_API_KEY}" },
+    "sentraTenantId": { "value": "${SENTRA_TENANT_ID}" },
+    "sentraAgentKid": { "value": "${SENTRA_AGENT_KID}" },
+    "sentraAgentPrivateKey": { "value": "${SENTRA_AGENT_PRIVATE_KEY}" }
   }
 }

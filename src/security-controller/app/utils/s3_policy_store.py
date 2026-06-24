@@ -151,6 +151,30 @@ class S3PolicyStore:
             raise S3DeleteException(f"S3 delete failed: {e}")
 
 
+def get_policy_object(s3_client, bucket: str, stored_key: str, *, tenant: Optional[str] = None):
+    """``get_object`` with the WS-B B3 dual-read fallback.
+
+    The policy metadata's ``s3_key`` is authoritative, so it is tried first; if the
+    object isn't there (mid-migration, or after a flag rollback) the alternate
+    prefix layout is tried before giving up. Returns the raw boto3 ``get_object``
+    response (drop-in for ``s3_client.get_object(...)``). Raises the last
+    ``NoSuchKey`` if no candidate exists.
+    """
+    from app.utils import tenancy  # local import avoids a utils import cycle
+
+    last_exc: Optional[ClientError] = None
+    for key in tenancy.policy_s3_read_candidates(stored_key, tenant=tenant):
+        try:
+            return s3_client.get_object(Bucket=bucket, Key=key)
+        except ClientError as e:
+            if e.response["Error"]["Code"] in ("NoSuchKey", "404", "NoSuchBucket"):
+                last_exc = e
+                continue
+            raise
+    assert last_exc is not None  # candidates is never empty
+    raise last_exc
+
+
 class S3UploadException(Exception):
     """Raised when S3 upload fails."""
     pass

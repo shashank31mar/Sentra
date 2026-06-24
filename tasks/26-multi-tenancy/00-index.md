@@ -2,7 +2,7 @@
 
 **Parent LLD**: [lld/26-multi-tenancy.md](../../lld/26-multi-tenancy.md) (v1.3, Approved)
 **Last Updated**: 2026-06-24
-**Status**: ✅ WS-A & WS-D complete · 🟡 WS-B/WS-C/WS-E partial (storage+identity+console+metrics shipped; live enforce flip, brownfield purge, residual-agent list, Streamlit decommission, quota soak still gated). See each WS doc's Status line.
+**Status**: ✅ WS-A & WS-D complete · 🟢 WS-B code-complete (B1 fallback window, B3 explicit S3 prefix, B4 table-drop, B5 docs, B9 inventory/purge tooling all built + tested; acme re-imported under tenant `acme` with live credentials) · 🟡 WS-C/WS-E partial (residual-list backend shipped, console wiring + Streamlit decommission pending; metrics shipped, quota soak pending). **LIVE-GATED, not executed:** per-tenant enforce flip + dev ceiling raise, B3 `--delete-old` cutover, `default` brownfield purge (human sign-off). See each WS doc's Status line.
 
 This folder breaks LLD-26 into five independently-ownable workstreams. Each doc is a **build task list** — concrete enough to code from without re-reading the whole LLD. Read this index first for the dependency graph and the one rule that gates the whole rollout (credential-coverage before enforce).
 

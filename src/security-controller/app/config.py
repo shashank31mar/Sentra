@@ -26,6 +26,11 @@ class Settings(BaseSettings):
         default="sentra-agent-registry",
         validation_alias="AGENT_REGISTRY_TABLE"
     )
+    # PLATFORM-GLOBAL, intentionally UNSCOPED (LLD-26 §4 / WS-B B5): Sentra-authored
+    # reference data, identical for every tenant, read-only on the validate path.
+    # CONTRACT: no tenant-specific data may EVER be written to a global table — a
+    # future tenant-custom need becomes a NEW tenant-scoped table layered over the
+    # global set, never a mutation of it. Same applies to `sigma_rules_metadata`.
     dynamodb_tool_registry_table: str = Field(
         default="sentra-tool-registry",
         validation_alias="TOOL_REGISTRY_TABLE"
@@ -71,6 +76,19 @@ class Settings(BaseSettings):
     dynamodb_validation_signals_table_v2: str = Field(
         default="sentra-validation-signals-v2",
         validation_alias="VALIDATION_SIGNALS_TABLE_V2",
+    )
+
+    # Explicit per-tenant S3 policy-object prefix (LLD-26 §4.3 / WS-B B3).
+    # OFF (default) → policy artifacts keep the legacy implicit layout
+    #   `policies/agents/{agent_id}/v{n}.{yaml|cedar}` (isolation holds only
+    #   because the canonical agent_id carries the tenant prefix).
+    # ON  → new writes use the explicit, IAM-scopable layout
+    #   `tenants/{tenant_id}/policies/agents/{agent_id}/v{n}.{yaml|cedar}`.
+    # Only meaningful with TENANCY_V2_ENABLED (tenant_id must be real). Reads
+    # dual-read across both layouts so the migration is a safe, reversible copy
+    # (run scripts/migrate_s3_policy_prefix.py to re-key existing objects).
+    s3_explicit_tenant_prefix: bool = Field(
+        default=False, validation_alias="S3_EXPLICIT_TENANT_PREFIX"
     )
 
     # ------------------------------------------------------------------
@@ -131,6 +149,27 @@ class Settings(BaseSettings):
     # JWT clock-skew leeway (seconds); matters with ≤15-min agent tokens.
     jwt_clock_skew_seconds: int = Field(
         default=60, validation_alias="JWT_CLOCK_SKEW_SECONDS"
+    )
+
+    # Residual uncredentialed-agent legacy-fallback window (LLD-26 §7.1.2 / WS-B
+    # B1). Enforce flips per-TENANT but credential coverage is per-AGENT, so a
+    # freshly-flipped tenant can still contain a not-yet-credentialed agent. Rather
+    # than bricking it the instant the tenant flips, each such agent gets a
+    # time-boxed, alarmed grace window in which it keeps running on the legacy
+    # self-asserted path ("no worse than today"); the window EXPIRES to a hard
+    # fail-secure DENY (it never silently rides on `default`). 0 (default) = window
+    # DISABLED → enforce denies an uncredentialed agent immediately (strict). Set
+    # >0 (e.g. 86400 = 24h) during a per-tenant enforce flip, then drive it to 0 as
+    # coverage reaches ~100%. Operators see the residual list (WS-C) and onboard or
+    # retire those agents before the window closes.
+    identity_fallback_window_seconds: int = Field(
+        default=0, validation_alias="IDENTITY_FALLBACK_WINDOW_SECONDS"
+    )
+    # Per-agent fallback state (first-seen + deadline) lives here so "expires to
+    # DENY" survives instance churn (an in-process deadline would reset on every
+    # cold start and never expire). Born tenant-scoped; in the WS-D purge list.
+    dynamodb_identity_fallback_table: str = Field(
+        default="sentra-identity-fallback", validation_alias="IDENTITY_FALLBACK_TABLE"
     )
 
     # ------------------------------------------------------------------
