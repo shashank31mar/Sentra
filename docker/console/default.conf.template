@@ -23,6 +23,14 @@ server {
         proxy_ssl_server_name on;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
         proxy_http_version 1.1;
+        # Carry the operator's ALB-Cognito identity to the controller under a
+        # NON-RESERVED name. The public ALB injects `x-amzn-oidc-data`, but every
+        # downstream gateway hop (API Gateway AND the internal ALB) strips inbound
+        # `x-amzn-oidc-*` (anti-spoofing) — so it never reaches the controller.
+        # Re-emit it as `x-sentra-oidc-data`, which the gateway forwards untouched;
+        # the controller's verify_alb_oidc reads it and still verifies the ALB
+        # signature. Without this, every auth'd control-plane route 401s.
+        proxy_set_header X-Sentra-Oidc-Data $http_x_amzn_oidc_data;
     }
 
     # ---- Static assets: long cache for hashed files ----

@@ -289,7 +289,14 @@ def verify_alb_oidc(request: Request) -> Dict:
     if _alb_claims_override is not None:  # pragma: no cover - test seam
         return _alb_claims_override(request)
 
-    data = request.headers.get("x-amzn-oidc-data")
+    # The native `x-amzn-oidc-data` is a RESERVED, ALB-authoritative header: every
+    # gateway hop after the authenticating public ALB (API Gateway AND the internal
+    # ALB) STRIPS inbound `x-amzn-oidc-*` to prevent spoofing. So the console nginx
+    # re-emits it under a non-reserved name (`x-sentra-oidc-data`) that survives the
+    # gateway; we read that first, falling back to the native header for any path
+    # that preserves it (direct calls / tests). Renaming the TRANSPORT is not a
+    # spoof vector — the ALB signature is still cryptographically verified below.
+    data = request.headers.get("x-sentra-oidc-data") or request.headers.get("x-amzn-oidc-data")
     if not data:
         raise HTTPException(status_code=401, detail="missing ALB identity")
     try:
