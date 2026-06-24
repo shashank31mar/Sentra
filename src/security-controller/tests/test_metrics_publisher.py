@@ -96,7 +96,7 @@ async def test_publish_error_metric(metrics_publisher):
 async def test_metrics_error_does_not_raise(metrics_publisher):
     """Test that metrics publishing errors don't propagate"""
     metrics_publisher.cloudwatch.put_metric_data.side_effect = Exception("CloudWatch error")
-    
+
     # Should not raise exception (fire-and-forget)
     try:
         await metrics_publisher.publish_validation_metrics(
@@ -107,6 +107,39 @@ async def test_metrics_error_does_not_raise(metrics_publisher):
         )
     except Exception:
         pytest.fail("Metrics publisher should not raise exceptions")
+
+
+@pytest.mark.asyncio
+async def test_publish_quota_exceeded_metric(metrics_publisher):
+    """QuotaExceeded carries a single tenant_id dimension (WS-E E2b)."""
+    await metrics_publisher.publish_quota_exceeded_metric(tenant_id="t_acme")
+
+    assert metrics_publisher.cloudwatch.put_metric_data.called
+    call_args = metrics_publisher.cloudwatch.put_metric_data.call_args
+    assert call_args[1]['Namespace'] == 'Sentra/SecurityController'
+    metric = call_args[1]['MetricData'][0]
+    assert metric['MetricName'] == 'QuotaExceeded'
+    assert metric['Value'] == 1 and metric['Unit'] == 'Count'
+    dims = {d['Name']: d['Value'] for d in metric['Dimensions']}
+    assert dims == {'tenant_id': 't_acme'}
+
+
+@pytest.mark.asyncio
+async def test_publish_quota_exceeded_metric_unknown_tenant(metrics_publisher):
+    """A missing tenant_id degrades to '_unknown' (never an empty dimension)."""
+    await metrics_publisher.publish_quota_exceeded_metric(tenant_id="")
+    metric = metrics_publisher.cloudwatch.put_metric_data.call_args[1]['MetricData'][0]
+    assert metric['Dimensions'][0]['Value'] == '_unknown'
+
+
+@pytest.mark.asyncio
+async def test_publish_quota_exceeded_metric_fail_safe(metrics_publisher):
+    """A CloudWatch failure never blocks the validate path (fire-and-forget)."""
+    metrics_publisher.cloudwatch.put_metric_data.side_effect = Exception("CloudWatch down")
+    try:
+        await metrics_publisher.publish_quota_exceeded_metric(tenant_id="t_acme")
+    except Exception:
+        pytest.fail("publish_quota_exceeded_metric must never raise")
 
 
 @pytest.mark.asyncio

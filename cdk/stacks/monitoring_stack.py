@@ -785,6 +785,30 @@ class MonitoringStack(Stack):
         sc_quarantined_sessions_alarm.add_alarm_action(cw_actions.SnsAction(self.info_alerts_topic))
         self.alarms.append(sc_quarantined_sessions_alarm)
 
+        # Alarm 7: Per-tenant commercial RPS quota exceeded (P1 — LLD-26 §9.3 / WS-E E2b).
+        # Fires when a tenant's validate traffic is DENIED for QUOTA_EXCEEDED. Quota is a
+        # commercial guardrail (not a security boundary), so this pages the standard P1
+        # topic, not critical. Only emits once max_validate_rps enforcement is founder-enabled.
+        sc_quota_exceeded_alarm = cloudwatch.Alarm(
+            self,
+            "QuotaExceededAlarm",
+            alarm_name=f"{prefix}-quota-exceeded",
+            alarm_description="Security Controller: tenant exceeded its commercial validate-RPS quota (P1, WS-E E2b)",
+            metric=cloudwatch.Metric(
+                namespace="Sentra/SecurityController",
+                metric_name="QuotaExceeded",
+                statistic="Sum",
+                period=Duration.minutes(5),
+            ),
+            threshold=1,
+            evaluation_periods=1,
+            datapoints_to_alarm=1,
+            comparison_operator=cloudwatch.ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD,
+            treat_missing_data=cloudwatch.TreatMissingData.NOT_BREACHING,
+        )
+        sc_quota_exceeded_alarm.add_alarm_action(cw_actions.SnsAction(self.alerts_topic))
+        self.alarms.append(sc_quota_exceeded_alarm)
+
         # ============================================================
         # Agent Management API Metrics and Alarms (Task 10)
         # ============================================================

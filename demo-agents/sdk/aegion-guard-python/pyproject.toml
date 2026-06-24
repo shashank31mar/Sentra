@@ -26,10 +26,18 @@ classifiers = [
 dependencies = []
 
 [project.optional-dependencies]
+# Data-plane runtime identity (LLD-26 §3 / WS-A): opt-in ES256 JWT signing. Kept
+# OUT of the runtime core so the validation hot path stays stdlib-only and vendors
+# unchanged into a Lambda zip / Azure Function (LLD 23 §2). Agents running under a
+# tenant in `enforce` install this; agents that don't need identity do not.
+identity = [
+    "PyJWT[crypto]>=2.8.0",
+]
 dev = [
     "pytest>=7.4",
     "pytest-cov>=4.1",
     "pytest-asyncio>=0.23",
+    "PyJWT[crypto]>=2.8.0",
 ]
 
 [project.urls]

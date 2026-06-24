@@ -50,7 +50,14 @@ export function primaryRole(user?: CurrentUser | null): string {
   return group ? prettify(group) : 'Operator'
 }
 
-/** Tenant inferred from the email domain (e.g. "acme.io"), or null. */
+/**
+ * DISPLAY-ONLY, NON-AUTHORITATIVE tenant label from the email domain ("acme.io").
+ *
+ * ⚠️ Cosmetic header hint only. The authoritative tenant is server-derived from
+ * the operator's membership (`GET /v1/me` → `useMe()`, LLD-26 WS-C C1). Never use
+ * this to scope data, gate UI, or send to the API — the server resolves and
+ * enforces the real tenant from the Cognito session.
+ */
 export function tenantOf(user?: CurrentUser | null): string | null {
   const email = user?.email?.trim()
   if (!email || !email.includes('@')) return null

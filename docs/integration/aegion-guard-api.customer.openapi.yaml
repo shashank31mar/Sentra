@@ -10,11 +10,17 @@ info:
     \ agent and annotate your tools.\n   The SDK calls `POST /v1/validate` for you, fails secure, and\
     \ adapts to Bedrock / Azure /\n   generic frameworks. See the *SDK Integration Guide*.\n2. **Direct\
     \ HTTP** \u2014 call `POST /v1/validate` yourself from any language. This spec is the contract.\n\n\
-    ### Authentication\nAll endpoints require an API key in the **`x-api-key`** header (issued per tenant\
-    \ via the\nAPI Gateway usage plan). The key also governs your rate limit. Never embed the key in a\
-    \ browser;\nkeep it server-side.\n\n### The decision pipeline\nEach `validate` runs sequentially through:\
-    \ **trust score \u2192 policy engine \u2192 cross-agent \u2192\nsigma rules \u2192 ML classifier \u2192\
-    \ context/sequence \u2192 rate limit**. The first blocking `DENY`\nshort-circuits. The response's\
+    ### Authentication\nTwo auth roots, by surface:\n- **Agents (data plane)** \u2014 `/v1/validate` and\
+    \ edge-signal calls carry a per-tenant API key in the\n  **`x-api-key`** header (issued per tenant\
+    \ via the API Gateway usage plan; also governs rate limit).\n  Keep it server-side. Once identity\
+    \ enforcement is enabled, agents also present a signed **agent\n  JWT** (ES256); register the agent's\
+    \ public key via the *Agent Credentials* endpoints.\n- **Operators (control plane)** \u2014 *Agent\
+    \ Credentials*, *Tenancy & Access*, and *Platform Admin*\n  endpoints are operator-authenticated via\
+    \ the console's ALB Cognito session (`OperatorSession`),\n  **not** the `x-api-key`. An RBAC role\
+    \ (`owner|admin|editor|viewer`) gates each mutation; multi-tenant\n  operators select a tenant with\
+    \ the optional `X-Aegion-Tenant` header.\n\n### The decision pipeline\nEach `validate` runs sequentially\
+    \ through: **trust score \u2192 policy engine \u2192 cross-agent \u2192\nsigma rules \u2192 ML classifier\
+    \ \u2192 context/sequence \u2192 rate limit**. The first blocking `DENY`\nshort-circuits. The response's\
     \ `reason`/`threat_type` tells you which layer fired.\n"
   contact:
     name: AegionAI
@@ -47,6 +53,13 @@ tags:
   description: "Operator actions \u2014 quarantine a session, reverse an unsafe action."
 - name: Agents
   description: Agent inventory and per-agent tool/policy views.
+- name: Agent Credentials
+  description: Register and rotate the per-agent public keys that prove agent identity at runtime (asymmetric
+    ES256). Operator-authenticated (console session), not the agent `x-api-key`.
+- name: Tenancy & Access
+  description: Manage your tenant, operators, invites, RBAC roles, and the per-tenant runtime-identity
+    rollout mode. Operator-authenticated; multi-tenant operators select a tenant with the optional `X-Aegion-Tenant`
+    header.
 - name: System
   description: Health and liveness.
 paths:
@@ -858,6 +871,404 @@ paths:
             application/json:
               schema:
                 type: object
+  /v1/agents/{agent_id}/credentials:
+    parameters:
+    - $ref: '#/components/parameters/AgentId'
+    post:
+      tags:
+      - Agent Credentials
+      x-audience: customer-admin
+      operationId: registerAgentCredential
+      summary: Register an agent's public signing key
+      security:
+      - OperatorSession: []
+      description: 'Deploy-time step of the two-phase agent-identity model. The agent holds a **private**
+
+        ES256 (P-256) key and signs its own runtime JWT; you register only the matching **public**
+
+        key here, so the controller can verify the agent but can never mint its identity. Returns
+
+        the generated `kid` (key id). Requires the `admin` role, and the agent must belong to your
+
+        tenant.
+
+        '
+      parameters:
+      - $ref: '#/components/parameters/TenantSwitch'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CredentialRegisterRequest'
+      responses:
+        '201':
+          description: Key registered.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CredentialRegistered'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+    get:
+      tags:
+      - Agent Credentials
+      x-audience: customer-admin
+      operationId: listAgentCredentials
+      summary: List an agent's registered keys
+      description: "Returns key metadata only \u2014 **never** any private material."
+      security:
+      - OperatorSession: []
+      parameters:
+      - $ref: '#/components/parameters/TenantSwitch'
+      responses:
+        '200':
+          description: Keys.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CredentialList'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+  /v1/agents/{agent_id}/credentials/{kid}/rotate:
+    parameters:
+    - $ref: '#/components/parameters/AgentId'
+    - name: kid
+      in: path
+      required: true
+      schema:
+        type: string
+      description: Key id returned at registration.
+    post:
+      tags:
+      - Agent Credentials
+      x-audience: customer-admin
+      operationId: rotateAgentCredential
+      summary: Mark a key rotating (overlap-based rotation)
+      security:
+      - OperatorSession: []
+      description: 'Overlap-based rotation: register the new key, mark the old one `rotating` (it stays
+        valid
+
+        until its `not_after` so in-flight tokens keep verifying), shift signing to the new key,
+
+        then revoke the old one. Requires the `editor` role.
+
+        '
+      parameters:
+      - $ref: '#/components/parameters/TenantSwitch'
+      responses:
+        '200':
+          description: Marked rotating.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CredentialStatus'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /v1/agents/{agent_id}/credentials/{kid}:
+    parameters:
+    - $ref: '#/components/parameters/AgentId'
+    - name: kid
+      in: path
+      required: true
+      schema:
+        type: string
+      description: Key id to revoke.
+    delete:
+      tags:
+      - Agent Credentials
+      x-audience: customer-admin
+      operationId: revokeAgentCredential
+      summary: Revoke a key immediately
+      security:
+      - OperatorSession: []
+      description: 'Sets the key `revoked`. Revocation propagates to the verify path within a few seconds
+
+        (bounded by the public-key cache TTL / shared revocation signal). Requires the `admin` role.
+
+        '
+      parameters:
+      - $ref: '#/components/parameters/TenantSwitch'
+      responses:
+        '200':
+          description: Revoked.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CredentialStatus'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /v1/me:
+    get:
+      tags:
+      - Tenancy & Access
+      x-audience: customer-admin
+      operationId: getMe
+      summary: "Current operator \u2014 role and tenant memberships"
+      security:
+      - OperatorSession: []
+      description: 'Console bootstrap: returns the signed-in operator''s active tenant, RBAC role, platform-staff
+
+        flag, and full membership set (used to render role-conditional UI and the tenant switcher).
+
+        '
+      parameters:
+      - $ref: '#/components/parameters/TenantSwitch'
+      responses:
+        '200':
+          description: Operator identity.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Me'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+  /v1/tenants:
+    post:
+      tags:
+      - Tenancy & Access
+      x-audience: customer-admin
+      operationId: createTenant
+      summary: Create a tenant (self-serve onboarding)
+      security:
+      - OperatorSession: []
+      description: "Provision a new tenant; the creating operator becomes its `owner`. The `tenant_id`\
+        \ is a\nSentra-derived **immutable slug** (`t_\u2026`) \u2014 never customer-chosen \u2014 and\
+        \ is baked into every\nagent id and stored key for the life of the tenant.\n"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TenantCreateRequest'
+      responses:
+        '201':
+          description: Created.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TenantSummary'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+  /v1/tenants/{tenant_id}:
+    parameters:
+    - $ref: '#/components/parameters/TenantId'
+    get:
+      tags:
+      - Tenancy & Access
+      x-audience: customer-admin
+      operationId: getTenant
+      summary: Get a tenant
+      security:
+      - OperatorSession: []
+      parameters:
+      - $ref: '#/components/parameters/TenantSwitch'
+      responses:
+        '200':
+          description: Tenant.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Tenant'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    patch:
+      tags:
+      - Tenancy & Access
+      x-audience: customer-admin
+      operationId: updateTenant
+      summary: Update a tenant (identity rollout mode / status)
+      security:
+      - OperatorSession: []
+      description: "Update mutable tenant fields. `identity_mode` is the per-tenant runtime-identity rollout\n\
+        control (`off \u2192 shadow \u2192 enforce`); flipping to `enforce` requires the `owner` role.\n\
+        `status` accepts `active | suspended`. Requires at least the `admin` role.\n"
+      parameters:
+      - $ref: '#/components/parameters/TenantSwitch'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TenantUpdateRequest'
+      responses:
+        '200':
+          description: Updated.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TenantSummary'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+    delete:
+      tags:
+      - Tenancy & Access
+      x-audience: customer-admin
+      operationId: deleteTenant
+      summary: Begin tenant deletion (staged, irreversible)
+      security:
+      - OperatorSession: []
+      description: 'Marks the tenant `deleting` and revokes all agent credentials immediately. The destructive
+
+        live-store purge runs out-of-band after an explicit sign-off (it is irreversible). Requires
+
+        the `owner` role.
+
+        '
+      parameters:
+      - $ref: '#/components/parameters/TenantSwitch'
+      responses:
+        '200':
+          description: Deletion started.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TenantDeleteResponse'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+  /v1/tenants/{tenant_id}/members:
+    parameters:
+    - $ref: '#/components/parameters/TenantId'
+    get:
+      tags:
+      - Tenancy & Access
+      x-audience: customer-admin
+      operationId: listTenantMembers
+      summary: List operators in a tenant
+      description: Requires the `admin` role.
+      security:
+      - OperatorSession: []
+      parameters:
+      - $ref: '#/components/parameters/TenantSwitch'
+      responses:
+        '200':
+          description: Members.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MemberList'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+  /v1/tenants/{tenant_id}/invites:
+    parameters:
+    - $ref: '#/components/parameters/TenantId'
+    post:
+      tags:
+      - Tenancy & Access
+      x-audience: customer-admin
+      operationId: createInvite
+      summary: Invite an operator to the tenant
+      security:
+      - OperatorSession: []
+      description: 'Mint a **single-use, time-boxed** invite token bound to an email address. The invited
+        role
+
+        may not exceed your own (no privilege escalation). Requires the `admin` role. Deliver the
+
+        returned token to the invitee out of band; they redeem it via `POST /v1/invites/redeem`.
+
+        '
+      parameters:
+      - $ref: '#/components/parameters/TenantSwitch'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/InviteCreateRequest'
+      responses:
+        '201':
+          description: Invite created.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/InviteCreated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+  /v1/invites/redeem:
+    post:
+      tags:
+      - Tenancy & Access
+      x-audience: customer-admin
+      operationId: redeemInvite
+      summary: Redeem an invite into a membership
+      security:
+      - OperatorSession: []
+      description: 'Consume an invite token. The redeeming operator''s **verified email must match** the
+        invited
+
+        email. Single-use, and it can never change an existing membership''s role.
+
+        '
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/InviteRedeemRequest'
+      responses:
+        '201':
+          description: Joined the tenant.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MembershipResult'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+  /v1/tenants/{tenant_id}/members/{operator_sub}:
+    parameters:
+    - $ref: '#/components/parameters/TenantId'
+    - name: operator_sub
+      in: path
+      required: true
+      schema:
+        type: string
+      description: The member's Cognito subject id.
+    delete:
+      tags:
+      - Tenancy & Access
+      x-audience: customer-admin
+      operationId: removeTenantMember
+      summary: Remove an operator from the tenant
+      security:
+      - OperatorSession: []
+      description: 'Requires the `admin` role. You cannot remove yourself, remove a higher-privileged
+        member,
+
+        or remove the last `owner`.
+
+        '
+      parameters:
+      - $ref: '#/components/parameters/TenantSwitch'
+      responses:
+        '200':
+          description: Removed.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  removed:
+                    type: string
+                  tenant_id:
+                    type: string
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
   /v1/health:
     get:
       tags:
@@ -884,6 +1295,18 @@ components:
       in: header
       name: x-api-key
       description: Per-tenant API key issued via the API Gateway usage plan. Governs access and rate limit.
+    OperatorSession:
+      type: apiKey
+      in: cookie
+      name: AWSELBAuthSessionCookie
+      description: "**Operator (human) authentication** for control-plane endpoints \u2014 Agent Credentials,\n\
+        Tenancy & Access, and Platform Admin. Established by signing in through the AegionAI\nconsole,\
+        \ which is fronted by an ALB **authenticate-cognito** action; the ALB then injects a\ncryptographically\
+        \ verified `x-amzn-oidc-data` identity token to the controller, from which\nthe operator's `sub`,\
+        \ tenant membership, and RBAC role are derived server-side.\n\nThese endpoints are **not** called\
+        \ with the agent `x-api-key`. Multi-tenant operators may\ntarget a specific tenant with the optional\
+        \ `X-Aegion-Tenant` header (validated against\nmembership). The cookie is managed by the browser/ALB\
+        \ \u2014 clients do not set it by hand.\n"
   parameters:
     SessionId:
       name: session_id
@@ -898,6 +1321,22 @@ components:
       required: true
       schema:
         type: string
+    TenantId:
+      name: tenant_id
+      in: path
+      required: true
+      schema:
+        type: string
+      description: Sentra-derived tenant slug (e.g. `t_3k9f2a8d1c0b7`).
+    TenantSwitch:
+      name: X-Aegion-Tenant
+      in: header
+      required: false
+      schema:
+        type: string
+      description: "Multi-tenant operators (AegionAI staff or partners managing several customers) select\
+        \ the\nactive tenant for this request. Validated against the operator's memberships \u2014 a non-member\n\
+        tenant returns `403`. Defaults to the operator's primary membership when omitted.\n"
   schemas:
     Decision:
       type: string
@@ -1391,6 +1830,275 @@ components:
           action: ALLOW
           severity: low
           enabled: true
+    Role:
+      type: string
+      description: Control-plane RBAC role (data-plane access is governed by policy, not roles).
+      enum:
+      - owner
+      - admin
+      - editor
+      - viewer
+    IdentityMode:
+      type: string
+      description: Per-tenant runtime-identity rollout state. The effective mode is `min(fleet ceiling,
+        this)`.
+      enum:
+      - false
+      - shadow
+      - enforce
+    TenantStatus:
+      type: string
+      enum:
+      - active
+      - suspended
+      - deleting
+      - purged
+    PlanType:
+      type: string
+      enum:
+      - trial
+      - dedicated
+      - enterprise
+    Quota:
+      type: object
+      properties:
+        max_agents:
+          type: integer
+          description: Max managed agents (checked at import).
+        max_validate_rps:
+          type: integer
+          description: Max /v1/validate requests per second (commercial guardrail).
+    CredentialRegisterRequest:
+      type: object
+      required:
+      - public_key
+      properties:
+        public_key:
+          type: string
+          description: ES256 (P-256) public key, PEM or JWK. The matching private key never leaves the
+            agent.
+        alg:
+          type: string
+          const: ES256
+          default: ES256
+          description: Only ES256 is accepted.
+        not_after:
+          type:
+          - integer
+          - 'null'
+          description: Optional key validity end (epoch ms). Defaults to ~1 year.
+      example:
+        public_key: '-----BEGIN PUBLIC KEY-----
+
+          MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAE...
+
+          -----END PUBLIC KEY-----'
+        alg: ES256
+    CredentialRegistered:
+      type: object
+      properties:
+        kid:
+          type: string
+          description: Generated key id (carried in the agent JWT header).
+        agent_id:
+          type: string
+        status:
+          type: string
+          const: active
+    CredentialStatus:
+      type: object
+      properties:
+        kid:
+          type: string
+        status:
+          type: string
+          enum:
+          - active
+          - rotating
+          - revoked
+    CredentialItem:
+      type: object
+      properties:
+        kid:
+          type: string
+        status:
+          type: string
+          enum:
+          - active
+          - rotating
+          - revoked
+        alg:
+          type: string
+        not_before:
+          type: integer
+          description: Epoch ms.
+        not_after:
+          type: integer
+          description: Epoch ms.
+    CredentialList:
+      type: object
+      properties:
+        agent_id:
+          type: string
+        credentials:
+          type: array
+          items:
+            $ref: '#/components/schemas/CredentialItem'
+    Me:
+      type: object
+      properties:
+        sub:
+          type: string
+          description: Cognito subject id.
+        email:
+          type: string
+        tenant_id:
+          type: string
+          description: The active tenant for this request.
+        role:
+          $ref: '#/components/schemas/Role'
+        is_platform:
+          type: boolean
+          description: True for AegionAI staff with the reserved `_platform` capability.
+        memberships:
+          type: array
+          items:
+            type: object
+            properties:
+              tenant_id:
+                type: string
+              role:
+                $ref: '#/components/schemas/Role'
+              is_primary:
+                type: boolean
+    TenantCreateRequest:
+      type: object
+      required:
+      - display_name
+      properties:
+        display_name:
+          type: string
+          minLength: 1
+          maxLength: 200
+          description: Human-readable name (mutable).
+        plan:
+          $ref: '#/components/schemas/PlanType'
+      example:
+        display_name: Acme Corp
+        plan: trial
+    TenantSummary:
+      type: object
+      properties:
+        tenant_id:
+          type: string
+        display_name:
+          type: string
+        plan:
+          $ref: '#/components/schemas/PlanType'
+        status:
+          $ref: '#/components/schemas/TenantStatus'
+        identity_mode:
+          $ref: '#/components/schemas/IdentityMode'
+        role:
+          $ref: '#/components/schemas/Role'
+    Tenant:
+      type: object
+      properties:
+        tenant_id:
+          type: string
+        display_name:
+          type: string
+        status:
+          $ref: '#/components/schemas/TenantStatus'
+        plan:
+          $ref: '#/components/schemas/PlanType'
+        identity_mode:
+          $ref: '#/components/schemas/IdentityMode'
+        quota:
+          $ref: '#/components/schemas/Quota'
+    TenantUpdateRequest:
+      type: object
+      description: All fields optional; only those present are changed.
+      properties:
+        display_name:
+          type: string
+        identity_mode:
+          $ref: '#/components/schemas/IdentityMode'
+        status:
+          type: string
+          enum:
+          - active
+          - suspended
+          description: Use the delete endpoint for deletion.
+    TenantDeleteResponse:
+      type: object
+      properties:
+        tenant_id:
+          type: string
+        status:
+          type: string
+          const: deleting
+        credentials_revoked:
+          type: integer
+          description: Number of agent keys revoked as part of teardown.
+        note:
+          type: string
+    Member:
+      type: object
+      properties:
+        operator_sub:
+          type: string
+        role:
+          $ref: '#/components/schemas/Role'
+        is_primary:
+          type: boolean
+    MemberList:
+      type: object
+      properties:
+        tenant_id:
+          type: string
+        members:
+          type: array
+          items:
+            $ref: '#/components/schemas/Member'
+    InviteCreateRequest:
+      type: object
+      required:
+      - email
+      properties:
+        email:
+          type: string
+          format: email
+          description: The invitee's email; the invite is bound to it at redemption.
+        role:
+          $ref: '#/components/schemas/Role'
+      example:
+        email: ops@acme.com
+        role: editor
+    InviteCreated:
+      type: object
+      properties:
+        invite_token:
+          type: string
+          description: Single-use, time-boxed. Deliver out of band; shown once.
+        tenant_id:
+          type: string
+        role:
+          $ref: '#/components/schemas/Role'
+    InviteRedeemRequest:
+      type: object
+      required:
+      - invite_token
+      properties:
+        invite_token:
+          type: string
+    MembershipResult:
+      type: object
+      properties:
+        tenant_id:
+          type: string
+        role:
+          $ref: '#/components/schemas/Role'
     GenericOk:
       type: object
       properties:

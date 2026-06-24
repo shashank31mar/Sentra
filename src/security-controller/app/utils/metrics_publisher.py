@@ -88,18 +88,44 @@ class MetricsPublisher:
             # Add deny rate metric for DENY decisions
             if decision == "DENY":
                 deny_dimensions = [{'Name': 'AgentId', 'Value': agent_id}]
-                
+
                 # Add threat_type dimension if available
                 if threat_type:
                     deny_dimensions.append({'Name': 'ThreatType', 'Value': threat_type})
-                
+
                 metrics.append({
                     'MetricName': 'DenyRate',
                     'Value': 1,
                     'Unit': 'None',
                     'Dimensions': deny_dimensions
                 })
-            
+
+            # Tenant-dimensioned metrics (LLD-26 §9.1 / WS-E E1). Emitted ALONGSIDE
+            # the AgentId-keyed streams above so existing dashboards keep working;
+            # per-tenant dashboards become a `tenant_id` filter, not a new pipeline.
+            # `tenant_id` is the request's resolved tenant (the `current_tenant()`
+            # contextvar) — `default` until identity rollout, then the real tid.
+            try:
+                from app.utils import tenancy
+                tid = tenancy.current_tenant()
+                metrics.append({
+                    'MetricName': 'Decisions',
+                    'Value': 1,
+                    'Unit': 'Count',
+                    'Dimensions': [
+                        {'Name': 'tenant_id', 'Value': tid},
+                        {'Name': 'verdict', 'Value': decision},
+                    ],
+                })
+                metrics.append({
+                    'MetricName': 'ValidateLatency',
+                    'Value': latency_ms,
+                    'Unit': 'Milliseconds',
+                    'Dimensions': [{'Name': 'tenant_id', 'Value': tid}],
+                })
+            except Exception:  # noqa: BLE001 — never let a metric tag block validation
+                pass
+
             self.cloudwatch.put_metric_data(
                 Namespace=self.namespace,
                 MetricData=metrics
@@ -242,6 +268,60 @@ class MetricsPublisher:
         except Exception as e:
             logger.exception(f"Failed to publish error metric (non-blocking): {e}")
             # Don't raise - metrics publishing should not block operations
+
+    async def publish_identity_fallback_metric(self, state: str, tenant_id: str):
+        """Residual uncredentialed-agent legacy-fallback window (LLD-26 / WS-B B1).
+
+        ``state`` ∈ {opened, active, expired}. ``opened``/``active`` should be
+        ALARMED — they mean enforce is letting an uncredentialed agent ride the
+        legacy path on borrowed time; ``expired`` means the window closed to a hard
+        DENY. Fire-and-forget; never blocks validate.
+        """
+        try:
+            self.cloudwatch.put_metric_data(
+                Namespace=self.namespace,
+                MetricData=[
+                    {
+                        'MetricName': 'IdentityFallback',
+                        'Value': 1,
+                        'Unit': 'Count',
+                        'Dimensions': [
+                            {'Name': 'State', 'Value': state},
+                            {'Name': 'tenant_id', 'Value': tenant_id or '_unknown'},
+                        ],
+                    }
+                ],
+            )
+            logger.debug("Published identity-fallback metric: %s tenant=%s", state, tenant_id)
+        except Exception as e:  # noqa: BLE001 — metrics never block validate
+            logger.warning("Failed to publish identity-fallback metric (non-blocking): %s", e)
+
+    async def publish_quota_exceeded_metric(self, tenant_id: str):
+        """Per-tenant commercial RPS quota denial (LLD-26 §9.3 / WS-E E2b).
+
+        Emitted once each time a validate is DENIED for `QUOTA_EXCEEDED`. One
+        dimension (`tenant_id`) so the `{prefix}-quota-exceeded` alarm can page on
+        a tenant hitting its ceiling. Quota is a *commercial* guardrail, so this is
+        a P1 (not a security-critical) signal. Fire-and-forget; never blocks
+        validate.
+        """
+        try:
+            self.cloudwatch.put_metric_data(
+                Namespace=self.namespace,
+                MetricData=[
+                    {
+                        'MetricName': 'QuotaExceeded',
+                        'Value': 1,
+                        'Unit': 'Count',
+                        'Dimensions': [
+                            {'Name': 'tenant_id', 'Value': tenant_id or '_unknown'},
+                        ],
+                    }
+                ],
+            )
+            logger.debug("Published quota-exceeded metric: tenant=%s", tenant_id)
+        except Exception as e:  # noqa: BLE001 — metrics never block validate
+            logger.warning("Failed to publish quota-exceeded metric (non-blocking): %s", e)
 
     # ============================================================
     # Workstream 11: Policy CRUD Metrics

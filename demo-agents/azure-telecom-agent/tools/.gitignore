@@ -3,3 +3,13 @@
 /common/
 .python_packages/
 __pycache__/
+# WS-A identity signing deps (PyJWT[crypto]) pip-vendored at package time — build
+# artifacts regenerated every `azd up`, never commit.
+/jwt/
+/cryptography/
+/cffi/
+/_cffi_backend*
+/pycparser/
+*.dist-info/
+*.libs/
+/bin/

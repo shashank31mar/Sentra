@@ -124,6 +124,18 @@ export function resolveMock(
     }
   }
 
+  // --- Identity / residual fallback-window agents (WS-C C2) ---
+  if (get && path === '/identity/residual-agents') {
+    return {
+      status: 200,
+      body: {
+        tenant_id: 't_acme',
+        residual_agents: fx.residualAgents,
+        count: fx.residualAgents.length,
+      },
+    }
+  }
+
   // --- Connections (powers Connect Account wizard) ---
   if (get && path === '/connections') {
     return { status: 200, body: { connections: [...connStore.values()] } }

@@ -43,6 +43,51 @@ export interface CurrentUser {
   groups: string[]
 }
 
+/** RBAC role on a tenant (LLD-26 §6.3). Ordered viewer < editor < admin < owner. */
+export type TenantRole = 'owner' | 'admin' | 'editor' | 'viewer'
+
+export interface TenantMembership {
+  tenant_id: string
+  role: TenantRole
+  is_primary: boolean
+}
+
+/**
+ * Server-derived operator context (`GET /v1/me`, LLD-26 WS-D D3b). This — NOT
+ * the cosmetic email-domain `tenantOf()` — is the authoritative tenant + role.
+ * The server resolves the tenant from the Cognito session; the console only
+ * *renders* to it (client gating is UX, the server still enforces every write).
+ */
+export interface MeContext {
+  sub: string
+  email: string
+  tenant_id: string
+  role: TenantRole
+  is_platform: boolean
+  memberships: TenantMembership[]
+}
+
+/**
+ * An agent currently riding the WS-B B1 legacy-fallback window: enforce is on for
+ * its tenant but it hasn't registered a credential yet, so it runs on the legacy
+ * self-asserted path on borrowed time. The console surfaces these so operators
+ * onboard or retire them before the per-agent deadline expires to a hard DENY.
+ * Times are epoch-ms (the backend's `first_seen_ms` / `deadline_ms`).
+ */
+export interface ResidualAgent {
+  agent_id: string
+  tenant_id: string
+  first_seen_ms: number
+  deadline_ms: number
+  expired: boolean
+}
+
+export interface ResidualAgentsResponse {
+  tenant_id: string
+  residual_agents: ResidualAgent[]
+  count: number
+}
+
 /** Generic cursor-paginated response, normalized by the api client. */
 export interface Page<T> {
   items: T[]

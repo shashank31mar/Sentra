@@ -11,10 +11,14 @@ services:
       prepackage:
         shell: sh
         run: |
-          rm -rf ./aegion_guard ./common
+          rm -rf ./aegion_guard ./common ./jwt ./cryptography ./cffi ./pycparser ./_cffi_backend* ./*.dist-info ./*.libs ./bin
           cp -r ../../sdk/aegion-guard-python/src/aegion_guard ./aegion_guard
           mkdir -p ./common/data && cp ../../common/*.py ./common/
           cp ../../common/data/*.json ./common/data/ 2>/dev/null || true
+          # WS-A identity signing: bundle PyJWT[crypto] as Linux/cp311 wheels so the
+          # agent can mint ES256 tokens under `enforce`. Lazy-imported by the SDK, so
+          # a non-signing deploy is unaffected. OneDeploy skips Oryx → must vendor.
+          python3 -m pip install --target . --only-binary=:all: --platform manylinux2014_x86_64 --implementation cp --python-version 3.11 "PyJWT[crypto]" -q
       # The Python v2 host sometimes fails to index routes until restarted post-deploy (404 otherwise).
       postdeploy:
         shell: sh

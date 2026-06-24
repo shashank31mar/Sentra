@@ -62,9 +62,13 @@ def load_compiled_policies(s3_client, bucket: str, source_s3_key: str) -> str:
     Takes a boto3 S3 client (same pattern as the policy engine's reads) so it's
     trivially testable with moto. Raises CompiledPolicyNotFound when absent."""
     key = cedar_key_for(source_s3_key)
+    # B3 dual-read: the co-artifact follows its source key, which may be under the
+    # legacy or the explicit per-tenant prefix during the migration window.
+    from botocore.exceptions import ClientError
+    from app.utils.s3_policy_store import get_policy_object
     try:
-        obj = s3_client.get_object(Bucket=bucket, Key=key)
-    except s3_client.exceptions.NoSuchKey as exc:
+        obj = get_policy_object(s3_client, bucket, key)
+    except (s3_client.exceptions.NoSuchKey, ClientError) as exc:
         raise CompiledPolicyNotFound(f"No compiled Cedar at s3://{bucket}/{key}") from exc
     return obj["Body"].read().decode("utf-8")
 

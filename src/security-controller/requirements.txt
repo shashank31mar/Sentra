@@ -7,6 +7,12 @@ boto3==1.34.20
 pyyaml==6.0.1
 python-json-logger==2.0.7
 
+# Multi-tenancy runtime identity (LLD-26 / WS-A, WS-D). PyJWT verifies the
+# agent's ES256 (P-256) JWT and ALB's OIDC token; the [crypto] extra pulls in
+# `cryptography`, which provides the EC backend. Sentra only ever *verifies*
+# (it stores public keys), never mints an agent token.
+PyJWT[crypto]==2.8.0
+
 # Cedar authorization engine (in-process). CT01 build-spike confirmed the
 # manylinux wheel installs + imports on python:3.11-slim for linux/amd64
 # (ECS target) with zero transitive deps — no Rust build stage, no sidecar.

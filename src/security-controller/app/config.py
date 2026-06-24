@@ -26,6 +26,11 @@ class Settings(BaseSettings):
         default="sentra-agent-registry",
         validation_alias="AGENT_REGISTRY_TABLE"
     )
+    # PLATFORM-GLOBAL, intentionally UNSCOPED (LLD-26 §4 / WS-B B5): Sentra-authored
+    # reference data, identical for every tenant, read-only on the validate path.
+    # CONTRACT: no tenant-specific data may EVER be written to a global table — a
+    # future tenant-custom need becomes a NEW tenant-scoped table layered over the
+    # global set, never a mutation of it. Same applies to `sigma_rules_metadata`.
     dynamodb_tool_registry_table: str = Field(
         default="sentra-tool-registry",
         validation_alias="TOOL_REGISTRY_TABLE"
@@ -71,6 +76,113 @@ class Settings(BaseSettings):
     dynamodb_validation_signals_table_v2: str = Field(
         default="sentra-validation-signals-v2",
         validation_alias="VALIDATION_SIGNALS_TABLE_V2",
+    )
+
+    # Explicit per-tenant S3 policy-object prefix (LLD-26 §4.3 / WS-B B3).
+    # OFF (default) → policy artifacts keep the legacy implicit layout
+    #   `policies/agents/{agent_id}/v{n}.{yaml|cedar}` (isolation holds only
+    #   because the canonical agent_id carries the tenant prefix).
+    # ON  → new writes use the explicit, IAM-scopable layout
+    #   `tenants/{tenant_id}/policies/agents/{agent_id}/v{n}.{yaml|cedar}`.
+    # Only meaningful with TENANCY_V2_ENABLED (tenant_id must be real). Reads
+    # dual-read across both layouts so the migration is a safe, reversible copy
+    # (run scripts/migrate_s3_policy_prefix.py to re-key existing objects).
+    s3_explicit_tenant_prefix: bool = Field(
+        default=False, validation_alias="S3_EXPLICIT_TENANT_PREFIX"
+    )
+
+    # ------------------------------------------------------------------
+    # Multi-Tenancy runtime identity (LLD-26 / WS-A, WS-D)
+    # ------------------------------------------------------------------
+    # Tenant registry + operator↔tenant membership (WS-D D1) and the per-agent
+    # asymmetric credential store (WS-A A1). All three are net-new, born
+    # tenant-scoped tables; they sit empty (and unread on the hot path) until
+    # identity is rolled out, so adding them is regression-free.
+    dynamodb_tenants_table: str = Field(
+        default="sentra-tenants", validation_alias="TENANTS_TABLE"
+    )
+    dynamodb_tenant_members_table: str = Field(
+        default="sentra-tenant-members", validation_alias="TENANT_MEMBERS_TABLE"
+    )
+    dynamodb_agent_credentials_table: str = Field(
+        default="sentra-agent-credentials", validation_alias="AGENT_CREDENTIALS_TABLE"
+    )
+    # Per-tenant quota counters (WS-E E2b). Write-sharded; rows auto-expire via TTL.
+    dynamodb_quota_counters_table: str = Field(
+        default="sentra-quota-counters", validation_alias="QUOTA_COUNTERS_TABLE"
+    )
+    # Hot-path RPS quota enforcement (WS-E E2b) — OFF by default (founder-gated,
+    # LLD-26 §9.3). On → a write-sharded per-validate counter (fail-open). Leave
+    # off until there are paying tenants with contractual limits.
+    quota_enforcement_enabled: bool = Field(
+        default=False, validation_alias="QUOTA_ENFORCEMENT_ENABLED"
+    )
+
+    # Fleet-wide rollout CEILING for runtime agent identity (LLD-26 §7.2).
+    # `off` → /v1/validate never resolves a JWT (byte-identical to pre-26).
+    # `shadow` → verify + log resolved tid, but DO NOT route onto it.
+    # `enforce` → route onto the verified tid; uncredentialed → fail-secure.
+    # Effective mode = min(this ceiling, the tenant row's `identity_mode`), so a
+    # tenant never rises above the fleet ceiling. Default `off` — no regression.
+    tenant_identity_mode: str = Field(
+        default="off", validation_alias="TENANT_IDENTITY_MODE"
+    )
+    # Dedicated / Self-Managed single-tenant pin (LLD-26 §3.6). When set, the
+    # verified token is still checked but set_current_tenant() always gets this
+    # value, and a tid-mismatch is a hard error. Empty = multi-tenant (default).
+    tenant_pin: str = Field(default="", validation_alias="TENANT_PIN")
+    # Public-key cache (WS-A A3.1). TTL is a *second* revocation budget alongside
+    # token lifetime, so keep it short (≤60s). The revoked-since shared signal is
+    # refreshed at most once per `revoked_since_refresh_seconds`.
+    credential_cache_ttl_seconds: int = Field(
+        default=60, validation_alias="CREDENTIAL_CACHE_TTL_SECONDS"
+    )
+    credential_cache_max_size: int = Field(
+        default=5000, validation_alias="CREDENTIAL_CACHE_MAX_SIZE"
+    )
+    credential_negative_cache_ttl_seconds: int = Field(
+        default=10, validation_alias="CREDENTIAL_NEGATIVE_CACHE_TTL_SECONDS"
+    )
+    revoked_since_refresh_seconds: int = Field(
+        default=10, validation_alias="REVOKED_SINCE_REFRESH_SECONDS"
+    )
+    # JWT clock-skew leeway (seconds); matters with ≤15-min agent tokens.
+    jwt_clock_skew_seconds: int = Field(
+        default=60, validation_alias="JWT_CLOCK_SKEW_SECONDS"
+    )
+
+    # Residual uncredentialed-agent legacy-fallback window (LLD-26 §7.1.2 / WS-B
+    # B1). Enforce flips per-TENANT but credential coverage is per-AGENT, so a
+    # freshly-flipped tenant can still contain a not-yet-credentialed agent. Rather
+    # than bricking it the instant the tenant flips, each such agent gets a
+    # time-boxed, alarmed grace window in which it keeps running on the legacy
+    # self-asserted path ("no worse than today"); the window EXPIRES to a hard
+    # fail-secure DENY (it never silently rides on `default`). 0 (default) = window
+    # DISABLED → enforce denies an uncredentialed agent immediately (strict). Set
+    # >0 (e.g. 86400 = 24h) during a per-tenant enforce flip, then drive it to 0 as
+    # coverage reaches ~100%. Operators see the residual list (WS-C) and onboard or
+    # retire those agents before the window closes.
+    identity_fallback_window_seconds: int = Field(
+        default=0, validation_alias="IDENTITY_FALLBACK_WINDOW_SECONDS"
+    )
+    # Per-agent fallback state (first-seen + deadline) lives here so "expires to
+    # DENY" survives instance churn (an in-process deadline would reset on every
+    # cold start and never expire). Born tenant-scoped; in the WS-D purge list.
+    dynamodb_identity_fallback_table: str = Field(
+        default="sentra-identity-fallback", validation_alias="IDENTITY_FALLBACK_TABLE"
+    )
+    # Append-only platform cross-tenant access audit (LLD-26 §5.5 / WS-E E3). Every
+    # `_platform` cross-tenant read (incl. the denials) writes an immutable record
+    # here — the enforced half of the audit-&-consent gate. RETAIN + PITR in CDK.
+    dynamodb_platform_audit_table: str = Field(
+        default="sentra-platform-audit-records", validation_alias="PLATFORM_AUDIT_TABLE"
+    )
+    # WS-E E3 consent ENFORCEMENT (the deny-by-default 403). Default OFF: platform
+    # cross-tenant reads are audited (immutable ledger always writes) but NOT denied
+    # until founder flips this on per the §10 Q2 rollout. Mirrors quota/identity-mode:
+    # build it, ship it inert, flip live when ready.
+    platform_read_consent_enforced: bool = Field(
+        default=False, validation_alias="PLATFORM_READ_CONSENT_ENFORCED"
     )
 
     # ------------------------------------------------------------------

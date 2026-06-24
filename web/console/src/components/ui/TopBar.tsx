@@ -9,6 +9,7 @@ import {
 } from '@tabler/icons-react'
 import { NAV_ITEMS } from '../../app/navConfig'
 import { AccountMenu } from './AccountMenu'
+import { TenantSwitcher } from './TenantSwitcher'
 
 interface Crumb {
   label: string
@@ -111,6 +112,9 @@ export function TopBar({ onMenuClick }: { onMenuClick: () => void }) {
           global-prod-01
           <IconChevronDown size={13} className="text-muted" />
         </button>
+
+        {/* Tenant switcher — only for multi-membership operators (LLD-26 WS-C). */}
+        <TenantSwitcher />
 
         <button
           type="button"

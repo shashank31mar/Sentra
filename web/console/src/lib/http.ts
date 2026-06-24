@@ -1,4 +1,5 @@
 import type { ApiErrorBody } from '../types/api'
+import { tenantHeader } from './tenant'
 
 /**
  * Thin fetch wrapper for the SOC console.
@@ -152,6 +153,9 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
       headers: {
         Accept: 'application/json',
         ...(init?.body ? { 'Content-Type': 'application/json' } : {}),
+        // Active-tenant switch for multi-membership operators (LLD-26 WS-C).
+        // Server-validated against membership; omitted when no explicit tenant.
+        ...tenantHeader(),
         ...init?.headers,
       },
     })

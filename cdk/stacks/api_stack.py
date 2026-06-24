@@ -1017,6 +1017,72 @@ class ApiStack(Stack):
             )
 
         # ============================================================
+        # LLD-26 Multi-Tenancy control-plane routes (WS-A / WS-C / WS-D / WS-E)
+        # ------------------------------------------------------------
+        # These FastAPI routes (app/api/tenancy_routes.py) were added for
+        # multi-tenancy but were never wired into API Gateway, so the whole
+        # console MT surface (/v1/me, tenants, credentials, invites, platform,
+        # residual-agents) 403'd at the edge (undefined resource) before reaching
+        # the controller. Operator auth is enforced AT THE CONTROLLER (ALB Cognito
+        # OIDC + RBAC); the HTTP_PROXY integration forwards `x-amzn-oidc-data`
+        # through. API key required (console usage plan), mirroring the other
+        # console endpoints. Explicit resources keep the edge deny-by-default.
+        # ============================================================
+        def _mt_route(resource, method, route, *, path_params=None):
+            resource.add_method(
+                method,
+                integration=create_http_integration(
+                    self.nlb_base_url, route, method, vpc_link=self.api_vpc_link,
+                ),
+                api_key_required=True,
+                request_parameters={
+                    f"method.request.path.{p}": True for p in (path_params or [])
+                },
+            )
+
+        # GET /v1/me — operator identity + memberships + role (WS-D)
+        _mt_route(v1_resource.add_resource("me"), "GET", "/v1/me")
+
+        # /v1/agents/{agent_id}/credentials (+ /{kid}, /{kid}/rotate) — WS-A
+        creds_resource = agent_id_resource.add_resource("credentials")
+        _mt_route(creds_resource, "POST", "/v1/agents/{agent_id}/credentials", path_params=["agent_id"])
+        _mt_route(creds_resource, "GET", "/v1/agents/{agent_id}/credentials", path_params=["agent_id"])
+        cred_kid_resource = creds_resource.add_resource("{kid}")
+        _mt_route(cred_kid_resource, "DELETE",
+                  "/v1/agents/{agent_id}/credentials/{kid}", path_params=["agent_id", "kid"])
+        _mt_route(cred_kid_resource.add_resource("rotate"), "POST",
+                  "/v1/agents/{agent_id}/credentials/{kid}/rotate", path_params=["agent_id", "kid"])
+
+        # GET /v1/identity/residual-agents — WS-B B1 residual fallback list
+        _mt_route(v1_resource.add_resource("identity").add_resource("residual-agents"),
+                  "GET", "/v1/identity/residual-agents")
+
+        # /v1/tenants (+ {tenant_id}, members/{operator_sub}, invites) — WS-D
+        tenants_resource = v1_resource.add_resource("tenants")
+        _mt_route(tenants_resource, "POST", "/v1/tenants")
+        tenant_id_resource = tenants_resource.add_resource("{tenant_id}")
+        for _m in ("GET", "PATCH", "DELETE"):
+            _mt_route(tenant_id_resource, _m, "/v1/tenants/{tenant_id}", path_params=["tenant_id"])
+        tenant_members_resource = tenant_id_resource.add_resource("members")
+        _mt_route(tenant_members_resource, "GET",
+                  "/v1/tenants/{tenant_id}/members", path_params=["tenant_id"])
+        _mt_route(tenant_members_resource.add_resource("{operator_sub}"), "DELETE",
+                  "/v1/tenants/{tenant_id}/members/{operator_sub}",
+                  path_params=["tenant_id", "operator_sub"])
+        _mt_route(tenant_id_resource.add_resource("invites"), "POST",
+                  "/v1/tenants/{tenant_id}/invites", path_params=["tenant_id"])
+
+        # POST /v1/invites/redeem — WS-D
+        _mt_route(v1_resource.add_resource("invites").add_resource("redeem"),
+                  "POST", "/v1/invites/redeem")
+
+        # /v1/platform/tenants (+ {tenant_id}) — _platform-gated ops console (WS-E)
+        platform_tenants_resource = v1_resource.add_resource("platform").add_resource("tenants")
+        _mt_route(platform_tenants_resource, "GET", "/v1/platform/tenants")
+        _mt_route(platform_tenants_resource.add_resource("{tenant_id}"), "GET",
+                  "/v1/platform/tenants/{tenant_id}", path_params=["tenant_id"])
+
+        # ============================================================
         # Task 11: CloudWatch Alarms for API Gateway
         # ============================================================
         # Create SNS topic for alarm notifications (or import from monitoring stack if exists)

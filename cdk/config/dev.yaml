@@ -19,7 +19,42 @@ environment: "dev"
 # false → controller reads/writes the v1 tables (today). Flip to true only
 # after the migration script has copied v1→v2 under tenant=default and the
 # write-freeze cutover (workstream T09) is ready.
-tenancy_v2_enabled: false
+# CUTOVER 2026-06-23: migrate_tenancy.py copied v1→v2 under tenant=default
+# (registry/policies/sessions/signals). Data-plane tenant-scoping now LIVE under
+# the single `default` tenant. Rollback: set false + cdk deploy.
+tenancy_v2_enabled: true
+
+# Multi-tenancy runtime identity rollout CEILING (LLD-26 §7.2). off → /v1/validate
+# never resolves a JWT (pre-26). shadow → verify+log presented JWTs, do NOT route
+# (no-token traffic still allowed). enforce → route verified tid; tokenless DENY
+# (needs ~100% credential coverage + SDK JWT signing/LLD-23 first — DO NOT raise
+# to enforce until the background agents sign tokens, or they will be denied).
+# Raised to `enforce` 2026-06-24: the only live validate traffic is the three Acme
+# agents, all signing under tenant `acme` (=enforce) with active credentials. Other
+# registry agents are idle (0 recent validate sessions). Per-tenant gate still
+# governs (effective = min(this, tenant.identity_mode)): `acme` enforces, Globex
+# (`off`) and any tenant left at shadow/off are unaffected for their signed traffic.
+tenant_identity_mode: enforce
+
+# Residual uncredentialed-agent legacy-fallback window (LLD-26 / WS-B B1). 0 =
+# disabled (tokenless validate under enforce DENYs immediately). Raise (e.g. 86400)
+# only if a not-yet-credentialed agent must be tolerated during a flip.
+identity_fallback_window_seconds: 0
+# Explicit per-tenant S3 policy prefix (WS-B B3). false = legacy implicit layout;
+# reads dual-read both, so flip on + run scripts/migrate_s3_policy_prefix.py to cut over.
+s3_explicit_tenant_prefix: false
+
+# Per-tenant validate-RPS quota enforcement (WS-E E2b). Safe to enable: inert
+# until a tenant is in `enforce` with a registered credential AND has a
+# max_validate_rps quota — for the current `default`/shadow fleet it's a no-op
+# (fails open on counter errors regardless). Flipped on after the cutover soak.
+quota_enforcement_enabled: true
+
+# Platform-admin cross-tenant read consent ENFORCEMENT (WS-E E3 / §10 Q2). When
+# true, a Sentra-staff per-tenant read DENIES (403) unless the target tenant has
+# platform_read_consent=true. The immutable audit ledger writes regardless. Enabled
+# on dev after granting consent to all active tenants (t_e1xm0m7g8f04s, acme).
+platform_read_consent_enforced: true
 
 # Cedar authorization engine (feature: cedar-policy). Rollout: shadow first
 # (both true → Cedar runs alongside, legacy verdict stays live, discrepancies

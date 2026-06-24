@@ -1,9 +1,10 @@
 # LLD 08: Authentication and ALB Architecture
 
-**Version:** 2.0
-**Last Updated:** November 23, 2025
-**Status:** Implemented
+**Version:** 2.1
+**Last Updated:** 2026-06-23
+**Status:** Implemented (Phase 2 edge auth) — multi-tenant control-plane auth designed in LLD-26, not yet built (§6.5)
 **Prerequisites:** [LLD 01: Infrastructure](./01-infrastructure.md), [LLD 04: Dashboard](./04-dashboard-v2.md)
+**Related:** [LLD 26: Multi-Tenancy](./26-multi-tenancy.md) — adds app-layer control-plane auth, operator↔tenant binding, RBAC, and `GET /v1/me` (§6.5)
 
 ---
 
@@ -48,6 +49,8 @@ The DyePack security automation plugin detects Streamlit applications exposed on
 - API key authentication for programmatic access (future enhancement)
 - Multi-region deployment
 - Custom identity provider integration (Phase 3)
+
+> **Superseded for the control plane:** app-layer authentication/authorization on the controller (operator OIDC verification, tenant binding, RBAC) was a non-goal of this Phase-2 doc but **is now designed and in-scope** in [LLD-26 §3.4/§5.2/§6.3](./26-multi-tenancy.md) — see §6.5 below. The edge-only model here remains accurate for the dashboard; it is no longer the whole auth story.
 
 ---
 
@@ -1181,6 +1184,23 @@ The original Network Stack used `/28` public subnets (16 IPs) which is too small
 
 ---
 
+## 6.5 Multi-Tenant Control-Plane Authentication (LLD-26)
+
+> **What changes vs. this doc's baseline:** the architecture above authenticates **at the edge only** — ALB `authenticate-cognito` gates the dashboard, and the controller's management endpoints (`/v1/agents`, `/v1/policies`, `/v1/connections`, …) trust that edge and have **no app-layer authz**. [LLD-26: Multi-Tenancy](./26-multi-tenancy.md) introduces the controller's **first in-app authentication and authorization**, because multi-tenant isolation cannot be enforced at the edge. Full design is canonical in LLD-26; summarized here so this doc is not read as "edge auth is the whole story."
+
+**Control-plane (operator → console/API):**
+- **`verify_alb_oidc` — net-new.** Every control-plane request is verified in-app: the ALB injects a signed `x-amzn-oidc-data` JWT of the Cognito claims; the controller fetches the ALB **regional public signing key** (`https://public-keys.auth.elb.{region}.amazonaws.com/{kid}`), **caches it, handles key rotation**, and validates signature + `exp`. Forged/expired → `401`. This is a security milestone, not plumbing (LLD-26 WS-D D3a).
+- **Operator↔tenant resolution (`resolve_operator_tenant`).** From the verified `sub`, look up `sentra-tenant-members`, resolve the active tenant, and call `set_current_tenant()`. A multi-tenant operator may pass an `X-Aegion-Tenant` header, validated against their membership set (deny `403` if not a member); default = primary membership (LLD-26 §5.2).
+- **RBAC (`require_role`).** A second dependency layered after tenant resolution gates control-plane mutations by role (`owner`/`admin`/`editor`/`viewer`); `_platform` is a reserved cross-tenant support capability, dual-audited (LLD-26 §6.3).
+- **`GET /v1/me` — net-new endpoint.** Returns `{tenant_id, role, memberships[]}` so the console renders role-conditional UI and the tenant switcher.
+
+**Data-plane (agent → `/v1/validate`):**
+- **Agent-JWT verify (`resolve_tenant_from_jwt`).** Agents present a short-lived ES256 JWT signed by a key whose **public** half is in `sentra-agent-credentials`; the controller verifies it (delimited `tid`-prefix-of-`sub` check), derives `(tenant_id, agent_id)`, and sets the request tenant. This is distinct from the operator OIDC path above (LLD-26 §3.4).
+
+These supersede the "Phase 3: API Authentication" placeholder (§13.1) for the control plane.
+
+---
+
 ## 7. Cost Analysis
 
 ### 7.1 Infrastructure Costs
@@ -1664,6 +1684,8 @@ https://${ALB_DNS}/oauth2/idpresponse?code=xxxxx&state=xxxxx
 ## 13. Future Enhancements
 
 ### 13.1 Phase 3: API Authentication
+
+> **Update:** app-layer **control-plane** authentication is no longer a future placeholder — it is designed in [LLD-26](./26-multi-tenancy.md) (operator OIDC verify, tenant binding, RBAC; see §6.5). The items below remain relevant only for **programmatic/API-key** access by external automation, which LLD-26 does not cover.
 
 **Add API Key Authentication:**
 - API Gateway in front of Private ALB

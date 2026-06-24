@@ -13,6 +13,7 @@ import {
   usePolicies, useSigmaRules, useSigmaRuleContent, useToggleSigmaRule,
   useSetPolicyStatus, useDeletePolicy,
 } from '../../lib/query/usePolicies'
+import { useCan } from '../../lib/query/useMe'
 import { policyDetailPath, policyEditPath, policyNewPath } from '../../app/routes'
 import { formatDateTime, formatNumber } from '../../lib/format'
 import type { PolicySummary } from '../../types/api'
@@ -40,6 +41,10 @@ const RANGES = [
 
 export function PolicyLibraryPage() {
   const navigate = useNavigate()
+  // Role-conditional rendering (LLD-26 WS-C C2): a viewer never sees write
+  // controls. The server still authorizes every mutation (require_role) — this
+  // gate is UX only, so a tampered client gains nothing.
+  const can = useCan()
   const policies = usePolicies()
   const [range, setRange] = useState<MetricsRange>('24h')
   const sigma = useSigmaRules({ range })
@@ -103,9 +108,11 @@ export function PolicyLibraryPage() {
           </span>
           <div className="flex items-center gap-3">
             <span className="text-xs font-mono text-muted">{policies.data?.pages[0]?.total ?? 0} total</span>
-            <Button variant="primary" onClick={() => navigate(policyNewPath())}>
-              <IconPlus size={14} /> New Policy
-            </Button>
+            {can('policies.write') && (
+              <Button variant="primary" onClick={() => navigate(policyNewPath())}>
+                <IconPlus size={14} /> New Policy
+              </Button>
+            )}
           </div>
         </div>
         {policies.isLoading ? (

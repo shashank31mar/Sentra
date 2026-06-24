@@ -23,8 +23,19 @@ ENV_TIMEOUT = "SENTRA_VALIDATE_TIMEOUT_S"
 ENV_FAIL_SECURE = "SENTRA_FAIL_SECURE"
 ENV_CONNECT_RETRIES = "SENTRA_CONNECT_RETRIES"
 
+# Data-plane identity (opt-in; LLD-26 §3 / WS-A). All three of tenant_id, kid and
+# a private key must be supplied together — partial identity config is a hard
+# error so an agent never half-signs and gets silently denied under `enforce`.
+ENV_TENANT_ID = "SENTRA_TENANT_ID"
+ENV_KID = "SENTRA_AGENT_KID"
+ENV_PRIVATE_KEY = "SENTRA_AGENT_PRIVATE_KEY"            # PEM literal
+ENV_PRIVATE_KEY_FILE = "SENTRA_AGENT_PRIVATE_KEY_FILE"  # path to a PEM file
+ENV_TOKEN_TTL = "SENTRA_TOKEN_TTL_S"
+
 _DEFAULT_TIMEOUT_S = 10.0          # hot-path default; raise for cross-cloud (§7)
 _DEFAULT_CONNECT_RETRIES = 1       # connection-establishment errors only (§8)
+_DEFAULT_TOKEN_TTL_S = 600.0       # ≤15 min; the token IS the revocation budget (§3.5)
+_MAX_TOKEN_TTL_S = 900.0
 _VALIDATE_PATH = "/v1/validate"
 
 _TRUE = {"1", "true", "yes", "on"}
@@ -81,11 +92,21 @@ class GuardConfig:
     timeout_s: float
     fail_secure: bool
     connect_retries: int
+    # Data-plane identity (None unless all three are configured together).
+    tenant_id: Optional[str] = None
+    kid: Optional[str] = None
+    private_key: Optional[str] = None  # PKCS#8 PEM, ES256 / P-256
+    token_ttl_s: float = _DEFAULT_TOKEN_TTL_S
 
     @property
     def validate_url(self) -> str:
         """Full URL of the validate endpoint (base already includes the stage)."""
         return f"{self.api_base}{_VALIDATE_PATH}"
+
+    @property
+    def identity_enabled(self) -> bool:
+        """True when this guard will sign requests with an agent JWT (WS-A)."""
+        return bool(self.tenant_id and self.kid and self.private_key)
 
     @classmethod
     def resolve(
@@ -96,6 +117,11 @@ class GuardConfig:
         timeout_s: Optional[float] = None,
         fail_secure: Optional[bool] = None,
         connect_retries: Optional[int] = None,
+        tenant_id: Optional[str] = None,
+        kid: Optional[str] = None,
+        private_key: Optional[str] = None,
+        private_key_file: Optional[str] = None,
+        token_ttl_s: Optional[float] = None,
     ) -> "GuardConfig":
         """Build config from explicit args, falling back to env. Fail fast.
 
@@ -149,10 +175,53 @@ class GuardConfig:
         else:
             resolved_retries = _env_int(ENV_CONNECT_RETRIES, _DEFAULT_CONNECT_RETRIES)
 
+        # ---- data-plane identity (opt-in, all-or-none) --------------------- #
+        r_tenant = (tenant_id or os.environ.get(ENV_TENANT_ID) or "").strip() or None
+        r_kid = (kid or os.environ.get(ENV_KID) or "").strip() or None
+        r_private_key = (private_key or os.environ.get(ENV_PRIVATE_KEY) or "").strip() or None
+        r_key_file = (private_key_file or os.environ.get(ENV_PRIVATE_KEY_FILE) or "").strip() or None
+        if r_private_key is None and r_key_file is not None:
+            try:
+                with open(r_key_file, "r", encoding="utf-8") as fh:
+                    r_private_key = fh.read().strip() or None
+            except OSError as exc:
+                raise ConfigError(
+                    f"could not read private key file {r_key_file!r}: {exc}"
+                ) from exc
+
+        provided = [p for p in (r_tenant, r_kid, r_private_key) if p]
+        if provided and len(provided) < 3:
+            missing = []
+            if not r_tenant:
+                missing.append(f"tenant_id ({ENV_TENANT_ID})")
+            if not r_kid:
+                missing.append(f"kid ({ENV_KID})")
+            if not r_private_key:
+                missing.append(
+                    f"private_key ({ENV_PRIVATE_KEY} or {ENV_PRIVATE_KEY_FILE})"
+                )
+            raise ConfigError(
+                "agent identity is partially configured — set all of tenant_id, kid "
+                "and a private key together, or none. Missing: " + ", ".join(missing)
+            )
+
+        if token_ttl_s is not None:
+            resolved_ttl = float(token_ttl_s)
+        else:
+            resolved_ttl = _env_float(ENV_TOKEN_TTL, _DEFAULT_TOKEN_TTL_S)
+        if not (0 < resolved_ttl <= _MAX_TOKEN_TTL_S):
+            raise ConfigError(
+                f"token_ttl_s must be in (0, {_MAX_TOKEN_TTL_S}] seconds (got {resolved_ttl})"
+            )
+
         return cls(
             api_base=resolved_base,
             api_key=resolved_key,
             timeout_s=resolved_timeout,
             fail_secure=resolved_fail_secure,
             connect_retries=resolved_retries,
+            tenant_id=r_tenant,
+            kid=r_kid,
+            private_key=r_private_key,
+            token_ttl_s=resolved_ttl,
         )

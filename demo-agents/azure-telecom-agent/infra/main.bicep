@@ -15,6 +15,23 @@ param sentraApiBase string
 @description('Sentra usage-plan x-api-key (injected into the Function env, server-side)')
 param sentraApiKey string
 
+// WS-A data-plane identity (LLD-26). When all three are set the agent SIGNS its
+// validate calls (ES256) under its tenant; empty (default) → non-signing deploy
+// is byte-identical (SDK lazy-loads PyJWT[crypto] only when the trio is present).
+@description('Tenant id for runtime identity signing (WS-A). Empty = signing off.')
+param sentraTenantId string = ''
+@description('Credential kid for runtime identity signing (WS-A).')
+param sentraAgentKid string = ''
+@secure()
+@description('Agent ES256 private key (PEM) for runtime identity signing (WS-A).')
+param sentraAgentPrivateKey string = ''
+
+var identitySettings = (!empty(sentraTenantId) && !empty(sentraAgentKid) && !empty(sentraAgentPrivateKey)) ? [
+  { name: 'SENTRA_TENANT_ID', value: sentraTenantId }
+  { name: 'SENTRA_AGENT_KID', value: sentraAgentKid }
+  { name: 'SENTRA_AGENT_PRIVATE_KEY', value: sentraAgentPrivateKey }
+] : []
+
 var storageName = toLower(replace('${prefix}st${uniqueString(resourceGroup().id)}', '-', ''))
 
 resource storage 'Microsoft.Storage/storageAccounts@2023-01-01' = {
@@ -51,7 +68,7 @@ resource func 'Microsoft.Web/sites@2023-12-01' = {
     httpsOnly: true
     siteConfig: {
       linuxFxVersion: 'Python|3.11'
-      appSettings: [
+      appSettings: concat([
         { name: 'FUNCTIONS_EXTENSION_VERSION', value: '~4' }
         { name: 'FUNCTIONS_WORKER_RUNTIME', value: 'python' }
         { name: 'AzureWebJobsFeatureFlags', value: 'EnableWorkerIndexing' }
@@ -60,7 +77,7 @@ resource func 'Microsoft.Web/sites@2023-12-01' = {
         { name: 'SENTRA_API_BASE', value: sentraApiBase }
         { name: 'SENTRA_API_KEY', value: sentraApiKey }
         { name: 'SENTRA_VALIDATE_TIMEOUT_S', value: '30' }
-      ]
+      ], identitySettings)
     }
   }
 }

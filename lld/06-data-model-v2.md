@@ -1,9 +1,10 @@
 # LLD 06: Data Model v2 - Agent, Tool, and Sigma Rule Registries
 
-**Version:** 2.0
-**Last Updated:** 2025-01-21
+**Version:** 2.1
+**Last Updated:** 2026-06-23
 **Status:** Ready for Implementation
 **Prerequisites:** [LLD 01: CDK Infrastructure](./01-cdk-infrastructure.md)
+**Related:** [LLD 26: Multi-Tenancy](./26-multi-tenancy.md) — adds the three tables in §2.6, the `-v2` tenant keys (§1.3), and the explicit S3 tenant prefix (§1.4)
 
 ---
 
@@ -43,6 +44,11 @@ This LLD defines **3 new DynamoDB tables** to store agent metadata, tool definit
 | `sentra-tool-registry` | Tool definitions | 15-20 | ~3 KB | DynamoDB only |
 | `sentra-policies-metadata` | Policy metadata (content in S3) | 3-5 | ~1 KB | **S3 YAML files** |
 | `sentra-sigma-rules-metadata` | Sigma rule metadata (content in S3) | 15-20 | ~500 bytes | **S3 YAML files** |
+| `sentra-agent-credentials` | Agent public keys for asymmetric JWT verify (LLD-26 §3.2) | per agent | ~1 KB | DynamoDB only |
+| `sentra-tenants` | Tenant registry — lifecycle/plan/quota/identity_mode (LLD-26 §6.1) | per tenant | ~1 KB | DynamoDB only |
+| `sentra-tenant-members` | Operator↔tenant membership + role (LLD-26 §6.1) | per (operator, tenant) | ~0.5 KB | DynamoDB only |
+
+> **Multi-tenancy (LLD-26):** the four runtime tables above also gain tenant-scoped `-v2` variants (PK `tenant_id`) under the `TENANCY_V2` cutover — `agent-registry-v2`, `policies-metadata-v2`, `session-context-v2`, `validation-signals-v2` (composite PK `tenant_session_id`). The three rows added here are net-new control-plane tables. Tenant-key details are canonical in [LLD-26 §4.1](./26-multi-tenancy.md); §2.6 below summarizes the new tables.
 
 ### 1.4 S3 Storage
 
@@ -50,6 +56,8 @@ This LLD defines **3 new DynamoDB tables** to store agent metadata, tool definit
 |------|---------|-------------|-----------|
 | `s3://sentra-mvp-artifacts/policies/agents/` | Agent policy YAML files | 3-5 | ✅ Yes |
 | `s3://sentra-mvp-artifacts/sigma_rules/llm/` | Sigma rule YAML files | 15-20 | ✅ Yes |
+
+> **Tenant prefix (LLD-26 §4.3):** under multi-tenancy, policy artifacts move to an **explicit** key `tenants/{tenant_id}/policies/agents/{agent_id}/v{n}.{yaml|cedar}`. Today keys are `policies/agents/{agent_id}/…` and tenant isolation is **implicit only** (it holds because `agent_id` carries the tenant prefix). The explicit prefix is application-layer defense-in-depth and makes a future IAM session-tag upgrade a config change, not a re-key. Decision and migration are canonical in LLD-26 §4.3 / WS-B.
 
 **Total Additional Cost:**
 - DynamoDB: ~$0.02/month
@@ -798,6 +806,49 @@ SEED_SIGMA_RULES_METADATA = [
 > **Note:** The legacy `sentra-policies` table is still used for storing `allowed_tools` associations. The new `sentra-policies-metadata` table (Section 2.3) stores policy metadata with S3 references for full policy content.
 
 **Key Change**: `allowed_tools` now stores **tool IDs** (strings), not full tool objects. Full tool metadata is fetched from `sentra-tool-registry` table.
+
+---
+
+### 2.6 Multi-Tenancy Tables (LLD-26)
+
+Three net-new control-plane tables introduced by [LLD-26: Multi-Tenancy](./26-multi-tenancy.md). Schemas summarized here for the data-model record; **full design, validity windows, and rationale are canonical in LLD-26** (§3.2, §6.1).
+
+**`sentra-agent-credentials`** (LLD-26 §3.2) — stores agent **public** keys for asymmetric JWT verify (Sentra verifies, never mints).
+
+| Attribute | Type | Notes |
+|---|---|---|
+| `tenant_id` (**PK**) | S | Owning tenant |
+| `key_id` (**SK**) | S | `{agent_id}#{kid}` — multiple active keys per agent for rotation |
+| `kid` | S | Globally-unique UUID; **own attribute** (it is the `kid-index` GSI PK) |
+| `agent_id`, `public_key`, `alg` | S | Canonical id; PEM/JWK; `ES256` (fixed) |
+| `status` | S | `active` \| `rotating` \| `revoked` |
+| `not_before` / `not_after` | N | Validity window (epoch ms) |
+
+- **GSI `kid-index`**: PK `kid` → O(1) verify lookup; intentionally **not** tenant-partitioned (the one pre-tenant lookup that establishes the tenant).
+
+**`sentra-tenants`** (LLD-26 §6.1) — tenant registry.
+
+| Attribute | Type | Notes |
+|---|---|---|
+| `tenant_id` (**PK**) | S | Immutable derived slug; reserved ids rejected (`default`, `_unverified`, `_platform`) |
+| `display_name`, `plan` | S | Customer name (mutable); `trial`\|`dedicated`\|`enterprise` |
+| `status` | S | `active` \| `suspended` \| `deleting` \| `purged` (terminal tombstone) |
+| `identity_mode` | S | `off`\|`shadow`\|`enforce` — authoritative per-tenant rollout control |
+| `quota` | M | `{max_agents, max_validate_rps}` |
+| `deletion_cursor` | M | Resumable-purge checkpoint |
+
+**`sentra-tenant-members`** (LLD-26 §6.1) — operator↔tenant mapping + RBAC role.
+
+| Attribute | Type | Notes |
+|---|---|---|
+| `operator_sub` (**PK**) | S | Cognito `sub` |
+| `tenant_id` (**SK**) | S | Membership = (sub, tenant) pair |
+| `role` | S | `owner` \| `admin` \| `editor` \| `viewer` |
+| `is_primary` | BOOL | Default tenant when no `X-Aegion-Tenant` header |
+
+- **GSI `tenant-members-index`**: PK `tenant_id` → list all operators in a tenant.
+
+> All three are added to the tenant-deletion purge path and require controller task-role IAM grants + env wiring (LLD-26 WS-A/WS-D).
 
 ---
 

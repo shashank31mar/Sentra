@@ -333,6 +333,16 @@ class DiscoveryService:
         if not resolvable:
             raise LookupError("none of the requested ids resolve to a scanned or policy-declared agent")
 
+        # Per-tenant agent quota (LLD-26 WS-E E2a): reject an import that would
+        # push the tenant over `max_agents`. Only counts agents not already in the
+        # registry (re-importing an existing agent is a no-op). No-op when the
+        # tenant has no quota row (e.g. `default` pre-identity) — no regression.
+        from app.services.quota_service import check_agent_quota
+
+        new_ids = [i for i in resolvable if i not in reg_native and i not in registry]
+        if new_ids:
+            check_agent_quota(current_count=len(registry), adding=len(new_ids))
+
         results: List[Dict[str, Any]] = []
         imported = 0
         now = _now_iso()

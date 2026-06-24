@@ -85,7 +85,110 @@ async def validate_tool_call(request: ValidationRequest, http_request: Request) 
     if validation_service is None:
         from app.services import ValidationService
         validation_service = ValidationService()
+
+    # LLD-26 §3 / WS-A A3: derive the tenant from the *verified* agent JWT, never
+    # from the request body. When identity is OFF fleet-wide (the default) this
+    # resolves to `disabled` and the call runs byte-identically to pre-LLD-26 —
+    # so the background AWS/Azure event traffic sees no change.
+    from app.api.deps import resolve_tenant_from_jwt
+    from app.utils import tenancy
+
+    ctx = await resolve_tenant_from_jwt(http_request)
+    if ctx.state == "disabled":
+        return await validation_service.validate_tool_call(request)
+
+    # Carry what identity resolved to into the audit trail (shadow + enforce).
+    request.context = {**(request.context or {}), "identity_state": ctx.state}
+    if ctx.claimed_tenant_id:
+        request.context["claimed_tenant_id"] = ctx.claimed_tenant_id
+
+    if ctx.should_deny:
+        # ENFORCE + not cleanly verified. Active spoofing — IDENTITY_TAMPERED (key
+        # reuse) / IDENTITY_MISMATCH — is ALWAYS a hard fail-secure DENY (§8). Only
+        # a genuinely uncredentialed agent (state=unverified) is eligible for the
+        # WS-B B1 residual legacy-fallback window: a time-boxed, alarmed grace ramp
+        # so flipping a tenant to enforce before 100% credential coverage doesn't
+        # brick a not-yet-onboarded agent. Default-off (window=0 → immediate DENY).
+        if ctx.state == "unverified":
+            from app.services.fallback_service import consider_fallback
+            decision = await consider_fallback(request.agent_id, ctx.claimed_tenant_id)
+            if decision.allow:
+                request.context["identity_state"] = "legacy_fallback"
+                request.context["fallback_deadline_ms"] = decision.deadline_ms
+                logger.warning(
+                    "identity legacy-fallback: agent=%s state=%s deadline_ms=%s "
+                    "(uncredentialed agent riding legacy path on borrowed time)",
+                    request.agent_id, decision.state, decision.deadline_ms,
+                )
+                return await validation_service.validate_tool_call(request)
+        # No window (disabled/expired) or non-unverified → fail-secure DENY, audited
+        # under the reserved `_unverified` tenant (never the claimed tenant or `default`).
+        return await _identity_deny(request, ctx.reason or "IDENTITY_UNVERIFIED")
+
+    if ctx.should_route:
+        # ENFORCE + verified → bind the whole request to the verified tenant.
+        if request.agent_id != ctx.agent_id:
+            return await _identity_deny(request, "IDENTITY_MISMATCH")
+        token = tenancy.set_current_tenant(ctx.tenant_id)
+        try:
+            # Commercial RPS quota (WS-E E2b) — inert unless founder-enabled.
+            # Fail-OPEN: a quota counter must never DoS legitimate validate traffic.
+            from app.services.quota_service import check_validate_rps
+            if not check_validate_rps(ctx.tenant_id):
+                # Fire-and-forget metric (self-guarding; never raises) so the
+                # commercial quota alarm can page on a tenant hitting its ceiling.
+                from app.utils.metrics_publisher import MetricsPublisher
+                await MetricsPublisher().publish_quota_exceeded_metric(ctx.tenant_id)
+                return {
+                    "decision": "DENY", "reason": "QUOTA_EXCEEDED",
+                    "trust_score": 0.0, "session_id": request.session_id,
+                    "latency_ms": 0.0, "violation_type": "QUOTA_EXCEEDED",
+                }
+            return await validation_service.validate_tool_call(request)
+        finally:
+            tenancy.reset_current_tenant(token)
+
+    # SHADOW (incl. verified-but-shadow): observe + log, do NOT route. The legacy
+    # path stays in force so an uncredentialed agent is never bricked.
+    if ctx.is_verified:
+        logger.info(
+            "identity shadow: resolved tid=%s agent=%s (observed, not routed)",
+            ctx.tenant_id, ctx.agent_id,
+        )
     return await validation_service.validate_tool_call(request)
+
+
+async def _identity_deny(request: "ValidationRequest", reason: str) -> Dict:
+    """Fail-secure identity DENY (LLD-26 §8). Audits under the reserved
+    `_unverified` tenant with the `claimed_tenant_id` dual-tag (A4) so a tenant's
+    SOC still sees spoof attempts against its agents, then returns the standard
+    DENY shape the SDK contract expects."""
+    from app.utils import tenancy
+    from app.utils.audit_logger import AuditLogger
+
+    token = tenancy.set_current_tenant(tenancy.UNVERIFIED_TENANT)
+    try:
+        await AuditLogger().log_decision(
+            decision="DENY",
+            request=request.model_dump(),
+            session={"session_id": request.session_id, "agent_id": request.agent_id,
+                     "trust_score": 0.0},
+            validation_result={"reason": reason, "violation_type": reason},
+            latency_ms=0.0,
+        )
+    except Exception:  # noqa: BLE001 — audit is best-effort; the DENY still returns
+        logger.warning("identity-DENY audit failed", exc_info=True)
+    finally:
+        tenancy.reset_current_tenant(token)
+
+    return {
+        "decision": "DENY",
+        "reason": reason,
+        "trust_score": 0.0,
+        "session_id": request.session_id,
+        "latency_ms": 0.0,
+        "violation_type": reason,
+    }
 
 
 # ============================================================
@@ -431,8 +534,12 @@ async def discovery_import(request: Dict) -> Dict:
     from app.services.discovery_service import DiscoveryService
     agent_ids = request.get("agent_ids")
     enforcement_mode = request.get("enforcement_mode", "monitor")
+    from app.services.quota_service import QuotaExceeded
     try:
         return await DiscoveryService().import_agents(agent_ids or [], enforcement_mode)
+    except QuotaExceeded as exc:
+        # Per-tenant agent cap hit (LLD-26 WS-E E2a).
+        raise HTTPException(status_code=429, detail=f"QUOTA_EXCEEDED: {exc}")
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
     except LookupError as exc:

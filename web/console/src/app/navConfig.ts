@@ -10,6 +10,7 @@ import {
   IconCloudComputing,
   IconShieldLock,
   IconLockExclamation,
+  IconClockExclamation,
   IconListSearch,
 } from '@tabler/icons-react'
 import { ROUTES } from './routes'
@@ -55,6 +56,7 @@ export const NAV_GROUPS: NavGroup[] = [
     items: [
       { label: 'Policies', to: ROUTES.policies, icon: IconShieldLock },
       { label: 'Quarantine', to: ROUTES.quarantine, icon: IconLockExclamation },
+      { label: 'Residual Agents', to: ROUTES.residualAgents, icon: IconClockExclamation },
       { label: 'Audit Trail', to: ROUTES.audit, icon: IconListSearch },
     ],
   },

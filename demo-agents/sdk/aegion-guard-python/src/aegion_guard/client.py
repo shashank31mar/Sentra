@@ -21,7 +21,7 @@ import ssl
 import time
 import urllib.error
 import urllib.request
-from typing import Any, Dict
+from typing import Any, Callable, Dict, Optional
 
 
 class TransportError(Exception):
@@ -54,12 +54,16 @@ class ValidateClient:
         timeout_s: float,
         connect_retries: int,
         user_agent: str,
+        token_provider: Optional[Callable[[], Optional[str]]] = None,
     ) -> None:
         self._url = validate_url
         self._api_key = api_key
         self._timeout_s = timeout_s
         self._connect_retries = connect_retries
         self._user_agent = user_agent
+        # When set, called once per POST to mint the agent's Bearer JWT (WS-A).
+        # A signer caches/refreshes internally, so this is cheap per call.
+        self._token_provider = token_provider
         # Verified TLS context. Explicit (rather than relying on the default) so
         # the intent — certificate verification ON — is unmistakable and can't be
         # silently weakened by a global default override.
@@ -72,12 +76,16 @@ class ValidateClient:
         Retries connection-establishment errors up to ``connect_retries`` times.
         """
         body = json.dumps(payload).encode("utf-8")
+        # Mint the identity token ONCE per POST (before the retry loop) so all
+        # connection retries reuse the same token and a sign failure surfaces
+        # immediately as fail-secure, never as an unsigned (→ denied) request.
+        auth_header = self._auth_header()
         attempts = self._connect_retries + 1
         last_exc: TransportError | None = None
 
         for attempt in range(attempts):
             try:
-                return self._post_once(body)
+                return self._post_once(body, auth_header)
             except TransportError as exc:
                 last_exc = exc
                 # Only connection-establishment failures are retryable; a
@@ -92,17 +100,42 @@ class ValidateClient:
         assert last_exc is not None
         raise last_exc
 
-    def _post_once(self, body: bytes) -> Dict[str, Any]:
+    def _auth_header(self) -> Optional[str]:
+        """Resolve the ``Authorization: Bearer`` value for this POST, or None.
+
+        A signing failure is fail-secure: we raise a non-retryable
+        ``TransportError`` so the guard denies the call locally rather than
+        sending an unsigned request that the controller would reject anyway.
+        """
+        if self._token_provider is None:
+            return None
+        try:
+            token = self._token_provider()
+        except Exception as exc:  # noqa: BLE001 — any sign failure → fail-secure
+            raise TransportError(
+                f"could not mint agent identity token: {exc}",
+                retryable=False,
+                cause=exc,
+            ) from exc
+        return f"Bearer {token}" if token else None
+
+    def _post_once(self, body: bytes, auth_header: Optional[str] = None) -> Dict[str, Any]:
+        headers = {
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+            "x-api-key": self._api_key,
+            "User-Agent": self._user_agent,
+        }
+        if auth_header:
+            # The verified agent JWT (WS-A). Carried alongside x-api-key:
+            # x-api-key is the API-Gateway edge key; this is the per-agent,
+            # per-tenant identity the controller verifies. Never logged.
+            headers["Authorization"] = auth_header
         req = urllib.request.Request(
             self._url,
             data=body,
             method="POST",
-            headers={
-                "Content-Type": "application/json",
-                "Accept": "application/json",
-                "x-api-key": self._api_key,
-                "User-Agent": self._user_agent,
-            },
+            headers=headers,
         )
         try:
             with urllib.request.urlopen(

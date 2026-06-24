@@ -195,6 +195,15 @@ class ComputeStack(Stack):
         for _v2_table in storage_stack.tenancy_v2_tables:
             _v2_table.grant_read_write_data(self.security_controller_task_role)
 
+        # Multi-tenancy registry, membership & agent credentials (LLD-26).
+        # grant_read_write_data covers the base tables AND their GSIs
+        # (tenant-members-index, kid-index) — DDB grants apply to the table and
+        # all its indexes. Granted now so the issuance/verify paths and the
+        # onboarding APIs work without a second deploy; the tables sit empty and
+        # unread on the hot path until TENANT_IDENTITY_MODE is raised.
+        for _mt_table in storage_stack.multitenancy_tables:
+            _mt_table.grant_read_write_data(self.security_controller_task_role)
+
         # Cloud Connections (Connect-Account wizard — connections-api-spec.md).
         storage_stack.connections_table.grant_read_write_data(self.security_controller_task_role)
         # Discovery cache (feature §8.1) — scan persists what it lists here.
@@ -863,6 +872,43 @@ class ComputeStack(Stack):
         # = lowest regression risk on the working auth.
         # ------------------------------------------------------------
         console_host = alb_config.get("console_host", "console.aegionai.ai")
+
+        # ------------------------------------------------------------
+        # WS-C (LLD-26): PUBLIC splash at the console root. Higher priority than
+        # the authed console rule below, so `/`, `/splash.html`, `/favicon.svg`
+        # are served WITHOUT authenticate-cognito (the designed Aegion front door
+        # renders with no session). nginx serves splash.html at exact `/`; its
+        # "Access Control Plane" button links to /overview, which falls through to
+        # the priority-10 authed rule → Cognito sign-in → console. Everything
+        # except these three exact paths stays Cognito-gated.
+        # ------------------------------------------------------------
+        self.console_splash_rule = elbv2.CfnListenerRule(
+            self,
+            "ConsoleSplashRule",
+            listener_arn=self.public_https_listener.ref,
+            priority=3,
+            conditions=[
+                elbv2.CfnListenerRule.RuleConditionProperty(
+                    field="host-header",
+                    host_header_config=elbv2.CfnListenerRule.HostHeaderConfigProperty(
+                        values=[console_host]
+                    ),
+                ),
+                elbv2.CfnListenerRule.RuleConditionProperty(
+                    field="path-pattern",
+                    path_pattern_config=elbv2.CfnListenerRule.PathPatternConfigProperty(
+                        values=["/", "/splash.html", "/favicon.svg"]
+                    ),
+                ),
+            ],
+            actions=[
+                elbv2.CfnListenerRule.ActionProperty(
+                    type="forward",
+                    target_group_arn=self.console_tg.target_group_arn,
+                ),
+            ],
+        )
+
         self.console_listener_rule = elbv2.CfnListenerRule(
             self,
             "ConsoleListenerRule",
@@ -1019,6 +1065,29 @@ class ComputeStack(Stack):
                     "/v1/quarantine*",
                     "/v1/rollback*",  # Tier A; had no ALB rule → was 404'ing too
                     "/v1/connections*"  # Connect-Account wizard (connections-api-spec)
+                ])
+            ],
+            action=elbv2.ListenerAction.forward(
+                target_groups=[self.security_controller_tg]
+            )
+        )
+
+        # Priority 6: LLD-26 multi-tenancy control-plane endpoints. Separate rule
+        # (ALB caps path-pattern values at 5/rule; priorities 1 & 5 are full). These
+        # are the SECOND edge allowlist after API Gateway — without them the
+        # gateway-registered tenancy routes (/v1/me, tenants, invites, platform,
+        # identity) 404 at the private ALB's default action. (/v1/agents/{id}/
+        # credentials already routes via the /v1/agents* rule at priority 4.)
+        self.private_http_listener.add_action(
+            "SecurityControllerRoutingTenancy",
+            priority=6,
+            conditions=[
+                elbv2.ListenerCondition.path_patterns([
+                    "/v1/me",
+                    "/v1/tenants*",
+                    "/v1/invites*",
+                    "/v1/platform*",
+                    "/v1/identity*",
                 ])
             ],
             action=elbv2.ListenerAction.forward(
@@ -1337,6 +1406,29 @@ def handler(event, context):
                     # Cloud Connections (Connect-Account wizard).
                     "CONNECTIONS_TABLE": storage_stack.connections_table.table_name,
                     "DISCOVERY_CACHE_TABLE": storage_stack.discovery_cache_table.table_name,
+                    # Multi-tenancy (LLD-26). Table names always present; the
+                    # rollout ceiling defaults OFF so the verify path is inert
+                    # (byte-identical to pre-26) until raised to shadow/enforce
+                    # per-tenant via the sentra-tenants row's identity_mode.
+                    "TENANTS_TABLE": storage_stack.tenants_table.table_name,
+                    "TENANT_MEMBERS_TABLE": storage_stack.tenant_members_table.table_name,
+                    "AGENT_CREDENTIALS_TABLE": storage_stack.agent_credentials_table.table_name,
+                    "TENANT_IDENTITY_MODE": str(config.get("tenant_identity_mode", "off")).lower(),
+                    "QUOTA_COUNTERS_TABLE": storage_stack.quota_counters_table.table_name,
+                    # Hot-path RPS quota enforcement (WS-E E2b) — founder-gated, off.
+                    "QUOTA_ENFORCEMENT_ENABLED": str(config.get("quota_enforcement_enabled", False)).lower(),
+                    # Residual uncredentialed-agent legacy-fallback window (WS-B B1).
+                    # Window defaults 0 (disabled → enforce denies uncredentialed
+                    # agents immediately); raise during a per-tenant enforce flip.
+                    "IDENTITY_FALLBACK_TABLE": storage_stack.identity_fallback_table.table_name,
+                    "IDENTITY_FALLBACK_WINDOW_SECONDS": str(config.get("identity_fallback_window_seconds", 0)),
+                    # Append-only platform cross-tenant access audit (WS-E E3). The
+                    # consent DENY is gated off by default (audit always writes;
+                    # 403 enforcement waits on the §10 Q2 rollout) — flip via config.
+                    "PLATFORM_AUDIT_TABLE": storage_stack.platform_audit_table.table_name,
+                    "PLATFORM_READ_CONSENT_ENFORCED": str(config.get("platform_read_consent_enforced", False)).lower(),
+                    # Explicit per-tenant S3 policy prefix (WS-B B3) — default off.
+                    "S3_EXPLICIT_TENANT_PREFIX": str(config.get("s3_explicit_tenant_prefix", False)).lower(),
                     # Cache Configuration (Workstream 5, Task 1)
                     "CACHE_ENABLED": "true",
                     "AGENT_METADATA_CACHE_TTL_SECONDS": "60",
@@ -1493,9 +1585,17 @@ def handler(event, context):
                 "target_group": self.console_tg,
                 "environment": {
                     "SERVICE_NAME": "console",
-                    # API base MUST include the /prod stage (nginx appends /v1/ → /prod/v1/).
-                    "SENTRA_API_BASE": "https://iw3limi4k7.execute-api.us-east-1.amazonaws.com/prod",
-                    "SENTRA_API_HOST": "iw3limi4k7.execute-api.us-east-1.amazonaws.com",
+                    # LLD-26 / Option B: the console proxies /v1 to the PRIVATE ALB,
+                    # not API Gateway. API Gateway strips the reserved `x-amzn-oidc-*`
+                    # request headers, so the operator's ALB-Cognito identity never
+                    # reached the controller → every auth'd control-plane route
+                    # (/v1/me, tenants, credentials, …) 401'd. The private ALB
+                    # preserves the header and already path-routes the full /v1
+                    # surface to the controller. API Gateway stays the agent/data-plane
+                    # edge (/v1/validate + usage plans); the console doesn't call those.
+                    # No /prod stage here — the ALB serves /v1/* directly (nginx adds /v1/).
+                    "SENTRA_API_BASE": f"http://{self.private_alb.load_balancer_dns_name}",
+                    "SENTRA_API_HOST": self.private_alb.load_balancer_dns_name,
                     # Cognito hosted-UI logout target for the nginx /logout location. Without this the
                     # /logout block 302s to an empty Location and the Cognito session silently survives
                     # (the user appears NOT signed out). `logout_uri` host is registered as an allowed

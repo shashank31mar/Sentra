@@ -245,9 +245,10 @@ class PolicyService:
                 logger.warning(f"Policy {policy_id} missing S3 reference")
                 return metadata  # Return metadata only
             
-            # Download full content from S3
+            # Download full content from S3 (B3 dual-read across legacy/explicit).
             logger.info(f"Loading policy content from S3: {s3_key}")
-            policy_obj = self.s3_client.get_object(Bucket=s3_bucket, Key=s3_key)
+            from app.utils.s3_policy_store import get_policy_object
+            policy_obj = get_policy_object(self.s3_client, s3_bucket, s3_key)
             policy_content = policy_obj['Body'].read().decode('utf-8')
             
             # Parse the structured source (always the editor's source of truth).
@@ -400,7 +401,8 @@ class PolicyService:
             # doesn't exist in deployed accounts — the bucket name is CDK-suffixed).
             s3_store = S3PolicyStore(bucket_name=settings.s3_bucket)
             version = policy_data['version']
-            s3_key = f"policies/agents/{policy_data['agent_id']}/v{version}.yaml"
+            # B3: explicit per-tenant key when enabled, else legacy implicit layout.
+            s3_key = tenancy.policy_s3_object_key(policy_data['agent_id'], version)
             s3_version_id = await s3_store.upload(
                 key=s3_key,
                 content=yaml_content,
@@ -541,7 +543,8 @@ class PolicyService:
         # 6. Upload to S3 (use existing bucket from metadata)
         bucket_name = existing.get('s3_bucket', 'sentra-mvp-artifacts')
         s3_store = S3PolicyStore(bucket_name=bucket_name)
-        s3_key = f"policies/agents/{policy_data['agent_id']}/v{new_version}.yaml"
+        # B3: explicit per-tenant key when enabled, else legacy implicit layout.
+        s3_key = tenancy.policy_s3_object_key(policy_data['agent_id'], new_version)
         s3_version_id = await s3_store.upload(
             key=s3_key,
             content=yaml_content,

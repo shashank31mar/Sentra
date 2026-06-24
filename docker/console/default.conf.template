@@ -17,12 +17,31 @@ server {
 
     # ---- API proxy: inject x-api-key server-side (never in the browser) ----
     location /v1/ {
-        proxy_pass ${SENTRA_API_BASE}/v1/;
+        # Runtime DNS re-resolution. ${SENTRA_API_BASE} is the INTERNAL ALB, whose
+        # IPs can rotate (scaling events). A literal proxy_pass resolves the host
+        # ONCE at worker start and would pin a now-stale IP until the next deploy.
+        # Putting the upstream in a VARIABLE forces nginx to resolve per request via
+        # the resolver below; valid=10s bounds how long a changed record is cached.
+        # 169.254.169.253 is the Amazon-provided VPC DNS (reachable from any VPC);
+        # ipv6=off avoids pointless AAAA lookups for the IPv4-only ALB. Because the
+        # upstream is a variable, nginx no longer rewrites the path automatically, so
+        # we forward the original $request_uri (path + query) explicitly.
+        resolver 169.254.169.253 valid=10s ipv6=off;
+        set $sentra_api "${SENTRA_API_BASE}";
+        proxy_pass $sentra_api$request_uri;
         proxy_set_header x-api-key "${SENTRA_API_KEY}";
         proxy_set_header Host "${SENTRA_API_HOST}";
         proxy_ssl_server_name on;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
         proxy_http_version 1.1;
+        # Carry the operator's ALB-Cognito identity to the controller under a
+        # NON-RESERVED name. The public ALB injects `x-amzn-oidc-data`, but every
+        # downstream gateway hop (API Gateway AND the internal ALB) strips inbound
+        # `x-amzn-oidc-*` (anti-spoofing) — so it never reaches the controller.
+        # Re-emit it as `x-sentra-oidc-data`, which the gateway forwards untouched;
+        # the controller's verify_alb_oidc reads it and still verifies the ALB
+        # signature. Without this, every auth'd control-plane route 401s.
+        proxy_set_header X-Sentra-Oidc-Data $http_x_amzn_oidc_data;
     }
 
     # ---- Static assets: long cache for hashed files ----
@@ -60,6 +79,17 @@ server {
     # until a hard refresh). `no-cache` = the browser may store it but MUST revalidate every load
     # (ETag → fast 304 when unchanged, fresh 200 right after a deploy). The hashed assets above stay
     # immutable/long-cached, so this costs one tiny conditional request per navigation.
+    # ---- Public splash (LLD-26 WS-C): the designed Aegion front door ----
+    # Served at EXACT `/` only, no SPA dependency. The public ALB exempts `/` +
+    # `/splash.html` from authenticate-cognito (higher-priority listener rule), so
+    # this renders without a session. Its "Access Control Plane" button links to
+    # /overview, which IS behind Cognito → the operator signs in and lands in the
+    # authenticated console. Every other path stays SPA + Cognito-gated.
+    location = / {
+        try_files /splash.html =404;
+        add_header Cache-Control "no-cache" always;
+    }
+
     location / {
         try_files $uri $uri/ /index.html;
         add_header Cache-Control "no-cache" always;
