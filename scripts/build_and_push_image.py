@@ -23,9 +23,12 @@ Usage:
 """
 
 import argparse
+import contextlib
+import fcntl
 import subprocess
 import sys
 import os
+import tempfile
 from typing import Optional, List
 
 
@@ -184,10 +187,51 @@ def push_image(service: str, tag: str) -> bool:
         return False
 
 
+@contextlib.contextmanager
+def push_lock():
+    """Serialize ECR login+push across concurrent invocations of this script.
+
+    `docker login` + `docker push` share one mutable ~/.docker/config.json (auths
+    + credsStore). Two invocations running at once race on it, and the loser's
+    push fails with `no basic auth credentials` — which is how a 'successful' run
+    can silently ship the OLD image. A coarse file lock makes parallel pushes
+    queue instead of collide. Build is unaffected (it's outside the lock)."""
+    lock_path = os.path.join(tempfile.gettempdir(), "sentra-ecr-push.lock")
+    fh = open(lock_path, "w")
+    try:
+        fcntl.flock(fh, fcntl.LOCK_EX)
+        yield
+    finally:
+        fcntl.flock(fh, fcntl.LOCK_UN)
+        fh.close()
+
+
+def image_digest_in_ecr(service: str, tag: str) -> Optional[str]:
+    """Return the imageDigest a tag resolves to in ECR, or None if absent."""
+    repo_name = f"sentra/{service}"
+    result = run_command(
+        [
+            "aws", "ecr", "describe-images",
+            "--repository-name", repo_name,
+            "--image-ids", f"imageTag={tag}",
+            "--region", AWS_REGION,
+            "--profile", AWS_PROFILE,
+            "--query", "imageDetails[0].imageDigest",
+            "--output", "text",
+        ],
+        capture_output=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        return None
+    digest = (result.stdout or "").strip()
+    return digest if digest and digest != "None" else None
+
+
 def check_image_exists_in_ecr(service: str, tag: str) -> bool:
     """Check if image already exists in ECR (returns True if exists)"""
     repo_name = f"sentra/{service}"
-    
+
     try:
         result = run_command(
             [
@@ -205,16 +249,34 @@ def check_image_exists_in_ecr(service: str, tag: str) -> bool:
         return False
 
 
-def verify_image_in_ecr(service: str, tag: str) -> bool:
-    """Verify image exists in ECR after push"""
-    print_step("[6/7]", f"Verifying image in ECR: {service}:{tag}")
-    
-    if check_image_exists_in_ecr(service, tag):
-        print_success(f"Image verified in ECR: sentra/{service}:{tag}")
-        return True
-    else:
-        print_warning(f"Image not found in ECR: sentra/{service}:{tag}")
+def verify_push_landed(service: str, milestone_tag: str) -> bool:
+    """Hard-verify the push actually landed: the milestone tag exists AND `latest`
+    resolves to the SAME digest. This is the guard against a 'green' run that
+    silently shipped a stale image — a failed/raced push leaves `latest` pointing
+    at the previous build, and ECS (which pulls `:latest`) would never get the new
+    code. Digest equality is the only honest proof the new code is deployable."""
+    print_step("[6/7]", f"Verifying push landed: {service}:{milestone_tag} == :latest")
+
+    milestone_digest = image_digest_in_ecr(service, milestone_tag)
+    latest_digest = image_digest_in_ecr(service, "latest")
+
+    if milestone_digest is None:
+        print_error(f"Milestone tag not in ECR after push: sentra/{service}:{milestone_tag}")
         return False
+    if latest_digest is None:
+        print_error(f"'latest' tag not in ECR after push: sentra/{service}:latest")
+        return False
+    if milestone_digest != latest_digest:
+        print_error(
+            f"'latest' does NOT point at {milestone_tag} "
+            f"({latest_digest[:19]}… vs {milestone_digest[:19]}…) — "
+            f"the push likely raced or failed. ECS pulls ':latest', so it would "
+            f"deploy the WRONG image. Re-run this push (serially)."
+        )
+        return False
+
+    print_success(f"Push verified: {milestone_tag} and latest both → {milestone_digest[:19]}…")
+    return True
 
 
 def test_image_locally(service: str, tag: str, port: int = 8080) -> bool:
@@ -355,39 +417,44 @@ BEST PRACTICES:
             sys.exit(1)
         print_success(f"Milestone {args.milestone} is available")
     
-    # Step 3: ECR login (skip if not pushing)
+    # Step 4: Build image (outside the push lock — builds can safely run in parallel)
     if not args.no_push:
-        if not ecr_login():
-            sys.exit(1)
+        print_step("[3/7]", "ECR login deferred to push lock (Step 5)")
     else:
         print_step("[3/7]", "Skipping ECR login (--no-push)")
-    
-    # Step 4: Build image
+
     if not build_image(args.service, args.dockerfile, args.context, milestone_tag):
         sys.exit(1)
-    
+
     # Step 5-6: Tag, push, and verify (skip if not pushing)
     if not args.no_push:
-        # Tag and push with milestone tag
-        if not tag_image(args.service, milestone_tag, milestone_tag):
-            sys.exit(1)
-        
-        if not push_image(args.service, milestone_tag):
-            sys.exit(1)
-        
-        # Also tag and push as latest
-        if not tag_image(args.service, milestone_tag, "latest"):
-            sys.exit(1)
-        
-        if not push_image(args.service, "latest"):
-            sys.exit(1)
-        
-        # Verify both tags
-        if not verify_image_in_ecr(args.service, milestone_tag):
-            print_warning("Milestone tag verification failed, but image may still be available")
-        
-        if not verify_image_in_ecr(args.service, "latest"):
-            print_warning("Latest tag verification failed, but image may still be available")
+        # Hold a cross-process lock around login+push+verify so concurrent
+        # invocations serialize instead of racing on ~/.docker/config.json
+        # (the root cause of silent 'no basic auth credentials' push failures).
+        with push_lock():
+            # Login INSIDE the lock — the ECR token write is itself the race.
+            if not ecr_login():
+                sys.exit(1)
+
+            # Tag and push with milestone tag
+            if not tag_image(args.service, milestone_tag, milestone_tag):
+                sys.exit(1)
+
+            if not push_image(args.service, milestone_tag):
+                sys.exit(1)
+
+            # Also tag and push as latest
+            if not tag_image(args.service, milestone_tag, "latest"):
+                sys.exit(1)
+
+            if not push_image(args.service, "latest"):
+                sys.exit(1)
+
+            # HARD gate: prove the push landed and `latest` resolves to this
+            # build's digest. A warning here was how a stale image shipped green.
+            if not verify_push_landed(args.service, milestone_tag):
+                print_error("Push verification FAILED — not treating this as a successful deploy.")
+                sys.exit(1)
     else:
         print_step("[5/7]", "Skipping tagging (--no-push)")
         print_step("[6/7]", "Skipping push (--no-push)")
