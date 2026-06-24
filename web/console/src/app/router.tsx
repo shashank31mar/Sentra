@@ -13,6 +13,7 @@ import { PolicyLibraryPage } from '../features/policies/PolicyLibraryPage'
 import { PolicyDetailPage } from '../features/policies/PolicyDetailPage'
 import { PolicyEditorPage } from '../features/policies/PolicyEditorPage'
 import { QuarantinePage } from '../features/quarantine/QuarantinePage'
+import { ResidualAgentsPage } from '../features/identity/ResidualAgentsPage'
 import { AuditTrailPage } from '../features/audit/AuditTrailPage'
 import { PlaceholderPage } from '../components/ui/PlaceholderPage'
 
@@ -40,6 +41,7 @@ export const router = createBrowserRouter([
       { path: ROUTES.policyEdit, element: <PolicyEditorPage /> },
       { path: ROUTES.policyDetail, element: <PolicyDetailPage /> },
       { path: ROUTES.quarantine, element: <QuarantinePage /> },
+      { path: ROUTES.residualAgents, element: <ResidualAgentsPage /> },
       { path: ROUTES.audit, element: <AuditTrailPage /> },
     ],
   },

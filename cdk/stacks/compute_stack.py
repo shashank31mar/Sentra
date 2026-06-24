@@ -1422,6 +1422,11 @@ def handler(event, context):
                     # agents immediately); raise during a per-tenant enforce flip.
                     "IDENTITY_FALLBACK_TABLE": storage_stack.identity_fallback_table.table_name,
                     "IDENTITY_FALLBACK_WINDOW_SECONDS": str(config.get("identity_fallback_window_seconds", 0)),
+                    # Append-only platform cross-tenant access audit (WS-E E3). The
+                    # consent DENY is gated off by default (audit always writes;
+                    # 403 enforcement waits on the §10 Q2 rollout) — flip via config.
+                    "PLATFORM_AUDIT_TABLE": storage_stack.platform_audit_table.table_name,
+                    "PLATFORM_READ_CONSENT_ENFORCED": str(config.get("platform_read_consent_enforced", False)).lower(),
                     # Explicit per-tenant S3 policy prefix (WS-B B3) — default off.
                     "S3_EXPLICIT_TENANT_PREFIX": str(config.get("s3_explicit_tenant_prefix", False)).lower(),
                     # Cache Configuration (Workstream 5, Task 1)

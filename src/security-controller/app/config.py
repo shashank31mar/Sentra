@@ -171,6 +171,19 @@ class Settings(BaseSettings):
     dynamodb_identity_fallback_table: str = Field(
         default="sentra-identity-fallback", validation_alias="IDENTITY_FALLBACK_TABLE"
     )
+    # Append-only platform cross-tenant access audit (LLD-26 §5.5 / WS-E E3). Every
+    # `_platform` cross-tenant read (incl. the denials) writes an immutable record
+    # here — the enforced half of the audit-&-consent gate. RETAIN + PITR in CDK.
+    dynamodb_platform_audit_table: str = Field(
+        default="sentra-platform-audit-records", validation_alias="PLATFORM_AUDIT_TABLE"
+    )
+    # WS-E E3 consent ENFORCEMENT (the deny-by-default 403). Default OFF: platform
+    # cross-tenant reads are audited (immutable ledger always writes) but NOT denied
+    # until founder flips this on per the §10 Q2 rollout. Mirrors quota/identity-mode:
+    # build it, ship it inert, flip live when ready.
+    platform_read_consent_enforced: bool = Field(
+        default=False, validation_alias="PLATFORM_READ_CONSENT_ENFORCED"
+    )
 
     # ------------------------------------------------------------------
     # Cloud Connections (Connect-Account wizard — connections-api-spec.md)

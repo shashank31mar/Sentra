@@ -8,6 +8,7 @@ import type {
   PlatformDistribution,
   PolicySummary,
   ProviderScan,
+  ResidualAgent,
   SessionInfo,
   SigmaRule,
   TimeseriesPoint,
@@ -274,4 +275,23 @@ export const sigmaRules: SigmaRule[] = [
   { rule_id: 'sig-001', title: 'Prompt injection — instruction override', category: 'injection', severity: 'high', status: 'enabled', match_count: 312 },
   { rule_id: 'sig-002', title: 'Jailbreak — role play bypass', category: 'jailbreak', severity: 'critical', status: 'enabled', match_count: 88 },
   { rule_id: 'sig-003', title: 'PII exfiltration via tool params', category: 'exfiltration', severity: 'high', status: 'disabled', match_count: 0 },
+]
+
+// Residual uncredentialed agents on the WS-B B1 fallback window (WS-C C2): one
+// still inside its window (active), one past its deadline (expired → denied).
+export const residualAgents: ResidualAgent[] = [
+  {
+    agent_id: 'agt-7781',
+    tenant_id: 't_acme',
+    first_seen_ms: Date.now() - 3_600_000, // seen 1h ago
+    deadline_ms: Date.now() + 86_400_000, // ~24h left
+    expired: false,
+  },
+  {
+    agent_id: 'agt-legacy-9043',
+    tenant_id: 't_acme',
+    first_seen_ms: Date.now() - 700_000_000,
+    deadline_ms: Date.now() - 3_600_000, // lapsed 1h ago
+    expired: true,
+  },
 ]

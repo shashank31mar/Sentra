@@ -76,6 +76,9 @@ class Tenant:
     plan: str = "trial"
     identity_mode: str = "off"
     quota: Dict[str, int] = field(default_factory=lambda: {"max_agents": 25, "max_validate_rps": 50})
+    # Cross-tenant consent (WS-E E3): a platform-admin per-tenant read DENIES unless
+    # this tenant has explicitly opted in. Defaults to False — deny-by-default.
+    platform_read_consent: bool = False
     deletion_cursor: Dict[str, str] = field(default_factory=dict)
     created_at: int = 0
     created_by: str = ""
@@ -89,6 +92,7 @@ class Tenant:
             plan=item.get("plan", "trial"),
             identity_mode=item.get("identity_mode", "off"),
             quota={k: int(v) for k, v in (item.get("quota") or {}).items()},
+            platform_read_consent=bool(item.get("platform_read_consent", False)),
             deletion_cursor=dict(item.get("deletion_cursor") or {}),
             created_at=int(item.get("created_at", 0)),
             created_by=item.get("created_by", ""),
@@ -206,6 +210,16 @@ class TenantStore:
             UpdateExpression="SET identity_mode = :m, updated_at = :u",
             ConditionExpression="attribute_exists(tenant_id)",
             ExpressionAttributeValues={":m": mode, ":u": _now_ms()},
+        )
+
+    def set_platform_read_consent(self, tenant_id: str, consent: bool) -> None:
+        """Grant/revoke this tenant's consent for platform-admin cross-tenant reads
+        (WS-E E3). Owner- or platform-gated at the route; deny-by-default."""
+        self._table().update_item(
+            Key={"tenant_id": tenant_id},
+            UpdateExpression="SET platform_read_consent = :c, updated_at = :u",
+            ConditionExpression="attribute_exists(tenant_id)",
+            ExpressionAttributeValues={":c": bool(consent), ":u": _now_ms()},
         )
 
     def set_deletion_cursor(self, tenant_id: str, cursor: Dict[str, str]) -> None:

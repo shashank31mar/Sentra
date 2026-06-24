@@ -139,3 +139,119 @@ def test_require_platform_allows_platform_member(mt_env):
         deps._alb_claims_override = None
 
     run(scenario())
+
+
+# --------------------------------------------------------------------------- #
+# E3 — cross-tenant read consent gate + immutable audit
+# --------------------------------------------------------------------------- #
+def _platform_ctx(sub="op_staff"):
+    from app.api.deps import OperatorContext
+    return OperatorContext(sub=sub, tenant_id="_platform", role="admin", is_platform=True)
+
+
+def _audit_rows(ddb, target_tenant):
+    table = ddb.Table(settings.dynamodb_platform_audit_table)
+    return table.query(
+        KeyConditionExpression="tenant_id = :t",
+        ExpressionAttributeValues={":t": target_tenant},
+    ).get("Items", [])
+
+
+def test_platform_per_tenant_read_denied_without_consent(mt_env, monkeypatch):
+    """With enforcement ON, a per-tenant platform read DENIES (403) when the tenant
+    hasn't consented, and the DENY is itself written to the immutable audit ledger
+    (fail-secure: the data fetch never runs)."""
+    from app.api import tenancy_routes as tr
+    from app.services.tenant_service import get_tenant_store
+
+    monkeypatch.setattr(settings, "platform_read_consent_enforced", True)
+
+    async def scenario():
+        get_tenant_store().create(display_name="No Consent", tenant_id="t_noc")
+        with pytest.raises(HTTPException) as exc:
+            await tr.platform_tenant_detail("t_noc", ctx=_platform_ctx())
+        assert exc.value.status_code == 403
+        rows = _audit_rows(mt_env, "t_noc")
+        assert len(rows) == 1
+        assert rows[0]["decision"] == "DENY" and rows[0]["consent_state"] == "false"
+        assert rows[0]["read_type"] == "per-tenant"
+
+    run(scenario())
+
+
+def test_platform_per_tenant_read_allowed_when_enforcement_off(mt_env, monkeypatch):
+    """Default (enforcement OFF): a no-consent per-tenant read is ALLOWED so the
+    platform console keeps working — but an honest audit row is still written,
+    marked 'false-unenforced'. This is the parked-rollout state."""
+    from app.api import tenancy_routes as tr
+    from app.services.tenant_service import get_tenant_store
+
+    monkeypatch.setattr(settings, "platform_read_consent_enforced", False)
+
+    async def scenario():
+        get_tenant_store().create(display_name="No Consent Off", tenant_id="t_off")
+        out = await tr.platform_tenant_detail("t_off", ctx=_platform_ctx())
+        assert out["tenant_id"] == "t_off"
+        rows = _audit_rows(mt_env, "t_off")
+        assert len(rows) == 1
+        assert rows[0]["decision"] == "ALLOW"
+        assert rows[0]["consent_state"] == "false-unenforced"
+
+    run(scenario())
+
+
+def test_platform_per_tenant_read_allowed_with_consent(mt_env):
+    """With consent granted, the detail is served and an ALLOW audit row persists."""
+    from app.api import tenancy_routes as tr
+    from app.services.tenant_service import get_tenant_store
+
+    async def scenario():
+        store = get_tenant_store()
+        store.create(display_name="Consented", tenant_id="t_yes")
+        store.set_platform_read_consent("t_yes", True)
+        out = await tr.platform_tenant_detail("t_yes", ctx=_platform_ctx())
+        assert out["tenant_id"] == "t_yes"
+        assert out["platform_read_consent"] is True
+        rows = _audit_rows(mt_env, "t_yes")
+        assert len(rows) == 1 and rows[0]["decision"] == "ALLOW"
+        assert rows[0]["consent_state"] == "true"
+
+    run(scenario())
+
+
+def test_platform_aggregate_read_ignores_consent(mt_env):
+    """The aggregate tenants list is _platform-only and needs no per-tenant
+    consent, but is still audited under the '*' partition."""
+    from app.api import tenancy_routes as tr
+    from app.services.tenant_service import get_tenant_store
+
+    async def scenario():
+        get_tenant_store().create(display_name="A", tenant_id="t_a1")  # no consent
+        out = await tr.platform_list_tenants(ctx=_platform_ctx())
+        assert out["count"] >= 1
+        rows = _audit_rows(mt_env, "*")
+        assert len(rows) == 1 and rows[0]["read_type"] == "aggregate"
+        assert rows[0]["decision"] == "ALLOW"
+
+    run(scenario())
+
+
+def test_set_platform_read_consent_requires_owner(mt_env):
+    """platform_read_consent is owner/platform-only — an admin can't self-serve it."""
+    from app.api import tenancy_routes as tr
+    from app.api.deps import OperatorContext
+    from app.services.tenant_service import get_tenant_store
+
+    async def scenario():
+        get_tenant_store().create(display_name="Owned", tenant_id="t_own")
+        body = tr.TenantUpdateRequest(platform_read_consent=True)
+        admin = OperatorContext(sub="op_admin", tenant_id="t_own", role="admin")
+        with pytest.raises(HTTPException) as exc:
+            await tr.update_tenant("t_own", body, ctx=admin)
+        assert exc.value.status_code == 403
+        # Owner succeeds and the flag persists.
+        owner = OperatorContext(sub="op_owner", tenant_id="t_own", role="owner")
+        out = await tr.update_tenant("t_own", body, ctx=owner)
+        assert out["platform_read_consent"] is True
+
+    run(scenario())

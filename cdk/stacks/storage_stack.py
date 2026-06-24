@@ -945,12 +945,28 @@ class StorageStack(Stack):
             removal_policy=RemovalPolicy.DESTROY,
         )
 
+        # sentra-platform-audit-records — append-only audit of platform-admin
+        # cross-tenant reads (WS-E E3 / §10 Q2). PK tenant_id (target) / SK
+        # record_id ({ms}#{uuid}). RETAIN + PITR: these are immutable compliance
+        # records, never auto-deleted with a stack teardown.
+        self.platform_audit_table = dynamodb.Table(
+            self,
+            "PlatformAuditRecordsTable",
+            table_name=tenancy_cfg.get("platform_audit_table_name", "sentra-platform-audit-records"),
+            partition_key=dynamodb.Attribute(name="tenant_id", type=dynamodb.AttributeType.STRING),
+            sort_key=dynamodb.Attribute(name="record_id", type=dynamodb.AttributeType.STRING),
+            billing_mode=dynamodb.BillingMode.PAY_PER_REQUEST,
+            point_in_time_recovery=True,
+            removal_policy=RemovalPolicy.RETAIN,
+        )
+
         for _logical, _table in {
             "tenants": self.tenants_table,
             "tenant-members": self.tenant_members_table,
             "agent-credentials": self.agent_credentials_table,
             "quota-counters": self.quota_counters_table,
             "identity-fallback": self.identity_fallback_table,
+            "platform-audit-records": self.platform_audit_table,
         }.items():
             CfnOutput(
                 self,
@@ -1129,4 +1145,5 @@ class StorageStack(Stack):
             self.agent_credentials_table,
             self.quota_counters_table,
             self.identity_fallback_table,
+            self.platform_audit_table,
         ]

@@ -24,6 +24,7 @@ export type Capability =
   | 'members.read'
   | 'members.manage'
   | 'tenant.delete'
+  | 'identity.residual.read' // view the WS-B fallback-window residual-agent list
 
 const MIN_ROLE: Record<Capability, TenantRole> = {
   'agents.write': 'editor',
@@ -33,6 +34,9 @@ const MIN_ROLE: Record<Capability, TenantRole> = {
   'members.read': 'editor',
   'members.manage': 'admin',
   'tenant.delete': 'owner',
+  // Read-only operational view; the backend lets any role see it (it's their own
+  // tenant's residual agents). viewer is the floor.
+  'identity.residual.read': 'viewer',
 }
 
 export function roleSatisfies(have: TenantRole | undefined | null, need: TenantRole): boolean {

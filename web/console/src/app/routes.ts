@@ -14,6 +14,7 @@ export const ROUTES = {
   policyEdit: '/policies/:policyId/edit',
   policyDetail: '/policies/:policyId',
   quarantine: '/quarantine',
+  residualAgents: '/identity/residual-agents',
   audit: '/audit',
 } as const
 

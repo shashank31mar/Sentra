@@ -296,6 +296,33 @@ class MetricsPublisher:
         except Exception as e:  # noqa: BLE001 — metrics never block validate
             logger.warning("Failed to publish identity-fallback metric (non-blocking): %s", e)
 
+    async def publish_quota_exceeded_metric(self, tenant_id: str):
+        """Per-tenant commercial RPS quota denial (LLD-26 §9.3 / WS-E E2b).
+
+        Emitted once each time a validate is DENIED for `QUOTA_EXCEEDED`. One
+        dimension (`tenant_id`) so the `{prefix}-quota-exceeded` alarm can page on
+        a tenant hitting its ceiling. Quota is a *commercial* guardrail, so this is
+        a P1 (not a security-critical) signal. Fire-and-forget; never blocks
+        validate.
+        """
+        try:
+            self.cloudwatch.put_metric_data(
+                Namespace=self.namespace,
+                MetricData=[
+                    {
+                        'MetricName': 'QuotaExceeded',
+                        'Value': 1,
+                        'Unit': 'Count',
+                        'Dimensions': [
+                            {'Name': 'tenant_id', 'Value': tenant_id or '_unknown'},
+                        ],
+                    }
+                ],
+            )
+            logger.debug("Published quota-exceeded metric: tenant=%s", tenant_id)
+        except Exception as e:  # noqa: BLE001 — metrics never block validate
+            logger.warning("Failed to publish quota-exceeded metric (non-blocking): %s", e)
+
     # ============================================================
     # Workstream 11: Policy CRUD Metrics
     # ============================================================

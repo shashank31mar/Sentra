@@ -1,7 +1,7 @@
 # WS-C: Dashboard & Web-Console Scoping
 
 **Parent LLD**: [lld/26-multi-tenancy.md](../../lld/26-multi-tenancy.md) §5
-**Status**: 🟡 Partial (2026-06-24) — DONE: C1 server-derived tenant (`useMe`, `tenantOf()` display-only), tenant switcher (`X-Aegion-Tenant`), C2 role-conditional UI (`rbac.ts`); **residual uncredentialed-agent list — backend ready** (`GET /v1/identity/residual-agents`, tenant-scoped, from WS-B B1). PENDING: console wiring of the residual list to that endpoint; C3 Streamlit decommission (separate infra PR).
+**Status**: 🟡 Partial (2026-06-24) — DONE: C1 server-derived tenant (`useMe`, `tenantOf()` display-only), tenant switcher (`X-Aegion-Tenant`), C2 role-conditional UI (`rbac.ts`) **and the residual uncredentialed-agent list is now wired** (`identityApi.listResidual` → `useResidualAgents` → `ResidualAgentsPage`, Govern nav, mock handler + fixtures; consumes `GET /v1/identity/residual-agents`). **DEFERRED (founder call 2026-06-24): C3 Streamlit decommission — keep the Streamlit dashboard as-is for now; the ALB default action is unchanged.** Consequence: WS-B B4 (`sentra-policies` table drop) stays gated since Streamlit remains the last potential reader.
 **Owner**: TBD
 
 ## Dependencies
@@ -15,7 +15,7 @@
 |---|---|---|
 | **SOC Console** | [web/console/src](../../web/console/src) | **The product UI.** React 19 + Vite + react-router v7 + react-query + chart.js, API-backed (`/v1/*`), behind ALB Cognito. All scoping work happens here. |
 | Marketing site | [frontend/src](../../frontend/src) | Out of scope — GoDaddy static landing page, no tenant data path. |
-| Streamlit | [src/dashboard](../../src/dashboard) | Legacy internal/demo — **decommissioned** (C3). |
+| Streamlit | [src/dashboard](../../src/dashboard) | Legacy internal/demo — **still deployed** (C3 decommission deferred 2026-06-24). No tenancy work invested in it. |
 
 ---
 
@@ -63,18 +63,18 @@ sequenceDiagram
   - `admin` / `owner` → member management visible.
   - `owner` only → **Delete tenant** action visible.
 - **Client gating is UX only, never the boundary** — every mutation is still authorized server-side by `require_role`, so a tampered client gains nothing.
-- Show the **residual uncredentialed-agent list** (WS-B B1 fallback window) so operators can onboard/retire agents before the window expires.
+- **DONE** — the **residual uncredentialed-agent list** (WS-B B1 fallback window) is wired in the console (Govern → Residual Agents): [ResidualAgentsPage.tsx](../../web/console/src/features/identity/ResidualAgentsPage.tsx) via [useResidualAgents.ts](../../web/console/src/lib/query/useResidualAgents.ts) / [api/identity.ts](../../web/console/src/lib/api/identity.ts) consuming `GET /v1/identity/residual-agents`. Active vs expired status is shown so operators onboard/retire agents before the window closes. Gated on the `identity.residual.read` capability (viewer+).
 
-### C3 — Streamlit decommission
+### C3 — Streamlit decommission (DEFERRED 2026-06-24)
 
-**Decision (LLD v1.3 §5.3):** Streamlit (`src/dashboard`) is retired — `web/console` covers every Streamlit tab (`overview, agents, threats, audit, policies, quarantine, topology, connect, discovery, import`) and is API-backed + tenant-scopable. No tenancy work is invested in Streamlit.
+**Decision (LLD v1.3 §5.3):** Streamlit (`src/dashboard`) is *slated* for retirement — `web/console` covers every Streamlit tab (`overview, agents, threats, audit, policies, quarantine, topology, connect, discovery, import`) and is API-backed + tenant-scopable. No tenancy work is invested in Streamlit.
 
-**This is a deploy-affecting infra change → its own follow-up PR, not this docs change.** What it entails:
+**DEFERRED (founder call 2026-06-24): NOT executed this round — the Streamlit dashboard stays deployed as-is.** When it is picked up it entails:
 - Delete `src/dashboard/` + its `docker/` build + `requirements.txt`.
-- Drop CDK: dashboard ECR repo, `DashboardTaskRole`, `dashboard_tg` target group, Cognito callback entries, monitoring widgets.
-- **Load-bearing**: the public ALB's **default listener action currently routes to Streamlit**, with `web/console` layered as a host-based rule on top ([cdk/stacks/compute_stack.py:859-896](../../cdk/stacks/compute_stack.py#L859-L896)). Removal requires **rewiring the ALB default action to `web/console`**.
-- This also removes the **last reader of legacy `sentra-policies`** → unblocks WS-B B4 (table deletion).
-- Until that PR lands, Streamlit stays deployed behind Cognito as-is (no new tenancy features); `web/console` is the surface customers use.
+- Drop CDK: dashboard ECR repo, `DashboardTaskRole`, `dashboard_tg` target group, Cognito callback entries (`dashboard.aegionai.ai`), monitoring widgets (`dashboard-service` CPU/memory), and the `dashboard` security group + service.
+- **Load-bearing**: the public ALB's **default listener action currently routes to Streamlit**, with `web/console` layered as a host-based rule on top ([cdk/stacks/compute_stack.py:846-864](../../cdk/stacks/compute_stack.py#L846-L864)). Removal requires **rewiring the ALB default action to `console_tg`**.
+- This also removes the **last reader of legacy `sentra-policies`** → would unblock WS-B B4 (table deletion). **Until C3 happens, B4 stays gated.**
+- Streamlit stays deployed behind Cognito as-is (no new tenancy features); `web/console` is the surface customers use.
 
 ## Acceptance criteria
 
@@ -82,8 +82,8 @@ sequenceDiagram
 - [ ] `tenantOf()` is display-only; tenant never sent as a client param except the validated `X-Aegion-Tenant` switcher.
 - [ ] Switcher appears only for multi-membership operators; foreign tenant → `403`.
 - [ ] Role-conditional rendering matches the RBAC matrix; server still enforces (tampered client gains nothing).
-- [ ] Residual uncredentialed-agent list surfaced.
-- [ ] (Follow-up infra PR) Streamlit code + CDK removed; ALB default action rewired to `web/console`; `sentra-policies` reader gone (hands off to WS-B B4).
+- [x] Residual uncredentialed-agent list surfaced (`ResidualAgentsPage`, Govern nav).
+- [ ] **(DEFERRED 2026-06-24)** Streamlit code + CDK removed; ALB default action rewired to `console_tg`; `sentra-policies` reader gone (hands off to WS-B B4). Not done this round — dashboard kept as-is.
 
 ## Cross-references
 

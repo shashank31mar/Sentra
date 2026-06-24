@@ -39,3 +39,23 @@ export function formatDateTime(iso: string | null | undefined): string {
   if (Number.isNaN(d.getTime())) return '—'
   return d.toLocaleString('en', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })
 }
+
+/**
+ * Signed relative time from an epoch-ms timestamp, e.g. past → "3m ago", future
+ * → "in 5h", now → "now". Unlike `formatRelativeTime` (which clamps the future to
+ * 0s), this keeps direction — needed for the residual-agent fallback deadline,
+ * which is usually in the future ("expires in …") until it lapses ("expired …").
+ */
+export function formatRelativeFromMs(ms: number | null | undefined): string {
+  if (ms === null || ms === undefined || Number.isNaN(ms)) return '—'
+  const deltaSec = Math.round((ms - Date.now()) / 1000)
+  const future = deltaSec >= 0
+  const abs = Math.abs(deltaSec)
+  let mag: string
+  if (abs < 60) mag = `${abs}s`
+  else if (abs < 3600) mag = `${Math.round(abs / 60)}m`
+  else if (abs < 86400) mag = `${Math.round(abs / 3600)}h`
+  else mag = `${Math.round(abs / 86400)}d`
+  if (abs < 5) return 'now'
+  return future ? `in ${mag}` : `${mag} ago`
+}

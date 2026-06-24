@@ -67,6 +67,27 @@ export interface MeContext {
   memberships: TenantMembership[]
 }
 
+/**
+ * An agent currently riding the WS-B B1 legacy-fallback window: enforce is on for
+ * its tenant but it hasn't registered a credential yet, so it runs on the legacy
+ * self-asserted path on borrowed time. The console surfaces these so operators
+ * onboard or retire them before the per-agent deadline expires to a hard DENY.
+ * Times are epoch-ms (the backend's `first_seen_ms` / `deadline_ms`).
+ */
+export interface ResidualAgent {
+  agent_id: string
+  tenant_id: string
+  first_seen_ms: number
+  deadline_ms: number
+  expired: boolean
+}
+
+export interface ResidualAgentsResponse {
+  tenant_id: string
+  residual_agents: ResidualAgent[]
+  count: number
+}
+
 /** Generic cursor-paginated response, normalized by the api client. */
 export interface Page<T> {
   items: T[]

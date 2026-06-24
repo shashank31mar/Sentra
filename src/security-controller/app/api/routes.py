@@ -135,6 +135,10 @@ async def validate_tool_call(request: ValidationRequest, http_request: Request) 
             # Fail-OPEN: a quota counter must never DoS legitimate validate traffic.
             from app.services.quota_service import check_validate_rps
             if not check_validate_rps(ctx.tenant_id):
+                # Fire-and-forget metric (self-guarding; never raises) so the
+                # commercial quota alarm can page on a tenant hitting its ceiling.
+                from app.utils.metrics_publisher import MetricsPublisher
+                await MetricsPublisher().publish_quota_exceeded_metric(ctx.tenant_id)
                 return {
                     "decision": "DENY", "reason": "QUOTA_EXCEEDED",
                     "trust_score": 0.0, "session_id": request.session_id,

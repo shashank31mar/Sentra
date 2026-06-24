@@ -27,6 +27,7 @@ from app.api.deps import (
     role_satisfies,
     verify_alb_oidc,
 )
+from app.config import settings
 from app.services.credentials_service import (
     CredentialValidationError,
     get_credential_cache,
@@ -223,6 +224,7 @@ class TenantUpdateRequest(BaseModel):
     display_name: Optional[str] = None
     identity_mode: Optional[str] = None  # off|shadow|enforce — the rollout control
     status: Optional[str] = None  # active|suspended (deletion has its own route)
+    platform_read_consent: Optional[bool] = None  # WS-E E3 cross-tenant consent
 
 
 @router.patch("/tenants/{tenant_id}")
@@ -245,11 +247,18 @@ async def update_tenant(
             if body.status not in ("active", "suspended"):
                 raise HTTPException(status_code=400, detail="status must be active|suspended")
             store.set_status(tenant_id, body.status)
+        if body.platform_read_consent is not None:
+            # Consenting to Sentra-staff cross-tenant reads is a trust decision —
+            # owner-only (or platform), never an admin self-serve (WS-E E3).
+            if ctx.role != "owner" and not ctx.is_platform:
+                raise HTTPException(status_code=403,
+                                    detail="platform_read_consent requires owner")
+            store.set_platform_read_consent(tenant_id, body.platform_read_consent)
     except TenantError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     tenant = store.get(tenant_id)
     return {"tenant_id": tenant_id, "identity_mode": tenant.identity_mode,
-            "status": tenant.status}
+            "status": tenant.status, "platform_read_consent": tenant.platform_read_consent}
 
 
 @router.delete("/tenants/{tenant_id}")
@@ -359,21 +368,69 @@ async def remove_member(
 
 
 # =========================================================================== #
-# Platform-admin (internal ops) console — WS-E E3 (LLD-26 §5.5)
+# Platform-admin (internal ops) console — WS-E E3 (LLD-26 §5.5 / §10 Q2)
 # Gated by the reserved `_platform` capability, NOT a tenant role. Reads the
 # tenant/member REGISTRIES (allowed for `_platform`); every cross-tenant access
-# is dual-audited under both `_platform` and the target tenant.
+# is enforced-audited: a per-tenant read DENIES (403) unless the target tenant has
+# granted `platform_read_consent`, and EVERY access (allow or deny) writes an
+# immutable record to `sentra-platform-audit-records`. This is the enforced half
+# of the §10 Q2 audit-&-consent model.
 #
-# NOTE (gated): cross-tenant CloudWatch *metric aggregation* (per-tenant threat/
-# validate volume) is intentionally NOT shipped here — it waits on LLD-26 §10 Q2
-# (the SOC2 / customer-contract audit-&-consent model). Registry reads only.
+# An AGGREGATE read (target `*`) is `_platform`-only by construction and carries no
+# single tenant's data, so it is allowed without per-tenant consent but is still
+# audited. Cross-tenant CloudWatch *metric aggregation* remains out of scope here
+# (registry reads only).
 # =========================================================================== #
 def _audit_platform_read(ctx: OperatorContext, target_tenant: str, what: str) -> None:
-    """Dual-audit a platform cross-tenant read (LLD-26 §6.3)."""
-    logger.info(
-        "PLATFORM_ACCESS operator=%s read=%s target_tenant=%s (audited under _platform + target)",
-        ctx.sub, what, target_tenant,
-    )
+    """Enforce + audit a platform cross-tenant read (LLD-26 §5.5 / §10 Q2 / WS-E E3).
+
+    Aggregate reads (``target_tenant == "*"``) are allowed (no single tenant's data)
+    but audited. A per-tenant read requires the target tenant's
+    ``platform_read_consent``; without it we write a DENY record and raise ``403``.
+    The audit record is written *before* serving (or denying), so an unaudited
+    cross-tenant read can never occur — an audit-write failure is itself fail-secure.
+    """
+    from app.services.platform_audit import get_platform_audit_store
+
+    def _write(decision: str, consent_state: str, read_type: str) -> None:
+        get_platform_audit_store().record(
+            operator_sub=ctx.sub, target_tenant=target_tenant, what=what,
+            read_type=read_type, decision=decision, consent_state=consent_state,
+        )
+
+    if target_tenant == "*":
+        # Aggregate cross-tenant view: _platform-only, no per-tenant consent needed.
+        _write(decision="ALLOW", consent_state="n/a-aggregate", read_type="aggregate")
+        logger.info("PLATFORM_ACCESS operator=%s read=%s target=* (aggregate, audited)",
+                    ctx.sub, what)
+        return
+
+    # Per-tenant read: deny-by-default unless the tenant opted in.
+    target = get_tenant_store().get(target_tenant)
+    consented = bool(target.platform_read_consent) if target else False
+    enforced = bool(settings.platform_read_consent_enforced)
+    if not consented:
+        # Enforcement OFF (the §10 Q2 rollout hasn't flipped yet): still write an
+        # honest audit row, but ALLOW the read so the platform console keeps working.
+        if not enforced:
+            _write(decision="ALLOW", consent_state="false-unenforced", read_type="per-tenant")
+            logger.info("PLATFORM_ACCESS operator=%s read=%s target=%s "
+                        "(no consent; enforcement OFF — allowed + audited)",
+                        ctx.sub, what, target_tenant)
+            return
+        try:
+            _write(decision="DENY", consent_state="false", read_type="per-tenant")
+        except Exception:  # noqa: BLE001 — never let an audit failure mask the DENY
+            logger.error("platform audit write failed on DENY path for target=%s",
+                         target_tenant, exc_info=True)
+        logger.warning("PLATFORM_ACCESS DENIED operator=%s read=%s target=%s (no consent)",
+                       ctx.sub, what, target_tenant)
+        raise HTTPException(status_code=403, detail="platform_read_consent not granted by tenant")
+    # Consented: audit the ALLOW before the data is served. A write failure here
+    # fails secure — we do not serve an unaudited cross-tenant read.
+    _write(decision="ALLOW", consent_state="true", read_type="per-tenant")
+    logger.info("PLATFORM_ACCESS operator=%s read=%s target=%s (consented, audited)",
+                ctx.sub, what, target_tenant)
 
 
 @router.get("/platform/tenants")
@@ -406,6 +463,6 @@ async def platform_tenant_detail(
     return {
         "tenant_id": tenant.tenant_id, "display_name": tenant.display_name,
         "status": tenant.status, "plan": tenant.plan, "identity_mode": tenant.identity_mode,
-        "quota": tenant.quota,
+        "quota": tenant.quota, "platform_read_consent": tenant.platform_read_consent,
         "members": [{"operator_sub": m.operator_sub, "role": m.role} for m in members],
     }

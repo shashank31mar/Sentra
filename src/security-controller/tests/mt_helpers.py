@@ -133,3 +133,16 @@ def create_mt_tables(ddb) -> None:
         AttributeDefinitions=[{"AttributeName": "agent_id", "AttributeType": "S"}],
         BillingMode="PAY_PER_REQUEST",
     )
+    # sentra-platform-audit-records (WS-E E3): PK tenant_id (target) / SK record_id.
+    ddb.create_table(
+        TableName=settings.dynamodb_platform_audit_table,
+        KeySchema=[
+            {"AttributeName": "tenant_id", "KeyType": "HASH"},
+            {"AttributeName": "record_id", "KeyType": "RANGE"},
+        ],
+        AttributeDefinitions=[
+            {"AttributeName": "tenant_id", "AttributeType": "S"},
+            {"AttributeName": "record_id", "AttributeType": "S"},
+        ],
+        BillingMode="PAY_PER_REQUEST",
+    )

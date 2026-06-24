@@ -29,6 +29,10 @@ export const queryKeys = {
     detail: (id: string) => ['agents', 'detail', id] as const,
     tools: (id: string) => ['agents', 'tools', id] as const,
   },
+  identity: {
+    // Residual uncredentialed agents on the WS-B B1 fallback window (WS-C C2).
+    residual: () => ['identity', 'residual-agents'] as const,
+  },
   connections: {
     list: () => ['connections', 'list'] as const,
     detail: (id: string) => ['connections', 'detail', id] as const,
