@@ -1585,9 +1585,17 @@ def handler(event, context):
                 "target_group": self.console_tg,
                 "environment": {
                     "SERVICE_NAME": "console",
-                    # API base MUST include the /prod stage (nginx appends /v1/ → /prod/v1/).
-                    "SENTRA_API_BASE": "https://iw3limi4k7.execute-api.us-east-1.amazonaws.com/prod",
-                    "SENTRA_API_HOST": "iw3limi4k7.execute-api.us-east-1.amazonaws.com",
+                    # LLD-26 / Option B: the console proxies /v1 to the PRIVATE ALB,
+                    # not API Gateway. API Gateway strips the reserved `x-amzn-oidc-*`
+                    # request headers, so the operator's ALB-Cognito identity never
+                    # reached the controller → every auth'd control-plane route
+                    # (/v1/me, tenants, credentials, …) 401'd. The private ALB
+                    # preserves the header and already path-routes the full /v1
+                    # surface to the controller. API Gateway stays the agent/data-plane
+                    # edge (/v1/validate + usage plans); the console doesn't call those.
+                    # No /prod stage here — the ALB serves /v1/* directly (nginx adds /v1/).
+                    "SENTRA_API_BASE": f"http://{self.private_alb.load_balancer_dns_name}",
+                    "SENTRA_API_HOST": self.private_alb.load_balancer_dns_name,
                     # Cognito hosted-UI logout target for the nginx /logout location. Without this the
                     # /logout block 302s to an empty Location and the Cognito session silently survives
                     # (the user appears NOT signed out). `logout_uri` host is registered as an allowed
