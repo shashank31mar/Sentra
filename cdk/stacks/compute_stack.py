@@ -872,6 +872,43 @@ class ComputeStack(Stack):
         # = lowest regression risk on the working auth.
         # ------------------------------------------------------------
         console_host = alb_config.get("console_host", "console.aegionai.ai")
+
+        # ------------------------------------------------------------
+        # WS-C (LLD-26): PUBLIC splash at the console root. Higher priority than
+        # the authed console rule below, so `/`, `/splash.html`, `/favicon.svg`
+        # are served WITHOUT authenticate-cognito (the designed Aegion front door
+        # renders with no session). nginx serves splash.html at exact `/`; its
+        # "Access Control Plane" button links to /overview, which falls through to
+        # the priority-10 authed rule → Cognito sign-in → console. Everything
+        # except these three exact paths stays Cognito-gated.
+        # ------------------------------------------------------------
+        self.console_splash_rule = elbv2.CfnListenerRule(
+            self,
+            "ConsoleSplashRule",
+            listener_arn=self.public_https_listener.ref,
+            priority=3,
+            conditions=[
+                elbv2.CfnListenerRule.RuleConditionProperty(
+                    field="host-header",
+                    host_header_config=elbv2.CfnListenerRule.HostHeaderConfigProperty(
+                        values=[console_host]
+                    ),
+                ),
+                elbv2.CfnListenerRule.RuleConditionProperty(
+                    field="path-pattern",
+                    path_pattern_config=elbv2.CfnListenerRule.PathPatternConfigProperty(
+                        values=["/", "/splash.html", "/favicon.svg"]
+                    ),
+                ),
+            ],
+            actions=[
+                elbv2.CfnListenerRule.ActionProperty(
+                    type="forward",
+                    target_group_arn=self.console_tg.target_group_arn,
+                ),
+            ],
+        )
+
         self.console_listener_rule = elbv2.CfnListenerRule(
             self,
             "ConsoleListenerRule",

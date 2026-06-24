@@ -60,6 +60,17 @@ server {
     # until a hard refresh). `no-cache` = the browser may store it but MUST revalidate every load
     # (ETag → fast 304 when unchanged, fresh 200 right after a deploy). The hashed assets above stay
     # immutable/long-cached, so this costs one tiny conditional request per navigation.
+    # ---- Public splash (LLD-26 WS-C): the designed Aegion front door ----
+    # Served at EXACT `/` only, no SPA dependency. The public ALB exempts `/` +
+    # `/splash.html` from authenticate-cognito (higher-priority listener rule), so
+    # this renders without a session. Its "Access Control Plane" button links to
+    # /overview, which IS behind Cognito → the operator signs in and lands in the
+    # authenticated console. Every other path stays SPA + Cognito-gated.
+    location = / {
+        try_files /splash.html =404;
+        add_header Cache-Control "no-cache" always;
+    }
+
     location / {
         try_files $uri $uri/ /index.html;
         add_header Cache-Control "no-cache" always;

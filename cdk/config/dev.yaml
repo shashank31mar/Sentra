@@ -31,6 +31,12 @@ tenancy_v2_enabled: true
 # to enforce until the background agents sign tokens, or they will be denied).
 tenant_identity_mode: shadow
 
+# Per-tenant validate-RPS quota enforcement (WS-E E2b). Safe to enable: inert
+# until a tenant is in `enforce` with a registered credential AND has a
+# max_validate_rps quota — for the current `default`/shadow fleet it's a no-op
+# (fails open on counter errors regardless). Flipped on after the cutover soak.
+quota_enforcement_enabled: true
+
 # Cedar authorization engine (feature: cedar-policy). Rollout: shadow first
 # (both true → Cedar runs alongside, legacy verdict stays live, discrepancies
 # recorded as CedarShadowDiscrepancy), then cutover by flipping

@@ -22,6 +22,10 @@ export const router = createBrowserRouter([
     errorElement: <RouteErrorBoundary />,
     children: [
       { path: ROUTES.overview, element: <OverviewPage /> },
+      // /overview alias — the public splash (served at `/` by nginx) links here
+      // so the operator enters the authenticated console (LLD-26 WS-C). `/` itself
+      // is the splash, so this alias is the in-app home target.
+      { path: '/overview', element: <OverviewPage /> },
       { path: ROUTES.threats, element: <ThreatsPage /> },
       { path: ROUTES.deployments, element: <PlaceholderPage title="Deployments" /> },
       { path: ROUTES.agents, element: <AgentInventoryPage /> },
