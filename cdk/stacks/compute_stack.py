@@ -1072,6 +1072,29 @@ class ComputeStack(Stack):
             )
         )
 
+        # Priority 6: LLD-26 multi-tenancy control-plane endpoints. Separate rule
+        # (ALB caps path-pattern values at 5/rule; priorities 1 & 5 are full). These
+        # are the SECOND edge allowlist after API Gateway — without them the
+        # gateway-registered tenancy routes (/v1/me, tenants, invites, platform,
+        # identity) 404 at the private ALB's default action. (/v1/agents/{id}/
+        # credentials already routes via the /v1/agents* rule at priority 4.)
+        self.private_http_listener.add_action(
+            "SecurityControllerRoutingTenancy",
+            priority=6,
+            conditions=[
+                elbv2.ListenerCondition.path_patterns([
+                    "/v1/me",
+                    "/v1/tenants*",
+                    "/v1/invites*",
+                    "/v1/platform*",
+                    "/v1/identity*",
+                ])
+            ],
+            action=elbv2.ListenerAction.forward(
+                target_groups=[self.security_controller_tg]
+            )
+        )
+
         # Priority 2: Customer Query Agent endpoints
         self.private_http_listener.add_action(
             "CustomerQueryAgentRouting",
