@@ -2,6 +2,7 @@
 
     AegionGuardError
     ├── ConfigError          (missing/invalid config at init — fail fast)
+    ├── IdentityError        (the `identity` extra is missing, or a token couldn't be minted)
     ├── ToolDenied           (the controller returned DENY, or fail-secure tripped)
     │   └── UnknownAgentError(controller reports the agent_id is not registered)
     └── SentraUnavailable    (transport failure AND fail_secure=False)
@@ -26,6 +27,17 @@ class ConfigError(AegionGuardError, ValueError):
 
     Subclasses ``ValueError`` so existing ``except ValueError`` handlers still
     catch it, while ``except AegionGuardError`` catches all SDK errors.
+    """
+
+
+class IdentityError(AegionGuardError):
+    """Raised when agent data-plane identity cannot be established or minted.
+
+    Distinct from ``ConfigError`` (static misconfiguration caught at init): this
+    covers the runtime/dependency cases — the optional ``identity`` extra
+    (``PyJWT[crypto]``) is not installed, or signing a token failed. Surfaced
+    distinctly so the integrator gets the ``pip install 'aegion-guard[identity]'``
+    hint instead of an opaque ``ImportError``.
     """
 
 

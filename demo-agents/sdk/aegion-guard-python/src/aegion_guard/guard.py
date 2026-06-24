@@ -88,6 +88,11 @@ class AegionGuard:
         timeout_s: Optional[float] = None,
         fail_secure: Optional[bool] = None,
         connect_retries: Optional[int] = None,
+        tenant_id: Optional[str] = None,
+        kid: Optional[str] = None,
+        private_key: Optional[str] = None,
+        private_key_file: Optional[str] = None,
+        token_ttl_s: Optional[float] = None,
         platform: Optional[str] = None,
         cloud_region: Optional[str] = None,
         on_decision: Optional[Callable[[Decision], None]] = None,
@@ -107,7 +112,34 @@ class AegionGuard:
             timeout_s=timeout_s,
             fail_secure=fail_secure,
             connect_retries=connect_retries,
+            tenant_id=tenant_id,
+            kid=kid,
+            private_key=private_key,
+            private_key_file=private_key_file,
+            token_ttl_s=token_ttl_s,
         )
+
+        # Data-plane identity (WS-A): when configured, sign every validate request
+        # with a short-lived ES256 JWT the controller verifies. The `identity`
+        # extra (PyJWT[crypto]) is imported lazily and ONLY here — the zero-dep
+        # core never touches it. AgentIdentity validates the key + tenant prefix
+        # at construction, so a misconfigured agent fails now, not at first call.
+        self._signer = None
+        token_provider = None
+        if self._config.identity_enabled:
+            from .identity import AgentIdentity, JwtSigner
+
+            self._signer = JwtSigner(
+                AgentIdentity(
+                    agent_id=self.agent_id,
+                    tenant_id=self._config.tenant_id,
+                    kid=self._config.kid,
+                    private_key=self._config.private_key,
+                    token_ttl_s=self._config.token_ttl_s,
+                )
+            )
+            token_provider = self._signer.token
+
         from . import __version__
 
         self._client = ValidateClient(
@@ -116,6 +148,7 @@ class AegionGuard:
             timeout_s=self._config.timeout_s,
             connect_retries=self._config.connect_retries,
             user_agent=f"aegion-guard/{__version__}",
+            token_provider=token_provider,
         )
 
     # -- configuration accessors (read-only; never expose the api_key) -------
@@ -127,13 +160,20 @@ class AegionGuard:
     def timeout_s(self) -> float:
         return self._config.timeout_s
 
+    @property
+    def identity_enabled(self) -> bool:
+        """True when this guard signs requests with an agent JWT (WS-A)."""
+        return self._signer is not None
+
     def __repr__(self) -> str:
-        # Never include api_key. Show only non-sensitive identity/config.
+        # Never include api_key or any private key material. Show only
+        # non-sensitive identity/config (kid is a public reference, safe to show).
         return (
             f"AegionGuard(agent_id={self.agent_id!r}, "
             f"validate_url={self._config.validate_url!r}, "
             f"fail_secure={self._config.fail_secure}, "
-            f"timeout_s={self._config.timeout_s})"
+            f"timeout_s={self._config.timeout_s}, "
+            f"identity_enabled={self.identity_enabled})"
         )
 
     # -- per-request context -------------------------------------------------

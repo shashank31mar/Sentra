@@ -84,6 +84,46 @@ guard = AegionGuard(
 
 ---
 
+## Runtime identity / request signing (opt-in)
+
+Under a tenant in **`enforce`** mode the controller derives `(tenant_id, agent_id)`
+from a **verified, agent-signed ES256 JWT** — not from the request body (LLD-26 §3 /
+WS-A). To sign, install the extra and supply the agent's private key + `kid`:
+
+```bash
+pip install 'aegion-guard[identity]'
+```
+
+The extra is **kept out of the zero-dep core** so the validation path still vendors
+unchanged into a Lambda zip / Azure Function (signing is impossible in pure stdlib).
+When these env vars are all set, `AegionGuard(...)` signs **every** validate call —
+**no code change**:
+
+| Env var | Meaning |
+|---|---|
+| `SENTRA_TENANT_ID` | the agent's tenant (`tid` claim) |
+| `SENTRA_AGENT_KID` | the `kid` the controller returned at registration |
+| `SENTRA_AGENT_PRIVATE_KEY_FILE` | path to the agent's P-256 private key PEM (or `SENTRA_AGENT_PRIVATE_KEY` for the literal) |
+| `SENTRA_TOKEN_TTL_S` | token lifetime, ≤ 900 (default 600) |
+
+`agent_id` must be the canonical `{tenant}-{cloud}-{slug}-{hash}` and start with
+`{tenant_id}-` — the SDK validates this at construction and fails fast.
+
+**Provision an agent (operator):**
+
+```bash
+python -m aegion_guard.provision \
+  --agent-id t_acme-aws-payments-ab12cd34 --tenant-id t_acme \
+  --register --api-base https://<controller> --header 'x-amzn-oidc-data: <...>'
+```
+
+This generates the keypair (private key written `0600`), registers the **public** key
+(returns the `kid`), and writes a `*.identity.env` scaffold to source. The private key
+never leaves the agent host. Without identity env set, the SDK runs exactly as before
+(unsigned) — appropriate for tenants in `off`/`shadow`.
+
+---
+
 ## Usage
 
 ### Decorator (recommended)

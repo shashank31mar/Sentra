@@ -24,11 +24,16 @@ from .config import GuardConfig
 from .exceptions import (
     AegionGuardError,
     ConfigError,
+    IdentityError,
     SentraUnavailable,
     ToolDenied,
     UnknownAgentError,
 )
 from .guard import AegionGuard, Decision, infer_operation_type
+
+# Identity (signing) helpers live behind the optional `identity` extra. Importing
+# the names is safe (lazy crypto/JWT imports inside); using them requires the extra.
+from .identity import AgentIdentity, JwtSigner, generate_keypair
 
 # Distribution/import name is `aegion_guard`; the market brand is AegionAI.
 # "Sentra" remains the internal control-plane codename.
@@ -50,7 +55,11 @@ __all__ = [
     "UnknownAgentError",
     "SentraUnavailable",
     "ConfigError",
+    "IdentityError",
     "AegionGuardError",
+    "AgentIdentity",
+    "JwtSigner",
+    "generate_keypair",
     "from_bedrock_event",
     "from_azure_request",
     "infer_operation_type",

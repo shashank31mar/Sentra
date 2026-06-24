@@ -36,6 +36,16 @@ def aws_credentials(monkeypatch):
 def env(aws_credentials):
     """Provision agent-registry + policies-metadata (with agent-index) + S3."""
     with mock_aws():
+        # PolicyEngine resolves bundles through a PROCESS-WIDE TTL cache
+        # (cache_manager, keyed `policy_bundle:{tenant}:{agent_id}`). These tests
+        # reuse the same agent_id/policy_id with DIFFERENT content+status across
+        # cases (active → disabled, us-east-1 → eu-west-1), bypassing the
+        # policy_service writes that would normally invalidate it. Clear the shared
+        # cache per test so a prior case's bundle can't satisfy a later get_item.
+        from app.utils.cache_manager import get_cache_manager
+
+        get_cache_manager().clear()
+
         ddb = boto3.resource("dynamodb", region_name=settings.aws_region)
         agents = ddb.create_table(
             TableName=settings.dynamodb_agent_registry_table,
