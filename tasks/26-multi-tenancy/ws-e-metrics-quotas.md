@@ -1,7 +1,7 @@
 # WS-E: Tenant-Aware Metrics, Quotas & Platform-Admin Console
 
 **Parent LLD**: [lld/26-multi-tenancy.md](../../lld/26-multi-tenancy.md) §9 (+ §5.5)
-**Status**: Designed — **cross-cutting, not on the A→B→C critical path**
+**Status**: 🟡 Partial (2026-06-24) — DONE: E1 `tenant_id` metric dimension (`metrics_publisher.py`), E2 `quota_service` + `quota_enforcement_enabled` flag, E3 `_platform` gate + `/v1/platform/tenants` endpoints. PENDING: E1 cardinality-cost validation, E2 enforce soak, E3 §10 Q2 audit/consent compliance gate before cross-tenant reads ship.
 **Owner**: TBD
 
 ## Dependencies

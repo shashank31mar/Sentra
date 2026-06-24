@@ -1,7 +1,7 @@
 # WS-D: Tenant Lifecycle, Onboarding & RBAC
 
 **Parent LLD**: [lld/26-multi-tenancy.md](../../lld/26-multi-tenancy.md) §6
-**Status**: Ready for build — **build first (foundation)**
+**Status**: ✅ Complete (2026-06-24, 8a34abd) — tenant/member tables, onboarding (invite/domain-claim/manual), `verify_alb_oidc` app-layer authN, `resolve_operator_tenant`+`require_role`, suspended semantics, `/v1/me`, `_platform` dual-audit, resumable deletion
 **Owner**: TBD
 
 ## Dependencies
@@ -150,15 +150,15 @@ Deletion is a compliance surface (GDPR/CCPA), so it is staged — not a single d
 
 ## Acceptance criteria
 
-- [ ] Both tables + GSI deployed via CDK; **task role granted RW + GSI query, table names in task env**; added to LLD-06.
-- [ ] Three onboarding paths implemented; free-mail domain-claim blocked; reserved ids rejected (`400`).
-- [ ] `tenant_id` minting produces immutable derived slugs only.
-- [ ] **D3a `verify_alb_oidc` live** — forged/expired `x-amzn-oidc-data` → `401`; ALB regional key fetched, cached, survives rotation. (Own acceptance, above.)
-- [ ] `resolve_operator_tenant` + `require_role` dependencies live (consume verified claims); `403` on non-member tenant and insufficient role.
-- [ ] `suspended` behavior implemented per defined semantics (control-plane read-only; data-plane `TENANT_SUSPENDED` DENY) and reversible.
-- [ ] `GET /v1/me` returns role + memberships.
-- [ ] `_platform` cross-tenant access dual-audited.
-- [ ] Deletion is resumable (kill mid-purge → resume completes); post-purge no tenant-keyed row remains except the `purged` tombstone + legal-held audit (covered by WS-B "Tenant delete" isolation test).
+- [x] Both tables + GSI deployed via CDK; **task role granted RW + GSI query, table names in task env**; added to LLD-06.
+- [x] Three onboarding paths implemented; free-mail domain-claim blocked; reserved ids rejected (`400`).
+- [x] `tenant_id` minting produces immutable derived slugs only.
+- [x] **D3a `verify_alb_oidc` live** — forged/expired `x-amzn-oidc-data` → `401`; ALB regional key fetched, cached, survives rotation. (Own acceptance, above.)
+- [x] `resolve_operator_tenant` + `require_role` dependencies live (consume verified claims); `403` on non-member tenant and insufficient role.
+- [x] `suspended` behavior implemented per defined semantics (control-plane read-only; data-plane `TENANT_SUSPENDED` DENY) and reversible.
+- [x] `GET /v1/me` returns role + memberships.
+- [x] `_platform` cross-tenant access dual-audited.
+- [x] Deletion is resumable (kill mid-purge → resume completes); post-purge no tenant-keyed row remains except the `purged` tombstone + legal-held audit (covered by WS-B "Tenant delete" isolation test).
 
 ## Cross-references
 

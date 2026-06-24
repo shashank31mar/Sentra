@@ -1,7 +1,7 @@
 # WS-A: Runtime Tenant Identity (asymmetric JWT)
 
 **Parent LLD**: [lld/26-multi-tenancy.md](../../lld/26-multi-tenancy.md) §3
-**Status**: Ready for build — build after WS-D
+**Status**: ✅ Complete (2026-06-24) — controller verify path + credential APIs (8a34abd), agent SDK ES256 signing + provisioning + cross-package e2e (5f90c03)
 **Owner**: TBD
 
 > This is the largest new build and the one that converts the system from "default-tenant" to genuinely multi-tenant on the data path. It ships in **shadow** first.
@@ -149,13 +149,13 @@ Short token lifetime (**≤15 min**) with SDK-side silent refresh from the held 
 
 ## Acceptance criteria
 
-- [ ] `sentra-agent-credentials` + `kid-index` GSI deployed; in purge list; **controller task role granted RW + GSI query, table name in task env** (CDK).
-- [ ] 4 credential APIs live; ownership-checked via **registry-row `tenant_id` compare or `tenant + "-"` prefix** (`403` on foreign agent); ES256-only.
-- [ ] `resolve_tenant_from_jwt` dependency wired into `/v1/validate`; `set_current_tenant` called per request in `try/finally`.
-- [ ] Public-key LRU + `revoked-since` signal; **no per-request GSI read** under load test.
-- [ ] Shadow mode verifies + logs without routing; uncredentialed agents unaffected.
-- [ ] `_unverified` audit bucket with `claimed_tenant_id` dual-tag (covered by WS-B isolation test).
-- [ ] Negative tests for all six error rows return the right code + DENY.
+- [x] `sentra-agent-credentials` + `kid-index` GSI deployed; in purge list; **controller task role granted RW + GSI query, table name in task env** (CDK).
+- [x] 4 credential APIs live; ownership-checked via **registry-row `tenant_id` compare or `tenant + "-"` prefix** (`403` on foreign agent); ES256-only.
+- [x] `resolve_tenant_from_jwt` dependency wired into `/v1/validate`; `set_current_tenant` called per request in `try/finally`.
+- [x] Public-key LRU + `revoked-since` signal; **no per-request GSI read** under load test.
+- [x] Shadow mode verifies + logs without routing; uncredentialed agents unaffected.
+- [x] `_unverified` audit bucket with `claimed_tenant_id` dual-tag (covered by WS-B isolation test).
+- [x] Negative tests for all six error rows return the right code + DENY.
 
 ## Cross-references
 

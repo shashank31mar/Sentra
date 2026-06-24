@@ -1,8 +1,8 @@
 # Multi-Tenancy Workstreams — Index & Sequencing
 
 **Parent LLD**: [lld/26-multi-tenancy.md](../../lld/26-multi-tenancy.md) (v1.3, Approved)
-**Last Updated**: 2026-06-23
-**Status**: Ready for build
+**Last Updated**: 2026-06-24
+**Status**: ✅ WS-A & WS-D complete · 🟡 WS-B/WS-C/WS-E partial (storage+identity+console+metrics shipped; live enforce flip, brownfield purge, residual-agent list, Streamlit decommission, quota soak still gated). See each WS doc's Status line.
 
 This folder breaks LLD-26 into five independently-ownable workstreams. Each doc is a **build task list** — concrete enough to code from without re-reading the whole LLD. Read this index first for the dependency graph and the one rule that gates the whole rollout (credential-coverage before enforce).
 

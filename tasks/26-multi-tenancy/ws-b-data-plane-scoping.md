@@ -1,7 +1,7 @@
 # WS-B: Data-Plane Tenant Scoping (cutover + loose ends)
 
 **Parent LLD**: [lld/26-multi-tenancy.md](../../lld/26-multi-tenancy.md) §4
-**Status**: Ready for build — storage copy **done**; enforce flip gated on WS-A
+**Status**: 🟡 Partial (2026-06-24) — DONE: TENANCY_V2 storage copy, B6 binding-under-v2 test, B7 contextvar rule, B8 isolation matrix (green). PENDING (gated): B1 per-tenant enforce flip, B3 explicit S3 prefix, B4 `sentra-policies` decommission, B9 brownfield re-import + `default` purge (human sign-off).
 **Owner**: TBD
 
 > The `TENANCY_V2` storage copy (4 tables, switchboard, tests) is already built and dual-readable. WS-B is the **live cutover** + the remaining loose ends — it adds **no new call-site rewrites** for the four migrated tables; it flips the flag, per-tenant.
