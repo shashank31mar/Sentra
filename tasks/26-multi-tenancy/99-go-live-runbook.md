@@ -1,9 +1,42 @@
 # Multi-Tenancy Go-Live Runbook — WS-A data-plane enforce
 
-**Status**: mechanism **complete and proven in tests**. The live-cutover steps below
-are **human-gated** because they are outward-facing (live dev/demo) and/or
-irreversible (brownfield purge). Build is done; flipping the live environment is a
-decision, not a code change.
+**Status**: ✅ **GO-LIVE EXECUTED on dev (2026-06-24).** Tenant `acme` is in `enforce`
+and the dev fleet ceiling is raised to `enforce`; all three Acme agents verify +
+route under tenant `acme` (live: 0 `_unverified`, normal policy verdicts). The full
+control-plane console surface is reachable end-to-end. Remaining human-gated items
+(brownfield `default` purge, B3 `--delete-old` S3 cutover, E2 RPS-quota ceiling)
+are still deliberately deferred. The live-cutover steps below are retained as the
+runbook of record.
+
+## Go-live record (2026-06-24, dev)
+
+| Step executed | Result |
+|---|---|
+| Tenant `acme` → `identity_mode=enforce` (`sentra-tenants`) | done |
+| Dev fleet ceiling `TENANT_IDENTITY_MODE=enforce` (`dev.yaml` + controller m86) | done |
+| Acme agents signing (Lambda + both Azure funcs) under tenant `acme` | live, verified (0 `_unverified`) |
+| Controller image `milestone-86`, console image `milestone-31` | deployed |
+| `sentra-identity-fallback` table (B1) | deployed (window=0, off) |
+
+**Console control-plane reachability (cross-cutting fix during go-live).** The
+LLD-26 tenancy routes 403/404/401'd at the edge until **three** layers were closed
+(each hid the next):
+1. **API Gateway** enumerates resources (no `{proxy+}`) → added explicit MT routes (`api_stack.py`).
+2. **Private ALB** path-allowlist defaults to 404 → added a priority-6 rule for
+   `/v1/me`, `/v1/tenants*`, `/v1/invites*`, `/v1/platform*`, `/v1/identity*` (`compute_stack.py`).
+3. **Reserved-header strip** — every gateway hop (API GW *and* the ALB) strips
+   inbound `x-amzn-oidc-*` (anti-spoof), so the operator identity never reached the
+   controller. Fix: console nginx re-emits it as `x-sentra-oidc-data`; the console
+   proxies `/v1` to the **private ALB** (not API GW); `verify_alb_oidc` reads the
+   renamed header (still verifies the ALB signature). Console nginx also re-resolves
+   the ALB DNS at runtime (`resolver`).
+
+> **Gotcha to remember:** reserved `x-amzn-oidc-*` headers are stripped on inbound by
+> *every* gateway hop, not just one. Any service behind a gateway that needs the
+> ALB-Cognito identity must receive it under a **non-reserved** header name.
+
+`admin@sentra.com` granted `owner` on `acme` (bootstrap membership) so the console
+tenant switcher exposes Acme.
 
 ---
 
