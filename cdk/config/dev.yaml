@@ -50,6 +50,12 @@ s3_explicit_tenant_prefix: false
 # (fails open on counter errors regardless). Flipped on after the cutover soak.
 quota_enforcement_enabled: true
 
+# Platform-admin cross-tenant read consent ENFORCEMENT (WS-E E3 / §10 Q2). When
+# true, a Sentra-staff per-tenant read DENIES (403) unless the target tenant has
+# platform_read_consent=true. The immutable audit ledger writes regardless. Enabled
+# on dev after granting consent to all active tenants (t_e1xm0m7g8f04s, acme).
+platform_read_consent_enforced: true
+
 # Cedar authorization engine (feature: cedar-policy). Rollout: shadow first
 # (both true → Cedar runs alongside, legacy verdict stays live, discrepancies
 # recorded as CedarShadowDiscrepancy), then cutover by flipping
