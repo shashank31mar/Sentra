@@ -1,5 +1,7 @@
 # AegionAI Guard — Architecture Brief (Investor / Technical Review)
 
+> **CONFIDENTIAL — Do not distribute.** Shared in confidence for investor / technical evaluation. Please do not forward, copy, or share outside your firm without the founder's consent. © 2026 AegionAI. All rights reserved.
+
 *A standalone technical overview for engineering reviewers: where we sit, how a decision is made, how we deploy (multi-tenant cloud, inside your VPC, or air-gapped), our threat model, and how we handle security, scale, and reliability. It is honest about what's built today versus on the roadmap.*
 
 ---

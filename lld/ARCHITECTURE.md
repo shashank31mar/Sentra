@@ -3,7 +3,7 @@
 **Version:** 1.2 (Draft for Review)
 **Last Updated:** 2026-06-17
 **Owner:** Shashank Gupta (Founder/CEO)
-**Companion docs:** [PRD.md](../PRD.md) (the "what" — requirements by ID) · [vision.md](../vision.md) (vision & pillars) · [STRATEGY.md](../pitch/STRATEGY.md) (market / GTM / roadmap) · LLDs in [lld/](./)
+**Companion docs:** [PRD.md](../PRD.md) (the "what" — requirements by ID) · [vision.md](../vision.md) (vision & pillars) · [STRATEGY.md](../pitch/share/STRATEGY.md) (market / GTM / roadmap) · LLDs in [lld/](./)
 
 > This document describes **how** we build AegionAI Guard to satisfy the requirements in the [PRD](../PRD.md). It references requirements by ID (FR-x / NFR-x) rather than restating them. It is honest about **today vs roadmap** — where they differ, this doc and the PRD's status column win over any aspirational prose.
 

@@ -8,7 +8,7 @@
 
 - **Depends on**: **WS-A** (the `tenant_id` dimension only becomes meaningful once identity is resolved per request) and **WS-D** (`sentra-tenants` registry for quota config + the `_platform` capability for the ops console).
 - **Blocks**: nothing on the critical path. Can run in parallel with WS-C once A/D land.
-- **Note**: WS-E is designed in the LLD but **not shown in the §7 rollout diagram** — it is deliberately deferred/parallel. Billing/metering rollup is explicitly out of scope (tracked in `pitch/STRATEGY.md`).
+- **Note**: WS-E is designed in the LLD but **not shown in the §7 rollout diagram** — it is deliberately deferred/parallel. Billing/metering rollup is explicitly out of scope (tracked in `pitch/share/STRATEGY.md`).
 
 ---
 

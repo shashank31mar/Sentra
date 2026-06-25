@@ -614,4 +614,4 @@ Switching from Y1 Consumption (free idle) to B1 Basic (~$13/mo flat) is the only
 - **LLD**: [lld/15-cross-cloud-connectors.md](../lld/15-cross-cloud-connectors.md)
 - **HLD**: [design-hld.md](../design-hld.md) §3.7
 - **ADRs**: [adr.md](../adr.md) ADR-020, ADR-021
-- **Investor commitment**: [pitch/pitch-deck-v4.md](../pitch/pitch-deck-v4.md) §11 (Month 2 milestones)
+- **Investor commitment**: [pitch/pitch-deck-v4.md](../pitch/archive/pitch-deck-v4.md) §11 (Month 2 milestones)

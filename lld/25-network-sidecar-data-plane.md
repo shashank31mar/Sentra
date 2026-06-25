@@ -1428,7 +1428,7 @@ out of scope for this LLD (see §1.8) and revisited later.
 [LLD 23 SDK](23-sentra-guard-sdk.md) · [LLD 18 Deterministic](18-deterministic-enforcement.md) ·
 [LLD 19 ML](19-ml-threat-classifier.md) · [LLD 24 Latency](24-latency-optimization.md) ·
 [LLD 15 Connectors](15-cross-cloud-connectors.md) · [LLD 17 Signal Store](17-validation-signal-store.md) ·
-[STRATEGY.md §3](../pitch/STRATEGY.md) (value floor / in-boundary intelligence model).
+[STRATEGY.md §3](../pitch/share/STRATEGY.md) (value floor / in-boundary intelligence model).
 
 **External (cloud feasibility, June 2026):**
 - AWS Fargate eBPF/capabilities: [containers-roadmap #1027](https://github.com/aws/containers-roadmap/issues/1027), [Fargate security considerations](https://docs.aws.amazon.com/AmazonECS/latest/developerguide/fargate-security-considerations.html)

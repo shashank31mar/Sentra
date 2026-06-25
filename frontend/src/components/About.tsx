@@ -18,7 +18,7 @@ const PILLARS = [
   {
     icon: 'ti-lock-check',
     title: 'Enforce',
-    description: 'Block, quarantine, contain, or rollback — automatically. Compromised agents are isolated in seconds, across any cloud.',
+    description: 'Block before execution, quarantine, contain — and roll back where the action is reversible. Compromised agents are isolated in seconds, across any cloud.',
     color: 'purple',
     highlighted: false,
     badge: null,
@@ -56,12 +56,12 @@ export default function About() {
             What We Do
           </span>
           <h2 className="font-heading text-3xl sm:text-4xl font-bold text-white mt-4 mb-5">
-            The AI Security Control Plane
+            The Control Plane for Every AI Agent
           </h2>
           <p className="font-body text-base sm:text-lg text-muted max-w-3xl mx-auto leading-relaxed">
             AegionAI is to AI agents what Kubernetes is to containers. We sit between your AI agents
             and the systems they interact with — intercepting, validating, and enforcing every action
-            before it executes. One governance layer. Every cloud. Every agent.
+            before it executes. One neutral governance layer no single cloud can be. Every cloud. Every agent.
           </p>
         </div>
 

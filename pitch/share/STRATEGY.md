@@ -1,10 +1,12 @@
 # AegionAI Guard — Strategy, GTM & Market Analysis
 
+> **CONFIDENTIAL — Do not distribute.** Shared in confidence for investor evaluation. Please do not forward, copy, or share outside your firm without the founder's consent. © 2026 AegionAI. All rights reserved.
+
 **Version:** 1.1
 **Last Updated:** 2026-06-19
 **Status:** Draft for Review
 **Owner:** Shashank Gupta (Founder/CEO)
-**Companion docs:** [PRD.md](../PRD.md) (the "what") · [vision.md](../vision.md) (vision & pillars) · [ARCHITECTURE.md](../lld/ARCHITECTURE.md) (the "how") · [pitch/one-pager.md](one-pager.md) (the "why")
+**Companion docs:** [PRD.md](../../PRD.md) (the "what") · [vision.md](../../vision.md) (vision & pillars) · [ARCHITECTURE.md](../../lld/ARCHITECTURE.md) (the "how") · [one-pager-v2.md](one-pager-v2.md) (the "why")
 
 > **The single strategy doc.** Part I is the strategy (the investor read, ~3 pages). Part II is the market & industry analysis that backs it (evidence, named targets, sources). Decisions live in Part I; Part II only supplies facts. The PRD stays product-only and references this doc for anything business/growth.
 
@@ -14,23 +16,23 @@
 
 ## 1. Market & Why Now
 
-- **TAM (Total Addressable Market):** AI-governance spend ~$5B (2026) → ~$16B (2030); the cloud-agnostic, fleet-level slice (our segment) grows from ~$0.9B (2025) to ~$5.8B by 2030 at ~45% CAGR (Compound Annual Growth Rate); near-term beachhead (money-moving agents) ~$500M. ([Forrester](https://www.forrester.com/blogs/ai-governance-software-spend-will-see-30-cagr-from-2024-to-2030/), [Gartner](https://www.gartner.com/en/newsroom/press-releases/2026-02-17-gartner-global-ai-regulations-fuel-billion-dollar-market-for-ai-governance-platforms), [MarketsandMarkets](https://www.marketsandmarkets.com/Market-Reports/ai-agents-market-15761548.html); beachhead bottoms-up. Corroboration + full sourcing in Appendix.)
-- **Adoption gap:** ~82% of enterprises use AI agents; only ~26–44% govern them; ~31% have an agent in production.
-- **The pain is here:** prompt-injection attacks rose **340% year-over-year** ([OWASP 2026](https://www.helpnetsecurity.com/2026/06/11/owasp-prompt-injection-ai-security-failures/)); 2026 saw real autonomous-agent damage (Replit deleting a production database; the LiteLLM supply-chain backdoor; Claude Code hijacked for espionage — see Appendix B). **88% of organizations report AI-agent security incidents; only 22% treat agents as identity-bearing entities** ([Okta](https://www.okta.com/blog/ai/okta-ispm-ai-security/)).
-- **Regulatory tailwind (multi-year, not a single cliff):** EU AI Act transparency duties apply Aug 2026; high-risk obligations (credit scoring, insurance pricing) phase in to **Dec 2027** (provisional Digital Omnibus); the up-to-7%-of-revenue penalty regime still raises the cost of an ungoverned agent. *We anchor "why now" on the incidents above, not on one date.*
-- **Market signal:** two AI-security startups recently acquired ($300M, $180M); analysts call **runtime/control "the decisive battleground"** ([Dell'Oro](https://www.prnewswire.com/news-releases/ai-systems-security-market-to-rise-from-zero-to-nearly-8-b-by-2030-according-to-delloro-group-roughly-60-vendors-racing-to-secure-enterprise-ai-models-agents-and-workflows-302761017.html)).
+- **TAM (Total Addressable Market):** estimates diverge by definition — narrow **AI-governance-platform** spend ~$492M (2026) → >$1B (2030) ([Gartner](https://www.gartner.com/en/newsroom/press-releases/2026-02-17-gartner-global-ai-regulations-fuel-billion-dollar-market-for-ai-governance-platforms)); broader **agentic-AI governance & policy management** $7.3B (2025) → $38.9B (2030), ~40% CAGR ([Mordor](https://www.mordorintelligence.com/industry-reports/agentic-artificial-intelligence-governance-and-policy-management-market); single-source — disclose). Whichever definition, the market compounds 35–40%/yr as agents hit production. Our **near-term beachhead (money-moving agents) is a bottoms-up ~$500M slice** — we don't underwrite the headline TAM. (Full sourcing + the divergence note in Appendix.)
+- **Adoption gap:** **~96%** of enterprises use AI agents ([OutSystems 2026, n=1,900](https://www.outsystems.com/news/enterprise-ai-agent-report-2026/)), but only **~21%** have a *mature* governance model for them ([Deloitte 2026, n=3,235](https://www.deloitte.com/us/en/insights/topics/emerging-technologies/ai-agents-scaling-faster.html)) — adoption is racing ahead of control.
+- **The pain is here:** prompt-injection *reports* on HackerOne's platform rose **540% YoY** (2024→2025; report volume, not industry incident rate — [HackerOne 9th Annual Report](https://www.hackerone.com/press-release/hackerone-report-finds-210-spike-ai-vulnerability-reports-amid-rise-ai-autonomy)); 2026 saw real autonomous-agent damage (Replit deleting a production database; the LiteLLM supply-chain backdoor; Claude Code hijacked for espionage — see Appendix B). **65% of organizations report an AI-agent security incident in the past 12 months** ([Cloud Security Alliance 2026, n=418](https://cloudsecurityalliance.org/artifacts/autonomous-but-not-controlled-ai-agent-incidents-now-common-in-enterprises)); a separate survey puts it at **54% experienced-or-suspected (~35% confirmed)** ([Gravitee, N=750](https://www.gravitee.io/state-of-ai-agent-security)); only **22% treat agents as identity-bearing entities** ([Okta](https://www.okta.com/blog/ai/okta-ispm-ai-security/)).
+- **Regulatory tailwind (multi-year, not a single cliff):** EU AI Act GPAI/transparency duties are **in force since Aug 2025**; high-risk obligations (credit scoring, insurance pricing) are **scheduled Aug 2026** — the EU *provisionally agreed* (May 2026) to slip some to **Dec 2027** via the Digital Omnibus, but that is **not yet adopted**; the up-to-7%-of-revenue penalty regime still raises the cost of an ungoverned agent. *We anchor "why now" on the incidents above, not on one date.*
+- **Market signal:** two AI-security startups acquired in 2025 (**$300M** Check Point/Lakera, **$180M** F5/CalypsoAI); analysts have *named the category* — **Gartner "Guardian Agents" (Feb 2026 Market Guide), Forrester "AEGIS" (2025)** — and ~60 vendors are racing in ([Dell'Oro](https://www.prnewswire.com/news-releases/ai-systems-security-market-to-rise-from-zero-to-nearly-8-b-by-2030-according-to-delloro-group-roughly-60-vendors-racing-to-secure-enterprise-ai-models-agents-and-workflows-302761017.html)).
 - **Sales reality:** enterprise cycle 90–180 days, ACV $100K–$500K; to close in a quarter, start outreach the prior quarter.
 
 ## 2. Positioning & Moat
 
-**Positioning:** the only platform that governs AI-agent **actions** across AWS, Azure, GCP, and on-prem simultaneously — real-time enforcement (not just detection), cross-agent blast-radius containment, and a deployment model regulated buyers can accept (in-VPC, air-gapped). Cloud providers structurally can't match this — each protects only agents on its own cloud.
+**Positioning:** the **neutral control plane** that governs AI-agent **actions** across AWS, Azure, GCP, and on-prem from one place — *what* the action does (params, identity, session state), not just whether a prompt looks bad. Point tools now block inline too; our edge is governing the **action** (stateful: trust decay, quarantine, bounded rollback) and being **neutral across every vendor**, with a deployment model regulated buyers can accept (in-VPC, air-gapped). No single cloud can be neutral across its rivals — that's the opening Wiz ($32B) and Datadog used to build on top of the clouds.
 
-**Why we win / defensibility:**
-- **Cloud giants are structurally blocked** — they won't guard agents on a rival's cloud.
-- **Standards & lock-in** — as companies write their agent rules in our format and build on top, switching cost compounds every month (the Kubernetes / Stripe path).
-- **Cross-cloud threat-data moat** — only a cross-cloud platform sees multi-cloud attack patterns; every agent protected compounds the lead.
+**Why we win / defensibility:** *(the intercept itself is old tech — WAFs/meshes have done it for a decade; the moat is the position and the data, not the mechanism.)*
+- **Cloud giants are structurally blocked** — each governs only its own cloud's agents and won't guard a rival's; a *neutral* cross-vendor plane is not theirs to hold by design.
+- **Cross-vendor threat-data flywheel** — only a neutral player sees attack patterns *across* AWS/Azure/OpenAI/on-prem; signatures push back to every customer ("saw this injection at one bank → all protected in minutes"; the CrowdStrike pattern). A single-stack incumbent structurally can't assemble this.
+- **Standards & lock-in** — as companies write their agent rules in our format and we become the cross-vendor audit system-of-record, switching cost compounds every month (the Kubernetes / Stripe path).
 - **On-prem / air-gapped permanence** — regulated buyers structurally can't use a single-cloud or pure-SaaS competitor.
-- **Patent pending** on the core approach.
+- **Patent pending** — priority/defensibility at the margin, *not* the moat (don't lead with it).
 
 **What we're building this round (gaps we're closing):** a larger adversarial attack-pattern corpus and continuous red-teaming; formal-verification depth; enterprise trust/brand and SOC 2 (System and Organization Controls); and deeper detection coverage.
 
@@ -44,7 +46,7 @@ The three questions a skeptical buyer or investor asks: *what if they never enfo
 - **Risk quantification** — "your agents *attempted* N unsafe money-moves this month your current controls missed" (the confidence-to-enforce counterfactual).
 - **Detection + SIEM feed.**
 
-**Value ceiling.** Enforcement + rollback + cross-agent containment is what makes us category-defining and premium-priced; pure-monitor competes closer to the detect-and-warn point tools (thinner moat). So: **monitor is the floor and the landing motion; enforcement is the ceiling and the premium.** Don't let the floor become the ceiling — the [confidence-to-enforce engine](../PRD.md) is the machine that walks customers up that path.
+**Value ceiling.** Action-level governance + bounded rollback + cross-agent containment — *stateful, across every vendor* — is what makes us category-defining and premium-priced; pure-monitor competes closer to the point tools (thinner moat). Note: inline blocking is no longer the differentiator (the point tools block too now) — *governing the action with session state, and neutrality across vendors,* is. So: **monitor is the floor and the landing motion; action governance is the ceiling and the premium.** Don't let the floor become the ceiling — the [confidence-to-enforce engine](../../PRD.md) is the machine that walks customers up that path.
 
 **In-boundary intelligence model.** Keeping data in the customer's cloud (Dedicated / Self-Managed) does **not** cost per-customer insight — the data plane runs in their cloud and produces *their* dashboards/audit; only metadata leaves. What it costs is the naive raw-content pooling a pure-SaaS rival uses to train a global model. We recover that the proven way: **telemetry up, intelligence down** — de-identified signals/signatures flow to the control plane, and signatures + model updates push back to every boundary ("saw this injection at one bank → all customers protected in minutes," no raw content moving; the CrowdStrike pattern). Plus **opt-in/Serverless tiers** feed the global model and the regulated tier receives the resulting intelligence. The flywheel runs on **metadata + signatures, not content** — leaner than a hoover-everything competitor, but the boundary model is a *selling point* to exactly our buyer, not only a cost.
 
@@ -67,19 +69,34 @@ The three questions a skeptical buyer or investor asks: *what if they never enfo
 - **The unlock:** the emerging **"Head of AI Platform / VP AI Engineering"** who owns both deployment and security — lead bottom-up via platform engineering, close top-down with the CISO.
 - **Beachhead buyer:** platform/SRE lead (Stage 0); Fraud/Risk lead at financial-action companies (Stage 1).
 
+**Geography — US-first, EU fast-follow.** Land in the **US**: densest agent deployment, the fintech/payment buyers (Brex/Ramp/Mercury-type), VC proximity, six-figure ACVs, and where the Stage-0 infra/automation targets concentrate — engineer-led buying in weeks, not 12-month cycles. **EU is the fast-follow**, pulled by the AI Act high-risk obligations and unlocked by the in-VPC / air-gapped + SOC 2 editions this round builds (data-residency is a buy-trigger there). The neutral-cross-vendor thesis is global — *geography is sequencing, not positioning.* (Asia/India opportunistic via network, not a primary motion.)
+
+**GTM motion — how we actually land and expand:**
+- **Land in shadow (zero-friction wedge).** Observe-only is the default first deployment: we sit in-path but change nothing — the customer sees every agent across every cloud and every action we *would* have blocked, in a week, with no blast risk. That report is the artifact that earns the enforce conversation. (This is the Wiz "deploy Friday, value Monday" move, adapted to an in-path product.)
+- **Bottom-up, then top-down.** Platform/AI-engineering adopts in shadow (low risk, instant inventory); the cross-vendor audit + the "what we'd have blocked" report wins the **CISO / Head of AI Governance** signature. Two motions, one account.
+- **Expand along the deployment ladder.** Shadow → enforce (per-tool), then Serverless → Dedicated/in-VPC → Self-Managed/air-gapped as the account climbs the regulated ladder — each step a price step.
+- **Channels for a pre-seed solo founder (ranked):** (1) **founder-led design-partner outreach** to named Stage-0/1 targets (Appendix A) — reference logos over paid demand-gen; (2) a **free/observe-only tier** as a self-serve "see your agent estate" demand engine (the Wiz/Snyk land trick); (3) **design-partner case studies** — one marquee FS logo running us in shadow across AWS+Azure is worth more than any campaign. *Avoid:* paid ads, broad "AI security" messaging (crowded), and leading with enforcement/rollback (high-friction). Lead with *see everything, change nothing.*
+
 ## 5. Competitive Landscape
 
-- **Cloud giants (AWS AgentCore, Azure, Google):** structurally won't govern agents on a rival's cloud; AgentCore is AWS-only by architecture. The cross-cloud position is ours.
-- **AI gateways (Portkey $18M Series A, LiteLLM):** govern LLM *calls*, not agent *actions*. Portkey's stated goal is agent governance (~12–18 months out) but **SaaS-only, not Kubernetes-native / on-prem** — that's our differentiator.
-- **AI-security point tools (Lakera→Check Point, CalypsoAI→F5, CrowdStrike, Palo Alto):** detect & warn, sell to the CISO, no enforcement-at-the-action depth.
+*Verified June 2026. The honest landscape: inline blocking is now widespread; what no one ships is action-level governance that is stateful + neutral across vendors.*
+
+- **Cloud giants (AWS AgentCore, Azure AI Foundry, Google):** already ship most *single-cloud* agent controls (guardrails, identity, Cedar policy, isolation, observability) — but each governs only its own cloud and won't guard a rival's. AgentCore is AWS-only by architecture. The **neutral cross-vendor** position is ours.
+- **AI-security point tools (Lakera→Check Point, CalypsoAI→F5, HiddenLayer, CrowdStrike Falcon AIDR):** **now block inline** (this is no longer our differentiator) — but on *prompt/content*, **stateless**, sell to the CISO, and each is single-stack/platform-locked. We govern the *action + parameters* with session state, neutral across vendors.
+- **Zenity:** closest to us — inline agent-runtime blocking, but **Microsoft-Foundry-only**, achieved via per-platform execution hooks (i.e. not neutral). The architecture you'd predict *versus* a neutral plane.
+- **Invariant Labs:** acquired by **Snyk (Jun 2025)**, folded into code/developer security; **detection-first**, no native Bedrock/Azure. Not the runtime governance plane.
+- **Adjacent (not action enforcement):** **Skyflow** = data/PII vault (tokenizes, doesn't block actions); **Protect AI → Palo Alto** = model-scan + content guardrails, PANW-locked; **observability** (LangSmith, Arize, W&B) sits *off* the action path — structurally can't block.
+- **AI gateways (Portkey $18M Series A, LiteLLM):** govern LLM *calls*, not agent *actions*. Portkey's stated agent-governance goal is ~12–18 months out and **SaaS-only, not Kubernetes-native / on-prem** — that's our differentiator.
 - **Identity (Okta Auth0 for AI Agents, CyberArk, Microsoft Entra Agent ID):** secure *who the agent is* — **complementary** to *what the action may do*. Partners, not competitors (and validation of our verified-agent-identity requirement).
 - **Agent-platform vendors (Decagon, Sierra, UiPath, Harvey):** potential customers *and* potential self-builders; selling to the **enterprises that deploy them** is the cleaner motion. Incumbents bundle governance only for their own platform — the same structural gap as the cloud giants.
+
+> **Validation, not threat:** Gartner's first **Guardian Agents Market Guide (Feb 2026)** treats this as an emerging category ("Representative Vendors," not a Magic Quadrant) — the market is forming and unconsolidated, exactly when a neutral plane can take the category.
 
 (Full competitive detail: Appendix D.)
 
 ## 6. 5-Year Roadmap
 
-Aligns to the PRD's P0/P1/P2 phasing and the GTM ladder. Detailed year-by-year targets and actions: [pitch/customer/5-year-roadmap.md](customer/5-year-roadmap.md).
+Aligns to the PRD's P0/P1/P2 phasing and the GTM ladder. Detailed year-by-year targets and actions: [pitch/customer/5-year-roadmap.md](../customer/5-year-roadmap.md).
 
 | Year | Theme | ARR | Customers | Avg ACV | Key milestone |
 |---|---|---|---|---|---|
@@ -93,7 +110,7 @@ Aligns to the PRD's P0/P1/P2 phasing and the GTM ladder. Detailed year-by-year t
 
 ## 7. Business KPIs & The Ask
 
-*(Product/efficacy metrics live in [PRD.md](../PRD.md) §3.2. These are the business/growth KPIs.)*
+*(Product/efficacy metrics live in [PRD.md](../../PRD.md) §3.2. These are the business/growth KPIs.)*
 
 | KPI | What it tracks |
 |---|---|
@@ -175,7 +192,7 @@ Aligns to the PRD's P0/P1/P2 phasing and the GTM ladder. Detailed year-by-year t
 
 ## Appendix B — Incident evidence (the "why now")
 
-Prompt-injection up **340% YoY**, fastest-growing attack category ([OWASP](https://www.helpnetsecurity.com/2026/06/11/owasp-prompt-injection-ai-security-failures/)). 2026 incidents, mostly infra/coding/automation agents:
+Prompt-injection *reports* on HackerOne's platform up **540% YoY** (2024→2025; report volume, not industry incident rate — [HackerOne 9th Annual Report](https://www.hackerone.com/press-release/hackerone-report-finds-210-spike-ai-vulnerability-reports-amid-rise-ai-autonomy)). 2026 incidents, mostly infra/coding/automation agents:
 - **Replit (2025):** coding agent deleted a production database despite "change nothing," fabricated records, lied that rollback was impossible.
 - **LiteLLM supply chain (Mar 2026):** autonomous bot pushed backdoored LiteLLM to PyPI — ~47,000 downloads in ~3 hours ([beam.ai](https://beam.ai/agentic-insights/ai-agent-security-breaches-2026-lessons)).
 - **Microsoft Semantic Kernel RCE (2026):** one prompt → host-level remote code execution ([Microsoft](https://www.microsoft.com/en-us/security/blog/2026/05/07/prompts-become-shells-rce-vulnerabilities-ai-agent-frameworks/)).

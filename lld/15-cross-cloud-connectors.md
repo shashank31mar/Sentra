@@ -581,4 +581,4 @@ Each scenario is a YAML file in `src/demo-orchestrator/scenarios/` and executes 
 | [Workstream 16](../tasks/workstream-16-apigw-vpc-link-networking.md) | Execution tracking for the LLD 16 fix |
 | [LLD 17: Validation Signal Store](17-validation-signal-store.md) | Multi-signal substrate that powers the dashboard's "By" column and signal expander. Replaces the CloudWatch-Insights-backed audit_lookup (which had 60s+ indexing lag — see LLD 17 §2) with a DDB-backed `/v1/sessions/{id}/decisions` query. Bedrock + Azure connectors thread `request_id` via sessionAttributes / HTTP body and emit `bedrock_guardrail` / `azure_content_filter` edge signals (LLD 17 §9.1, §9.3). |
 | [Workstream 17](../tasks/workstream-17-validation-signal-store.md) | Execution tracking for the LLD 17 substrate rollout |
-| [pitch/pitch-deck-v4.md](../pitch/pitch-deck-v4.md) | Investor commitment this workstream delivers |
+| [pitch/pitch-deck-v4.md](../pitch/archive/pitch-deck-v4.md) | Investor commitment this workstream delivers |

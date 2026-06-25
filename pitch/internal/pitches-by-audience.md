@@ -1,6 +1,6 @@
 # AegionAI — Four Pitches, One Spine
 
-**Purpose**: Rehearsable, word-for-word scripts. Internalize the **spine** once; each pitch just stretches a different beat. Backups in [../docs/investor-qa-objection-handling.md](../docs/investor-qa-objection-handling.md) and the narrative in [../docs/pitch-narrative.md](../docs/pitch-narrative.md).
+**Purpose**: Rehearsable, word-for-word scripts. Internalize the **spine** once; each pitch just stretches a different beat. Backups in [../docs/investor-qa-objection-handling.md](investor-qa-objection-handling.md) and the narrative in [../docs/pitch-narrative.md](pitch-narrative.md).
 
 > **THE SPINE (memorize this — everything else is altitude):**
 > 1. **Agents now take real actions** — refunds, money, data, emails. Not chatbots.

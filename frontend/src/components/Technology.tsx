@@ -10,15 +10,15 @@ const TECH_CARDS = [
     icon: 'ti-file-code',
     title: 'Stateful Policy Engine',
     color: 'purple',
-    description: 'Open-standard YAML/OPA policies with stateful session tracking. Unlike Cedar\'s stateless-by-design approach, AegionAI validates action sequences — ensuring required steps happen in order.',
-    tags: ['YAML + OPA Rego', 'Session-aware', 'No vendor lock-in'],
+    description: 'Open-standard policies with stateful session tracking. Beyond stateless allow/deny, AegionAI validates action sequences — ensuring required steps happen in the right order, across an agent\'s whole session.',
+    tags: ['Open policy standards', 'Session-aware', 'No vendor lock-in'],
   },
   {
     icon: 'ti-brain',
     title: 'ML Detection Layer',
     color: 'green',
     description: 'Fine-tuned transformer trained on HackAPrompt, JailbreakBench, and HarmBench datasets for prompt injection detection. Behavioral anomaly detection via Isolation Forest on tool call metadata — no content inspection required.',
-    tags: ['94% precision', 'Adaptive learning', '< 2% false positives'],
+    tags: ['Transformer + Isolation Forest', 'Adaptive learning', 'Shadow-validated before enforce'],
   },
   {
     icon: 'ti-shield-off',
@@ -35,7 +35,7 @@ const INSPECTS = [
   { title: 'Agent identity claims', desc: 'Zero-trust agent verification' },
   { title: 'Prompt injection & jailbreak patterns', desc: 'Fine-tuned transformer classification' },
   { title: 'Behavioral anomalies', desc: 'Isolation Forest on metadata — no content inspection' },
-  { title: 'PII and sensitive data', desc: '94% precision real-time detection & redaction' },
+  { title: 'PII and sensitive data', desc: 'Real-time detection & redaction' },
 ] as const
 
 const ACTIONS = [
@@ -43,7 +43,7 @@ const ACTIONS = [
   'Quarantine compromised agents instantly',
   'Auto-reject all flows touching quarantined agents',
   'Contain blast radius across clouds',
-  'Rollback to safe state',
+  'Roll back actions where they\'re reversible',
   'Trace threat source across full agent topology',
 ] as const
 

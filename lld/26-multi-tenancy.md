@@ -41,7 +41,7 @@ This LLD closes that gap. The load-bearing mechanism is a **per-agent asymmetric
 - **WS-D** Tenant lifecycle, onboarding & operator RBAC.
 - **WS-E** Cross-cutting: tenant-aware metrics, quotas, audit of the unverified path.
 
-**Out of scope (named, with pointers):** billing/metering rollup (depends on WS-E metrics; tracked separately in `pitch/STRATEGY.md` commercial model), and the in-VPC Dedicated/Self-Managed editions' single-tenant collapse (those editions pin `tenant_id` to one value and skip WS-A's multi-tenant resolution — see §3.6).
+**Out of scope (named, with pointers):** billing/metering rollup (depends on WS-E metrics; tracked separately in `pitch/share/STRATEGY.md` commercial model), and the in-VPC Dedicated/Self-Managed editions' single-tenant collapse (those editions pin `tenant_id` to one value and skip WS-A's multi-tenant resolution — see §3.6).
 
 ### 1.4 Surface Status at a Glance
 

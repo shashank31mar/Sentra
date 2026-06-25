@@ -52,8 +52,8 @@ export default function Hero() {
 
           {/* Description */}
           <p className="font-body text-base sm:text-lg text-muted max-w-lg mx-auto lg:mx-0 leading-relaxed mb-8">
-            AegionAI is the first cross-cloud security control plane for AI agents — one policy
-            layer across AWS, Azure, GCP, and beyond.
+            AegionAI is the neutral control plane that governs every AI agent — across AWS,
+            Azure, GCP, and on-prem. One policy layer no single cloud can be.
           </p>
 
           {/* CTAs */}

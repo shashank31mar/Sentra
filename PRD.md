@@ -5,9 +5,9 @@
 **Last Updated:** 2026-06-19
 **Status:** Draft for Review
 **Owner:** Shashank Gupta (Founder/CEO)
-**Companion docs:** [ARCHITECTURE.md](lld/ARCHITECTURE.md) (the "how") · [STRATEGY.md](pitch/STRATEGY.md) (market / GTM / roadmap) · [vision.md](vision.md) (vision & pillars) · [pitch/one-pager.md](pitch/one-pager.md) (the "why")
+**Companion docs:** [ARCHITECTURE.md](lld/ARCHITECTURE.md) (the "how") · [STRATEGY.md](pitch/share/STRATEGY.md) (market / GTM / roadmap) · [vision.md](vision.md) (vision & pillars) · [pitch/one-pager-v2.md](pitch/share/one-pager-v2.md) (the "why")
 
-> This PRD defines **what** AegionAI Guard is — the product requirements and how they map to the strategic roadmap. (Market, GTM, and business targets live in [STRATEGY.md](pitch/STRATEGY.md); the "how we build it" lives in [ARCHITECTURE.md](lld/ARCHITECTURE.md), which references this PRD by requirement ID.)
+> This PRD defines **what** AegionAI Guard is — the product requirements and how they map to the strategic roadmap. (Market, GTM, and business targets live in [STRATEGY.md](pitch/share/STRATEGY.md); the "how we build it" lives in [ARCHITECTURE.md](lld/ARCHITECTURE.md), which references this PRD by requirement ID.)
 
 ---
 
@@ -82,7 +82,7 @@ Three pillars guide everything we build (mirrored in [vision.md](vision.md)). Ev
 
 ### 3.2 Success Metrics
 
-**North-star:** *how many agents we protect — and how much human oversight we take off their plate* (the decisions we handle automatically that would otherwise need a person). These are **product** metrics; business/growth KPIs (ARR, customers, ACV) live in [STRATEGY.md](pitch/STRATEGY.md).
+**North-star:** *how many agents we protect — and how much human oversight we take off their plate* (the decisions we handle automatically that would otherwise need a person). These are **product** metrics; business/growth KPIs (ARR, customers, ACV) live in [STRATEGY.md](pitch/share/STRATEGY.md).
 
 **Security efficacy.** *Defense in depth means several independent layers (policy, signature detection, machine-learning detection, trust, abuse). We track how much gets caught — and, the real point, how little gets through all of them.*
 
@@ -171,7 +171,7 @@ AegionAI Guard **acts on agent actions** — it doesn't only watch them. In scop
 
 ## 7. Functional Requirements
 
-Priority tracks the **GTM ladder** in [STRATEGY.md](pitch/STRATEGY.md):
+Priority tracks the **GTM ladder** in [STRATEGY.md](pitch/share/STRATEGY.md):
 - **P0 = what Stage 0 needs to land *today*** — software / DevOps / **infrastructure & automation** agents (their highest-blast-radius actions map directly onto our deterministic engine), plus cross-cloud proof and the multi-tenant foundation.
 - **P1 = Stage 1 (fintech / payments) + the first regulated buyers** — in-VPC deployment, verified identity, redaction, distilled model, compliance reports.
 - **P2 = the Stage 2/3 climb** (banks, healthcare, government) — Self-Managed / air-gapped, deep detection, Kubernetes CRDs.
@@ -338,13 +338,13 @@ Status reflects the shipping codebase. *(See [ARCHITECTURE.md](lld/ARCHITECTURE.
 | **P1 — Stage 1 (fintech/payments) + first regulated** | Make latency, resilience, data-boundary, identity, and compliance real — and make enforcement safe to turn on | FR-1.4/1.5/1.7, 2.8/2.9, 3.4–3.7/3.12/3.13, 4.3/4.4, 5.4, 6.5/6.7, 7.4/7.7–7.10, 8.4/8.7/8.8, 9.2, 10.3/10.4, 11.1–11.3; NFR-1/4/6/7/8 | In-VPC Dedicated, local cached enforcement, redaction, distilled model, sidecar, Connect & Import, verified agent identity, compliance reports, SIEM export, confidence-to-enforce + graduated rollout, learned policy proposals, industry packs; **SOC 2 Type II + HIPAA**; first paying enterprises |
 | **P2 — Stage 2/3 climb** (banks, healthcare, government) | Category standard + the strictest deployments | FR-2.6, 3.8–3.11/3.14, 4.5, 6.6, 8.6/8.8, 9.3; CRDs / CNCF | Self-Managed / air-gapped, deep detection layers (D3/D4), blast-radius containment, Kubernetes CRDs, agent SBOM |
 
-**Phases are capability tiers gated by milestones and funding — not calendar commitments**, and map to the [STRATEGY.md](pitch/STRATEGY.md) GTM ladder: **P0 → Stage 0** (infra/automation land + cross-cloud proof), **P1 → Stage 1** (fintech) + first regulated, **P2 → Stage 2/3** (banks, healthcare, government).
+**Phases are capability tiers gated by milestones and funding — not calendar commitments**, and map to the [STRATEGY.md](pitch/share/STRATEGY.md) GTM ladder: **P0 → Stage 0** (infra/automation land + cross-cloud proof), **P1 → Stage 1** (fintech) + first regulated, **P2 → Stage 2/3** (banks, healthcare, government).
 
 ---
 
 ## 10. Open Questions
 
-*(Business/GTM questions — open-source core, pricing, beachhead emphasis — live in [STRATEGY.md](pitch/STRATEGY.md). These are product-level.)*
+*(Business/GTM questions — open-source core, pricing, beachhead emphasis — live in [STRATEGY.md](pitch/share/STRATEGY.md). These are product-level.)*
 
 1. **Verified agent-identity mechanism** — the credential type and how it is issued/rotated for FR-10.3 (per-agent credential). *Open.*
 2. **How the sidecar delivers the multi-phase features** — the SDK ships decorators for all phases (FR-3.4); how the sidecar (FR-1.5) provides the same `content` / `output` / `memory` coverage in the in-boundary editions is to be worked out. *To discuss later.*
