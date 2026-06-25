@@ -176,6 +176,19 @@ async def _identity_deny(request: "ValidationRequest", reason: str) -> Dict:
             validation_result={"reason": reason, "violation_type": reason},
             latency_ms=0.0,
         )
+        # Count the gate-DENY in the same CloudWatch streams a normal verdict uses,
+        # so an enforce cutover that starts denying an unsigned/uncredentialed agent
+        # shows up as DENYs (not as a phantom traffic drop). The `current_tenant()`
+        # contextvar is `_unverified` here, so the tenant-keyed `Decisions` series is
+        # tagged `_unverified` — never the claimed tenant or `default`. Fire-and-forget,
+        # guarded separately so a metrics failure never changes the DENY we return.
+        try:
+            from app.utils.metrics_publisher import MetricsPublisher
+            await MetricsPublisher().publish_validation_metrics(
+                decision="DENY", latency_ms=0.0, agent_id=request.agent_id, trust_score=0.0,
+            )
+        except Exception:  # noqa: BLE001 — metrics are best-effort; the DENY still returns
+            logger.warning("identity-DENY metric publish failed", exc_info=True)
     except Exception:  # noqa: BLE001 — audit is best-effort; the DENY still returns
         logger.warning("identity-DENY audit failed", exc_info=True)
     finally:

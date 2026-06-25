@@ -75,10 +75,18 @@ resource func 'Microsoft.Web/sites@2023-12-01' = {
     httpsOnly: true
     siteConfig: {
       linuxFxVersion: 'Python|3.11'
+      // alwaysOn keeps the worker warm so the ES256-signing path (PyJWT[crypto] →
+      // the native `cryptography` Rust ext) is imported once at deploy, not on every
+      // cold start. Without it, the heavy crypto import on a cold B1 worker overran
+      // Azure's 230s site-startup probe and the container crash-looped (LLD-26 WS-A).
+      alwaysOn: true
       appSettings: concat([
         { name: 'FUNCTIONS_EXTENSION_VERSION', value: '~4' }
         { name: 'FUNCTIONS_WORKER_RUNTIME', value: 'python' }
         { name: 'AzureWebJobsFeatureFlags', value: 'EnableWorkerIndexing' } // v2 model: index functions
+        // Give the crypto-bearing package headroom over the 230s default to finish
+        // indexing on a cold start (belt-and-braces with alwaysOn above).
+        { name: 'WEBSITE_CONTAINER_START_TIME_LIMIT', value: '600' }
         { name: 'AzureWebJobsStorage', value: 'DefaultEndpointsProtocol=https;AccountName=${storage.name};AccountKey=${storage.listKeys().keys[0].value};EndpointSuffix=${environment().suffixes.storage}' }
         { name: 'APPLICATIONINSIGHTS_CONNECTION_STRING', value: insights.properties.ConnectionString }
         { name: 'SENTRA_API_BASE', value: sentraApiBase }
