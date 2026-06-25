@@ -2,13 +2,9 @@
 
 > **CONFIDENTIAL — Do not distribute.** Shared in confidence for investor evaluation. Please do not forward, copy, or share outside your firm without the founder's consent. © 2026 AegionAI. All rights reserved.
 
-**Version:** 1.1
-**Last Updated:** 2026-06-19
-**Status:** Draft for Review
-**Owner:** Shashank Gupta (Founder/CEO)
-**Companion docs:** [PRD.md](../../PRD.md) (the "what") · [vision.md](../../vision.md) (vision & pillars) · [ARCHITECTURE.md](../../lld/ARCHITECTURE.md) (the "how") · [one-pager-v2.md](one-pager-v2.md) (the "why")
+**Companion docs (this folder):** [one-pager-v2.md](one-pager-v2.md) (the "why") · [architecture-brief.md](architecture-brief.md) (the "how"). Deeper product requirements and engineering design available to engaged investors under NDA.
 
-> **The single strategy doc.** Part I is the strategy (the investor read, ~3 pages). Part II is the market & industry analysis that backs it (evidence, named targets, sources). Decisions live in Part I; Part II only supplies facts. The PRD stays product-only and references this doc for anything business/growth.
+> **The single strategy doc.** Part I is the strategy (the investor read, ~3 pages). Part II is the market & industry analysis that backs it (evidence, named targets, sources). Decisions live in Part I; Part II only supplies the facts.
 
 ---
 
@@ -46,7 +42,7 @@ The three questions a skeptical buyer or investor asks: *what if they never enfo
 - **Risk quantification** — "your agents *attempted* N unsafe money-moves this month your current controls missed" (the confidence-to-enforce counterfactual).
 - **Detection + SIEM feed.**
 
-**Value ceiling.** Action-level governance + bounded rollback + cross-agent containment — *stateful, across every vendor* — is what makes us category-defining and premium-priced; pure-monitor competes closer to the point tools (thinner moat). Note: inline blocking is no longer the differentiator (the point tools block too now) — *governing the action with session state, and neutrality across vendors,* is. So: **monitor is the floor and the landing motion; action governance is the ceiling and the premium.** Don't let the floor become the ceiling — the [confidence-to-enforce engine](../../PRD.md) is the machine that walks customers up that path.
+**Value ceiling.** Action-level governance + bounded rollback + cross-agent containment — *stateful, across every vendor* — is what makes us category-defining and premium-priced; pure-monitor competes closer to the point tools (thinner moat). Note: inline blocking is no longer the differentiator (the point tools block too now) — *governing the action with session state, and neutrality across vendors,* is. So: **monitor is the floor and the landing motion; action governance is the ceiling and the premium.** Don't let the floor become the ceiling — the confidence-to-enforce engine is the machine that walks customers up that path.
 
 **In-boundary intelligence model.** Keeping data in the customer's cloud (Dedicated / Self-Managed) does **not** cost per-customer insight — the data plane runs in their cloud and produces *their* dashboards/audit; only metadata leaves. What it costs is the naive raw-content pooling a pure-SaaS rival uses to train a global model. We recover that the proven way: **telemetry up, intelligence down** — de-identified signals/signatures flow to the control plane, and signatures + model updates push back to every boundary ("saw this injection at one bank → all customers protected in minutes," no raw content moving; the CrowdStrike pattern). Plus **opt-in/Serverless tiers** feed the global model and the regulated tier receives the resulting intelligence. The flywheel runs on **metadata + signatures, not content** — leaner than a hoover-everything competitor, but the boundary model is a *selling point* to exactly our buyer, not only a cost.
 
@@ -96,7 +92,7 @@ The three questions a skeptical buyer or investor asks: *what if they never enfo
 
 ## 6. 5-Year Roadmap
 
-Aligns to the PRD's P0/P1/P2 phasing and the GTM ladder. Detailed year-by-year targets and actions: [pitch/customer/5-year-roadmap.md](../customer/5-year-roadmap.md).
+Aligns to the product's P0/P1/P2 phasing and the GTM ladder. Detailed year-by-year targets and actions available on request.
 
 | Year | Theme | ARR | Customers | Avg ACV | Key milestone |
 |---|---|---|---|---|---|
@@ -110,7 +106,7 @@ Aligns to the PRD's P0/P1/P2 phasing and the GTM ladder. Detailed year-by-year t
 
 ## 7. Business KPIs & The Ask
 
-*(Product/efficacy metrics live in [PRD.md](../../PRD.md) §3.2. These are the business/growth KPIs.)*
+*(These are the business/growth KPIs; product/efficacy metrics are tracked separately.)*
 
 | KPI | What it tracks |
 |---|---|

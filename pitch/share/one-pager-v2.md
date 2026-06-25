@@ -81,3 +81,5 @@ Those are the near-term milestones that unlock a credible **Series A**. The mode
 ---
 
 *AI without governance is just liability at scale.*
+
+<sub>© 2026 AegionAI. Confidential — shared for evaluation. **info@aegionai.ai**</sub>
