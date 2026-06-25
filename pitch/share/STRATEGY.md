@@ -2,8 +2,6 @@
 
 > **CONFIDENTIAL — Do not distribute.** Shared in confidence for investor evaluation. Please do not forward, copy, or share outside your firm without the founder's consent. © 2026 AegionAI. All rights reserved.
 
-**Companion docs (this folder):** [one-pager-v2.md](one-pager-v2.md) (the "why") · [architecture-brief.md](architecture-brief.md) (the "how"). Deeper product requirements and engineering design available to engaged investors under NDA.
-
 > **The single strategy doc.** Part I is the strategy (the investor read, ~3 pages). Part II is the market & industry analysis that backs it (evidence, named targets, sources). Decisions live in Part I; Part II only supplies the facts.
 
 ---
