@@ -172,3 +172,4 @@ frontend/aegionai-godaddy/
 # Kombai design-tool working data (canvas + backups) — like .claude/, not source
 # ===================================
 .kombai/
+Sentra.code-workspace

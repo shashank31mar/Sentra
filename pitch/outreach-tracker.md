@@ -1,6 +1,6 @@
 # AegionAI — Design Partner Outreach Tracker
 
-**Last updated:** 2026-06-23
+**Last updated:** 2026-06-25
 
 > Two tracks here: **design partners** (#1–6, pilot/customer motion — do NOT send the investor one-pager) and **investors** (#7+, fundraising motion — the investor one-pager IS appropriate). Keep them separate.
 
@@ -10,14 +10,14 @@ State legend: `Not contacted` → `Sent (LinkedIn)` → `Responded` → `Moved t
 
 | # | Name | Company | Title | Relationship | Channel | Ask | State | Personal email | Next step |
 |---|------|---------|-------|--------------|---------|-----|-------|----------------|-----------|
-| 1 | Vivek Garg | Swiggy | VP Engineering | Cold | LinkedIn → email | Design partner (payments/marketplace) | **Email sent** | vivek.garg@swiggy.in | Await reply / schedule call |
+| 1 | Vivek Garg | Swiggy | VP Engineering | Cold | LinkedIn → email | Design partner (payments/marketplace) | **No response** | vivek.garg@swiggy.in | Stalled after multiple follow-ups; deprioritize |
 | 2 | Animesh Srivastava | JPMorgan Chase | VP, GenAI & Applied ML | Cold | LinkedIn | Design partner (financial-action agents) | **Sent (LinkedIn)** | — | Await reply |
 | 3 | Parminder Bhatia | GE HealthCare | Chief AI Officer | **Warm — college senior** | LinkedIn | Advisory + design partner (healthcare) | **Sent (LinkedIn)** | — | Await reply |
 | 4 | Ashish S. | Siemens | Leads Data & AI / Physical AI | Cold | LinkedIn | Advisory + design partner (securing agents, general) | **Sent (LinkedIn)** | — | Await reply |
 | 5 | Vasi Philomin | Siemens | EVP Data & AI (ex-AWS VP) | Cold | LinkedIn | Advisory + design partner (securing agents) | **Sent (LinkedIn)** | — | Await reply |
 | 6 | Mayank Shrivastava | SAP | Senior ML leader | Cold | LinkedIn | Advisory + design partner (enterprise workflows) | **Sent (LinkedIn)** | — | Await reply |
 | 7 | Rutvik Doshi | Athera Venture Partners | VC / Partner | Inbound/warm | — | **Investor (fundraising)** — not a design partner | **Intro call scheduled** | — | First/intro call Mon 2026-06-29 |
-| 8 | Randy Franklin | Consertus | Tech exec (COO Forum; CISSP/CCSP) | Warm | — | **Investor (fundraising)** — may invest or intro to other investors | **Reviewing tech docs** | — | Follow up on doc review; ask re: investor intros |
+| 8 | Randy Franklin | Consertus | Tech exec (COO Forum; CISSP/CCSP) | Warm | — | **Investor (fundraising)** — may invest or intro to other investors | **Bought in — scheduling call** | — | Availability sent; await his reply to lock time |
 | 9 | Zafar | — | Potential investor | Warm | In-person | **Investor (fundraising)** — needs significant convincing | **In-person meeting (3rd)** | — | Meet in India, 1st week July; prep strong convincing pitch |
 
 ## Detail / history
@@ -28,7 +28,8 @@ State legend: `Not contacted` → `Sent (LinkedIn)` → `Responded` → `Moved t
 - **2026-06-22** — Sent LinkedIn InMail (subject: "AegionAI <> Swiggy — design partner conversation").
 - **2026-06-22** — Responded: "Looks interesting. Please drop me email at vivek.garg@swiggy.in"
 - **2026-06-23** — Acknowledged on LinkedIn; sent recap email to vivek.garg@swiggy.in (no investor one-pager attached).
-- **Next:** await reply / schedule call.
+- **2026-06-25** — **No response** after multiple follow-ups. Deprioritize; one final break-up note then leave the door open.
+- **Next:** send a short break-up email; revisit if/when we have a marquee logo or new proof point.
 
 ### 2. Animesh Srivastava — JPMorgan Chase (VP, GenAI & Applied ML)
 - LinkedIn: https://www.linkedin.com/in/animesh-srivastava-87968880/
@@ -44,6 +45,7 @@ State legend: `Not contacted` → `Sent (LinkedIn)` → `Responded` → `Moved t
 - **Ask:** start as advisory ("get your take"), design partner in healthcare emerges naturally.
 - Warm note drafted (lead with "hope you remember me from college", defer to his schedule).
 - **2026-06-23** — Sent warm note on LinkedIn.
+- **2026-06-25** — Nudged again.
 - **Next:** await reply.
 
 ### 4. Ashish S. — Siemens (Leads Data & AI / Physical AI)
@@ -80,10 +82,10 @@ State legend: `Not contacted` → `Sent (LinkedIn)` → `Responded` → `Moved t
 - LinkedIn: https://www.linkedin.com/in/randykellyfranklin/
 - Senior tech exec, Charlotte NC. Security-credentialed (**CISSP, CCSP**), COO Forum member, ex-7x24 Exchange VP. Operations/scaling background — and the security creds mean he can actually evaluate the tech.
 - **Investor track.** May invest directly or connect us to other investors.
-- Currently **reviewing the tech docs**.
+- **2026-06-25** — Reviewed the docs, **liked it, and is willing to connect us with investors.** Asked for Shashank's availability; **availability already sent — awaiting his reply to schedule.**
 - **Ask:** investor conversation + warm intros to other investors.
-- **Next:** follow up on his doc review; once he's bought in, ask for investor introductions.
-- _TODO: confirm his investing capacity/role and contact details._
+- **Next:** await his response on timing. When the call happens: ask for specific names/firms + preferred intro mechanic, offer a forwardable blurb + one-pager, and ask whether he wants to participate himself.
+- _TODO: confirm his own investing capacity/role and contact details._
 
 ### 9. Zafar — Potential investor
 - **Investor track.** Coming to India **first week of July 2026**; asked to meet in person.

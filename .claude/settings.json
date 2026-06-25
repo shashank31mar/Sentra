@@ -86,7 +86,14 @@
       "WebFetch(domain:www.automationanywhere.com)",
       "WebFetch(domain:www.databricks.com)",
       "WebFetch(domain:www.craw.in)",
-      "WebFetch(domain:www.eccu.edu)"
+      "WebFetch(domain:www.eccu.edu)",
+      "WebFetch(domain:www.sofi.com)",
+      "WebFetch(domain:www.crunchbase.com)",
+      "WebFetch(domain:www.betterment.com)",
+      "WebFetch(domain:www.google.com)",
+      "WebFetch(domain:www.bing.com)",
+      "WebFetch(domain:ramp.com)",
+      "WebFetch(domain:mercury.com)"
     ]
   },
   "enabledPlugins": {
