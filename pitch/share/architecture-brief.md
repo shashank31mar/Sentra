@@ -121,10 +121,4 @@ A working demonstration enforcing across two clouds (AWS and Azure) runs today �
 
 ---
 
-## 8. Going deeper
-
-This brief is intentionally above the implementation. The detailed engineering design — component-level low-level design, threat model, decision records, and the security architecture — is available to engaged investors under NDA. The thesis to take away: **single-cloud agent enforcement is now commoditized; the open, defensible ground is the neutral control plane across every vendor — and that is what the architecture above is built to be.**
-
----
-
 *Companion docs (shared in confidence): [STRATEGY.md](STRATEGY.md) (market / GTM / moat) · [one-pager-v2.md](one-pager-v2.md) (the why).*
