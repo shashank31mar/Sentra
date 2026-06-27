@@ -69,6 +69,21 @@ Sources: [adoption by vertical](https://www.digitalapplied.com/blog/ai-agent-ado
 
 ---
 
+## Harness.io — a delivery-domain competitor, NOT a partner (and a source of target customers)
+
+**Verdict: do NOT pursue Harness as a design partner.** Harness ($5.5B / ~$250M ARR, 1,000+ enterprises, 2026 Gartner DevSecOps MQ Leader) has **already built and shipped our control-plane-for-agent-actions thesis inside the delivery domain** — their CEO's essay ("AI writes the code. Who delivers it safely?") maps 1:1 onto our pitch: control plane for agent **actions**, agent identity + scoped credentials, **OPA policy gates the agent "can't route around,"** an MCP Gateway, runtime containment via the Delegate, and **cryptographically signed evidence** each action met policy. That is our Cedar PDP/PEP-split, block-before-execute, and forensic-evidence story — already GA, squarely in our **Stage-0 beachhead** (DevOps/infra agents). ([Harness products](https://www.harness.io/products); [TechCrunch $5.5B](https://techcrunch.com/2025/12/11/harness-hits-5-5b-valuation-with-240m-to-automate-ais-after-code-gap/))
+
+**Why not a design partner:** (1) **they'll build it / built it** — a design-partner engagement is free R&D + IP leak (Cedar/Sigma/ML/trust-state) to a distribution-rich incumbent with M&A muscle (acquired **Traceable** for runtime API protection, **Qwiet** for agentic vuln detection) and an Agent Marketplace; (2) **"one company, one delivery control plane" is their doctrine** — no room for a neutral cross-vendor peer on their turf; (3) **wrong buyer/motion** — this is a corp-dev conversation wearing a partner costume, no engineering-led champion with buying urgency.
+
+**The three gaps Harness explicitly disclaims — our positioning *around* them:**
+1. **Cross-agent cascade containment** across heterogeneous agents (their answer is just "centralize on us").
+2. **Non-delivery autonomous actions** — financial / data-movement / prod-ops (they are *"the harness for delivery,"* explicitly not this — this is **our Stage-1 financial-action headline**).
+3. **Quarantine / trust-scoring** of compromised agents (absent from their materials).
+
+**The actual play — target Harness's *customers*, not Harness.** Their named enterprise customers run agents that act *beyond* the deploy path — a **direct** motion into our beachhead, not a channel bet: **Citi, NAB (National Australia Bank), Morningstar, Workday** (financial-action + regulated). Treat the CEO essay as the **competitor playbook** for how the market will try to neutralize generic "agents need a runtime control plane" messaging — and lead around it. *(Narrow exception: a founder-to-founder, zero-IP-disclosure ecosystem-interop chat — "you govern delivery, we govern the non-delivery agent fleet" — is fine; never the design-partner program.)*
+
+---
+
 ## Honesty note for the deck
 
 The "**Aug 2, 2026 cliff**" is softer than pitch-deck-v4 implies: high-risk systems *embedded in regulated products* were extended to **2028**, and some deadlines slipped. Financial-sector high-risk obligations *do* land Aug 2026 — so it's a real tailwind, but don't hinge the thesis on a hard cliff a diligent investor knows was partially pushed. ([deadline delays](https://www.traverssmith.com/knowledge/knowledge-container/eu-agrees-to-delay-key-ai-act-compliance-deadlines/))

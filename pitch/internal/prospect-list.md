@@ -9,6 +9,22 @@
 
 ---
 
+## ★ Priority lead — Harness.io (warm path via Jyoti Bansal)
+
+**Why this is the top design-partner lead:** Harness ships a full **suite of AI agents** (DevOps, Site Reliability, Release, AppSec, Test, Incident agents + an "AI SRE") that take exactly our high-blast-radius actions — deploy to prod, **auto-rollback**, scale infra, toggle feature flags, modify IaC. Their AI SRE is **human-in-the-loop today**, which is precisely the wedge: as they push agents toward fuller autonomy on consequential actions, they need runtime enforcement/guardrails. And per Shashank's read, **"at the edge we could hook ourselves in"** — integrate at their platform layer. Bansal's own framing ("faster, *safer*") opens the conversation.
+
+| Status | Name | Company | Title | Source | Conf. |
+|--------|------|---------|-------|--------|-------|
+| ✅ | **Jyoti Bansal** | Harness | Co-Founder & CEO (founded AppDynamics → Cisco $3.7B; also Co-Founder, Unusual Ventures) | [linkedin](https://www.linkedin.com/in/jyotibansal/) · [harness.io](https://www.harness.io/company/about-us) | HIGH |
+| ✅ | Sanjay Nagaraj | Harness | SVP Engineering & GM, App Security — *strongest technical design-partner contact* | [harness.io](https://www.harness.io/company/about-us) | HIGH |
+| ✅ | Rishi Singh | Harness | Co-Founder & Board Member (founding CTO) | [harness.io](https://www.harness.io/company/about-us) | HIGH |
+
+**Company facts (for outreach):** SF HQ (+ Bengaluru/Gurugram offices); ~1,200 staff, 1,000+ customers; **$240M Series E Dec 2025 → $5.5B valuation**; "AI-native software delivery platform." Recent: merged with **Traceable** (API security, also a Bansal co.) Mar 2025; acquired **Qwiet AI** Sep 2025; **Workday** picked Harness "to power agentic AI software delivery" Mar 2026.
+
+**The two-doors-one-key play:** Jyoti Bansal is *both* CEO of Harness (this design-partner target) **and** Co-Founder of Unusual Ventures (investor target — see [vc-list.md](vc-list.md)). Recommended sequence: **lead with the Harness design-partner conversation** (concrete, product-led, lower-stakes); let technical validation there become the warm signal into Unusual's seed process — rather than cold-pitching the fund first. ⚠️ Don't overstate "your agents already nuke prod unsupervised" — they market human-in-the-loop; frame as *"as you move agents toward autonomy on consequential actions."*
+
+---
+
 ## Tier 1 — Fintech / Payments (Stage 1 headline)
 
 | Status | Name | Company | Title | Source | Conf. |

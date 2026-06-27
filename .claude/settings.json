@@ -93,10 +93,12 @@
       "WebFetch(domain:www.google.com)",
       "WebFetch(domain:www.bing.com)",
       "WebFetch(domain:ramp.com)",
-      "WebFetch(domain:mercury.com)"
+      "WebFetch(domain:mercury.com)",
+      "Bash(gh api *)"
     ]
   },
   "enabledPlugins": {
+    "harness@claude-skills": true,
     "sentra@claude-skills": true
   }
 }

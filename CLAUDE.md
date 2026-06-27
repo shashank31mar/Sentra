@@ -13,102 +13,107 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-**Sentra** - A Kubernetes-style runtime control plane for autonomous AI agents, providing orchestration, security, and governance at scale.
+**AegionAI Guard** (customer-facing brand; parent company **AegionAI**) — a **neutral, cross-vendor runtime control plane that governs the *actions* AI agents take** across AWS, Azure, GCP, and on-prem from one place. "**Sentra**" is the **internal control-plane codename** (and the repo/codebase name); never customer-facing. *(Branding: [pitch/share/STRATEGY.md](pitch/share/STRATEGY.md):1,138; [lld/ARCHITECTURE.md](lld/ARCHITECTURE.md):1; LLD 25 header.)*
+
+> **Source of truth.** This file is a working orientation. The authoritative docs are
+> [vision.md](vision.md) (vision), [PRD.md](PRD.md) (requirements), [lld/ARCHITECTURE.md](lld/ARCHITECTURE.md) (architecture + ADRs),
+> [pitch/share/STRATEGY.md](pitch/share/STRATEGY.md) (market/GTM/moat). When this file and those disagree, **they win** — and fix this file.
 
 ### Vision
-A future where enterprises can safely deploy autonomous AI agents at scale — with the same level of trust, security, and governance that containers and Kubernetes brought to cloud workloads.
+Enterprises run autonomous AI agents across every cloud with **one neutral layer governing what those agents are allowed to *do*** — the cross-vendor control plane no single cloud can be (the Wiz/Datadog-on-top-of-the-clouds pattern). Canonical: [vision.md](vision.md) (three pillars — stop harm before it happens / make autonomy safe / trusted on every cloud).
 
 ### Mission
-Build the industry's first runtime control plane for AI agents — providing real-time observability, policy enforcement, containment, rollback, and compliance across single- and multi-agent systems.
+Govern AI-agent **actions** — evaluating *what an action does* (parameters, identity, sequence, session/trust state), not just whether a prompt looks bad — and stop the harmful action the instant it happens, **neutrally across every vendor**, with a deployment model regulated buyers accept (in-VPC, air-gapped).
 
 ### Core Value Proposition
-Unlike existing players (Lakera, CalypsoAI, HiddenLayer) who focus on guardrails and detection, Sentra provides:
-- **Automatic enforcement** of security rules at runtime
-- **Rollback capabilities** for unsafe agent actions
-- **Cross-agent containment** to prevent cascade failures
-- **Cryptographic SBOM** for agent provenance
-- **Forensic chain-of-thought** tracing for compliance
+Inline blocking is **no longer the differentiator** — point tools block too now. The edge is governing the **action with session state** and **neutrality across every vendor**:
+- **Action-level governance** — parameters, sequence integrity, identity/authorization, injection signals, accumulated trust — not just "is this tool allowed?"
+- **Neutral, cross-vendor** — one plane across AWS/Azure/GCP/on-prem; a position the clouds structurally cannot hold.
+- **Block-before-execute + quarantine + fail-secure** (built today); **bounded, opt-in rollback** only where an action is *reversible* (compensating op + returned handle) — never a promise to undo the irreversible (roadmap; network sidecar is **preventive-only, no rollback**).
+- **Cross-vendor threat-data flywheel** — de-identified signals up, protection down (the CrowdStrike pattern).
+- **Tamper-evident audit / system-of-record** for SOC 2 / HIPAA / EU AI Act.
 
 ## Repository Structure
 
+This is **not a docs-only repo** — there is working implementation (Python + AWS CDK + React).
+
 ```
-/Sentra/                          # Main documentation and design
-├── Kuberneters-Control-Plane-For-AI-Agents.md  # Core architecture design
-├── Prototype-Plan.md                            # Implementation roadmap
-├── Sentra.md                                    # Technical requirements & components
-├── The-Missing-Security-Governance-Layer.md     # Market analysis & positioning
-└── README.md                                    # Project overview
+/Sentra/
+├── src/                          # Application code (Python)
+│   ├── security-controller/      # The PDP "brain": app/validators/{cedar,sigma_engine,
+│   │                             #   ml_classifier,trust_checker,abuse_detector,cross_agent_validator},
+│   │                             #   combiners/signal.py (deny-overrides), api/, services/, utils/
+│   ├── connectors/               # bedrock/ + azure_foundry/ interceptors (GCP roadmap)
+│   ├── dashboard/                # dashboard backend service
+│   ├── payment-agent/            # demo agent (financial-action)
+│   ├── customer-query-agent/     # demo agent
+│   ├── demo-orchestrator/        # multi-agent demo orchestration
+│   └── common/                   # shared utilities
+├── cdk/                          # AWS CDK infra (Python): stacks/{network,storage,compute,
+│   │                             #   api,monitoring,cognito,bedrock_agent}_stack.py
+│   └── app.py
+├── frontend/                     # React 19 + TypeScript + Tailwind 4 + Vite
+├── docker/                       # 7 Dockerfiles (controller, dashboard, agents, console)
+├── tests/  ·  lambda/  ·  scripts/  ·  config/
+│
+├── lld/                          # 27 docs — ARCHITECTURE.md (the index) + NN-*.md (01–26)
+├── pitch/                        # share/ (STRATEGY, architecture-brief, one-pager-v2),
+│                                 #   internal/, customer/, technical/, archive/, legal/
+│
+├── PRD.md  ·  vision.md          # canonical requirements + vision
+├── design-hld.md · adr.md · flow.md · demo.md   # HLD / decisions / flows / demo (cross-doc sync targets)
+└── Kuberneters-Control-Plane-For-AI-Agents.md · Prototype-Plan.md · Sentra.md ·
+    The-Missing-Security-Governance-Layer.md      # ⚠️ HISTORICAL (Nov-2025); superseded — do not rely on
 ```
 
-## Architecture (Kubernetes Analogy)
+## Architecture (PEP/PDP split — NOT a Kubernetes/CRD model)
 
-Sentra extends Kubernetes for AI agents using:
+The operative model is [lld/ARCHITECTURE.md](lld/ARCHITECTURE.md) §2. **The Kubernetes/CRD analogy is retired** — it survives only as (a) a loose switching-cost/champion-familiarity metaphor in pitch docs and (b) P2-roadmap (Y3) CRD vocabulary. Brain-and-wires framing: [lld/25-network-sidecar-data-plane.md](lld/25-network-sidecar-data-plane.md) §1.3.
 
-1. **Custom Resource Definitions (CRDs)**:
-   - `Agent` - Like Pods, but for AI agents
-   - `AgentPolicy` - RBAC + safety rules for agents
-   - `ToolBinding` - Permissions for tools/resources
-   - `AgentTopology` - Real-time agent-tool-resource graph
+```mermaid
+flowchart LR
+  AG["AI agent (any cloud,<br/>any framework)"] --> PEP["Checkpoint (PEP)<br/>— always in customer env;<br/>intercept · enforce verdict · fail-secure"]
+  PEP -->|"POST /v1/validate"| PDP["Policy engine (PDP) — the brain<br/>trust → Cedar → Sigma → ML/D1–D7<br/>→ deny-overrides combiner"]
+  PDP -->|"decision + reason + source"| PEP
+  PDP -. "metadata / signals (never raw content)" .-> CP["Control plane (AegionAI)<br/>authoring · signing · distribution<br/>fleet telemetry · SOC console · flywheel<br/><b>NEVER on the action path</b>"]
+  CP -. "signed policy + weights" .-> PDP
+```
 
-2. **Control Plane Layer**:
-   - Agent Controller (CRD Operator)
-   - Policy Engine (OPA-based)
-   - Security Controller (runtime guardian)
-   - Topology Manager
-   - Agent Scheduler
+1. **PEP / PDP split** (tenet 1: *enforcement is local; the control plane is never on the action path*):
+   - **Checkpoint (PEP)** — in the customer's env; intercepts the action, calls the engine, enforces the verdict fail-secure.
+   - **Policy engine (PDP)** — the "brain"; full validator pipeline → decision + reason + deciding source + action (block / rollback / quarantine). Implemented in [src/security-controller/](src/security-controller/).
+   - **Control plane** — authoring, signing, distribution, fleet telemetry, SOC console, threat-data flywheel. **Never on the action path.**
 
-3. **Runtime Layer (Agent Security Mesh)**:
-   - Sidecar Security Proxy (per agent)
-   - Cross-Agent Security Module
-   - Service Mesh Integration
-   - Cross-Agent Coordinator
+2. **Three "wires" (PEP forms — same brain behind all)**: **SDK decorator** (today) · **connector** interceptor (Bedrock action-group Lambda / Azure Function — [src/connectors/](src/connectors/), live) · **network sidecar** (roadmap; zero-code, non-bypassable, **preventive-only/no rollback**).
 
-4. **Agent Layer (Workloads)**:
-   - Agents-as-Pods with security sidecars
-   - External Agent Connectors (for Bedrock, Azure, etc.)
+3. **Three deployment editions = where the PDP runs** (AD-6): **Serverless** (multi-tenant, AegionAI cloud — today; content leaves boundary) · **Dedicated** (single-tenant, customer VPC, managed by us — roadmap; only metadata leaves) · **Self-Managed** (air-gapped — roadmap; nothing leaves).
 
-5. **Observability & Governance Layer**:
-   - Audit & Logging
-   - Metrics Collection
-   - Forensics & Chain-of-Thought Tracing
+4. **Decision flow**: one endpoint `POST /v1/validate`, branches on `phase` (request live; content/output/memory roadmap). Cheap deterministic frontier (trust → **Cedar** policy → **Sigma** signature → taint/abuse) short-circuits before any model; expensive models (ML classifier, D1–D7) run after; **deny-overrides combiner** ([src/security-controller/app/combiners/signal.py](src/security-controller/app/combiners/signal.py)) names the deciding source.
 
-## Core Security Features
+5. **Core components** (validators live under [src/security-controller/app/validators/](src/security-controller/app/validators/)): Checkpoint/SDK · **Cedar** policy engine (**not OPA/Rego — AD-2**) · Detectors (Sigma live + ML shadow + D1–D7 defense-in-depth + multimodal) · Trust & containment (quarantine, cross-agent filtering) · Rollback coordinator (effect-handle compensation, roadmap) · Audit store (DynamoDB + CloudWatch today, pluggable) · Connectors/Import · Management plane · Control plane/console.
 
-The prototype focuses on runtime security enforcement:
+**Abandoned vocabulary (do not use):** `Pod`-analog Agent CRD, `ToolBinding`, `AgentTopology`, `AgentRBAC`. `AgentPolicy`/`AgentTrust` exist only as **P2-roadmap (Y3) CNCF CRDs** (PRD FR-2.6); today's policy authority is **Cedar**.
 
-1. **Prompt Injection Detection & Blocking** - Sidecar intercepts and validates all prompts
-2. **Data Redaction / DLP** - Automatic PII/credential masking
-3. **Tool/API Call Guardrails** - Policy-based allow/deny for agent tool usage
-4. **Rollback Actions** - Undo unsafe operations (DB writes, API calls)
-5. **Privilege Escalation Prevention** - Cross-agent permission enforcement
-6. **Inter-Agent Message Filtering** - Validate agent-to-agent communications
-7. **Agent Quarantine** - Isolate compromised agents based on trust scores
+## Core Security Features (with today-vs-roadmap status)
+
+Runtime security enforcement, staged honestly (deterministic floors ship first; ML behind shadow→enforce):
+
+1. **Tool/API call guardrails** — Cedar allow/deny + parameter bounds + sequence integrity. **Live.**
+2. **Prompt-injection detection** — Sigma signatures (live, blocking) + ML classifier (**shadow today**, not yet enforcing).
+3. **Privilege-escalation prevention / cross-agent filtering** — `cross_agent_validator`. **Live**; mesh-wide *blast-radius containment* is roadmap.
+4. **Agent quarantine** — trust-score-driven isolation. **Live.**
+5. **Data redaction / DLP** — input-side PII/credential masking. **Roadmap** (Serverless content is unredacted-for-the-engine today; FR-3.13).
+6. **Bounded rollback** — SDK-only compensation for *reversible*, handle-returning actions, dependency-ordered. **Roadmap.** Block-before-execute is primary; **network sidecar is preventive-only (no rollback)**.
+7. **Tamper-evident audit / chain-of-thought forensics** — append-only audit is live; full forensic chain-of-thought is **roadmap**.
 
 ## Development Approach
 
-### Phase 1: Prototype (2-3 months)
-- Define Agent, AgentPolicy CRDs
-- Implement sidecar security proxy with core features
-- Basic Policy Engine and Security Controller APIs
-- Minimal dashboard for observability
+**The roadmap is NOT maintained here** (a dated month-by-month plan is exactly what rotted this file before). The authoritative roadmap is:
+- **Phases** — PRD P0 / P1 / P2 (see [PRD.md](PRD.md)).
+- **5-year ARR plan + GTM ladder** — [pitch/share/STRATEGY.md](pitch/share/STRATEGY.md) §4 (roughly Y1≈P0, Y2≈P1, Y3+≈P2; CRDs/CNCF are a Y3 item, not near-term).
+- **Editions ladder** (how the product climbs): **Serverless (today) → Dedicated/in-VPC → Self-Managed/air-gapped** — [pitch/share/architecture-brief.md](pitch/share/architecture-brief.md).
 
-### Phase 2: Short Term (6-9 months)
-- Expand CRDs (AgentTopology, AgentRBAC)
-- Full cross-agent communication controls
-- Multi-cloud connectors (AWS Bedrock, Azure OpenAI, GCP Vertex)
-- Integration with OPA/Gatekeeper
-
-### Phase 3: Medium Term (12-18 months)
-- Topology Manager with live graph
-- Global Security Agent coordinating mesh-wide security
-- Automated rollback/containment workflows
-- Observability stack (Grafana dashboards)
-
-### Phase 4: Long Term (24+ months)
-- Full Agent Security Mesh (Istio for agents)
-- Compliance profiles (HIPAA, GDPR, SOC2)
-- Self-optimizing scheduler
-- AgentOps SaaS platform
+**Direction in one line:** land on Serverless (SDK/connector, shadow→enforce), climb to in-VPC then air-gapped as residency needs demand; the two-moat thesis (below) drives which segment funds which capability.
 
 ## Key Design Principles
 
@@ -122,47 +127,57 @@ The prototype focuses on runtime security enforcement:
 
 ## Competitive Differentiation
 
-### vs AWS Bedrock AgentCore
-- **Deeper enforcement**: Rollback, quarantine, cross-agent containment
-- **Transparent policy control**: More flexible than AWS managed policies
-- **Hybrid/on-prem support**: Not locked to AWS cloud
-- **Forensic focus**: Chain-of-thought, immutable audit trails
+Full landscape: [pitch/share/STRATEGY.md](pitch/share/STRATEGY.md) §2. **Inline blocking is no longer the differentiator** (point tools block too now) — the edge is *stateful action governance + neutrality across vendors*.
 
-### vs Security Players (Lakera, CalypsoAI, HiddenLayer)
-- **Beyond guardrails**: Orchestration + security + governance
-- **Multi-agent focus**: Cascade prevention, inter-agent security
-- **Rollback capabilities**: Undo unsafe actions, not just detect
-- **Platform play**: Category-defining like Kubernetes, not point solution
+- **vs cloud giants (AWS Bedrock AgentCore, Azure AI Foundry, Google):** they ship strong *single-cloud* controls but each governs only its own cloud and won't guard a rival's — **neutral cross-vendor is ours**. AgentCore (NL→Cedar, deny-at-Gateway, GA) only governs agents *built on Bedrock*; we intercept agents on the customer's own infra, any cloud. AgentCore is *validation*, not a head-to-head.
+- **vs point tools (Lakera→Check Point, CalypsoAI→F5, HiddenLayer, CrowdStrike):** stateless, prompt/content-level, single-stack; we govern the **action + parameters with session state**, neutral across vendors.
+- **vs Zenity:** closest, but Microsoft-Foundry-only.
+- **vs AI gateways (Portkey, LiteLLM) / observability (LangSmith, Arize):** govern LLM *calls* or sit off the action path — structurally can't block the action.
+- **Identity vendors (Okta, CyberArk, Entra Agent ID):** complementary partners (*who* the agent is), not competitors (*what* the action may do).
 
-## Technology Stack (Planned)
+### Moat — two moats, by segment (STRATEGY §2)
+Deliberately **two**, each strongest where the other is weakest:
+- **Moat 1 — data flywheel** (compounds with scale; strongest in **Serverless/mid-market**). Two tracks: **content** (injection/DLP, fed by Serverless *redacted* content) + **behavioral** (egress reputation/anomaly/trust/outcome labels, fed by de-identified metadata from *every* edition). Regulated/in-VPC leaks no content → feeds behavioral + opt-in signatures, doesn't feed content. *Load-bearing open question: content-fed vs. metadata/signature-fed share of detection lift — unmeasured.*
+- **Moat 2 — structural** (needs no data; strongest in **regulated/in-VPC**): neutrality + switching cost (egress re-routing, audit system-of-record) + compliance certification + on-prem permanence + signature-intel.
+- **Patent pending** — defensibility at the margin, **not** a moat; don't lead with it.
 
-- **Control Plane**: Go/Rust microservices (Kubernetes-native)
-- **API**: gRPC + REST with OpenAPI spec
-- **Policy Engine**: OPA (Rego) or custom DSL with Rego layer
-- **Sidecar**: Lightweight Rust/Go service
-- **Sandboxing**: Firecracker microVMs / Wasmtime (WASM)
-- **Storage**: S3 for blobs + PostgreSQL/CockroachDB for metadata
-- **SBOM Ledger**: Append-only DB with KMS signing
-- **UI**: React + Tailwind admin console
-- **AuthN/Z**: OIDC + RBAC with corporate IdP integration
-- **CI/CD**: GitOps (Flux/ArgoCD)
+*One-line read: Serverless is where the data moat compounds; regulated is where the structural moat holds.*
+
+## Technology Stack (actual — verified against the code)
+
+- **Backend / PDP**: **Python** ([src/security-controller/](src/security-controller/)) — not Go/Rust.
+- **Policy engine**: **Cedar** ([src/security-controller/app/validators/cedar/](src/security-controller/app/validators/cedar/)), with YAML/JSON authoring compiled to Cedar — **AD-2; not OPA/Rego.**
+- **Detectors**: Sigma engine + ML classifier + trust/abuse/cross-agent validators (all under `app/validators/`); deny-overrides combiner in `app/combiners/signal.py`.
+- **API**: REST/HTTP via **AWS API Gateway + ALB** (CDK) — not gRPC. Single `POST /v1/validate` contract.
+- **Infra (IaC)**: **AWS CDK (Python)** — [cdk/stacks/](cdk/stacks/) (network, storage, compute, api, monitoring, cognito, bedrock_agent).
+- **Storage / audit**: **DynamoDB + S3 + CloudWatch** (pluggable per cloud/on-prem) — not PostgreSQL/CockroachDB; no SBOM ledger.
+- **Connectors**: **Bedrock + Azure Foundry** ([src/connectors/](src/connectors/)); GCP roadmap.
+- **Frontend**: **React 19 + TypeScript + Tailwind 4 + Vite** ([frontend/](frontend/)).
+- **Containers**: **Docker** — 7 images ([docker/](docker/)).
+- **AuthN/Z**: **Cognito** (CDK `cognito_stack.py`); OIDC + RBAC.
+- **IP protection (in-VPC editions, roadmap)**: self-hostable distilled CPU model + confidential-computing enclaves (Nitro / Azure CVM / GCP CVM) — not Firecracker/Wasmtime.
+- **Not yet implemented**: CI/CD (GitOps Flux/ArgoCD planned), input-side redaction/DLP, rollback coordinator.
 
 ## Key Documentation References
 
-When working on specific features, refer to:
+When working on specific features, refer to (the four legacy root .md files are **superseded** — do not use):
 
-- **Architecture decisions**: `Sentra/Kuberneters-Control-Plane-For-AI-Agents.md`
-- **Implementation details**: `Sentra/Sentra.md`
-- **Prototype roadmap**: `Sentra/Prototype-Plan.md`
-- **Market positioning**: `Sentra/The-Missing-Security-Governance-Layer.md`
+- **Architecture + ADRs**: [lld/ARCHITECTURE.md](lld/ARCHITECTURE.md) (the LLD index) + the numbered [lld/](lld/) NN-*.md
+- **Requirements**: [PRD.md](PRD.md)  ·  **Vision**: [vision.md](vision.md)
+- **Market / GTM / moat**: [pitch/share/STRATEGY.md](pitch/share/STRATEGY.md)
+- **Investor-facing architecture**: [pitch/share/architecture-brief.md](pitch/share/architecture-brief.md)
+- **HLD / decisions / flows / demo** (keep in sync per LLD rules): [design-hld.md](design-hld.md) · [adr.md](adr.md) · [flow.md](flow.md) · [demo.md](demo.md)
 
 ## Critical Constraints
 
-1. **Low Latency**: Policy checks must not significantly impact agent response times
-2. **Security First**: Never compromise security for convenience
-3. **Standards-Based**: Follow Kubernetes patterns (CRDs, controllers, operators)
-4. **Multi-Cloud**: Must work across AWS, Azure, GCP, and on-premises
-5. **Compliance Ready**: Design for SOC2, HIPAA, GDPR, EU AI Act from day one
+1. **Low Latency**: deterministic-floor target **≤500 ms p99**; ML-hot ≤900 ms (LLD 24). Honest today: ~0.6–1.2 s on Serverless (every call is a network round-trip to us) — the in-VPC local-floor path is what closes this. A *currently-unmet target*, not a vague aspiration.
+2. **Security First**: never compromise security for convenience; **fail-secure / deny-by-default**.
+3. **Multi-Cloud**: AWS + Azure today, **GCP roadmap**; on-prem via Self-Managed edition.
+4. **Compliance Ready**: design for SOC 2 (Type II in progress), HIPAA, GDPR, EU AI Act; tamper-evident audit is the evidence substrate.
+5. **The data boundary is the customer's to set** (edition choice) — Serverless content leaves (redacted, roadmap); Dedicated metadata-only; Self-Managed nothing leaves.
+6. **Honest staging**: ship deterministic floors first; ML stays in shadow until shadow→enforce graduation.
+
+*(CRDs/CNCF standardization are a Y3 roadmap item — not a current "standards-based" constraint.)*
 
 ---
 
@@ -273,14 +288,16 @@ except Exception as e:
 3. Move concrete code to implementation files
 4. Reference external documents instead of duplicating content
 
-**Example Structure** (keeps docs < 1000 lines):
+**Example Structure** (actual filenames; [lld/ARCHITECTURE.md](lld/ARCHITECTURE.md) is the index, docs run 01–26):
 ```
 lld/
-├── 01-cdk-infrastructure.md      (~800 lines)
-├── 02-api-gateway.md             (~600 lines)
-├── 03-security-controller.md     (~900 lines)
-├── 04-agents.md                  (~700 lines)
-├── 05-dashboard.md               (~500 lines)
+├── ARCHITECTURE.md               # the index / canonical architecture
+├── 01-cdk-infrastructure.md
+├── 02-api-gateway.md
+├── 03-security-controller.md
+├── 04-dashboard-v2.md
+├── 05-ai-agents.md  /  05-agent-management-apis.md
+└── … through 26-multi-tenancy.md
 ```
 
 **Rationale**:

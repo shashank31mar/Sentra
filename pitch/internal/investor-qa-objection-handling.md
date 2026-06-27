@@ -279,6 +279,21 @@ If they mean "intercept closer to the model": two legit options —
 
 ---
 
+### B14. "Who is your first customer?" *(focus test — answer with the two-layer structure, NOT a SKU list)*
+
+**Why this is asked**: it's a *focus* test. They want to see you can say no to nine segments to win one — and that you know the difference between *who you build the company around* and *who signs first*. The trap (and the instinct to resist): listing the three editions (Serverless/Dedicated/air-gapped) or naming several segments — that reads as undecided. Lead with the segment + buyer + pain, not the product packaging.
+
+**One-liner (memorize this)**:
+> "Two layers, precisely. The **beachhead we build the company around is financial-action agents** at mid-market fintechs — a wrong agent action is direct loss plus a compliance breach, so ROI and regulatory pull both land. The **fastest technical wedge — where our first design-partner logos come from — is infra/automation agents**: same engine, engineering-led buyers who decide in weeks. So we **wedge in infra/automation and build the durable business in financial-action.** Both land identically — observe-only in days, then enforce."
+
+**If pushed "so which is it, really?"**: "The *first logos* are infra/automation because they move fastest; the *first dollars that define us* are financial-action. I'm not hedging — that's a deliberate wedge-then-beachhead, the Wiz/Snyk pattern: land cheap and fast, expand into the high-value regulated motion."
+
+**Named targets**: wedge = scale-ups running Devin/Cursor/Claude Code/Replit in CI/CD (+ UiPath/ServiceNow deployers); beachhead = Brex/Ramp/Mercury-tier fintechs; direct regulated = enterprises already running agent fleets beyond the deploy path (e.g. Harness customers — Citi/NAB/Morningstar/Workday — whose non-delivery agents Harness leaves ungoverned).
+
+**Do NOT say**: "we have three flavors for three sensitivity levels…" (taxonomy, not a customer); B2C refund-fraud / Swiggy-Zomato as the lead (explicitly retired — [gtm-beachhead-analysis.md](gtm-beachhead-analysis.md)); or any answer that names more than the two layers. Editions/sensitivity tiers are a *follow-up* answer ("how do you serve regulated buyers?"), never the first-customer answer. Full GTM: [STRATEGY.md §4](../share/STRATEGY.md).
+
+---
+
 ### Part B reusable closers
 - **The moat (strategic)**: "The intercept is old tech — anyone can copy it. What they can't copy is being *neutral across every cloud* and the *cross-vendor threat network* that only a neutral player can build. That's the Wiz playbook."
 - **On the platforms**: "AWS guards AWS, Azure guards Azure. Neither will ever guard the other. The enterprise running agents on both has no neutral control point — that's us."

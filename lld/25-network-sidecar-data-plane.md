@@ -305,12 +305,77 @@ flowchart TB
 the residency-bound segment (banks, healthcare, government) where the sidecar is unavoidable. The
 no-customer-infra alternatives below are **out of scope here** (a later doc); listed only to mark the boundary.
 
-#### 1.8.1 The no-infra alternatives are deferred
+#### 1.8.1 Two wires, two threat models — which wire defends what (read this before "incomplete solution")
+
+A recurring review objection is *"the differentiated capabilities (content inspection, rollback, cross-agent
+containment) ride the **SDK**, which a hijacked agent can bypass — so the differentiation sits on the
+bypassable wire."* The resolution is to stop treating the SDK as a security boundary at all and state the
+threat-model split explicitly: **the two wires defend two different threats, and the boundary against a
+*hostile* agent is the network chokepoint — never the SDK.**
+
+| | **SDK (Wire A, cooperative)** | **Network chokepoint + egress lockdown (Wire B, non-cooperative)** |
+|---|---|---|
+| **Defends against** | the **honest/accidental** agent — misbehaving, mis-prompted, buggy | the **hostile/hijacked** agent — actively trying to dodge us |
+| **What it adds** | depth: in-process tool calls, content/parameter visibility for free (plaintext), **effect-capture for rollback** | the boundary: an action **cannot leave the box** without passing us |
+| **Hijacked agent** | **bypassable** — spawn a subprocess, use an un-hooked path, write its own socket (§3.1, [:543](#L543)) | **not bypassable for egress** — the VPC route table (admin-controlled, *not* the workload) sends `0.0.0.0/0` → chokepoint; default-deny drops anything else (§3.1 Step 2, S2 §7.2) |
+
+**So the answer to "how do you protect against an agent that overrides the SDK" is: you don't rely on the
+SDK for it.** A hijacked agent that skips the SDK is contained by the chokepoint, which sits *outside* its
+process and which it cannot route around. Concretely, against a hostile agent that bypassed the SDK:
+
+| Hostile action | Caught? | By what |
+|---|---|---|
+| Exfil to a **new/unauthorized destination** | ✅ always | default-deny egress at the chokepoint (§3.1, S2) |
+| **Forge another agent's identity** to widen its allow-list | ✅ always | verified mTLS/SPIFFE cert, never self-asserted (§3.5.1, S9) |
+| **Volume / rate abuse** on an allowed destination | ✅ (metadata) | rate/abuse limits + volume anomaly |
+| **Malicious payload to an *allowed* destination** (the $1M refund to the real `api.stripe.com`) | ⚠️ **only with content visibility (3T-D / 3T-A)** | content inspection at the egress decrypt point (§1.8.3) |
+| **DNS exfil · VPC-lateral · PrivateLink-to-cloud · peered networks** | ❌ residual | the customer's network architecture (§7.3) |
+| **Non-HTTP egress** (DB wire, Kafka) | metadata-only | pending a wire parser (§14) |
+
+**The one-line framing for the pitch:** *the network boundary **contains** hijacked agents; the SDK adds
+**depth** on cooperative ones.* Never sell "the SDK protects against a hijacked agent" — it is the
+bypassable wire by design. The differentiated capabilities that *do* survive a hostile agent are
+(i) **non-bypassable egress containment** and (ii) **content-granular enforcement on allowed destinations
+*when content is visible*** — which is the beachhead's normal case (§1.8.3), not an exotic add-on.
+
+#### 1.8.2 The no-infra alternatives are deferred
 The no-customer-infra rows in the matrix above — **cloud-backed SDK/connector**, **local-only SDK**, and
 **hosted egress proxy** — plus **`ext_authz` on a customer's existing mesh/gateway** (Envoy `ext_authz` /
 WASM / API-GW authorizer → our hosted brain; no *new* infra if they already run a mesh, keeps (a)+(c),
 partial (b)) are the ways to govern *without* in-boundary compute. **All are deferred** — this LLD designs
 the in-VPC (b)+(c) path; the no-infra family is a separate workstream tracked as **D8** (§15).
+
+#### 1.8.3 Content-granular enforcement on the non-bypassable wire — why the beachhead gets it by default
+
+§1.8.1's one ⚠️ — *catching a malicious payload to an **allowed** destination* (the canonical hostile case:
+a hijacked refund agent issuing a fraudulent refund to the **real** `api.stripe.com`) — needs the **decrypted
+body**, which the default metadata-only TLS lean (3T-B) does not have. This is the seam where "non-bypassable"
+and "content-granular" appear to live on different wires. **For the regulated beachhead it collapses, because
+those customers already run outbound TLS inspection.**
+
+- Banks, government, and healthcare — the residency-bound segment this LLD scopes to (§1.8) — **almost always
+  already operate central outbound break-and-inspect** at their egress, with an internal CA every workload
+  trusts (AWS Network Firewall / Azure Firewall Premium / GCP SWP, §3.3.3). This is **3T-D**: we **consume
+  their already-decrypted feed** and ask the customer for **nothing new**.
+- TLS therefore terminates at the **customer's central egress** ("the main entrance"), and our brain consumes
+  the decrypt point *there*. The per-agent PEP, sitting *before* that egress, still sees ciphertext — so the
+  correct mental model is **"our brain consumes the egress decrypt point,"** not "the per-pod sidecar reads
+  the prompt." Content-ML on the non-bypassable wire runs where the decrypted feed is.
+- With 3T-D present, **content-granular enforcement is itself on the non-bypassable wire**: the hijacked
+  agent's fraudulent refund is inspected and blocked at the chokepoint even though Stripe is an allowed
+  destination — closing §1.8.1's one ⚠️ for this segment.
+
+> **Refinement to D3 (§3.3.5) for the beachhead.** The doc's general lean is *3T-C default, 3T-D when
+> network-layer content is needed*. For the **regulated beachhead, 3T-D is the *expected* default** —
+> they already inspect egress, so riding it is zero new ask and gives content-ML on the non-bypassable
+> wire out of the box. Make **"do you run outbound TLS inspection?" a qualifying question** in the
+> beachhead sales motion: **yes** → ride it (seam closed, nothing new asked); **no** → be explicit that the
+> non-bypassable wire is metadata + the deterministic floor, and content depends on the cooperative SDK.
+
+**Residual even with 3T-D (do not over-claim):** **cert-pinned** clients/SDKs refuse *any* substitute cert,
+including the customer's own break-and-inspect CA (§3.3.2 cost #2) — those connections break or are exempted,
+a bounded content blind spot; and the §7.3 set (DNS/lateral/PrivateLink/peered) remains the customer's
+network-architecture responsibility regardless of TLS handling.
 
 ---
 
@@ -560,11 +625,23 @@ A **variant** = the concrete way we physically insert the network-capture proxy 
 need several because **no single attach method works on every platform** (clouds restrict different things,
 §13) — on a full K8s node you'd use 3B/3C, on Fargate you're forced to 3A, on Lambda you use the extension.
 
-| Variant | How it attaches | Best where | Catch |
-|---|---|---|---|
-| **3A Explicit proxy** | set `HTTPS_PROXY` so the agent dials the PEP | **anywhere incl. Fargate** (no privilege) | cooperative-ish (app can ignore the env var) |
-| **3B Transparent redirect** | `iptables`/eBPF redirect in the agent's network namespace | EKS-EC2 / AKS / GKE-Standard | needs privilege; **eBPF blocked on Fargate & GKE Dataplane V2** |
-| **3C Mesh sidecar** | Envoy as a sidecar container (Istio-style) | EKS / AKS / GKE; Cloud Run / ACA multi-container | per-pod overhead; not for Lambda |
+| Variant | How it attaches | Best where | Catch | Guarantee **without** egress lockdown |
+|---|---|---|---|---|
+| **3A Explicit proxy** | set `HTTPS_PROXY` so the agent dials the PEP | **anywhere incl. Fargate** (no privilege) | cooperative-ish (app can ignore the env var) | **capture only — cooperative, NOT (c)** |
+| **3B Transparent redirect** | `iptables`/eBPF redirect in the agent's network namespace | EKS-EC2 / AKS / GKE-Standard | needs privilege; **eBPF blocked on Fargate & GKE Dataplane V2** | strong default vs. honest agents; still not a hard guarantee |
+| **3C Mesh sidecar** | Envoy as a sidecar container (Istio-style) | EKS / AKS / GKE; Cloud Run / ACA multi-container | per-pod overhead; not for Lambda | strong default vs. honest agents; still not a hard guarantee |
+
+> **Capture method ≠ guarantee level — don't conflate the two axes (CISO read).** The variant above decides *how
+> richly we capture*; it does **not**, by itself, decide whether a *hijacked* agent can dodge us. **Non-bypass (c)
+> against a hostile agent comes from one thing only: egress lockdown (route `0.0.0.0/0` → chokepoint + default-deny,
+> §3.1 Step 2 / §7.3) on the governed subnet — not from picking 3A/3B/3C.** So the *lightest* option (3A, no network
+> change) is **cooperative**: it gives capture and monitor-mode value with zero infra change, but a hijacked agent can
+> ignore the env var → no (c). The customer adds egress lockdown **only when they want the hard guarantee**, on the
+> **one governed subnet** (scoped blast radius, §7.4) — and for the regulated beachhead that is usually a *rule on an
+> egress path they already operate and CAB-gate* (the same path that makes 3T-D work, §1.8.3), not greenfield
+> re-plumbing. This is the progressive ladder (§1.7, §4.6): **scoped + cooperative + monitor-first → opt-in egress
+> lockdown for (c)** — never a day-one wall. (The §7.3 residuals — DNS/lateral/PrivateLink/peered — persist regardless
+> of variant *and* of subnet scoping; they are the customer's network architecture.)
 
 **Serverless agents (Lambda / Functions) can't host a sidecar** — they use an in-execution-environment
 extension instead:
@@ -1058,7 +1135,9 @@ ALLOWED** (§14); rollback requires the SDK. (2) Non-bypass is **scoped and cond
 ### 7.3 Non-bypass is conditional and *scoped* (state it plainly)
 The precise claim is: **non-bypassable for direct internet egress from the governed segment, given egress
 lockdown enforced.** Without egress lockdown it is a strong default, not a guarantee — a documented deployment
-requirement, verified at onboarding and attested (§12). Even *with* lockdown, default-deny on `0.0.0.0/0` to the
+requirement, verified at onboarding and attested (§12). **Egress lockdown — not the capture variant (3A/3B/3C) — is
+what delivers (c); the lightest, network-change-free option (3A) is *cooperative* and gives capture, not the hard
+guarantee (see the guarantee-level column in §3.1.1).** Even *with* lockdown, default-deny on `0.0.0.0/0` to the
 chokepoint does **not by itself** cover the residual exfil/bypass paths below — a hijacked agent doesn't need a
 raw internet socket, it needs **any reachable hop that egresses**. Enumerate them as known gaps and close each:
 
@@ -1409,7 +1488,7 @@ as complementary, not either/or.
 | D5 | IP protection | 6A encrypt / 6B TEE / 6C obfusc-split | **6A floor + 6B opt-in + tiering** |
 | D6 | Metering | 10A CP / 10B signed-ledger / 10C license | **10A (Dedicated) + 10B/10C (air-gap)** |
 | D7 | CP connectivity | private link per cloud / public mTLS | **private where available; CP per cloud** |
-| D8 | No-in-boundary-compute alternatives (§1.8.1) | Serverless-SDK / connector / ext_authz on existing mesh / hosted egress proxy | **deferred — separate workstream after the in-VPC path lands** |
+| D8 | No-in-boundary-compute alternatives (§1.8.2) | Serverless-SDK / connector / ext_authz on existing mesh / hosted egress proxy | **deferred — separate workstream after the in-VPC path lands** |
 | D9 | Workload-identity stack (§3.5) | self-hosted **SPIFFE/SPIRE** / native per-cloud (IRSA · Entra WI · GKE WI) / hybrid | **SPIFFE/SPIRE portable core + native bootstrap per cloud** |
 | D-fresh | Policy cache staleness (§2.1) | exact TTL + staleness SLO; push-channel transport; **force-central thundering-herd bound** (pre-scale vs rate-limit-to-floor) + affected-tool QPS assumption | **push primary + force-central (pre-scale + shed-to-floor); TTL/SLO/QPS TBD** |
 | D-spool | Spool overflow policy on sustained outage (§8.4) | (a) back-pressure/alert and never drop audit+metering; (b) also let audit degrade gracefully under extreme disk pressure; spool size + reuse Fluent Bit/Vector/OTel vs build | **default: never silently drop audit/metering; exact size + transport TBD** |
@@ -1491,6 +1570,117 @@ The product still works (§9.2): degrade to deterministic-floor-only, or escalat
 Serverless edition / control plane for the heavy model (re-adds egress — a data-boundary trade-off the
 customer accepts), or route that account to the Serverless edition entirely. "No compute" picks an edition;
 it doesn't break the product.
+
+**FAQ-8 — How do you protect against a *hijacked* agent that overrides / bypasses the SDK?**
+You don't rely on the SDK for it — and you shouldn't. The two wires defend two different threats: the **SDK
+(Wire A)** is for the *honest/accidental* agent (it adds in-process visibility, content, and effect-capture
+for rollback) and is **bypassable by a hostile agent** by design — it can spawn a subprocess, take an
+un-hooked path, or open its own socket. The boundary against a *hostile* agent is the **network chokepoint +
+egress lockdown (Wire B)**, which sits **outside the agent's process**: the VPC route table — controlled by
+the cloud admin, not the workload — forces `0.0.0.0/0` through the chokepoint with no direct internet route,
+and default-deny drops anything to an unallowed destination. So a hijacked agent that skips the SDK **still
+cannot reach an unauthorized destination, cannot forge another agent's identity (verified mTLS/SPIFFE cert),
+and cannot exceed rate/volume limits.** One-liner: *the network boundary **contains** hijacked agents; the
+SDK adds **depth** on cooperative ones.* The residual paths (DNS exfil, VPC-lateral, PrivateLink-to-cloud,
+peered networks) are the customer's network architecture (§7.3). See §1.8.1.
+
+**FAQ-9 — Then can the non-bypassable wire catch a malicious payload to an *allowed* destination (e.g. a
+fraudulent refund to the real `api.stripe.com`)?**
+Only if it can see the decrypted body — and **for the regulated beachhead it can, by default.** Catching a
+bad payload to an allowed host needs content visibility, which the metadata-only lean (3T-B) lacks. But
+banks/gov/healthcare **already run central outbound TLS inspection** with an internal CA every workload
+trusts — that's **3T-D**: we consume their already-decrypted feed (asking for nothing new), TLS terminates at
+their **central egress**, and our brain consumes that decrypt point. Content-granular enforcement then runs
+**on the non-bypassable wire**, so the fraudulent refund is blocked at the chokepoint even though Stripe is an
+allowed destination. Make **"do you run outbound TLS inspection?" a qualifying question**: yes → seam closed,
+nothing new asked; no → the non-bypassable wire is metadata + the deterministic floor and content depends on
+the cooperative SDK. Bounded residual: **cert-pinned** connections refuse even the customer's own
+inspection CA (§3.3.2). See §1.8.3.
+
+> *FAQ-8 through FAQ-15 are the adversarial review questions raised in design/grill sessions, kept here so the
+> answers are consistent whether the asker is a technical investor, a co-founder, or a CISO.*
+
+**FAQ-10 — Your differentiated features (content inspection, rollback, cross-agent containment) ride the SDK, which a
+hijacked agent bypasses. So isn't the differentiation on the *bypassable* wire — and the non-bypassable wire just does
+commodity allow/deny?**
+This is the sharpest version of the objection, and the answer is to separate *two wires for two threats* (§1.8.1).
+The SDK is the **cooperative** wire — it adds depth (in-process calls, content, rollback) for *honest/accidental*
+agents and is bypassable by design. The boundary against a *hostile* agent is the **network chokepoint**, outside
+the agent's process. What survives a hostile agent and is still differentiated is: **(i) non-bypassable egress
+containment** (it can't reach an unauthorized destination, forge identity, or exceed rate/volume) and **(ii)
+content-granular enforcement on *allowed* destinations when content is visible** — which, for the regulated
+beachhead, is the default because they already run egress TLS inspection (3T-D, §1.8.3). The commodity part (coarse
+IP/domain allow-deny) is the customer's existing firewall; **the agent-aware decision the chokepoint enforces —
+Cedar + Sigma + ML + identity + trust — is ours** (§3.1 Step 2). One-liner: *the network boundary contains hijacked
+agents; the SDK adds depth on cooperative ones.* Never sell SDK-rollback as a hostile-agent defense.
+
+**FAQ-11 — If AWS, Azure, and Google each ship native governance for their own managed agent platform, what's left for
+you — and how big is it?**
+Their native controls (e.g. Bedrock AgentCore Policy: NL→Cedar, deny-at-Gateway, GA) only govern agents *built on
+their managed platform*. Our addressable surface is **agents running *off* the managed platforms** — self-hosted,
+cross-cloud, any framework — which is *exactly* the regulated/multi-cloud population that can't or won't put its
+agents on a single vendor's managed runtime. So the hyperscaler-native trend **defines** our market rather than
+erasing it, and it aligns with our beachhead (a bank that self-hosts for residency/control is the off-platform
+customer). **The honest dependency: our TAM ≈ the fraction of enterprise agents that stay off managed platforms over
+the next 24–36 months.** If everything consolidates onto Bedrock/Foundry/Vertex managed agents, we shrink; if
+regulated + multi-cloud keeps a large off-platform population, we win. That single number is the business thesis —
+state it as a thesis, not a certainty.
+
+**FAQ-12 — The customers who most need the in-VPC sidecar (regulated) leak the least data back — Dedicated is
+metadata-only, Self-Managed is nothing. Doesn't your beachhead starve the data-flywheel you call the moat?**
+It would, if there were one moat. There are **two** (STRATEGY §2). **Moat 1 (data flywheel)** compounds with scale and
+is strongest in **Serverless/mid-market**; it has two tracks — a *content* track (injection/DLP) fed by Serverless
+redacted content, and a *behavioral* track (egress reputation, anomaly, trust, outcome labels) fed by de-identified
+metadata from *every* edition. **Moat 2 (structural)** needs no data and is strongest in **regulated/in-VPC**:
+neutrality + switching cost (egress re-routing, audit system-of-record, SIEM wiring) + compliance certification +
+on-prem permanence. So the regulated beachhead is defended by Moat 2, still feeds Moat 1's behavioral track via
+metadata, contributes **opt-in customer-approved derived signatures** (Sigma rules / patterns / centroids — never
+content) that carry its *high-value* attack shapes out, and *receives* the improved global model. The same customer
+need not be both your biggest moat-feeder and your biggest check — by design. *Load-bearing open question: the
+content-fed vs. metadata/signature-fed share of detection lift — measure before claiming the regulated tier is
+moat-neutral.*
+
+**FAQ-13 — Re-routing a regulated VPC's production egress sounds like the largest change-management item in the whole
+design. Why would a CISO do that — and is it the same scary change for everyone?**
+It's smaller and more graduated than it sounds. (1) **Scoped, not blanket** — only *onboarded* agents go into a
+**governed subnet** whose route points at the chokepoint; all other traffic is untouched, so a bad route black-holes
+only onboarded agents (§3.1, §7.4). (2) **The capture variant and the guarantee are different axes** (§3.1.1): the
+lightest option (3A explicit proxy, **no network change**) gives capture + monitor-mode value cooperatively; the
+customer adds **egress lockdown only when they want non-bypass (c)**, on that one subnet. (3) **For the beachhead it's
+usually not greenfield** — banks/gov/healthcare already operate a CAB-gated egress path with TLS inspection (the same
+path that powers 3T-D); we add the governed subnet's route + an allow-rule to infra they already run. (4) It gets
+real change-management rigor regardless — staged pilot-subnet rollout, destination-reachability canary, one-step
+declarative revert, customer owns the change through their CAB (§7.4). The pitch is the **progressive ladder**
+(§1.7): scoped + cooperative + monitor-first → opt-in egress lockdown for the hard guarantee — never a day-one wall.
+
+**FAQ-14 — Your latency, sizing, and fail-mode numbers are all deferred to a load test that hasn't run. How do you
+commit to anything?**
+We don't commit yet — and we say so. The **escalation fraction** (what share of calls need the ML tier) is the single
+cross-cutting unknown that drives latency, fleet sizing, and the thundering-herd bound (D-escalation, §15); the in-VPC
+PEP→PDP RTT (≤5 ms p99) and QPS/agent are placeholders; the §9.2 sizing table is explicitly "planning placeholders,
+not commitments." What we *can* stand behind today: the **common path decides locally on the deterministic floor with
+no network hop** (single-digit–tens of ms), only borderline cases pay inference, and the architecture **fails secure
+under load** (bounded queues + shed-to-floor, never fail-open). The discipline is to **run LLD 24 M1 before any
+external latency/sizing claim**, and treat **fail-mode as an open per-tool decision** (next FAQ) rather than a blanket
+promise. For an investor: the honest answer is "here are the few numbers that gate the claims and the one experiment
+that resolves them," not a fabricated p99.
+
+**FAQ-15 — Fail-secure means that when *your* control plane has an outage, a payments agent stops moving money. Isn't
+that a worse incident than the one you're preventing?**
+This is the #1 enterprise-architecture pushback and we surface it as an open decision, not a slogan (D-failmode,
+§8.1.1). The tension is real: high-risk tools are flagged `requires_ml` → they *always* escalate → if the PDP is
+unreachable there's no local verdict → fail-secure **blocks**, and that's a blast-radius event our own outage
+triggers. So fail-mode is **per-tool, not global**: low/medium-risk tools fall back to the cached deterministic floor
+(no outage impact); high-risk tools default to fail-secure (DENY) but the customer may **opt into fail-open on named
+tools and owns that residual risk, audited and signed off at onboarding**. We shrink the dilemma first — PDP HA +
+multi-AZ to make "unreachable" rare, and a *degraded-floor* verdict (tighter Cedar bounds that hold without ML) so
+high-risk tools aren't *all* hard-blocked. The honest position: we default secure, make the exception explicit and
+customer-owned, and never silently fail open.
+
+> **Related boundary — don't oversell the demo (rollback).** The canonical refund-agent demo can *block before* a bad
+> refund, but on the network sidecar it **cannot undo** an ALLOWED one (preventive-only, no effect-capture handle —
+> §1.8, §14); rollback needs the SDK and only for *reversible*, handle-returning actions. Lead the network-sidecar
+> demo with prevention-on-an-allowed-destination, not with "undo the $500."
 
 ---
 *Draft for review. Per LLD standards: update HLD/ADR/flow/demo on changes; no option here is final until §15 is resolved.*

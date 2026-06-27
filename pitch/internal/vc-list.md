@@ -1,11 +1,25 @@
 # AegionAI Guard — Investor (VC) Target List
 
 **Created:** 2026-06-25 (verified pass: firm site + partner + thesis fit) · **Track:** Fundraising (seed, ~$5M)
-**Companion:** [outreach-tracker.md](outreach-tracker.md) (Rutvik/Randy/Zafar live) · [prospect-list.md](prospect-list.md) (design partners) · [STRATEGY.md](../share/STRATEGY.md)
+**Companion:** [outreach-tracker.md](outreach-tracker.md) (Rutvik/Randy/Zafar live) · [angel-list.md](angel-list.md) (pre-seed angels) · [prospect-list.md](prospect-list.md) (design partners) · [STRATEGY.md](../share/STRATEGY.md)
 
-> 47 firms, each verified against its **own website / team page** for: active early-stage investing, a named partner with correct current title, genuine thesis fit, and a relevant portfolio company. **Investor one-pager IS the right artifact here** (unlike design-partner outreach). LinkedIn is bot-blocked, so titles come from firm sites/press — re-confirm the partner is current on Sales Nav before sending.
+> 48 firms, each verified against its **own website / team page** for: active early-stage investing, a named partner with correct current title, genuine thesis fit, and a relevant portfolio company. **Investor one-pager IS the right artifact here** (unlike design-partner outreach). LinkedIn is bot-blocked, so titles come from firm sites/press — re-confirm the partner is current on Sales Nav before sending.
 >
 > ⚠️ **Partner-departed flags** are called out inline — do NOT email someone who left. These cost real credibility.
+
+---
+
+## ★★ Warm two-doors-one-key — Unusual Ventures (via Jyoti Bansal / Harness)
+
+**The single best path on this list, because it's warm and dual-purpose.** Jyoti Bansal is Co-Founder of **Unusual Ventures** *and* CEO of **Harness** (our top design-partner lead — see [prospect-list.md](prospect-list.md)). One relationship opens both doors.
+
+| Firm | Geo | Partner (title) | Stage | Fit | Proof-point |
+|------|-----|-----------------|-------|-----|-------------|
+| **Unusual Ventures** | US | **John Vrionis** (Co-Founder & Managing Partner) — *the infra/security spine: Arctic Wolf, MuleSoft, Nicira, Harness* | Seed / Series A (seed specialist; hands-on model) | ★ Strong (enterprise infra + security + AI-infra) | Kipling Secure (AI-native cyber), Resolve AI (AI production engineer), Kusari/Socket (supply-chain sec), Relyance (governance), Harness |
+
+- **Jyoti Bansal** is "Co-Founder & Entrepreneur Partner" at Unusual (not GP — John Vrionis is Managing Partner and the right thesis-fit pitch target).
+- **Sequence:** lead with the **Harness design-partner conversation** (concrete, product-led); let that technical validation become the warm signal into Unusual's seed process. Don't cold-pitch the fund first.
+- ⚠️ **Wei Lien Dang** (StackRox founder, ex-security partner) appears to have **departed** Unusual — not on current team page. Don't target him. **Sandhya Hegde** is a Venture Partner but SaaS/PLG-focused, not security — secondary.
 
 ---
 
