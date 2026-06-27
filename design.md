@@ -1,3 +1,5 @@
+> ⚠️ **DEPRECATED (2026-06-28) — historical, not maintained.** Superseded by [lld/ARCHITECTURE.md](lld/ARCHITECTURE.md). Do not rely on this document for current architecture, requirements, or positioning; kept for historical reference only.
+
 # Sentra MVP - Technical Design Document
 
 **Version**: 1.0

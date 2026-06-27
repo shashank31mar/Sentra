@@ -1,3 +1,5 @@
+> ⚠️ **DEPRECATED (2026-06-28) — historical, not maintained.** Superseded by [flow.md](flow.md). Do not rely on this document for current architecture, requirements, or positioning; kept for historical reference only.
+
 # Request Flow Explanation: First vs Second Request
 
 ## What Happens When User Asks "list all orders"

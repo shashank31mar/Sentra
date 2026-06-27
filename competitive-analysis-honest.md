@@ -1,3 +1,5 @@
+> ⚠️ **DEPRECATED (2026-06-28) — historical, not maintained.** Superseded by [pitch/share/STRATEGY.md §2](pitch/share/STRATEGY.md). Do not rely on this document for current architecture, requirements, or positioning; kept for historical reference only.
+
 # Honest Competitive Analysis - Sentra vs. Market
 
 **Date**: January 11, 2025

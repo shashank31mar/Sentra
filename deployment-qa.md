@@ -1,3 +1,5 @@
+> ⚠️ **DEPRECATED (2026-06-28) — historical, not maintained.** Superseded by [pitch/share/architecture-brief.md](pitch/share/architecture-brief.md). Do not rely on this document for current architecture, requirements, or positioning; kept for historical reference only.
+
 # Deployment & Positioning Q&A
 
 **Date**: January 11, 2025

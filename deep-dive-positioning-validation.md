@@ -1,3 +1,5 @@
+> ⚠️ **DEPRECATED (2026-06-28) — historical, not maintained.** Superseded by [pitch/share/STRATEGY.md](pitch/share/STRATEGY.md). Do not rely on this document for current architecture, requirements, or positioning; kept for historical reference only.
+
 # Deep Dive: Validating Sentra's Core Value Propositions
 
 **Date**: January 11, 2025

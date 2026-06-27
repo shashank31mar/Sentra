@@ -1,3 +1,5 @@
+> ⚠️ **DEPRECATED (2026-06-28) — historical, not maintained.** Superseded by [PRD.md](PRD.md). Do not rely on this document for current architecture, requirements, or positioning; kept for historical reference only.
+
 # MVP Requirements: 2-4 Week Minimal Demo
 
 **Goal**: Prove that runtime security enforcement for AI agents works with the absolute minimum viable implementation.
