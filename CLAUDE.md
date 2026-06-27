@@ -66,6 +66,72 @@ This is **not a docs-only repo** — there is working implementation (Python + A
     The-Missing-Security-Governance-Layer.md      # ⚠️ HISTORICAL (Nov-2025); superseded — do not rely on
 ```
 
+## Common Commands
+
+There is **no Makefile and no monorepo task runner** — each language/area has its own toolchain. Two Python virtualenvs are expected: a **repo-root `venv/`** (used by CDK — see `cdk/cdk.json` `app: ../../venv/bin/python3 app.py`) and **`src/security-controller/venv/`** (the PDP service). Activate the matching one before running a command.
+
+### PDP / Security Controller — [src/security-controller/](src/security-controller/)
+```bash
+cd src/security-controller
+python -m venv venv && source venv/bin/activate          # first time
+pip install -r requirements.txt -r requirements-test.txt # runtime + test deps
+
+# Run the service locally (FastAPI/uvicorn on :8080) — or just: ./start_server.sh from repo root
+python -m uvicorn app.main:app --host 0.0.0.0 --port 8080 --reload
+
+# Tests (pytest lives in tests/ AND as loose test_*.py in the package root)
+pytest tests/ -v                                  # the main suite
+pytest tests/ test_e2e.py test_validate_endpoint.py test_alarms.py test_milestone3.py  # include root-level tests
+pytest tests/test_cedar_evaluator.py -v           # a single file
+pytest tests/test_combiner.py -k deny_overrides   # a single test by name
+pytest tests/ --cov=app --cov-report=html         # with coverage
+```
+
+### Frontend console — [frontend/](frontend/) (React 19 + Vite)
+```bash
+cd frontend
+npm install
+npm run dev        # Vite dev server
+npm run build      # tsc -b && vite build
+npm run lint       # eslint
+```
+
+### CDK infrastructure — [cdk/](cdk/) (Python; deploys to AWS account 531109575379, profile `sentra`)
+```bash
+./scripts/setup_cdk.sh                 # installs root-venv deps + verifies CDK CLI (run from repo root)
+export AWS_PROFILE=sentra AWS_REGION=us-east-1
+cd cdk
+cdk bootstrap aws://531109575379/us-east-1   # first time only
+cdk synth                              # generate CloudFormation
+cdk diff
+cdk deploy --all                       # respects stack dependency order
+```
+**Heed the production-safety rules** (global CLAUDE.md): prefer read/describe/list, never `cdk destroy` or delete resources without explicit confirmation.
+
+### Top-level tests — [tests/](tests/) (CDK + policy + cross-cloud integration, run from repo root)
+```bash
+pytest tests/unit/ -v                  # CDK stack + policy/scenario unit tests
+pytest tests/integration/ -v           # e2e agent / policy-CRUD / cross-cloud scenarios
+```
+
+### Drop-in SDK (PEP) — [demo-agents/sdk/aegion-guard-python/](demo-agents/sdk/aegion-guard-python/)
+Runtime is **stdlib-only by design** (vendors unchanged into a Lambda zip / Azure Function — LLD 23 §2); the `identity` extra adds `PyJWT[crypto]` for ES256. Tests use `asyncio_mode = auto`, `testpaths = tests`.
+```bash
+cd demo-agents/sdk/aegion-guard-python
+pip install -e ".[dev]"
+pytest                                 # config in pyproject.toml ([tool.pytest.ini_options])
+```
+
+### Demo agents & seeding
+```bash
+AEGION_DEMO_BACKEND=memory python demo-agents/run_local_demo.py   # offline multi-agent demo
+pytest demo-agents/tests/ -v                                      # offline demo tests (shared FakeController)
+python scripts/seed_all.py                                        # seed agents/policies/tools/sigma into DynamoDB (needs AWS)
+./scripts/build_and_push_images.sh                                # build + push the 7 Docker images to ECR (needs sentra profile)
+```
+
+> ⚠️ [src/security-controller/README.md](src/security-controller/README.md) is **stale** — it marks shipped validators (Cedar/Sigma/trust/abuse) as "TODO" and predates the Cedar cutover. Trust this file + [lld/ARCHITECTURE.md](lld/ARCHITECTURE.md) for current status, not that README.
+
 ## Architecture (PEP/PDP split — NOT a Kubernetes/CRD model)
 
 The operative model is [lld/ARCHITECTURE.md](lld/ARCHITECTURE.md) §2. **The Kubernetes/CRD analogy is retired** — it survives only as (a) a loose switching-cost/champion-familiarity metaphor in pitch docs and (b) P2-roadmap (Y3) CRD vocabulary. Brain-and-wires framing: [lld/25-network-sidecar-data-plane.md](lld/25-network-sidecar-data-plane.md) §1.3.
