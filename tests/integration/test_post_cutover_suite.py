@@ -89,14 +89,21 @@ def _require_reachable(base_url):
 # Helpers
 # =========================================================================== #
 def _no_auth_headers(api_headers):
-    """A copy of the operator headers with EVERY auth credential stripped — used
-    to assert the 401 (no-auth) failure path. The control-plane front door verifies
-    an ALB-OIDC operator token (deps.verify_alb_oidc); against a deployed ALB a
-    request with no operator identity must be rejected (401)."""
-    stripped = dict(api_headers)
-    for key in ("Authorization", "X-Operator-Email", "x-amzn-oidc-data",
-                "x-sentra-oidc-data", "X-Aegion-Tenant"):
-        stripped.pop(key, None)
+    """A copy of the operator headers with EVERY auth credential stripped — used to
+    assert the no-auth deny path. Strips BOTH trust roots so the request carries no
+    authority at all:
+      * the API-Gateway key (`X-Api-Key`) — the gateway's `api_key_required=True`
+        denies BEFORE the request reaches the controller (a 403). Without stripping
+        this the request slips past the gateway and the controller may reject it for
+        a *non-auth* reason (bad body / missing-registry agent), masking the auth test.
+      * the control-plane operator identity (`Authorization` bearer, the legacy
+        `X-Operator-Email` shim, the ALB-OIDC `x-amzn-oidc-data` /
+        `x-sentra-oidc-data` headers, and the `X-Aegion-Tenant` switch).
+    Header names are matched case-insensitively (requests preserves whatever case the
+    fixture used)."""
+    drop = {"authorization", "x-operator-email", "x-amzn-oidc-data",
+            "x-sentra-oidc-data", "x-aegion-tenant", "x-api-key"}
+    stripped = {k: v for k, v in api_headers.items() if k.lower() not in drop}
     # Keep Content-Type so the request is otherwise well-formed.
     stripped.setdefault("Content-Type", "application/json")
     return stripped
@@ -134,6 +141,16 @@ def _decision_of(resp: requests.Response) -> str | None:
         return (resp.json() or {}).get("decision")
     except ValueError:
         return None
+
+
+def _has_operator_token() -> bool:
+    """True iff a real ALB-OIDC operator token is available. Control-plane routes
+    (deps.verify_alb_oidc) require a cryptographically-verified ALB OIDC JWT; against
+    this headless API-Gateway path there is none, so those routes legitimately return
+    401 "missing ALB identity". When no token is present, control-plane READS assert
+    only the auth-gate (401/403); when one IS present, they assert the full 200 shape.
+    The negative (no-auth → deny) tests stay strict regardless."""
+    return bool(os.environ.get("SENTRA_OPERATOR_TOKEN"))
 
 
 # --------------------------------------------------------------------------- #
@@ -188,24 +205,56 @@ def _route_exists(resp: requests.Response) -> bool:
     return False
 
 
-# The FULL 59-route inventory (prefix /v1) — method + path template with absent-id
-# placeholders. Source: app/api/routes.py (43) + app/api/tenancy_routes.py (16).
+# --------------------------------------------------------------------------- #
+# Detect an API-Gateway "route not exposed on the public gateway" response.
+# --------------------------------------------------------------------------- #
+def _is_gateway_not_exposed(resp: requests.Response) -> bool:
+    """True iff the response is API Gateway saying "no public route here":
+    a 403 whose body carries the gateway's missing-auth-token / no-method marker.
+    This is the SAME shape both for (a) an internal-only route correctly absent from
+    the public gateway and (b) the E4 footgun (a route that SHOULD be public but was
+    never wired). The two callers below assign opposite meanings to it: the PUBLIC
+    enumeration FAILS on it (E4), the INTERNAL enumeration REQUIRES it (boundary)."""
+    if resp.status_code != 403:
+        return False
+    return any(m in (resp.text or "").lower() for m in _GATEWAY_MISSING_MARKERS)
+
+
+# The 59-route controller inventory (prefix /v1) — method + path template with
+# absent-id placeholders. Source: app/api/routes.py (43) + app/api/tenancy_routes.py
+# (16). It is split into two sets because the PUBLIC API Gateway exposes only a
+# SUBSET of controller routes BY DESIGN (verified by reading cdk/stacks/api_stack.py
+# + direct curl, WS-K K8.4):
+#
+#   * PUBLIC  — wired through API Gateway → VPC Link → NLB → private ALB in
+#     api_stack.py. Reachable on the public gateway → asserted REACHABLE via
+#     `_route_exists` (a real handler response, never a gateway hole). This is the
+#     set that catches the E4 footgun: a route that SHOULD be public but was never
+#     wired returns the missing-auth-token 403 and FAILS its test.
+#   * INTERNAL — deliberately NOT wired into the public gateway; reachable only over
+#     the PRIVATE ALB (server-to-server, e.g. the dashboard calling
+#     /v1/sessions/{id}/signals via src/dashboard/services/security_controller_client.py).
+#     On the PUBLIC gateway these return 403 {"message":"Missing Authentication Token"}
+#     — the gateway saying "no such public route", NOT the E4 defect. Asserted to
+#     return exactly that gateway-not-exposed shape, which pins the public/private
+#     boundary: the test FAILS if an internal route is ever silently exposed publicly
+#     (handler response instead of the gateway 403), catching boundary regressions.
+#
 # Placeholders are obviously-absent ids so a 404 here means "resource not found"
-# (route exists), never a real delete/mutation. Bodies for the write routes are the
-# minimal well-formed shape so we reach the handler (not a pre-handler 422 that
-# would still prove reachability, but a clean handler entry is cleaner).
+# (route exists), never a real delete/mutation.
 _ABSENT = "__nope__"
-_ROUTE_INVENTORY = [
-    # ---- routes.py ----
+
+# PUBLIC: every (method, path) that api_stack.py actually wires onto the gateway.
+_PUBLIC_ROUTES = [
+    # ---- routes.py (public subset) ----
     ("GET", "/v1/health", None),
     ("POST", "/v1/validate", _validate_body(_agent_id_for(_ABSENT), "noop", {})),
     ("GET", "/v1/logs", None),
     ("GET", f"/v1/sessions/{_ABSENT}/decisions", None),
-    ("GET", f"/v1/sessions/{_ABSENT}/signals", None),
     ("GET", "/v1/decisions", None),
-    ("POST", f"/v1/sessions/{_ABSENT}/signals", {"source": "test", "signal_type": "noop"}),
     ("GET", "/v1/sessions", None),
-    ("GET", "/v1/metrics", None),
+    # NB: bare GET /v1/metrics is INTERNAL-only (below). The three /metrics/* sub-
+    # resources ARE wired (api_stack.py T20-T22) and stay public:
     ("GET", "/v1/metrics/overview", None),
     ("GET", "/v1/metrics/platform-distribution", None),
     ("GET", "/v1/metrics/decisions-timeseries", None),
@@ -242,10 +291,9 @@ _ROUTE_INVENTORY = [
     ("GET", f"/v1/logs/conversation/{_ABSENT}", None),
     ("POST", "/v1/rollback", {"action_id": _ABSENT, "action_type": "noop",
                               "reason": "test", "operator_id": "test"}),
-    ("POST", f"/v1/rollback/conversation/{_ABSENT}", {"reason": "test"}),
     ("POST", f"/v1/quarantine/{_ABSENT}", {"reason": "test", "operator_id": "test"}),
     ("DELETE", f"/v1/quarantine/{_ABSENT}", None),
-    # ---- tenancy_routes.py ----
+    # ---- tenancy_routes.py (all 16 ARE wired public — api_stack.py _mt_route) ----
     ("GET", "/v1/me", None),
     ("POST", f"/v1/agents/{_ABSENT}/credentials",
      {"public_key": "-----BEGIN PUBLIC KEY-----\nnope\n-----END PUBLIC KEY-----", "alg": "ES256"}),
@@ -264,6 +312,25 @@ _ROUTE_INVENTORY = [
     ("GET", "/v1/platform/tenants", None),
     ("GET", f"/v1/platform/tenants/{_ABSENT}", None),
 ]
+
+# INTERNAL-ONLY: controller routes deliberately absent from the public gateway
+# (api_stack.py wires none of these — confirmed by reading it). Reachable only over
+# the private ALB (server-to-server). On the public gateway each returns 403
+# missing-auth-token. These 4 complete the 59-route inventory (55 public + 4 internal).
+_INTERNAL_ONLY_ROUTES = [
+    ("GET", "/v1/metrics", None),                                  # bare; /metrics/* are public
+    ("GET", f"/v1/sessions/{_ABSENT}/signals", None),
+    ("POST", f"/v1/sessions/{_ABSENT}/signals", {"source": "test", "signal_type": "noop"}),
+    ("POST", f"/v1/rollback/conversation/{_ABSENT}", {"reason": "test"}),  # /rollback is public
+]
+
+# Guard: the split must still account for all 59 controller routes (no route silently
+# dropped). Fails at collection if the inventory drifts from routes.py/tenancy_routes.py.
+assert len(_PUBLIC_ROUTES) + len(_INTERNAL_ONLY_ROUTES) == 59, (
+    f"route inventory drift: {len(_PUBLIC_ROUTES)} public + "
+    f"{len(_INTERNAL_ONLY_ROUTES)} internal != 59 — re-derive from routes.py + "
+    "tenancy_routes.py + api_stack.py"
+)
 
 
 # =========================================================================== #
@@ -305,13 +372,18 @@ class TestDataPlaneValidate:
         assert _decision_of(resp) == "DENY", \
             f"over-cap refund must DENY, got {resp.text}"
 
-    def test_validate_malformed_body_422(self, base_url, api_headers):
-        """A /v1/validate body missing required fields is a Pydantic 422 (handler
-        rejects malformed input at the edge) — not a 5xx."""
+    def test_validate_malformed_body_4xx(self, base_url, api_headers):
+        """A /v1/validate body missing required fields is rejected at the edge with a
+        4xx. The PUBLIC gateway enforces the validate request model and returns
+        400 {"message":"Invalid request body"} BEFORE the request reaches the
+        controller; a controller hit directly (no gateway model) returns the Pydantic
+        422. Both are "handler/edge rejected bad input" — accept either, and the
+        assertion still FAILS on a 2xx (bad input wrongly accepted) or a 5xx (crash)."""
         resp = requests.post(f"{base_url}/v1/validate",
                              json={"agent_id": _agent_id_for("acme")},
                              headers=api_headers, timeout=HTTP_TIMEOUT)
-        assert resp.status_code == 422, f"expected 422, got {resp.status_code}: {resp.text}"
+        assert resp.status_code in (400, 422), \
+            f"malformed validate body must be 400/422, got {resp.status_code}: {resp.text}"
 
     def test_validate_unsigned_under_enforce_is_identity_unverified(self, base_url, api_headers):
         """K8.2 data-plane: an unsigned/tokenless call under ENFORCE → fail-secure
@@ -398,10 +470,23 @@ def cred_cleanup(base_url, api_headers):
 class TestIdentityCredentials:
 
     def test_residual_agents_returns_count(self, base_url, api_headers):
-        """GET /v1/identity/residual-agents returns a JSON object with a `count`
-        (the WS-B legacy-fallback residual list the console surfaces)."""
+        """GET /v1/identity/residual-agents (control-plane read). With a real operator
+        OIDC token it returns 200 with a JSON `count` (the WS-B legacy-fallback residual
+        list the console surfaces). WITHOUT one (headless API-Gateway path), the route
+        correctly returns 401 "missing ALB identity" — that is right control-plane
+        behaviour, not a bug — so we assert the auth gate instead. The 200-with-`count`
+        shape is asserted only when a token is present, but the route must NEVER 5xx
+        or be an undefined gateway hole in either case."""
         resp = requests.get(f"{base_url}/v1/identity/residual-agents",
                             headers=api_headers, timeout=HTTP_TIMEOUT)
+        assert _route_exists(resp), \
+            f"residual-agents must be a wired public route, got {resp.status_code}: {resp.text}"
+        if not _has_operator_token():
+            assert resp.status_code in (401, 403), (
+                "no operator OIDC token (SENTRA_OPERATOR_TOKEN) — control-plane read "
+                f"must return the auth gate (401/403), got {resp.status_code}: {resp.text}"
+            )
+            return
         assert resp.status_code == 200, f"expected 200, got {resp.status_code}: {resp.text}"
         payload = resp.json()
         assert "count" in payload, f"residual-agents must carry a `count`, got {payload}"
@@ -618,7 +703,17 @@ class TestPolicyCRUD:
 
     def test_author_bind_list_patch_delete(self, base_url, api_headers, policy_cleanup):
         """author → get → bind (POST /agents/{id}/policies) → list → patch-status →
-        delete. Idempotent + self-cleaning via policy_cleanup."""
+        delete. Idempotent + self-cleaning via policy_cleanup.
+
+        Two real preconditions on a deployed target, each a clean SKIP (not a fail),
+        because neither is satisfiable from this headless path without out-of-band
+        setup — and once satisfied the lifecycle is asserted STRICTLY (201 → 200 →
+        bind → 200 → patch 200 → delete 200):
+          * control-plane write needs an operator OIDC token (create → 401/403);
+          * policy_validator requires the agent to exist in the registry first
+            (create → 400 "...not found in registry"); there is no PUBLIC route to
+            register a fresh agent (seeding/discovery-import only), so we skip with a
+            clear reason rather than assert against an agent we cannot create here."""
         agent_id = _agent_id_for("acme")
         create = requests.post(f"{base_url}/v1/policies",
                               json=_policy_payload(agent_id),
@@ -627,6 +722,13 @@ class TestPolicyCRUD:
             pytest.skip(
                 "no write-capable operator on this target "
                 f"(create policy → {create.status_code}); supply SENTRA_OPERATOR_TOKEN."
+            )
+        if create.status_code == 400 and "not found in registry" in create.text.lower():
+            pytest.skip(
+                f"agent {agent_id!r} is not in the deployed registry "
+                "(policy_validator precondition); register/seed the agent first to "
+                "exercise the policy author→bind→delete lifecycle. No public "
+                "agent-register route exists from this path."
             )
         assert create.status_code == 201, \
             f"create policy expected 201, got {create.status_code}: {create.text}"
@@ -681,21 +783,25 @@ class TestPolicyCRUD:
         assert resp.status_code in (400, 401, 403, 422), \
             f"malformed policy expected 400/422 (or auth gate), got {resp.status_code}: {resp.text}"
 
-    def test_create_policy_no_auth_401(self, base_url, api_headers):
-        """Create a policy with no operator identity → 401/403."""
+    def test_create_policy_no_auth_denied(self, base_url, api_headers):
+        """Create a policy with ALL auth stripped → the auth gate denies it (401/403).
+
+        Critical: the body is WELL-FORMED (valid schema) so the ONLY reason this
+        request can be rejected is the missing auth — NOT a 400 for a bad body or a
+        missing-registry agent. That makes 401/403 the load-bearing assertion: a 2xx
+        here is a real auth-bypass failure, and a 400 here would mean the request got
+        PAST the auth gate to body/registry validation (also a failure of "auth is the
+        first gate"). On the public gateway, stripping X-Api-Key yields the gateway's
+        own deny; against a direct controller the operator-header strip is the gate.
+        We deliberately do NOT accept 400 (per K8.4: don't widen the set to go green)."""
         resp = requests.post(f"{base_url}/v1/policies",
                            json=_policy_payload(_agent_id_for("acme")),
                            headers=_no_auth_headers(api_headers), timeout=HTTP_TIMEOUT)
-        # A controller behind ALB rejects unauthenticated writes; a local dev
-        # controller with the legacy shim may allow → clean up if it 201s.
-        assert resp.status_code in (401, 403, 201), \
-            f"unexpected status for no-auth create: {resp.status_code}: {resp.text}"
-        if resp.status_code == 201:
-            try:
-                requests.delete(f"{base_url}/v1/policies/{resp.json()['policy_id']}",
-                                headers=api_headers, timeout=HTTP_TIMEOUT)
-            except requests.exceptions.RequestException:
-                pass
+        assert resp.status_code in (401, 403), (
+            f"no-auth policy create must be denied at the auth gate (401/403), got "
+            f"{resp.status_code}: {resp.text}. A 2xx is an auth bypass; a 400 means the "
+            "request reached body/registry validation BEFORE auth was enforced."
+        )
 
     def test_cross_tenant_policy_read_denied(self, base_url, api_headers):
         """A policy id under a foreign tenant scope is not readable → 403/404
@@ -766,11 +872,13 @@ class TestQuerySocReads:
     """Each read returns 200 with the auth'd operator (tenant-scoped). The IDENTITY_*
     audit filter is what surfaces gate-DENYs the Decisions metric hides (memo)."""
 
+    # NB: bare /v1/metrics is INTERNAL-only (private ALB), so it is NOT a public SOC
+    # read — it is covered by TestEveryRouteResponds.test_internal_route_not_exposed.
+    # The three /metrics/* sub-resources ARE public and stay here.
     @pytest.mark.parametrize("path", [
         "/v1/logs",
         "/v1/sessions",
         "/v1/decisions",
-        "/v1/metrics",
         "/v1/metrics/overview",
         "/v1/metrics/platform-distribution",
         "/v1/metrics/decisions-timeseries",
@@ -781,9 +889,9 @@ class TestQuerySocReads:
         "/v1/sigma-rules",
     ])
     def test_soc_read_returns_200(self, base_url, api_headers, path):
-        """A SOC/query read returns 200 for an authenticated operator (or 401/403 if
-        this env has no operator identity — the auth boundary held). Never a 5xx and
-        never an undefined-route gateway hole."""
+        """A PUBLIC SOC/query read returns 200 for an authenticated operator (or
+        401/403 if this env has no operator identity — the auth boundary held). Never
+        a 5xx and never an undefined-route gateway hole."""
         resp = requests.get(f"{base_url}{path}", headers=api_headers, timeout=HTTP_TIMEOUT)
         assert resp.status_code in (200, 401, 403), \
             f"{path} unexpected status {resp.status_code}: {resp.text}"
@@ -907,19 +1015,29 @@ class TestCredentialSignVerifyE2E:
 # Group 8 — K8.3 gap 2: every-route-responds enumeration (apigw E4 footgun)
 # =========================================================================== #
 class TestEveryRouteResponds:
-    """A parametrized hit over the FULL 59-route inventory. Each route is hit once
-    with the auth'd headers and asserted REACHABLE — the handler ran (any deliberate
-    status), NOT an undefined-gateway-route 403 ("Missing Authentication Token") or a
-    contentless 5xx / connection error. This catches the apigw-per-resource missing-
-    route footgun (LLD §8 E4): a new controller route that was never added to the API
-    Gateway + ALB rules 403s at the gateway and is silently unreachable."""
+    """Parametrized hits over the full 59-route controller inventory, split by the
+    public/private gateway boundary (verified against cdk/stacks/api_stack.py).
+
+      * PUBLIC routes  → asserted REACHABLE via `_route_exists` (a real handler
+        response). This catches the apigw-per-resource missing-route footgun (LLD §8
+        E4): a route that SHOULD be public but was never wired into API Gateway + ALB
+        returns the missing-auth-token 403 and FAILS here.
+      * INTERNAL routes → asserted NOT exposed on the public gateway (the
+        missing-auth-token 403). This pins the public/private boundary: the test
+        FAILS if an internal-only route ever gets silently exposed publicly (it would
+        return a handler response instead of the gateway 403).
+
+    Neither assertion is vacuous: the PUBLIC test fails on a gateway hole, the
+    INTERNAL test fails on an accidental public exposure."""
 
     @pytest.mark.parametrize(
         "method,path,body",
-        _ROUTE_INVENTORY,
-        ids=[f"{m} {p}" for (m, p, _b) in _ROUTE_INVENTORY],
+        _PUBLIC_ROUTES,
+        ids=[f"{m} {p}" for (m, p, _b) in _PUBLIC_ROUTES],
     )
-    def test_route_is_reachable(self, base_url, api_headers, method, path, body):
+    def test_public_route_is_reachable(self, base_url, api_headers, method, path, body):
+        """A PUBLIC route must be reachable on the gateway — the handler ran, NOT an
+        undefined-gateway-route 403 / contentless 5xx / connection error."""
         kwargs = {"headers": api_headers, "timeout": HTTP_TIMEOUT}
         if body is not None:
             kwargs["json"] = body
@@ -931,8 +1049,35 @@ class TestEveryRouteResponds:
                 "connection error means the route/gateway integration is missing (E4)."
             )
         assert _route_exists(resp), (
-            f"{method} {path} is NOT reachable: HTTP {resp.status_code} "
-            f"body={resp.text[:200]!r}. A '{resp.status_code}' here looks like an "
-            "undefined API-Gateway route (the apigw-per-resource footgun, E4): the "
-            "controller route exists but was never wired into the gateway + ALB rules."
+            f"PUBLIC route {method} {path} is NOT reachable: HTTP {resp.status_code} "
+            f"body={resp.text[:200]!r}. This is the apigw-per-resource footgun (E4): "
+            "the controller route exists but was never wired into the gateway + ALB "
+            "rules (it returns the API-Gateway missing-auth-token 403)."
+        )
+
+    @pytest.mark.parametrize(
+        "method,path,body",
+        _INTERNAL_ONLY_ROUTES,
+        ids=[f"{m} {p}" for (m, p, _b) in _INTERNAL_ONLY_ROUTES],
+    )
+    def test_internal_route_not_exposed_publicly(self, base_url, api_headers, method, path, body):
+        """An INTERNAL-only route (private ALB / server-to-server) must NOT be exposed
+        on the public gateway — it returns the API-Gateway missing-auth-token 403.
+        Fails if the route ever starts answering with a real handler response (an
+        accidental public exposure of an internal surface, a security regression)."""
+        kwargs = {"headers": api_headers, "timeout": HTTP_TIMEOUT}
+        if body is not None:
+            kwargs["json"] = body
+        try:
+            resp = requests.request(method, f"{base_url}{path}", **kwargs)
+        except requests.exceptions.RequestException as exc:
+            pytest.fail(
+                f"{method} {path} raised {exc.__class__.__name__}: {exc} — expected the "
+                "gateway's missing-auth-token 403 (route not publicly exposed)."
+            )
+        assert _is_gateway_not_exposed(resp), (
+            f"INTERNAL route {method} {path} appears EXPOSED on the public gateway: "
+            f"HTTP {resp.status_code} body={resp.text[:200]!r}. It must return the "
+            "API-Gateway missing-auth-token 403 (private-ALB-only by design); a handler "
+            "response here is an accidental public exposure of an internal route."
         )
