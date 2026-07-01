@@ -37,6 +37,19 @@ _CONTENT_FIELD = {
     "memory":  "content_text",
 }
 
+# WS-B (backend rule — reject oversized input at the edge, don't coerce it).
+# content_text carries arbitrary free-text egressing content (an ingested doc /
+# emitted output / memory-write payload) for the content/output/memory phases.
+# Without a bound, an adversarial multi-hundred-MB body deserializes and is
+# `model_dump()`'d in the fail-secure DENY path BEFORE the DENY returns — parse /
+# memory pressure the server should never absorb. A Pydantic max_length rejects an
+# over-cap value as a 422 (malformed request) at request validation, before the
+# handler runs — the SAME "malformed → 422, not a verdict" edge behavior an unknown
+# `phase` gets (§3.1). 1 MiB is generous for a real document-ingest payload and firm
+# enough to reject an oversized body; a phase needing a larger structured payload
+# adds its own field additively (see the §2.3 design note).
+CONTENT_TEXT_MAX_LEN = 1_048_576  # 1 MiB of characters
+
 
 class ValidationRequest(BaseModel):
     """
@@ -73,9 +86,11 @@ class ValidationRequest(BaseModel):
     # byte-identical for existing callers. WS-E consumes it via _CONTENT_FIELD.
     content_text: Optional[str] = Field(
         None,
+        max_length=CONTENT_TEXT_MAX_LEN,
         description="Phase-specific content for content/output/memory phases "
                     "(the ingested doc / emitted output / memory-write payload). "
-                    "Absent on the request phase.",
+                    "Absent on the request phase. Bounded (max_length) so an "
+                    "oversized body is rejected as a 422 at the edge, not coerced.",
     )
     context: Optional[Dict[str, Any]] = Field(default_factory=dict, description="Additional context (user_id, ip_address, authorization_level, etc.)")
     # Cross-cloud fields (Workstream 15) — interceptor-supplied hints.

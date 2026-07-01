@@ -20,7 +20,12 @@ import pytest
 from fastapi.testclient import TestClient
 from pydantic import ValidationError
 
-from app.api.models import KNOWN_PHASES, ValidationRequest, _CONTENT_FIELD
+from app.api.models import (
+    CONTENT_TEXT_MAX_LEN,
+    KNOWN_PHASES,
+    ValidationRequest,
+    _CONTENT_FIELD,
+)
 from app.main import app
 
 
@@ -157,6 +162,49 @@ def test_content_field_map_is_canonical():
     fields = set(ValidationRequest.model_fields)
     for field_name in _CONTENT_FIELD.values():
         assert field_name in fields, f"_CONTENT_FIELD names a non-field: {field_name}"
+
+
+# ================================================= B1.3 content_text edge size cap
+
+def test_content_text_at_cap_constructs():
+    """A content_text exactly at the CONTENT_TEXT_MAX_LEN bound is accepted — the
+    cap must not reject a legitimate (large-but-in-bounds) content payload."""
+    at_cap = "x" * CONTENT_TEXT_MAX_LEN
+    req = ValidationRequest(**_today_payload(phase="content", content_text=at_cap))
+    assert req.content_text == at_cap
+    assert len(req.content_text) == CONTENT_TEXT_MAX_LEN
+
+
+def test_oversized_content_text_rejected_at_validation():
+    """An over-cap content_text is a MALFORMED request → Pydantic ValidationError
+    at construction (not coerced/truncated). Backend rule: reject oversized input
+    at the edge. Must FAIL if max_length is dropped from the content_text field."""
+    over_cap = "x" * (CONTENT_TEXT_MAX_LEN + 1)
+    with pytest.raises(ValidationError):
+        ValidationRequest(**_today_payload(phase="content", content_text=over_cap))
+
+
+def test_oversized_content_text_422_not_routed(client, spy_service, spy_deny_seams):
+    """Over the app: a POST with an oversized content_text returns HTTP 422 (a
+    validation error, NOT a verdict) and is rejected at the edge — the request is
+    NEVER routed to the pipeline OR to the fail-secure phase-DENY path, so the
+    oversized body never reaches `model_dump()`. Same "malformed → 422, not a
+    verdict, not metered" edge behavior an unknown phase gets (§3.1, §9).
+
+    Must FAIL if max_length is dropped: without it the body deserializes and the
+    content phase routes to `_phase_not_implemented_deny` (a 200 DENY) after
+    model_dump() has already absorbed the oversized payload."""
+    over_cap = "x" * (CONTENT_TEXT_MAX_LEN + 1)
+    resp = client.post(
+        "/v1/validate", json=_today_payload(phase="content", content_text=over_cap)
+    )
+    assert resp.status_code == 422
+    # A 422 is a framework validation error, not a decision body.
+    assert resp.json().get("decision") != "DENY"
+    # Rejected at the edge: neither the pipeline nor the phase-DENY seams ran.
+    spy_service.validate_tool_call.assert_not_awaited()
+    spy_deny_seams["audit"].log_decision.assert_not_awaited()
+    spy_deny_seams["metrics"].publish_validation_metrics.assert_not_awaited()
 
 
 # ===================================================================== B2.1 routing
