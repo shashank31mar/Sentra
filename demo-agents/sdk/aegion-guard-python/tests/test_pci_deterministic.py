@@ -100,9 +100,15 @@ def test_pci_zero_miss_every_sad_dropped_no_value(row):
     assert ("SAD", None) in toks, f"[{row['id']}] SAD not dropped: {out!r}"
     # SAD carries NO meta (never-store), and the raw digit value is gone.
     assert not re.search(r":SAD:", out), f"[{row['id']}] SAD carried meta: {out!r}"
+    # Strip the wire tokens FIRST before the raw-value scan: the ⟦AEGR:{nonce}:…⟧
+    # nonce is 16 random hex chars, so a short 3-6 digit SAD value is valid hex and
+    # collides with the nonce as an incidental substring ~0.3% of the time — a
+    # `not in out` against the un-stripped output false-fails on a nonce coincidence,
+    # not a real leak. Same nonce-stripping idiom as line 142 below.
+    stripped = _WIRE.sub("", out)
     raw_digits = re.findall(r"\d{3,6}", row["text"])
     for d in raw_digits:
-        assert d not in out, f"[{row['id']}] raw SAD value {d!r} leaked: {out!r}"
+        assert d not in stripped, f"[{row['id']}] raw SAD value {d!r} leaked: {out!r}"
 
 
 @pytest.mark.parametrize("row", _NEG_ROWS, ids=[r["id"] for r in _NEG_ROWS])
@@ -136,10 +142,16 @@ def test_pci_zero_miss_sad_before_separated_pan_redacts_both(row):
     )
     # The raw SAD value is GONE (never-store); the full PAN never egresses; and no
     # 13+ digit run survives in cleartext once the wire tokens are stripped.
-    assert row["sad"] not in out, f"[{row['id']}] raw SAD value leaked: {out!r}"
+    # Strip the wire tokens FIRST: the ⟦AEGR:{nonce}:…⟧ nonce is 16 random hex chars,
+    # so a short numeric SAD value (e.g. a 3-digit CVV) is valid hex and collides with
+    # the nonce as an incidental substring ~0.3% of the time — a `not in out` against
+    # the un-stripped output false-fails on a nonce coincidence, not a real leak. The
+    # meta of the retained CARD token legitimately holds first6/last4, so stripping the
+    # tokens is required for both the SAD-value and full-PAN raw-substring checks too.
     assert not re.search(r":SAD:", out), f"[{row['id']}] SAD carried meta: {out!r}"
-    assert pan not in out, f"[{row['id']}] full PAN leaked: {out!r}"
     stripped = _WIRE.sub("", out)
+    assert row["sad"] not in stripped, f"[{row['id']}] raw SAD value leaked: {out!r}"
+    assert pan not in stripped, f"[{row['id']}] full PAN leaked: {out!r}"
     assert not any(len(run) >= 13 for run in re.findall(r"\d+", stripped)), (
         f"[{row['id']}] a 13+ digit run survived in cleartext: {out!r}"
     )

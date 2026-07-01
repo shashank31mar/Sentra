@@ -53,11 +53,17 @@ def test_pci_zero_miss_pan_masked_to_first6_last4(pan):
     digits = re.sub(r"\D", "", pan)
     assert meta == f"{digits[:6]}:{digits[-4:]}"
     # RELEASE-BLOCKING: the full contiguous PAN must be GONE (only first6/last4
-    # survive, and only inside the typed token's meta).
-    assert digits not in out                # full contiguous PAN gone
-    assert pan not in out                   # exact raw form gone
-    # No digit-run of the full PAN length survives anywhere in the egress text.
-    assert not any(len(run) >= len(digits) for run in re.findall(r"\d+", out))
+    # survive, and only inside the typed token's meta). Strip the wire tokens FIRST:
+    # the ⟦AEGR:{nonce}:…⟧ nonce is 16 random hex chars (so incidental decimal runs
+    # can appear inside it), and the retained CARD token's meta legitimately holds
+    # first6/last4 — checking raw-value substrings against the un-stripped output can
+    # false-fail on a nonce coincidence rather than a real leak (same idiom as
+    # test_pci_deterministic.py:142 / test_pan_never_emits_full_number_even_tokenized).
+    stripped = _WIRE.sub("", out)
+    assert digits not in stripped           # full contiguous PAN gone
+    assert pan not in stripped              # exact raw form gone
+    # No digit-run of the full PAN length survives anywhere in the token-free egress.
+    assert not any(len(run) >= len(digits) for run in re.findall(r"\d+", stripped))
 
 
 def test_pan_never_emits_full_number_even_tokenized():
@@ -377,8 +383,14 @@ def test_sad_value_before_separated_pan_redacts_both_never_leaks_cvv(text, sad_v
         f"card not tokenized to real first6/last4 for {text!r}: {out!r}"
     )
     # The raw CVV value is GONE (never-store) and the full PAN never egresses.
-    assert sad_value not in out, f"raw CVV {sad_value!r} leaked (R3-H1) in {out!r}"
-    assert pan not in out, f"raw PAN {pan!r} leaked in {out!r}"
+    # Strip the wire tokens FIRST: the ⟦AEGR:{nonce}:…⟧ nonce is 16 random hex
+    # chars, so a short numeric SAD value (999/321/456) is valid hex and collides
+    # with the nonce as an incidental substring ~0.3% of the time — a `not in out`
+    # against the un-stripped output false-fails on a nonce coincidence, not a real
+    # leak. Same nonce-stripping idiom as test_pci_deterministic.py:142.
+    stripped = _WIRE.sub("", out)
+    assert sad_value not in stripped, f"raw CVV {sad_value!r} leaked (R3-H1) in {out!r}"
+    assert pan not in stripped, f"raw PAN {pan!r} leaked in {out!r}"
 
 
 def test_sad_value_IS_card_leading_group_declines_to_card_only():
@@ -787,6 +799,25 @@ def test_redact_params_walks_nested_structures():
     assert "4111111111111111" not in str(out)
     assert "clean" in out["user"]["note"]        # clean text untouched
     assert "no card here" in out["cards"][1]
+
+
+def test_redact_params_tuple_leaf_redacts_and_coerces_to_list():
+    # A tuple leaf in tool_params is walked like a list: its string elements are
+    # redacted AND the container is coerced to a list. tool_params are JSON-shaped
+    # (JSON has no tuple type — a tuple round-trips to an array), so the coercion is
+    # the intended, harmless behavior; this pins it so (a) redaction of tuple-nested
+    # content can't silently regress and (b) the list-coercion is a deliberate,
+    # tested contract rather than an accidental untested type change (_walk,
+    # redaction.py:1003-1004). MUST FAIL if the tuple branch stops recursing (a raw
+    # value would then egress) or is changed to a different container semantics.
+    params = {"pair": ("4111111111111111", "clean"), "nested": (("bob@example.com",),)}
+    out = redact_params(params)
+    assert isinstance(out["pair"], list), "tuple leaf must coerce to list (JSON-shaped)"
+    assert isinstance(out["nested"], list) and isinstance(out["nested"][0], list)
+    flat = str(out)
+    assert "4111111111111111" not in flat         # PAN inside tuple redacted
+    assert "bob@example.com" not in flat          # email inside nested tuple redacted
+    assert "clean" in out["pair"][1]              # clean text untouched
 
 
 def test_redact_params_does_not_mutate_input():
