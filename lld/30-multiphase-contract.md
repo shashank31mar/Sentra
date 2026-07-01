@@ -2,7 +2,7 @@
 
 **Version**: 1.0
 **Last Updated**: 2026-07-01
-**Status**: Draft
+**Status**: Approved (review-lld + grill + reconciled; 5/5 consistency-gate pass 2026-07-01)
 **Prerequisites**: **AD-3** (one endpoint, branch on `phase` — *refined* here, not re-opened); HLD [hld/serverless-edition.md](../hld/serverless-edition.md) §6.2(b) (the approved **Option A** — additive optional `phase` enum + per-phase decorator + unknown→fail-secure) and §8 hand-off row 2 (`FR-3.4 → AD-3 → LLD 23 + the /v1/validate contract (LLD 03/API)`); workstream scope [tasks/serverless-edition/ws-b-multiphase-contract.md](../tasks/serverless-edition/ws-b-multiphase-contract.md); sibling LLDs [23-sentra-guard-sdk.md](23-sentra-guard-sdk.md) (the stdlib-only SDK the per-phase decorators extend), [29-redaction.md](29-redaction.md) (**WS-E** — consumes `ValidationRequest.phase` + the `_CONTENT_FIELD` map defined here), [28-cedar-policy-engine.md](28-cedar-policy-engine.md) (the Cedar bundle the `request`-phase pipeline evaluates).
 
 > **This LLD elaborates the approved Option A in implementation detail; it does not re-open it.** HLD §6.2(b) chose Option A over Option B (per-phase endpoints — breaks AD-3) and Option C (free-form `phase` string — can't narrow untrusted input). That choice is fixed. This doc pins down the exact Pydantic field (an enum-narrowed, additive-superset `phase`), the handler routing, the **unknown-phase → 422 validation-error** vs **known-but-unbuilt → fail-secure DENY** split, the SDK decorator surface, and the shared per-phase content contract WS-E consumes.
