@@ -79,6 +79,40 @@ def test_redactor_failure_fails_secure_to_deny(make_guard, fake_client, monkeypa
     assert fake_client.sent == []
 
 
+def test_redaction_deny_fires_on_decision_hook(make_guard, fake_client, monkeypatch):
+    # OBSERVABILITY (E1.5 / §3.8): the redaction fail-secure DENY branch
+    # (`_redaction_denied`) MUST fire the `on_decision` hook, exactly like the
+    # ALLOW/DENY and the transport-fail-secure paths — a redaction DENY is not a
+    # silent drop; the SOC console/telemetry pipeline observes it via this hook.
+    # This pins that contract on the REDACTION branch specifically (the generic
+    # fail-secure hook test in test_hook_session_serialization.py covers the
+    # TRANSPORT branch, a different code path). MUST FAIL if `_fire_hook` is
+    # dropped from `_redaction_denied`.
+    seen = []
+    guard = make_guard(on_decision=seen.append)
+    fake_client.set_default({"decision": "ALLOW"})  # would ALLOW if the hook were bypassed
+
+    def _boom(text, nonce):
+        raise ValueError("crash")
+
+    monkeypatch.setattr(R, "_ORDERED_MATCHERS", (("BOOM", _boom),))
+
+    @guard.tool()
+    def leaky(card_number):
+        return "ran"
+
+    with guard.session(session_id="s1", user_input="pay"):
+        with pytest.raises(ToolDenied):
+            leaky("4111111111111111")
+
+    # The hook fired exactly once, with the redaction-DENY Decision itself.
+    assert len(seen) == 1
+    assert seen[0].decision == "DENY"
+    assert seen[0].reason == "redaction_failed"
+    # And nothing egressed on the way to that DENY (belt-and-suspenders).
+    assert fake_client.sent == []
+
+
 def test_redactor_failure_denies_even_when_fail_open(make_guard, fake_client, monkeypatch):
     # fail_secure=False is an opt-out of failing closed on TRANSPORT loss, NOT a
     # license to leak raw PII. A redactor failure still DENYs (clause-(a) safety).
