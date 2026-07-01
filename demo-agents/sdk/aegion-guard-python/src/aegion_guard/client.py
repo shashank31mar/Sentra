@@ -32,10 +32,22 @@ class TransportError(Exception):
     when ``fail_secure=False``). It never escapes the SDK's public API directly.
     """
 
-    def __init__(self, message: str, *, retryable: bool, cause: BaseException | None = None) -> None:
+    def __init__(
+        self,
+        message: str,
+        *,
+        retryable: bool,
+        cause: BaseException | None = None,
+        status_code: Optional[int] = None,
+    ) -> None:
         super().__init__(message)
         self.retryable = retryable
         self.cause = cause
+        # WS-B (LLD 30 §3.6): the HTTP status when a non-2xx response was received
+        # (403/422/5xx). None for a timeout/connection error (no HTTP response).
+        # The guard branches on `== 422` to raise a developer-facing BadRequest;
+        # everything else (5xx / None) stays on the fail-secure DENY path.
+        self.status_code = status_code
 
 
 # Cap the response body we will read/parse. A validate response is small
@@ -151,11 +163,14 @@ class ValidateClient:
         except urllib.error.HTTPError as exc:
             # A response with a non-2xx status. DENY is 200, so this is a real
             # server/gateway error (403 missing key, 5xx, etc.) — not retryable
-            # here; fail-secure handles it upstream.
+            # here; fail-secure handles it upstream. Carry the status so the guard
+            # can distinguish a 422 (bad request → BadRequest) from a 5xx/403 outage
+            # (→ fail-secure DENY) — WS-B / LLD 30 §3.6.
             raise TransportError(
                 f"validate returned HTTP {exc.code}",
                 retryable=False,
                 cause=exc,
+                status_code=exc.code,
             ) from exc
         except socket.timeout as exc:
             # Read-timeout: the request was sent but no/late response. NOT

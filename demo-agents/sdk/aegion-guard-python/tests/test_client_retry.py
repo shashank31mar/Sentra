@@ -102,6 +102,32 @@ def test_non_json_body_is_transport_error(monkeypatch):
         client.post({"x": 1})
 
 
+def test_transport_error_carries_status_code(monkeypatch):
+    """WS-B (LLD 30 §3.6): a non-2xx HTTPError sets TransportError.status_code
+    from exc.code (so the guard can tell a 422 from a 5xx); a timeout/connection
+    error — no HTTP response — leaves it None."""
+    # 422 from a non-2xx HTTP response → status_code == 422.
+    err_422 = urllib.error.HTTPError(url="u", code=422, msg="Unprocessable", hdrs=None, fp=None)
+    client, _ = _client(monkeypatch, [err_422], connect_retries=0)
+    with pytest.raises(TransportError) as exc:
+        client.post({"x": 1})
+    assert exc.value.status_code == 422
+
+    # 502 gateway error → status_code == 502 (NOT 422 — must stay fail-secure).
+    err_502 = urllib.error.HTTPError(url="u", code=502, msg="Bad Gateway", hdrs=None, fp=None)
+    client, _ = _client(monkeypatch, [err_502], connect_retries=0)
+    with pytest.raises(TransportError) as exc:
+        client.post({"x": 1})
+    assert exc.value.status_code == 502
+
+    # Read-timeout: the request was sent but no HTTP response arrived → None.
+    client, _ = _client(monkeypatch, [socket.timeout("timed out")], connect_retries=0)
+    monkeypatch.setattr("time.sleep", lambda *_: None)
+    with pytest.raises(TransportError) as exc:
+        client.post({"x": 1})
+    assert exc.value.status_code is None
+
+
 def test_retries_exhausted_raises(monkeypatch):
     refused = urllib.error.URLError(ConnectionRefusedError("refused"))
     client, calls = _client(monkeypatch, [refused], connect_retries=2)

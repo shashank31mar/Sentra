@@ -61,3 +61,22 @@ async def test_avalidate_explicit(make_guard, fake_client):
         session_id="s1", user_input="hi",
     )
     assert decision.allowed is True
+
+
+async def test_async_content_decorator_threads_phase(make_guard, fake_client):
+    """WS-B (LLD 30 §4): a @guard.content on an async fn threads phase +
+    content_text through the same async path as @guard.tool (reuses
+    _avalidate_or_raise)."""
+    guard = make_guard()
+    fake_client.set_default({"decision": "ALLOW"})
+
+    @guard.content()
+    async def ingest(doc):
+        return {"seen": doc}
+
+    with guard.session(session_id="s1", user_input="untrusted-doc-body"):
+        result = await ingest("d")
+
+    assert result == {"seen": "d"}
+    assert fake_client.last["phase"] == "content"
+    assert fake_client.last["content_text"] == "untrusted-doc-body"

@@ -31,7 +31,7 @@ from . import context as _ctx
 from ._time import isoformat_ms_z
 from .client import TransportError, ValidateClient
 from .config import GuardConfig
-from .exceptions import SentraUnavailable, ToolDenied, UnknownAgentError
+from .exceptions import BadRequest, SentraUnavailable, ToolDenied, UnknownAgentError
 
 logger = logging.getLogger("aegion_guard")
 
@@ -208,7 +208,7 @@ class AegionGuard:
         finally:
             _ctx.reset_current(token)
 
-    # -- decorator -----------------------------------------------------------
+    # -- decorators ----------------------------------------------------------
     def tool(
         self,
         name: Optional[str] = None,
@@ -216,7 +216,70 @@ class AegionGuard:
     ) -> Callable[[F], F]:
         """Decorate a tool so every call is validated before the body runs.
 
-        Works on both ``def`` and ``async def`` functions.
+        This is the ``request`` phase — the action-validation surface (LLD 30
+        §4.1). Its public signature is unchanged; the payload carries no ``phase``
+        or ``content_text`` key (byte-identical to pre-WS-B). Works on both ``def``
+        and ``async def`` functions.
+        """
+        return self._phase_decorator("request", name, operation_type)
+
+    def content(
+        self,
+        name: Optional[str] = None,
+        operation_type: str = "READ",
+    ) -> Callable[[F], F]:
+        """Decorate a function whose argument is untrusted data the agent INGESTS
+        (the ``content`` phase — second-order injection surface, D2; LLD 30 §4).
+
+        NOTE (§4.4): the controller has no live ``content`` handler yet, so a call
+        today fails secure — the server DENYs (``phase_handler_not_implemented``)
+        and this decorator raises ``ToolDenied`` via the same path as ``@guard.tool``.
+        When WS-L lands the D2 handler, the SAME decorator starts returning real
+        verdicts — no SDK change.
+        """
+        return self._phase_decorator("content", name, operation_type)
+
+    def output(
+        self,
+        name: Optional[str] = None,
+        operation_type: str = "READ",
+    ) -> Callable[[F], F]:
+        """Decorate a function whose value is data the agent EMITS (the ``output``
+        phase — egress/DLP surface, D5; LLD 30 §4).
+
+        NOTE (§4.4): no live ``output`` handler yet → fail-secure ``ToolDenied``
+        today (server DENYs ``phase_handler_not_implemented``); WS-L's D5 handler
+        flips it to a real verdict with no SDK change.
+        """
+        return self._phase_decorator("output", name, operation_type)
+
+    def memory(
+        self,
+        name: Optional[str] = None,
+        operation_type: str = "WRITE",
+    ) -> Callable[[F], F]:
+        """Decorate a function that performs a WRITE to the agent's memory store
+        (the ``memory`` phase — memory-integrity surface, D3; LLD 30 §4).
+
+        NOTE (§4.4): no live ``memory`` handler yet → fail-secure ``ToolDenied``
+        today (server DENYs ``phase_handler_not_implemented``); WS-L's D3 handler
+        flips it to a real verdict with no SDK change.
+        """
+        return self._phase_decorator("memory", name, operation_type)
+
+    def _phase_decorator(
+        self,
+        phase: str,
+        name: Optional[str] = None,
+        operation_type: str = "auto",
+    ) -> Callable[[F], F]:
+        """Shared decorator machinery for all four phase surfaces (LLD 30 §4.1).
+
+        The ONLY new thing threaded through vs. the pre-WS-B ``tool()`` body is the
+        ``phase`` string — it flows to ``_build_request`` (NOT via ``RequestContext``,
+        §4.2). Everything else (``_bind_params``, sync/async selection,
+        ``_validate_or_raise``/``_avalidate_or_raise``) is reused unchanged, so no
+        new dependency and no behavior change to the ``request`` path.
         """
 
         def decorator(fn: F) -> F:
@@ -231,6 +294,7 @@ class AegionGuard:
                         tool_name=tool_name,
                         tool_params=params,
                         operation_type=operation_type,
+                        phase=phase,
                     )
                     return await fn(*args, **kwargs)
 
@@ -243,6 +307,7 @@ class AegionGuard:
                     tool_name=tool_name,
                     tool_params=params,
                     operation_type=operation_type,
+                    phase=phase,
                 )
                 return fn(*args, **kwargs)
 
@@ -261,11 +326,14 @@ class AegionGuard:
         operation_type: str = "auto",
         request_id: Optional[str] = None,
         context: Optional[Dict[str, Any]] = None,
+        phase: str = "request",
     ) -> Decision:
         """Validate a tool call explicitly and return the ``Decision``.
 
         Does NOT raise on DENY — the caller inspects ``decision.allowed``. Session
         fields may come from an active ``guard.session(...)`` or be passed here.
+        ``phase`` defaults to ``"request"`` (LLD 30 §4) — keeping existing call
+        sites unchanged; only the per-phase decorators pass a non-request phase.
         """
         payload = self._build_request(
             tool_name=tool_name,
@@ -275,6 +343,7 @@ class AegionGuard:
             user_input=user_input,
             request_id=request_id,
             context=context,
+            phase=phase,
         )
         return self._send(payload)
 
@@ -288,6 +357,7 @@ class AegionGuard:
         operation_type: str = "auto",
         request_id: Optional[str] = None,
         context: Optional[Dict[str, Any]] = None,
+        phase: str = "request",
     ) -> Decision:
         """Async twin of :meth:`validate` — runs the blocking client off-loop."""
         payload = self._build_request(
@@ -298,6 +368,7 @@ class AegionGuard:
             user_input=user_input,
             request_id=request_id,
             context=context,
+            phase=phase,
         )
         # Preserve the ambient contextvars into the worker thread.
         ctx = contextvars.copy_context()
@@ -305,19 +376,35 @@ class AegionGuard:
 
     # -- internals -----------------------------------------------------------
     def _validate_or_raise(
-        self, *, tool_name: str, tool_params: Dict[str, Any], operation_type: str
+        self,
+        *,
+        tool_name: str,
+        tool_params: Dict[str, Any],
+        operation_type: str,
+        phase: str = "request",
     ) -> Decision:
         decision = self.validate(
-            tool_name=tool_name, tool_params=tool_params, operation_type=operation_type
+            tool_name=tool_name,
+            tool_params=tool_params,
+            operation_type=operation_type,
+            phase=phase,
         )
         self._raise_if_blocked(decision)
         return decision
 
     async def _avalidate_or_raise(
-        self, *, tool_name: str, tool_params: Dict[str, Any], operation_type: str
+        self,
+        *,
+        tool_name: str,
+        tool_params: Dict[str, Any],
+        operation_type: str,
+        phase: str = "request",
     ) -> Decision:
         decision = await self.avalidate(
-            tool_name=tool_name, tool_params=tool_params, operation_type=operation_type
+            tool_name=tool_name,
+            tool_params=tool_params,
+            operation_type=operation_type,
+            phase=phase,
         )
         self._raise_if_blocked(decision)
         return decision
@@ -332,6 +419,7 @@ class AegionGuard:
         user_input: Optional[str],
         request_id: Optional[str],
         context: Optional[Dict[str, Any]],
+        phase: str = "request",
     ) -> Dict[str, Any]:
         # Session fields: explicit args win; otherwise the active session().
         active = _ctx.current()
@@ -386,6 +474,19 @@ class AegionGuard:
             payload["cloud_region"] = self.cloud_region
         if resolved_context:
             payload["context"] = resolved_context
+        # WS-B (LLD 30 §4.2): emit `phase` (and `content_text` for the egressing
+        # phases) ONLY when not "request". The `request` path stays byte-identical
+        # on the wire — the server defaults the absent `phase` to "request". Do NOT
+        # always emit "phase": "request" (it would perturb every existing caller's
+        # payload — the no-op guarantee, §1.4).
+        if phase != "request":
+            payload["phase"] = phase
+            # content/output/memory carry their content in content_text (§2.3,
+            # _CONTENT_FIELD). WS-E (lld/29 §3.5) redacts this field before _send;
+            # WS-B only PLACES it, sourced from the resolved input the decorator
+            # already has. A richer per-phase capture arg is WS-L's concern — WS-B
+            # guarantees the field EXISTS and is populated, not its richest source.
+            payload["content_text"] = resolved_input
         return payload
 
     def _send(self, payload: Dict[str, Any]) -> Decision:
@@ -393,6 +494,14 @@ class AegionGuard:
         try:
             body = self._client.post(payload)
         except TransportError as exc:
+            # WS-B (LLD 30 §3.6): a 422 is a MALFORMED REQUEST (e.g. a bad `phase`),
+            # not an outage — surface a developer-actionable, NON-recoverable raise
+            # that halts the wrapper BEFORE `fn` runs. ONLY `== 422` takes this
+            # branch; a None (timeout/connection) or a 5xx/403 MUST stay on the
+            # fail-secure DENY path below — a truthiness/coercion refactor here that
+            # let a 5xx skip fail-secure would fail OPEN on an outage (the footgun).
+            if exc.status_code == 422:
+                raise BadRequest(str(exc)) from exc
             if self._config.fail_secure:
                 decision = Decision(
                     decision="DENY",

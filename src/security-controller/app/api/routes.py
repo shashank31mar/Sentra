@@ -77,6 +77,34 @@ async def validate_tool_call(request: ValidationRequest, http_request: Request) 
     if source_ip:
         request.context = {**(request.context or {}), "ip_address": source_ip}
 
+    # WS-B (LLD 30 §3.2) — multi-phase routing guard. Runs FIRST, before tenant
+    # derivation / quota / the pipeline, so a known-but-unbuilt phase is denied
+    # cheaply and never touches the pipeline, combiner, or Cedar.
+    from app.api.models import KNOWN_PHASES  # {request, content, output, memory}
+
+    phase = request.phase  # normally already narrowed to KNOWN_PHASES by the Literal (B1.1).
+
+    # GUARD 1 (FIRST statement — belt-and-suspenders, AHEAD of the `!= request`
+    # compare): a value outside KNOWN_PHASES that bypassed the Literal (a hand-built
+    # ValidationRequest / model_construct / future internal call) re-raises the SAME
+    # 422 — a malformed request, NEVER a deny. Placing this FIRST keeps a typo from
+    # ever falling into the DENY path and polluting the Decisions metric (§3.1, §9).
+    if phase not in KNOWN_PHASES:
+        raise HTTPException(status_code=422, detail=f"unknown phase: {phase}")
+
+    # GUARD 2 (only reached with phase IN KNOWN_PHASES):
+    if phase != "request":
+        # content/output/memory: known phase, no live handler yet → fail-secure
+        # DENY (§3.1 right column, tenet 2). WS-L replaces this line with the real
+        # D2/D3/D5 handler when it ships — no contract / endpoint / SDK change.
+        return await _phase_not_implemented_deny(
+            request, reason=f"phase_handler_not_implemented:{phase}"
+        )
+
+    # phase == "request": fall through to the EXISTING path, byte-for-byte
+    # unchanged — tenant derivation, quota, _run_validation_pipeline (incl. the
+    # FR-2.3 sequence check in context_validator). WS-B adds NOTHING to this branch.
+
     # Reuse the process-wide ValidationService built at startup (app/main.py
     # lifespan, LLD 24 / WS24 M2). Per-request construction rebuilt ~10 boto3
     # clients and defeated the Sigma rule cache. Fall back to a local instance only
@@ -201,6 +229,51 @@ async def _identity_deny(request: "ValidationRequest", reason: str) -> Dict:
         "session_id": request.session_id,
         "latency_ms": 0.0,
         "violation_type": reason,
+    }
+
+
+async def _phase_not_implemented_deny(request: "ValidationRequest", reason: str) -> Dict:
+    """Fail-secure DENY for a known-but-not-yet-handled phase (LLD 30 §3.1, right
+    column). ONLY for phases in KNOWN_PHASES with no live handler — an unknown/typo
+    phase 422s at the edge (validate_tool_call GUARD 1) and never reaches here.
+
+    Modeled on ``_identity_deny``: same DENY response shape (the keys the SDK's
+    ``_parse_decision`` reads) plus the same best-effort audit + metric emission,
+    so a known-but-unbuilt-phase DENY is observable in the same CloudWatch/audit
+    streams as any other verdict — a REAL deny, not a phantom traffic drop (§9).
+    WS-L replaces the call site with the real D2/D3/D5 handler when it ships."""
+    from app.utils.audit_logger import AuditLogger
+
+    try:
+        await AuditLogger().log_decision(
+            decision="DENY",
+            request=request.model_dump(),
+            session={"session_id": request.session_id, "agent_id": request.agent_id,
+                     "trust_score": 0.0},
+            validation_result={"reason": reason, "violation_type": "PHASE_UNHANDLED"},
+            latency_ms=0.0,
+        )
+        # Count the phase-DENY in the same CloudWatch streams a normal verdict uses
+        # so it shows up in Decisions as a DENY (contrast the unknown-phase 422,
+        # which must NOT be metered — §9). Fire-and-forget, guarded separately so a
+        # metrics failure never changes the DENY we return.
+        try:
+            from app.utils.metrics_publisher import MetricsPublisher
+            await MetricsPublisher().publish_validation_metrics(
+                decision="DENY", latency_ms=0.0, agent_id=request.agent_id, trust_score=0.0,
+            )
+        except Exception:  # noqa: BLE001 — metrics are best-effort; the DENY still returns
+            logger.warning("phase-DENY metric publish failed", exc_info=True)
+    except Exception:  # noqa: BLE001 — audit is best-effort; the DENY still returns
+        logger.warning("phase-DENY audit failed", exc_info=True)
+
+    return {
+        "decision": "DENY",
+        "reason": reason,
+        "trust_score": 0.0,
+        "session_id": request.session_id,
+        "latency_ms": 0.0,
+        "violation_type": "PHASE_UNHANDLED",
     }
 
 

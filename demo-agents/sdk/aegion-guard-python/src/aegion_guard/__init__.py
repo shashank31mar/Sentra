@@ -23,6 +23,7 @@ from .adapters import from_azure_request, from_bedrock_event
 from .config import GuardConfig
 from .exceptions import (
     AegionGuardError,
+    BadRequest,
     ConfigError,
     IdentityError,
     SentraUnavailable,
@@ -54,6 +55,7 @@ __all__ = [
     "ToolDenied",
     "UnknownAgentError",
     "SentraUnavailable",
+    "BadRequest",
     "ConfigError",
     "IdentityError",
     "AegionGuardError",

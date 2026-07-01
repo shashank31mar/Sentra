@@ -3,7 +3,7 @@ Pydantic Models for API Request/Response Schemas
 
 Defines data models for validation requests and responses.
 """
-from typing import Optional, Dict, Any, List
+from typing import Optional, Dict, Any, List, Literal
 from datetime import datetime
 from pydantic import BaseModel, Field, validator
 import sys
@@ -12,6 +12,30 @@ import os
 # Add scripts path for policy_schema import
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '../../../..', 'scripts'))
 from schemas.policy_schema import PolicyRule
+
+
+# ============================================================
+# WS-B (LLD 30 §2.2) — multi-phase /v1/validate contract constants
+# ============================================================
+# KNOWN_PHASES is the SINGLE SOURCE OF TRUTH for the multi-phase surface: it is
+# BOTH the set the `phase` Literal narrows to (an out-of-set value 422s at the
+# edge, §3.1) AND the set the handler routes on (routes.py). Only "request" has a
+# LIVE handler today; content/output/memory are known-but-unbuilt → fail-secure
+# DENY at the handler (§3.2), NOT a silent route to request and NOT an ALLOW.
+# Registering a future phase = add its string here AND to the `phase` Literal —
+# that one change flips it from a 422-unknown to a routed known-but-unbuilt DENY.
+KNOWN_PHASES = frozenset({"request", "content", "output", "memory"})
+
+# Canonical phase → content-field map (LLD 30 §2.3). WS-E's per-phase redactor
+# indexes this as `_CONTENT_FIELD[phase]` to know which ValidationRequest field
+# carries the egressing content. There is ONE content field (`content_text`),
+# disambiguated by `phase` — NOT per-phase `*_body` fields (a second spelling is
+# residual drift). The `request` phase carries no content field (absent → None).
+_CONTENT_FIELD = {
+    "content": "content_text",
+    "output":  "content_text",
+    "memory":  "content_text",
+}
 
 
 class ValidationRequest(BaseModel):
@@ -31,6 +55,28 @@ class ValidationRequest(BaseModel):
     user_input: str = Field(..., description="Original user input (for threat detection)")
     timestamp: str = Field(..., description="Request timestamp (ISO 8601)")
     operation_type: str = Field(..., description="Operation type: READ or WRITE")
+    # WS-B (LLD 30 §2.1) — multi-phase validation surface (additive, defaulted).
+    # A Literal/Enum over KNOWN_PHASES is PREFERRED here precisely because we WANT
+    # an unknown value to 422 at the edge (§3.1) — an unknown phase is a client
+    # contract error, NOT a security verdict. Default "request" keeps every
+    # existing caller (SDK @guard.tool, Bedrock + Azure connectors) byte-identical
+    # on the wire: a request omitting `phase` deserializes to phase == "request".
+    phase: Literal["request", "content", "output", "memory"] = Field(
+        "request",
+        description="Validation phase: request | content | output | memory (default request). "
+                    "An unknown value is a malformed request → 422 (a validation exception), "
+                    "NOT a policy DENY. A known-but-unbuilt phase fails secure at the handler (§3).",
+    )
+    # WS-B (LLD 30 §2.3) — phase-specific content for content/output/memory phases
+    # (the ingested doc / emitted output / memory-write payload). Additive optional,
+    # default None so the `request` phase never carries it and the wire stays
+    # byte-identical for existing callers. WS-E consumes it via _CONTENT_FIELD.
+    content_text: Optional[str] = Field(
+        None,
+        description="Phase-specific content for content/output/memory phases "
+                    "(the ingested doc / emitted output / memory-write payload). "
+                    "Absent on the request phase.",
+    )
     context: Optional[Dict[str, Any]] = Field(default_factory=dict, description="Additional context (user_id, ip_address, authorization_level, etc.)")
     # Cross-cloud fields (Workstream 15) — interceptor-supplied hints.
     # When absent, the controller resolves platform/cloud_region from the agent's policy.
