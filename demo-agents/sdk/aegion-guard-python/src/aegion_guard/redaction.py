@@ -193,15 +193,24 @@ def _shannon_entropy(s: str) -> float:
 # --------------------------------------------------------------------------- #
 
 # --- PAN (card) : regex candidate -> windowed Luhn -> ⟦…:CARD:first6:last4⟧ --- #
-# 13-19 digits, optionally separated into groups by a single space / hyphen / dot /
-# slash / comma / underscore. The separator set is DELIBERATELY wide: a PAN pasted
-# from a spreadsheet, a formatted field, or an obfuscation attempt commonly carries a
-# non-standard group separator (``4111.1111.1111.1111``, ``4111/1111/…``, ``4111_1111…``,
-# ``4111,1111,…``) — and with a space/hyphen-only class those forms egressed the card
-# RAW (R2-C1, PCI fail-open, M-3 / NFR-7 (a)). :data:`_PAN_SEP` is the single canonical
-# separator class shared by :data:`_PAN_CANDIDATE`, the SAD footgun run
-# (:data:`_SAD_VALUE_PAN_RUN`), and the SSN matcher (:data:`_SSN`) so the accepted
-# separators stay in lock-step (widening one without the others re-opens R2-C1/R2-C2).
+# 13-19 digits, optionally separated into groups by up to TWO of {space, TAB, newline
+# (CR or LF), hyphen, dot, slash, comma, underscore} chars between groups (a two-char
+# ``\r\n`` CRLF from a Windows/multi-line paste, or ``,`` + space from a TSV/CSV cell). The separator set is DELIBERATELY
+# wide: a PAN pasted from a spreadsheet, a TSV/CSV cell, a formatted field, or a
+# multi-line form commonly carries a non-standard group separator
+# (``4111.1111.1111.1111``, ``4111/1111/…``, ``4111_1111…``, ``4111,1111,…``, a
+# TAB-delimited ``4111\t1111\t…`` from a spreadsheet/TSV, or a newline-wrapped
+# ``4111\n1111\n…`` from a multiline field) — and with a set that omitted TAB/newline
+# those whitespace-delimited forms egressed the card RAW (R2-C1, PCI fail-open, M-3 /
+# NFR-7 (a)): the design intent of this class is to cover exactly the spreadsheet /
+# formatted-field paste, where TAB is the canonical delimiter, so omitting it was
+# inconsistent with the stated intent. :data:`_PAN_SEP` is the single canonical
+# separator class shared by :data:`_PAN_CANDIDATE` and the SAD footgun run
+# (:data:`_SAD_VALUE_PAN_RUN`) so the accepted separators stay in lock-step (widening
+# one without the other re-opens R2-C1/R2-C2). NOTE the SSN matcher (:data:`_SSN`)
+# deliberately keeps its OWN narrower ``[ .\-]`` class (dash/space/dot only — ``/``,
+# ``,``, ``_`` are date/thousands/identifier shapes, not SSN forms), so it is not
+# driven by ``_PAN_SEP`` and this widening does not touch it.
 #
 # The candidate boundary is DELIBERATELY loose: because a separator is also a valid
 # inter-group separator, the candidate can over-capture one OR MORE separated
@@ -219,8 +228,18 @@ def _shannon_entropy(s: str) -> float:
 # accepted separator: a ``\w`` boundary would refuse a card whose own separator is an
 # underscore. The Luhn gate + group-window scan bound false positives, so the loose
 # boundary never mis-masks a non-card run.
-_PAN_SEP = r"[ \-./,_]"
-_PAN_CANDIDATE = re.compile(rf"(?<!\d)(\d{_PAN_SEP}?){{12,18}}\d(?!\d)")
+_PAN_SEP = r"[ \t\r\n\-./,_]"
+# Up to TWO separator chars may sit between digit groups (``{0,2}``), not just one:
+# a multi-line/Windows paste separates groups with a two-char ``\r\n`` (CRLF), and a
+# TSV/CSV cell boundary can be ``,`` + space — a single-separator quantifier broke the
+# digit run at the double separator so a CRLF-wrapped card still egressed RAW (R2-C1
+# whitespace form). The bound is 2 (not unbounded ``*``) so the loose candidate cannot
+# span a large gap and mis-associate two distant numbers; the group-windowed Luhn scan
+# (:func:`_best_pan_window`, which trims WHOLE ASCII digit-groups) re-bounds any
+# over-capture to the actual card regardless of how many separator chars sat between
+# groups, so widening the run count never mis-masks a non-card run nor drops the
+# surrounding text.
+_PAN_CANDIDATE = re.compile(rf"(?<!\d)(\d{_PAN_SEP}{{0,2}}){{12,18}}\d(?!\d)")
 
 # ASCII digit RUNS only. A PAN written in non-ASCII \d-matching digits (Arabic-Indic,
 # Devanagari, or a fullwidth digit that slipped NFKC) must NOT be treated as a card:
@@ -337,7 +356,12 @@ _SAD_ANCHORED = re.compile(
 # "pin is 4111.1111.1111.1111" the guard saw only the leading "4111", declined to
 # step aside, and tokenized it to SAD — stranding the trailing 12 card digits in
 # cleartext behind a marker that falsely looked redacted (worse than a plain miss).
-_SAD_VALUE_PAN_RUN = re.compile(rf"\d(?:{_PAN_SEP}?\d)*")
+# Allows up to TWO separator chars between digits in lock-step with ``_PAN_CANDIDATE``
+# (``{0,2}``) so a SAD label before a CRLF/multi-line-separated card
+# ("pin is 4111\r\n1111\r\n1111\r\n1111") still lets the guard see the whole trailing
+# Luhn-valid card and step aside for ``_redact_pan`` — a single-separator run here
+# (while _PAN_CANDIDATE accepts a two-char CRLF) would re-open the R2-C2 partial-PAN.
+_SAD_VALUE_PAN_RUN = re.compile(rf"\d(?:{_PAN_SEP}{{0,2}}\d)*")
 
 
 def _redact_sad(text: str, nonce: str) -> str:
@@ -578,16 +602,23 @@ _SECRET_CANDIDATE = re.compile(r"(?<![\w/+\-])[A-Za-z0-9/+_\-]{20,}(?![\w/+\-])"
 # everything else. Kept short + specific so ordinary tokens aren't over-matched.
 _SECRET_PREFIXES = ("AKIA", "ASIA", "AIza", "ghp_", "gho_", "xoxb", "xoxp")
 
-# Long all-lowercase-hex run — a SHA1/SHA256/HMAC digest, hex session token, or
-# hex API key. Such a token clears the ≥3.5 entropy floor but fails BOTH the
-# mixed-charset gate (all-lowercase, no upper) AND the ≥4.0 non-mixed fallback (a
-# 16-symbol hex alphabet caps entropy at 4.0 and a 40-char digest sits near 3.7),
-# so the generic heuristic missed it and it egressed RAW (R2-H1, credential leak,
-# NFR-7 (a)). A 32+ char pure-lowercase-hex run is not a benign identifier (a UUID
-# carries dashes; an order number is far shorter and not full-hex), so treating it
-# as a secret outright adds recall with negligible false-positive risk. 32 = the
-# shortest common digest (MD5); SHA1 (40) and SHA256 (64) exceed it.
-_HEX_SECRET = re.compile(r"^[0-9a-f]{32,}$")
+# Long pure-hex run (EITHER case) — a SHA1/SHA256/HMAC digest, hex session token,
+# or hex API key. Such a token clears the ≥3.5 entropy floor but fails BOTH the
+# mixed-charset gate (a same-case hex run has no upper+lower mix) AND the ≥4.0
+# non-mixed fallback (a 16-symbol hex alphabet caps entropy at 4.0 and a 40-char
+# digest sits near 3.7), so the generic heuristic missed it and it egressed RAW
+# (R2-H1, credential leak, NFR-7 (a)). The match is CASE-INSENSITIVE (``[0-9a-fA-F]``)
+# because the leak is charset-CASE-independent: an all-UPPER-case digest/token (upper
+# SHA1/SHA256/MD5, an uppercase HMAC signature, an uppercase hex session key) has no
+# lowercase char (``mixed=False``) and the same ~3.7 (<4.0) entropy cap, so the mixed
+# gate, the ≥4.0 fallback, AND a lowercase-only ``^[0-9a-f]{32,}$`` ALL miss it — the
+# raw uppercase credential egressed while its lowercase twin was masked (R2-H1 was
+# only half-closed; behaviour must not be case-dependent). A 32+ char pure-hex run is
+# not a benign identifier (a UUID carries dashes; an order number is far shorter and
+# not full-hex), so treating it as a secret outright adds recall with negligible
+# false-positive risk. 32 = the shortest common digest (MD5); SHA1 (40)/SHA256 (64)
+# exceed it.
+_HEX_SECRET = re.compile(r"^[0-9a-fA-F]{32,}$")
 
 
 def _redact_secret(text: str, nonce: str) -> str:
