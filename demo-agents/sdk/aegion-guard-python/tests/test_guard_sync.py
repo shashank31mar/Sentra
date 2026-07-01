@@ -247,6 +247,36 @@ def test_guard_content_sets_phase_and_content_text(
     assert fake_client.last["operation_type"] == expected_op
 
 
+def test_egress_content_text_is_unredacted_today_ws_e_boundary(make_guard, fake_client):
+    """WS-B→WS-E redaction-boundary tripwire (LLD 30 §Residual, lld/29 §3.5).
+
+    WS-B only PLACES content_text = resolved_input on the egressing phases; the
+    per-phase redactor is WS-E's owned scope (lld/29 §3.5) and is NOT on this
+    branch. So TODAY a sensitive-looking value in the ingested content egresses
+    on the wire VERBATIM (unredacted). This test pins that documented current
+    contract explicitly so the raw-content-on-the-wire behavior is not silent.
+
+    It is the intended propagate-change tripwire for the WS-E merge: when WS-E's
+    redactor lands in _build_request, content_text will no longer equal the raw
+    input and this assertion must be updated DELIBERATELY (assert the redaction
+    marker instead) — not silently. Until then, this documents that WS-B does not
+    redact and must not be read as endorsing raw egress as the end state."""
+    guard = make_guard()
+    fake_client.set_default({"decision": "ALLOW"})
+
+    secret_looking = "SSN 123-45-6789 and card 4111 1111 1111 1111"
+
+    @guard.content()
+    def ingest(doc):
+        return "ran"
+
+    with guard.session(session_id="s1", user_input=secret_looking):
+        ingest("payload")
+
+    # WS-B places the raw resolved_input verbatim; no redaction on this branch.
+    assert fake_client.last["content_text"] == secret_looking
+
+
 def test_new_decorators_reuse_tool_machine(make_guard, fake_client):
     """A @guard.content on a DENY raises ToolDenied (same _raise_if_blocked path
     as @guard.tool); on ALLOW it runs the wrapped fn (§4.4)."""
