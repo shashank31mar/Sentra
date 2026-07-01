@@ -173,3 +173,9 @@ frontend/aegionai-godaddy/
 # ===================================
 .kombai/
 Sentra.code-workspace
+
+# harness code-loop tripwire marker (run-tests.sh)
+.harness/
+
+# harness autopilot workflow scratch (not project code)
+.autopilot/

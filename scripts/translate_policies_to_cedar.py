@@ -172,14 +172,69 @@ def translate(dry_run: bool) -> int:
     return 0
 
 
+def verify() -> int:
+    """WS-I I3.2 — the hard gate before flipping `legacy_retired: true` (LLD 28
+    §4.4 steps 2–3). Read-only. Asserts BOTH conditions:
+
+      1. zero policies with `policy_format != cedar` (residual-abstain count == 0), and
+      2. every co-artifact's `generator_version` == the current GENERATOR_VERSION
+         (a version bump without re-running the backfill leaves stale `.cedar` whose
+         policy_format is still `cedar` — condition 1 alone would miss it, §3.3/E11).
+
+    Exit 0 = safe to retire legacy. Exit 1 = NOT safe (residual or stale rows listed).
+    """
+    session = _session()
+    dynamodb = session.resource("dynamodb")
+    table = dynamodb.Table(_tenancy.table_name(POLICY_TABLE, POLICY_TABLE_V2))
+    policies = _scan_all(table)
+
+    non_cedar: List[str] = []
+    stale_gv: List[str] = []
+    for meta in policies:
+        pid = meta.get("policy_id", "<unknown>")
+        if meta.get(policy_artifact.POLICY_FORMAT_FIELD) != policy_artifact.FORMAT_CEDAR:
+            non_cedar.append(f"{pid} (policy_format={meta.get(policy_artifact.POLICY_FORMAT_FIELD)!r})")
+        elif meta.get("generator_version") != GENERATOR_VERSION:
+            stale_gv.append(f"{pid} (generator_version={meta.get('generator_version')!r}, "
+                            f"expected {GENERATOR_VERSION!r})")
+
+    print(f"Verified {len(policies)} policy rows in {table.name} "
+          f"(current GENERATOR_VERSION={GENERATOR_VERSION})")
+    print(f"  residual non-cedar (would ABSTAIN): {len(non_cedar)}")
+    print(f"  stale generator_version (cedar but out-of-date): {len(stale_gv)}")
+    if non_cedar:
+        print("  NON-CEDAR rows:")
+        for s in non_cedar:
+            print("    ", s)
+    if stale_gv:
+        print("  STALE generator_version rows:")
+        for s in stale_gv:
+            print("    ", s)
+
+    if non_cedar or stale_gv:
+        print("\nGATE FAILED — backfill incomplete. Do NOT flip legacy_retired:true.",
+              file=sys.stderr)
+        return 1
+    print("\nGATE PASSED — every policy carries a current .cedar co-artifact. "
+          "Flipping legacy_retired:true is safe (founder-gated, I3.3).")
+    return 0
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Translate agent policies to Cedar co-artifacts (CT08).")
     parser.add_argument("--dry-run", action="store_true", help="Preview only; write nothing.")
+    parser.add_argument(
+        "--verify", action="store_true",
+        help="WS-I I3.2 read-only gate: assert 0 residual non-cedar policies AND "
+             "generator-version parity. Exit 1 if not safe to retire legacy.")
     parser.add_argument(
         "--confirm-ct06b-deployed", action="store_true",
         help="Required for live runs: confirms the CT06b display-path fix is deployed "
              "(else migrated agents show a broken Tools tab).")
     args = parser.parse_args()
+
+    if args.verify:
+        return verify()
 
     if not args.dry_run and not args.confirm_ct06b_deployed:
         print("Refusing live backfill: pass --confirm-ct06b-deployed (CT06b gate) "

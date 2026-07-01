@@ -243,6 +243,23 @@ class Settings(BaseSettings):
     # enabled on, Cedar takes the policy slot. Both default off.
     cedar_enabled: bool = Field(default=False, validation_alias="CEDAR_ENABLED")
     cedar_shadow_mode: bool = Field(default=False, validation_alias="CEDAR_SHADOW_MODE")
+    # End-state retirement of the legacy policy engine (WS-I I2 / LLD 28 §4.2).
+    # Conservative-OFF (default false): while false, a Cedar ABSTAIN (agent not
+    # yet carrying a .cedar co-artifact) falls back to the legacy engine so there
+    # is no un-enforced window during the CT08 rollout. Flip to true ONLY after
+    # the backfill has every prod policy on Cedar (founder-gated, I3.3) — then an
+    # abstain is a DEFECT (missing co-artifact) and fails SECURE to DENY
+    # (POLICY_NOT_MIGRATED) instead of silently riding the retired legacy path.
+    # FOOTGUN (E12): an absent/true-by-default value would turn every rollout-era
+    # abstain into a DENY before the backfill — keep the default false.
+    legacy_retired: bool = Field(default=False, validation_alias="LEGACY_RETIRED")
+    # Deterministic local-floor kill-switch (WS-I I5 / LLD 28 §5.6). Default TRUE:
+    # the edge evaluates the signed Cedar bundle locally. Flip to false (fleet, or
+    # per-tenant via the sentra-tenants row) ONLY as an incident escape hatch — it
+    # routes every call to the hosted /v1/validate path (network-required,
+    # fail-secure), it does NOT disable enforcement (ADR-034). Off-state = "validate
+    # on the server", NEVER "skip validation" (the fail-open catastrophe, §5.6).
+    local_floor_enabled: bool = Field(default=True, validation_alias="LOCAL_FLOOR_ENABLED")
     # Workload isolation lever (LLD 19 §2.4): the validator's invocations route
     # through this Application Inference Profile, separating its quota / cost /
     # CloudWatch metrics from any other Bedrock consumer on the same model family.

@@ -169,6 +169,43 @@ _GATEWAY_MISSING_MARKERS = (
 )
 
 
+def _is_transient(resp: "requests.Response | None", exc: "Exception | None") -> bool:
+    """A transient blip we should retry — NOT a deterministic finding. True for a
+    connection-level error or a CONTENTLESS 5xx (a cold Lambda / ALB target warm-up
+    / one-off edge 502 under the suite's burst). A real E4 gateway hole is the
+    *consistent* `403 Missing Authentication Token`, which is NOT transient and
+    survives the retry, so this can never mask it."""
+    if exc is not None:
+        return True
+    if resp is not None and resp.status_code >= 500:
+        try:
+            return not bool(resp.json())  # contentless 5xx → transient; structured 5xx → real handler error
+        except ValueError:
+            return True
+    return False
+
+
+def _request_reachability(method: str, url: str, **kwargs) -> requests.Response:
+    """Issue the request with a bounded retry on TRANSIENT failures only (2 tries,
+    short backoff). Deterministic responses (any real status, incl. the E4
+    missing-auth 403) return on the first attempt — the retry exists solely so a
+    one-off cold-start/edge blip doesn't flake the reachability gate."""
+    last_exc = None
+    resp = None
+    for attempt in range(2):
+        try:
+            resp = requests.request(method, url, **kwargs)
+        except requests.exceptions.RequestException as exc:  # noqa: PERF203
+            last_exc, resp = exc, None
+        if not _is_transient(resp, last_exc):
+            return resp
+        if attempt == 0:
+            time.sleep(2.0)
+    if resp is not None:
+        return resp
+    raise last_exc
+
+
 def _route_exists(resp: requests.Response) -> bool:
     """True iff the response proves the route's HANDLER ran (route is wired through
     the gateway + ALB to the controller). False iff it looks like an undefined
@@ -1042,11 +1079,12 @@ class TestEveryRouteResponds:
         if body is not None:
             kwargs["json"] = body
         try:
-            resp = requests.request(method, f"{base_url}{path}", **kwargs)
+            resp = _request_reachability(method, f"{base_url}{path}", **kwargs)
         except requests.exceptions.RequestException as exc:
             pytest.fail(
                 f"{method} {path} is UNREACHABLE ({exc.__class__.__name__}: {exc}) — "
-                "connection error means the route/gateway integration is missing (E4)."
+                "a connection error that PERSISTED through a retry means the "
+                "route/gateway integration is missing (E4)."
             )
         assert _route_exists(resp), (
             f"PUBLIC route {method} {path} is NOT reachable: HTTP {resp.status_code} "

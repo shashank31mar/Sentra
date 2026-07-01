@@ -226,6 +226,24 @@ calling an AWS-hosted controller) can take **15s+ on cold starts** — raise
 refused). It never retries a read-timeout (that would just double the wait before
 failing secure) and never retries a `DENY` (an authoritative decision).
 
+### Local floor & the `local_floor_enabled` kill-switch (roadmap — WS-A / Group 2)
+
+Today the SDK **always** calls the hosted `/v1/validate` and fail-secures (DENY)
+on transport error under `fail_secure=True` — there is no on-device evaluation
+yet. The deterministic *local floor* (edge-evaluate a signed Cedar bundle, WS-A +
+WS-I Group 2) is spike-gated on WS-0 and not shipped here.
+
+The control-plane half of its kill-switch **is** live (WS-I I5.3): the fleet
+`LOCAL_FLOOR_ENABLED` flag plus a per-tenant `local_floor_enabled` override on the
+`sentra-tenants` row, combined conservatively by
+`tenancy.effective_local_floor_enabled()` (both must permit → evaluate locally;
+either false → hosted path). **Contract for the future SDK transport:** when the
+floor is disabled for a scope, the SDK MUST route every call to the hosted
+`/v1/validate` (this network-required, `fail_secure=True` path) — it MUST NEVER be
+read as "skip validation". The kill-switch moves the eval *location*, never
+disables enforcement (ADR-034). Wiring the SDK to consume this flag is WS-A's task
+(the local-floor transport doesn't exist until then).
+
 ---
 
 ## Development

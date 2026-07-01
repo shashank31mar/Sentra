@@ -603,7 +603,11 @@ class SessionManager:
             sessions: List[Dict[str, Any]] = []
             last_key: Optional[Dict[str, Any]] = None
             while True:
-                response = tenancy.query_or_scan(self.table, **scan_kwargs)
+                # FLEET-WIDE (all tenants): the SOC console session list is a
+                # platform view. query_or_scan would show only current_tenant()'s
+                # sessions (=`default`), hiding every other tenant's. fleet_scan
+                # spans all partitions; pagination is unchanged.
+                response = tenancy.fleet_scan(self.table, **scan_kwargs)
                 for item in response.get('Items', []):
                     sessions.append(self._format_session_for_api(item))
                 last_key = response.get('LastEvaluatedKey')
@@ -700,7 +704,11 @@ class SessionManager:
                 'FilterExpression': Attr('quarantine_status').eq(status),
             }
             while True:
-                response = tenancy.query_or_scan(self.table, **scan_kwargs)
+                # FLEET-WIDE (all tenants): this is a platform/SOC KPI, not a
+                # per-tenant read. query_or_scan would scope to current_tenant()
+                # (=`default` on an API-key console call) and miss every other
+                # tenant's quarantined sessions. See tenancy.fleet_scan.
+                response = tenancy.fleet_scan(self.table, **scan_kwargs)
                 count += response.get('Count', 0)
                 lek = response.get('LastEvaluatedKey')
                 if not lek:
@@ -721,7 +729,9 @@ class SessionManager:
             scores: Dict[str, list] = {}
             scan_kwargs = {'ProjectionExpression': 'agent_id, trust_score'}
             while True:
-                response = tenancy.query_or_scan(self.table, **scan_kwargs)
+                # FLEET-WIDE (all tenants): agents-below-trust is a platform KPI.
+                # query_or_scan would only aggregate current_tenant()'s sessions.
+                response = tenancy.fleet_scan(self.table, **scan_kwargs)
                 for item in response.get('Items', []):
                     agent_id = item.get('agent_id')
                     if not agent_id:

@@ -206,6 +206,103 @@ class MetricsPublisher:
         except Exception as e:
             logger.exception(f"Failed to publish Cedar shadow metric (non-blocking): {e}")
 
+    # ============================================================
+    # WS-I (LLD 28 §5.6): Cedar local-floor / abstain operational metrics.
+    # All fire-and-forget, OFF the response path — OPS/dashboard signals, NOT the
+    # billing ledger (that is WS-H's durable pipeline). A publish failure here must
+    # never block or change a verdict.
+    # ============================================================
+
+    async def publish_cedar_abstain_metric(self, denied: bool, agent_id: str, tenant_id: str = ""):
+        """Cedar-abstain outcome under cutover (WS-I I2.3 / LLD 28 §4.3, §5.6).
+
+        ``denied=True`` → ``CedarAbstainDenied`` (legacy retired: a missing .cedar
+        co-artifact became a fail-secure DENY — a DEFECT worth alarming).
+        ``denied=False`` → ``CedarAbstainFallback`` (rollout era: abstain fell back
+        to the legacy engine, the expected transient state during the backfill).
+        """
+        metric = "CedarAbstainDenied" if denied else "CedarAbstainFallback"
+        try:
+            self.cloudwatch.put_metric_data(
+                Namespace=self.namespace,
+                MetricData=[{
+                    'MetricName': metric,
+                    'Value': 1,
+                    'Unit': 'Count',
+                    'Dimensions': [
+                        {'Name': 'AgentId', 'Value': agent_id},
+                        {'Name': 'tenant_id', 'Value': tenant_id or '_unknown'},
+                    ],
+                }],
+            )
+            logger.debug("Published %s metric for agent=%s", metric, agent_id)
+        except Exception as e:  # noqa: BLE001 — metrics never block validate
+            logger.warning("Failed to publish %s metric (non-blocking): %s", metric, e)
+
+    async def publish_cedar_eval_latency(self, latency_ms: float, cache_hit: bool, tenant_id: str = ""):
+        """Cedar compiled-policy evaluation latency (WS-I I5.2 / LLD 28 §5.6, §8).
+
+        Tagged ``cache_hit=true|false``. An LRU hit evaluates in ~1–5 ms; a spike of
+        ``cache_hit=false`` flags a cold or thrashing ``_compiled_cache``.
+        """
+        try:
+            self.cloudwatch.put_metric_data(
+                Namespace=self.namespace,
+                MetricData=[{
+                    'MetricName': 'CedarEvalLatencyMs',
+                    'Value': latency_ms,
+                    'Unit': 'Milliseconds',
+                    'Dimensions': [
+                        {'Name': 'tenant_id', 'Value': tenant_id or '_unknown'},
+                        {'Name': 'cache_hit', 'Value': 'true' if cache_hit else 'false'},
+                    ],
+                }],
+            )
+        except Exception as e:  # noqa: BLE001 — metrics never block validate
+            logger.warning("Failed to publish CedarEvalLatencyMs metric (non-blocking): %s", e)
+
+    async def publish_edge_resolve_metric(self, escalated: bool, tenant_id: str = ""):
+        """Edge bundle resolution outcome (WS-I I5.1 / LLD 28 §5.6).
+
+        Every edge resolution increments ``EdgeResolveTotal``; the ones that could
+        not be decided locally and fell through to the hosted PDP also increment
+        ``EscalatedToHostedTotal``. The ratio is the local-floor hit rate.
+        """
+        try:
+            metric_data = [{
+                'MetricName': 'EdgeResolveTotal',
+                'Value': 1,
+                'Unit': 'Count',
+                'Dimensions': [{'Name': 'tenant_id', 'Value': tenant_id or '_unknown'}],
+            }]
+            if escalated:
+                metric_data.append({
+                    'MetricName': 'EscalatedToHostedTotal',
+                    'Value': 1,
+                    'Unit': 'Count',
+                    'Dimensions': [{'Name': 'tenant_id', 'Value': tenant_id or '_unknown'}],
+                })
+            self.cloudwatch.put_metric_data(Namespace=self.namespace, MetricData=metric_data)
+        except Exception as e:  # noqa: BLE001 — metrics never block validate
+            logger.warning("Failed to publish edge-resolve metric (non-blocking): %s", e)
+
+    async def publish_bundle_stale_fail_closed_metric(self, tenant_id: str = ""):
+        """Edge rejected a stale/expired signed bundle and failed CLOSED (WS-I I5.1
+        / LLD 28 §5.6). Each occurrence is a fail-secure event worth alarming — the
+        anti-rollback guard (nbf/iat) refused an out-of-date bundle."""
+        try:
+            self.cloudwatch.put_metric_data(
+                Namespace=self.namespace,
+                MetricData=[{
+                    'MetricName': 'BundleStaleFailClosed',
+                    'Value': 1,
+                    'Unit': 'Count',
+                    'Dimensions': [{'Name': 'tenant_id', 'Value': tenant_id or '_unknown'}],
+                }],
+            )
+        except Exception as e:  # noqa: BLE001 — metrics never block validate
+            logger.warning("Failed to publish BundleStaleFailClosed metric (non-blocking): %s", e)
+
     async def publish_session_metrics(self, quarantined_count: int, suspended_count: int):
         """
         Publish session status metrics.

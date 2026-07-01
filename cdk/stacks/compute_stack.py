@@ -1469,6 +1469,15 @@ def handler(event, context):
                     # Cedar runs alongside and records CedarShadowDiscrepancy (CT07).
                     "CEDAR_ENABLED": str(config.get("cedar_enabled", False)).lower(),
                     "CEDAR_SHADOW_MODE": str(config.get("cedar_shadow_mode", False)).lower(),
+                    # Legacy-engine retirement (WS-I I2 / LLD 28 §4.2). Conservative-
+                    # OFF default: a Cedar abstain falls back to legacy until every
+                    # policy carries a .cedar co-artifact (CT08 backfill). Flip to
+                    # true (founder-gated, I3.3) → abstain fails SECURE to DENY.
+                    "LEGACY_RETIRED": str(config.get("legacy_retired", False)).lower(),
+                    # Deterministic local-floor kill-switch (WS-I I5 / LLD 28 §5.6).
+                    # Default true (edge evaluates the signed bundle locally); false
+                    # routes to the hosted path (network-required, NOT deny-all).
+                    "LOCAL_FLOOR_ENABLED": str(config.get("local_floor_enabled", True)).lower(),
                 },
                 "health_check_command": ["CMD-SHELL", "curl -f http://localhost:8080/v1/health || exit 1"],
             },

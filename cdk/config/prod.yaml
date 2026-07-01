@@ -30,6 +30,19 @@ tenancy_v2_enabled: false
 cedar_enabled: true
 cedar_shadow_mode: false
 
+# Legacy-engine retirement (WS-I I2 / LLD 28 §4.2). Conservative-OFF. While false,
+# a Cedar ABSTAIN (agent without a .cedar co-artifact) falls back to the legacy
+# engine — no un-enforced window during the CT08 backfill. Flip to true ONLY after
+# the backfill verify (I3.2) confirms 0 policies with policy_format != cedar AND
+# generator-version parity; the flip is founder-gated (I3.3), NOT done in code.
+legacy_retired: false
+
+# Deterministic local-floor kill-switch (WS-I I5 / LLD 28 §5.6). Default true: the
+# edge evaluates the signed Cedar bundle locally. Set false (incident escape hatch)
+# to route every call to the hosted /v1/validate path (network-required, fail-secure)
+# — it does NOT disable enforcement (ADR-034). Per-tenant override via sentra-tenants.
+local_floor_enabled: true
+
 # VPC Configuration
 vpc:
   cidr: "10.0.0.0/16"

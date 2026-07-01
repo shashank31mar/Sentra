@@ -17,6 +17,31 @@ def pytest_configure(config):
     config.addinivalue_line(
         "markers", "requires_services: marks tests that require running services"
     )
+    config.addinivalue_line(
+        "markers", "integration: marks integration tests (run with '-m integration')"
+    )
+
+
+@pytest.fixture(scope="session")
+def api_headers():
+    """Common headers for control-plane (operator) API requests against the
+    deployed controller (WS-K K8). The data-plane validate path additionally needs
+    the gateway API key (X-Api-Key) — provided via SENTRA_API_KEY when present.
+
+    Operator identity: the deployed front door verifies an ALB-OIDC operator JWT;
+    against a locally-run controller (no ALB) the legacy X-Operator-Email shim is
+    honored. Tests assert on STATUS CODES + reason codes, so both work."""
+    headers = {
+        "Content-Type": "application/json",
+        "X-Operator-Email": os.environ.get("SENTRA_OPERATOR_EMAIL", "test-integration@sentra.com"),
+    }
+    bearer = os.environ.get("SENTRA_OPERATOR_TOKEN")
+    if bearer:
+        headers["Authorization"] = f"Bearer {bearer}"
+    api_key = os.environ.get("SENTRA_API_KEY")
+    if api_key:
+        headers["X-Api-Key"] = api_key
+    return headers
 
 
 @pytest.fixture(scope="session")

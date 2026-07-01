@@ -79,6 +79,11 @@ class Tenant:
     # Cross-tenant consent (WS-E E3): a platform-admin per-tenant read DENIES unless
     # this tenant has explicitly opted in. Defaults to False — deny-by-default.
     platform_read_consent: bool = False
+    # Deterministic local-floor kill-switch, per-tenant override (WS-I I5.3 / LLD 28
+    # §5.6). None = inherit the fleet `local_floor_enabled` flag; False = force this
+    # tenant onto the hosted /v1/validate path (incident escape hatch for one bad
+    # bundle, without a fleet-wide fallback). NEVER means "skip validation".
+    local_floor_enabled: Optional[bool] = None
     deletion_cursor: Dict[str, str] = field(default_factory=dict)
     created_at: int = 0
     created_by: str = ""
@@ -93,6 +98,9 @@ class Tenant:
             identity_mode=item.get("identity_mode", "off"),
             quota={k: int(v) for k, v in (item.get("quota") or {}).items()},
             platform_read_consent=bool(item.get("platform_read_consent", False)),
+            # Absent attribute → None → inherit the fleet flag (WS-I I5.3).
+            local_floor_enabled=(None if item.get("local_floor_enabled") is None
+                                 else bool(item.get("local_floor_enabled"))),
             deletion_cursor=dict(item.get("deletion_cursor") or {}),
             created_at=int(item.get("created_at", 0)),
             created_by=item.get("created_by", ""),

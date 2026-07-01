@@ -86,6 +86,20 @@ def effective_identity_mode(tenant_mode: Optional[str]) -> str:
     return IDENTITY_MODES[min(ci, ti)]
 
 
+def effective_local_floor_enabled(tenant_override: Optional[bool]) -> bool:
+    """Whether the deterministic local floor is active for a tenant (WS-I I5.3 /
+    LLD 28 §5.6). The floor evaluates locally ONLY when the fleet flag AND the
+    tenant override both permit it — either set to False routes that tenant to the
+    hosted ``/v1/validate`` path (the incident escape hatch). ``tenant_override``
+    None means "inherit the fleet flag". This is a kill-switch over the EVAL
+    LOCATION, never over enforcement (ADR-034): off ⇒ validate on the server, it
+    must NEVER be read as "skip validation"."""
+    fleet = bool(getattr(settings, "local_floor_enabled", True))
+    if tenant_override is None:
+        return fleet
+    return fleet and bool(tenant_override)
+
+
 def is_reserved_tenant(tenant_id: str) -> bool:
     """True if ``tenant_id`` is a reserved system id that no customer may hold."""
     return tenant_id in RESERVED_TENANT_IDS
@@ -321,6 +335,33 @@ def query_or_scan(table, **scan_kwargs):
     else:
         q["KeyConditionExpression"] = Key("tenant_id").eq(current_tenant())
     return table.query(**q)
+
+
+# --------------------------------------------------------------------------- #
+# fleet_scan — a DELIBERATELY cross-tenant scan for platform / SOC fleet views
+# --------------------------------------------------------------------------- #
+def fleet_scan(table, **scan_kwargs):
+    """A genuine cross-tenant ``table.scan`` for **fleet-wide platform/SOC KPIs**
+    — the opposite of :func:`query_or_scan`.
+
+    ``query_or_scan`` scopes every read to ``current_tenant()`` (the tenant-
+    isolation guarantee for per-tenant data). But a handful of reads are *platform*
+    views that must span EVERY tenant: the SOC console's fleet quarantine count +
+    session list + agents-below-trust. Routed through ``query_or_scan`` those
+    silently see only the caller's partition (``default`` for an API-key console
+    read) and miss every other tenant's sessions.
+
+    This helper runs a plain ``scan`` (no ``KeyConditionExpression``) so it reads
+    ALL tenant partitions, folding the caller's ``FilterExpression`` /
+    ``ProjectionExpression`` / ``Limit`` / ``ExclusiveStartKey`` / ``Select``
+    through unchanged. Byte-identical to the pre-v2 behaviour.
+
+    USE ONLY for platform/SOC aggregates that are meant to be fleet-wide. NEVER use
+    it for per-tenant data reads — that would leak one tenant's rows to another.
+    (Auth-hardening — scoping the console to an operator's tenants — is a separate
+    follow-up; today the console is a single-operator platform view.)
+    """
+    return table.scan(**scan_kwargs)
 
 
 # --------------------------------------------------------------------------- #

@@ -18,6 +18,7 @@ from typing import Dict, List, Optional
 
 from app.api.models import ValidationRequest, ValidationResult
 from app.config import settings
+from app.utils import tenancy
 from app.utils.session_manager import SessionManager, SessionUpdateError
 
 logger = logging.getLogger(__name__)
@@ -55,6 +56,23 @@ _bg_tasks: "set" = set()
 # security-audit write is worse than the backlog — and the M7 durable shipper
 # removes this in-process queue entirely.
 _BG_TASKS_SOFT_CAP = 1000
+
+
+# --- WS-I I2.2: fail-secure DENY for the legacy-retired end state -----------------
+# A new, distinct violation type (NOT POLICY_ERROR) so the audit trail separates
+# "Cedar evaluator errored" from "no .cedar co-artifact while legacy is retired"
+# (LLD 28 §4.3). Dangerous-tier penalty −15, matching POLICY_NOT_FOUND/POLICY_DISABLED.
+POLICY_NOT_MIGRATED = "POLICY_NOT_MIGRATED"
+_POLICY_NOT_MIGRATED_PENALTY = -15
+
+
+def _fail_secure_deny(violation_type: str, penalty: int, reason: str) -> ValidationResult:
+    """Build a fail-secure DENY ValidationResult in the engine `_deny` shape
+    (engine.py:238). Used when Cedar abstains under `legacy_retired` — there is no
+    legacy engine left to fall back to, so the safe verdict is DENY, not allow."""
+    return ValidationResult(
+        decision="DENY", reason=reason, violation_type=violation_type,
+        violated_policy=None, penalty=penalty, should_deny=True)
 
 
 def _fire_and_forget(coro, label: str) -> None:
@@ -137,7 +155,22 @@ class ValidationService:
         
         self.audit_logger = AuditLogger()  # Task 9 ✅
         self.metrics_publisher = MetricsPublisher()  # Task 9 ✅
-    
+
+    def _emit_cedar_abstain_metric(self, *, denied: bool, agent_id: str) -> None:
+        """WS-I I2.3: fire-and-forget the Cedar-abstain outcome metric. Guarded so a
+        missing/partial metrics_publisher (e.g. in unit pipelines) NEVER turns a
+        telemetry gap into a broken verdict — telemetry is off the response path."""
+        publisher = getattr(self, "metrics_publisher", None)
+        emit = getattr(publisher, "publish_cedar_abstain_metric", None)
+        if emit is None:
+            return
+        try:
+            _fire_and_forget(emit(
+                denied=denied, agent_id=agent_id, tenant_id=tenancy.current_tenant()),
+                "metrics")
+        except Exception:  # noqa: BLE001 — telemetry must never block a verdict
+            logger.debug("cedar-abstain metric emit skipped", exc_info=True)
+
     async def validate_tool_call(self, request: ValidationRequest) -> Dict:
         """
         Main validation pipeline orchestrator.
@@ -303,12 +336,29 @@ class ValidationService:
         if cutover:
             policy_result = _capture(await _timed("policy", cedar.validate(request)))
             if policy_result.is_abstain:
-                # Agent not Cedar-migrated yet — fall back to legacy enforcement
-                # so there is never an un-enforced window during rollout.
-                logger.info(
-                    "Cedar abstained (not migrated) for %s; falling back to legacy engine",
-                    request.agent_id)
-                policy_result = _capture(await _timed("policy_fallback", self.policy_engine.validate(request)))
+                if settings.legacy_retired:
+                    # End state (FR-2.4 / LLD 28 §4.3): legacy is retired. An abstain
+                    # here means a policy that SHOULD carry a .cedar co-artifact does
+                    # not — a defect. There is no legacy engine to fall back to, so we
+                    # fail SECURE to DENY (POLICY_NOT_MIGRATED), never permissively.
+                    logger.error(
+                        "Cedar abstained under legacy_retired for %s; fail-secure DENY",
+                        request.agent_id)
+                    self._emit_cedar_abstain_metric(denied=True, agent_id=request.agent_id)
+                    policy_result = _capture(_fail_secure_deny(
+                        violation_type=POLICY_NOT_MIGRATED,
+                        penalty=_POLICY_NOT_MIGRATED_PENALTY,
+                        reason="Policy not Cedar-migrated; legacy engine retired (fail-secure)"))
+                else:
+                    # Rollout era (legacy_retired=false): keep the existing permissive
+                    # fallback so there is never an un-enforced window during the
+                    # CT08 backfill. This branch MUST stay byte-for-byte the legacy
+                    # fallback — the existing test pins it (LLD 28 §14.1).
+                    logger.info(
+                        "Cedar abstained (not migrated) for %s; falling back to legacy engine",
+                        request.agent_id)
+                    self._emit_cedar_abstain_metric(denied=False, agent_id=request.agent_id)
+                    policy_result = _capture(await _timed("policy_fallback", self.policy_engine.validate(request)))
         else:
             policy_result = _capture(await _timed("policy", self.policy_engine.validate(request)))
             # Cedar shadow comparison (CT07): run Cedar alongside, record any
@@ -509,14 +559,22 @@ class ValidationService:
         # decided — which are correctly measured here. No post-execution emitter
         # exists, so there is no double-count. Emitted OFF the response path
         # (WS24 M4.2) — the DENY is already returning; metrics must not block it.
-        _fire_and_forget(self.metrics_publisher.publish_validation_metrics(
-            decision="DENY",
-            latency_ms=latency_ms,
-            agent_id=request.agent_id,
-            trust_score=float(updated_session['trust_score']),
-            threat_type=validation_result.threat_type,
-            severity=validation_result.severity,
-        ), "metrics")
+        #
+        # WS-I I2.4 (LLD 28 §12): a POLICY_NOT_MIGRATED DENY is AUDIT-ONLY — it is
+        # surfaced in the audit log + the CedarAbstainDenied metric (emitted at the
+        # abstain branch), but EXCLUDED from the metered Decisions/quota series so a
+        # missing-co-artifact defect cannot exhaust a victim tenant's budget. Mirrors
+        # the identity-gate-DENY-not-metered intent. A flat console "decisions" panel
+        # for these is the EXPECTED outcome, not a regression.
+        if violation_type != POLICY_NOT_MIGRATED:
+            _fire_and_forget(self.metrics_publisher.publish_validation_metrics(
+                decision="DENY",
+                latency_ms=latency_ms,
+                agent_id=request.agent_id,
+                trust_score=float(updated_session['trust_score']),
+                threat_type=validation_result.threat_type,
+                severity=validation_result.severity,
+            ), "metrics")
 
         # Surface cross-cloud fields (agent-policy-management §2.3/C2: these are
         # AGENT-sourced — stamped from the registry by the policy engine, or by the

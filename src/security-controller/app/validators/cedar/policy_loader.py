@@ -17,7 +17,9 @@ the C6 blocker). This loader:
 """
 from __future__ import annotations
 
+import asyncio
 import logging
+import time
 from collections import OrderedDict
 from dataclasses import dataclass
 from typing import Optional
@@ -32,6 +34,33 @@ logger = logging.getLogger(__name__)
 # a change to any component yields a new key and a fresh S3 read.
 _COMPILED_CACHE_MAX = 512
 _compiled_cache: "OrderedDict[tuple, str]" = OrderedDict()
+
+# WS-I I5.2 (LLD 28 §5.6, §8): lazily-shared metrics publisher + a background-task
+# set so the CedarEvalLatencyMs emit is fire-and-forget and OFF the eval path. A
+# metric failure (or no event loop) must NEVER disturb a verdict — every touch here
+# is guarded. The cache hit/miss split proves §8: ~1–5 ms on an LRU hit; a spike of
+# cache_hit=false flags a cold/thrashing cache.
+_metrics_publisher = None  # type: ignore[var-annotated]
+_eval_metric_tasks: "set" = set()
+
+
+def _emit_eval_latency(latency_ms: float, cache_hit: bool) -> None:
+    global _metrics_publisher
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        return  # no event loop (e.g. a sync unit test) — skip silently
+    try:
+        if _metrics_publisher is None:
+            from app.utils.metrics_publisher import MetricsPublisher
+            _metrics_publisher = MetricsPublisher()
+        from app.utils import tenancy
+        task = loop.create_task(_metrics_publisher.publish_cedar_eval_latency(
+            latency_ms=latency_ms, cache_hit=cache_hit, tenant_id=tenancy.current_tenant()))
+        _eval_metric_tasks.add(task)
+        task.add_done_callback(_eval_metric_tasks.discard)
+    except Exception:  # noqa: BLE001 — telemetry must never block eval
+        logger.debug("CedarEvalLatencyMs emit skipped", exc_info=True)
 
 
 def clear_compiled_cache() -> None:
@@ -74,7 +103,9 @@ class CedarPolicyLoader:
                 f"(policy_format={metadata.get(policy_artifact.POLICY_FORMAT_FIELD)!r})"
             )
 
-        compiled = self._load_compiled_cached(metadata)
+        t0 = time.perf_counter()
+        compiled, cache_hit = self._load_compiled_cached(metadata)
+        _emit_eval_latency((time.perf_counter() - t0) * 1000.0, cache_hit)
         return LoadedCedarPolicy(policy=policy, metadata=metadata, agent=agent, compiled_cedar=compiled)
 
     def _cache_key(self, metadata: dict) -> tuple:
@@ -84,12 +115,14 @@ class CedarPolicyLoader:
             metadata.get("generator_version"),
         )
 
-    def _load_compiled_cached(self, metadata: dict) -> str:
+    def _load_compiled_cached(self, metadata: dict) -> tuple[str, bool]:
+        """Return (compiled_text, cache_hit). cache_hit=True means the immutable
+        LRU served it (no S3 round-trip) — the §8 fast path."""
         key = self._cache_key(metadata)
         cached = _compiled_cache.get(key)
         if cached is not None:
             _compiled_cache.move_to_end(key)  # LRU touch
-            return cached
+            return cached, True
 
         text = policy_artifact.load_compiled_policies(
             self._s3, metadata["s3_bucket"], metadata["s3_key"]
@@ -98,4 +131,4 @@ class CedarPolicyLoader:
         _compiled_cache.move_to_end(key)
         while len(_compiled_cache) > _COMPILED_CACHE_MAX:
             _compiled_cache.popitem(last=False)
-        return text
+        return text, False

@@ -242,6 +242,7 @@ Status reflects the shipping codebase. *(See [ARCHITECTURE.md](lld/ARCHITECTURE.
 | FR-5.2 | LIFO multi-step rollback within a session/conversation | P0 | Built |
 | FR-5.3 | Reversibility checks (never imply irreversible can be undone) | P0 | Built |
 | FR-5.4 | Expanded adapter library (more action types) | P1 | Roadmap |
+| FR-5.5 | Customer-declared compensation in policy — the customer expresses, per reversible action, the compensating intent (the API/operation to invoke, parameters to carry, ordering); the engine derives reversibility and the undo step from policy, not a hardcoded adapter (generalizes FR-5.1) | P1 | Roadmap |
 
 ### 7.6 Audit, Observability & Compliance — `lld/17`
 | ID | Requirement | Pri | Status |
@@ -253,6 +254,8 @@ Status reflects the shipping codebase. *(See [ARCHITECTURE.md](lld/ARCHITECTURE.
 | FR-6.5 | Compliance reports (SOC 2 / HIPAA / GDPR / EU AI Act) generated < 5 min — gates the Stage-2 regulated buyers (insurance, regional banks) | P1 | Roadmap |
 | FR-6.6 | Agent SBOM (models, tools, policies; signed) | P2 | Roadmap |
 | FR-6.7 | Push decisions / alerts to the customer's SIEM / SOAR / ITSM (Splunk, Sentinel, Chronicle, PagerDuty, Jira) — first-class signal export; how we're useful in monitor/detect mode before they trust us to enforce (complements, doesn't replace, their SIEM) | P1 | Roadmap |
+| FR-6.8 | Full decision-trail audit — record every detector/classifier that ran and its verdict (caller identity, each layer's pass/flag, why the deciding layer denied), not just the prioritized deciding source; reconciles with the deny-overrides combiner's short-circuit behavior | P1 | Roadmap |
+| FR-6.9 | Session-correlated forensic view — a session-global reference correlating every message/action across a multi-step attack so the sequence is reconstructable end-to-end (builds on request-id correlation FR-7.5) | P1 | Roadmap |
 
 ### 7.7 Integration & Multi-Cloud Connectors — `lld/15`, `lld/16`, `lld/22`, `lld/23`, `features/multicloud-agent-import`
 *Goal: make getting an agent under governance as low-friction as possible — connect an account, discover the agents, onboard them with a starter policy and an interception path.*
@@ -269,6 +272,7 @@ Status reflects the shipping codebase. *(See [ARCHITECTURE.md](lld/ARCHITECTURE.
 | FR-7.8 | Tool introspection on import (action-group / function / tool definitions → tool list) → **auto-seed a starter policy** | P1 | Roadmap |
 | FR-7.9 | Import lifecycle tracking (`discovered → policy-seeded → intercepting / governed`) | P1 | Roadmap |
 | FR-7.10 | Framework integrations (LangChain, CrewAI, MCP) for one-step instrumentation — eases Stage-0/1 adoption (these agents are framework-based) | P1 | Roadmap |
+| FR-7.11 | Connector onboarding config — per cloud, the exact customer-side grant to enable discovery/interception (AWS IAM policy + role ARN, Azure Service-Principal allowlist, GCP service-account/role), surfaced in-console at connect time | P1 | Roadmap |
 
 ### 7.8 Management Plane — agents, policies, onboarding — `lld/05`, `lld/11`, `features/agent-policy-management`, `features/multi-format-policy-authoring`
 *The authoring/management side: how customers define and manage what the runtime engine (§7.2) enforces. Distinct from §7.2 — that one decides at runtime; this one is how policies and agents are created, bound, and operated.*
@@ -296,10 +300,11 @@ Status reflects the shipping codebase. *(See [ARCHITECTURE.md](lld/ARCHITECTURE.
 
 | ID | Requirement | Pri | Status |
 |---|---|---|---|
-| FR-10.1 | Multi-tenant isolation — every connection, agent, policy, credential, and signal scoped to `tenant_id`; onboarding a new customer is a data operation, not a re-architecture | P0 | In build (tenant-scoped tables; `TENANCY_V2` cutover in flight) |
+| FR-10.1 | Multi-tenant isolation — every connection, agent, policy, credential, and signal scoped to `tenant_id`; onboarding a new customer is a data operation, not a re-architecture | P0 | Built on dev (`TENANCY_V2` enabled + enforcing, go-live 2026-06-24; tenant `acme` enforcing, 0 `_unverified`). Prod/staging founder-gated off — see FR-10.5 |
 | FR-10.2 | Tenant-scoped APIs, data stores, and dashboards | P0/P1 | Partial / Roadmap |
-| FR-10.3 | **Verified agent identity** — per-agent credential issued at import; the controller resolves the authoritative `(tenant_id, agent_id)` from the verified credential, never from a self-asserted request field | P1 | Roadmap (today: shared API key only — `agent_id` is self-asserted) |
+| FR-10.3 | **Verified agent identity** — per-agent credential issued at import; the controller resolves the authoritative `(tenant_id, agent_id)` from the verified credential, never from a self-asserted request field | P1 | Built on dev (signed-credential verify path live; `(tenant_id, agent_id)` resolved from verified credential, enforcing for tenant `acme`). Prod-gated; legacy shared-API-key path remains until per-agent credential coverage ≈100% |
 | FR-10.4 | Per-tenant configuration (policies, detectors, fail modes, retention) | P1 | Partial / Roadmap |
+| FR-10.5 | Activate `TENANCY_V2` in prod/staging — flip `tenancy_v2_enabled` + per-tenant `TENANT_IDENTITY_MODE=enforce` (today founder-gated off in prod) and finish the tail: S3 prefix migration, `default` brownfield purge, per-tenant RPS-quota ceiling raise. Prod multi-tenant onboarding gates on this | P1 | Built on dev / prod activation founder-gated |
 
 ### 7.11 Safe Enforcement Adoption — crossing monitor → enforce
 *The leap from observing to blocking is the hardest step for a buyer (false-positive risk, hot-path liability). These requirements make that crossing measurable and gradual — the machine that walks a customer up from the monitor floor to full enforcement. Builds on shadow/monitor modes (FR-3.3, FR-8.4).*
@@ -309,6 +314,24 @@ Status reflects the shipping codebase. *(See [ARCHITECTURE.md](lld/ARCHITECTURE.
 | FR-11.1 | Confidence-to-enforce counterfactual — per policy / detector / agent over a window: what *would* have been blocked, the false-positive rate, and the exact legitimate actions a flip to enforce would have broken | P1 | Roadmap |
 | FR-11.2 | Graduated enforcement rollout — promote a policy/detector from monitor to enforce on a canary slice (e.g., 1% → 10% → 100% of sessions), with automatic rollback to monitor if the false-positive rate spikes | P1 | Roadmap |
 | FR-11.3 | First-class denial explanation + human override / appeal — operator-facing "why this was blocked" with evidence, and an audited per-case override / HOLD-for-human path (complements engine-level decision-source attribution FR-2.7 and output HOLD FR-3.7) | P1 | Roadmap |
+
+### 7.12 Metering & Billing
+*Multi-tenant SaaS (especially Serverless) requires per-tenant usage accounting to bill and rate-limit fairly. Raw per-tenant CloudWatch counters exist; the usage record / billing ledger / API-Gateway usage plans do not.*
+
+| ID | Requirement | Pri | Status |
+|---|---|---|---|
+| FR-12.1 | Usage metering — count billable validation events per tenant, emitted off the response path (like audit; zero added hot-path latency), aggregated to a per-tenant usage record | P1 | Partial (raw counters only) |
+| FR-12.2 | Usage-based limits / quota — enforce per-tenant request budgets / plan tiers (e.g., API-Gateway usage plans), with graceful quota-exceeded handling | P1 | Partial |
+| FR-12.3 | Billing / usage records — periodic per-tenant usage record suitable for invoicing/chargeback (pricing dimension — per-decision / per-agent / per-seat / tiered — TBD) | P1 | Roadmap |
+
+### 7.13 Console Experience
+*The operator-facing console as a first-class product surface. Backend tenant-resolution exists; the console UI is not yet tenant-scoped.*
+
+| ID | Requirement | Pri | Status |
+|---|---|---|---|
+| FR-13.1 | Multi-tenant console — every console view scoped to the operator's tenant; no cross-tenant leakage; tenant context resolved from login | P0/P1 | Roadmap (UI layer; backend tenant-resolution built) |
+| FR-13.2 | Exhaustive dashboard set — Overview, Agent inventory, Activity / live feed, Violations & threats (per detector), Decision detail (the FR-6.8 trail), Session forensics (FR-6.9), Policies, Connectors & import (FR-7.11), Audit & compliance (FR-6.5), Usage & billing (FR-12.x) | P1 | Partial |
+| FR-13.3 | Console authentication & tenancy model — define login method, tenant-membership model, and RBAC roles; revisit against comparable security consoles (SSO/SAML, org→tenant mapping) | P0/P1 | Partial (Cognito OIDC; no tenant mapping/RBAC) |
 
 ---
 
@@ -327,6 +350,7 @@ Status reflects the shipping codebase. *(See [ARCHITECTURE.md](lld/ARCHITECTURE.
 | NFR-9 | **Integrity** | Signed/versioned policies; tamper-evident audit; signing-key management/rotation |
 | NFR-10 | **Observability** | Metrics, traces, decision-source attribution; SLO dashboards |
 | NFR-11 | **Portability** | AWS, Azure, GCP, on-prem; no single-cloud lock-in |
+| NFR-12 | **Metering integrity** | Billable-event accounting ≥ 99.9% per tenant; emitted off the response path (zero added hot-path latency) |
 
 ---
 
@@ -334,8 +358,8 @@ Status reflects the shipping codebase. *(See [ARCHITECTURE.md](lld/ARCHITECTURE.
 
 | Phase | Theme | Key requirements | Outcome |
 |---|---|---|---|
-| **P0 — Land Stage 0** (software / DevOps / infra & automation; prove cross-cloud) | Deterministic enforcement that fits today's highest-blast-radius agents; multi-tenant foundation | FR-1.1–1.3, 2.1–2.7, 3.1–3.3, 4.1/4.2/4.6, 5.1–5.3, 6.1–6.4, 7.1–7.3/7.5/7.6, 8.1–8.3/8.5, 9.1, 10.1/10.2 | Block destructive infra/code actions, quarantine, rollback, cross-cloud demo; 3–5 design partners → paying |
-| **P1 — Stage 1 (fintech/payments) + first regulated** | Make latency, resilience, data-boundary, identity, and compliance real — and make enforcement safe to turn on | FR-1.4/1.5/1.7, 2.8/2.9, 3.4–3.7/3.12/3.13, 4.3/4.4, 5.4, 6.5/6.7, 7.4/7.7–7.10, 8.4/8.7/8.8, 9.2, 10.3/10.4, 11.1–11.3; NFR-1/4/6/7/8 | In-VPC Dedicated, local cached enforcement, redaction, distilled model, sidecar, Connect & Import, verified agent identity, compliance reports, SIEM export, confidence-to-enforce + graduated rollout, learned policy proposals, industry packs; **SOC 2 Type II + HIPAA**; first paying enterprises |
+| **P0 — Land Stage 0** (software / DevOps / infra & automation; prove cross-cloud) | Deterministic enforcement that fits today's highest-blast-radius agents; multi-tenant foundation | FR-1.1–1.3, 2.1–2.7, 3.1–3.3, 4.1/4.2/4.6, 5.1–5.3, 6.1–6.4, 7.1–7.3/7.5/7.6, 8.1–8.3/8.5, 9.1, 10.1/10.2, 13.1/13.3 (console foundation) | Block destructive infra/code actions, quarantine, rollback, cross-cloud demo, multi-tenant console; 3–5 design partners → paying |
+| **P1 — Stage 1 (fintech/payments) + first regulated** | Make latency, resilience, data-boundary, identity, and compliance real — and make enforcement safe to turn on | FR-1.4/1.5/1.7, 2.8/2.9, 3.4–3.7/3.12/3.13, 4.3/4.4, 5.4/5.5, 6.5/6.7/6.8/6.9, 7.4/7.7–7.11, 8.4/8.7/8.8, 9.2, 10.3/10.4/10.5, 11.1–11.3, 12.1–12.3, 13.2; NFR-1/4/6/7/8/12 | In-VPC Dedicated, local cached enforcement, redaction, distilled model, sidecar, Connect & Import, verified agent identity, prod tenancy activation, full decision-trail + session forensics, customer-declared compensation, compliance reports, SIEM export, confidence-to-enforce + graduated rollout, learned policy proposals, industry packs, metering & billing, exhaustive console; **SOC 2 Type II + HIPAA**; first paying enterprises |
 | **P2 — Stage 2/3 climb** (banks, healthcare, government) | Category standard + the strictest deployments | FR-2.6, 3.8–3.11/3.14, 4.5, 6.6, 8.6/8.8, 9.3; CRDs / CNCF | Self-Managed / air-gapped, deep detection layers (D3/D4), blast-radius containment, Kubernetes CRDs, agent SBOM |
 
 **Phases are capability tiers gated by milestones and funding — not calendar commitments**, and map to the [STRATEGY.md](pitch/share/STRATEGY.md) GTM ladder: **P0 → Stage 0** (infra/automation land + cross-cloud proof), **P1 → Stage 1** (fintech) + first regulated, **P2 → Stage 2/3** (banks, healthcare, government).
@@ -346,7 +370,7 @@ Status reflects the shipping codebase. *(See [ARCHITECTURE.md](lld/ARCHITECTURE.
 
 *(Business/GTM questions — open-source core, pricing, beachhead emphasis — live in [STRATEGY.md](pitch/share/STRATEGY.md). These are product-level.)*
 
-1. **Verified agent-identity mechanism** — the credential type and how it is issued/rotated for FR-10.3 (per-agent credential). *Open.*
+1. **Verified agent-identity mechanism** — the credential type and how it is issued/rotated for FR-10.3 (per-agent credential). *Mechanism proven on dev (signed credential; controller resolves `(tenant_id, agent_id)` from it, enforcing for tenant `acme`); the open part is the prod rollout + rotation policy and per-agent credential coverage before the prod enforce flip (FR-10.5).*
 2. **How the sidecar delivers the multi-phase features** — the SDK ships decorators for all phases (FR-3.4); how the sidecar (FR-1.5) provides the same `content` / `output` / `memory` coverage in the in-boundary editions is to be worked out. *To discuss later.*
 
 ---

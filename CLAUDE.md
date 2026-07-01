@@ -154,7 +154,7 @@ flowchart LR
 
 3. **Three deployment editions = where the PDP runs** (AD-6): **Serverless** (multi-tenant, AegionAI cloud — today; content leaves boundary) · **Dedicated** (single-tenant, customer VPC, managed by us — roadmap; only metadata leaves) · **Self-Managed** (air-gapped — roadmap; nothing leaves).
 
-4. **Decision flow**: one endpoint `POST /v1/validate`, branches on `phase` (request live; content/output/memory roadmap). Cheap deterministic frontier (trust → **Cedar** policy → **Sigma** signature → taint/abuse) short-circuits before any model; expensive models (ML classifier, D1–D7) run after; **deny-overrides combiner** ([src/security-controller/app/combiners/signal.py](src/security-controller/app/combiners/signal.py)) names the deciding source.
+4. **Decision flow**: one endpoint `POST /v1/validate`, branches on `phase` (request live; content/output/memory roadmap). Cheap deterministic frontier (trust → **Cedar** policy → **Sigma** signature → taint/abuse) short-circuits before any model; expensive models (ML classifier, D1–D7) run after; **deny-overrides combiner** ([src/security-controller/app/combiners/deny_overrides.py](src/security-controller/app/combiners/deny_overrides.py), class `DenyOverrides`) names the deciding source (`signal.py` in the same package is the `Signal` type, not the algorithm).
 
 5. **Core components** (validators live under [src/security-controller/app/validators/](src/security-controller/app/validators/)): Checkpoint/SDK · **Cedar** policy engine (**not OPA/Rego — AD-2**) · Detectors (Sigma live + ML shadow + D1–D7 defense-in-depth + multimodal) · Trust & containment (quarantine, cross-agent filtering) · Rollback coordinator (effect-handle compensation, roadmap) · Audit store (DynamoDB + CloudWatch today, pluggable) · Connectors/Import · Management plane · Control plane/console.
 
@@ -213,7 +213,7 @@ Deliberately **two**, each strongest where the other is weakest:
 
 - **Backend / PDP**: **Python** ([src/security-controller/](src/security-controller/)) — not Go/Rust.
 - **Policy engine**: **Cedar** ([src/security-controller/app/validators/cedar/](src/security-controller/app/validators/cedar/)), with YAML/JSON authoring compiled to Cedar — **AD-2; not OPA/Rego.**
-- **Detectors**: Sigma engine + ML classifier + trust/abuse/cross-agent validators (all under `app/validators/`); deny-overrides combiner in `app/combiners/signal.py`.
+- **Detectors**: Sigma engine + ML classifier + trust/abuse/cross-agent validators (all under `app/validators/`); deny-overrides combiner in `app/combiners/deny_overrides.py` (`signal.py` in that package is the `Signal` type, not the algorithm).
 - **API**: REST/HTTP via **AWS API Gateway + ALB** (CDK) — not gRPC. Single `POST /v1/validate` contract.
 - **Infra (IaC)**: **AWS CDK (Python)** — [cdk/stacks/](cdk/stacks/) (network, storage, compute, api, monitoring, cognito, bedrock_agent).
 - **Storage / audit**: **DynamoDB + S3 + CloudWatch** (pluggable per cloud/on-prem) — not PostgreSQL/CockroachDB; no SBOM ledger.
