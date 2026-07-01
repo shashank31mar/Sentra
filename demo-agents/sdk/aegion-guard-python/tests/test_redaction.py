@@ -238,6 +238,84 @@ def test_multiple_adjacent_pans_in_one_run_all_tokenized(text, pans):
         assert pan not in despaced, f"separated PAN {pan!r} survived: {out!r}"
 
 
+# ---- PCI COST-BOUND: the _PAN_MAX_GROUPS DoS-guard boundary (pin the tradeoff) ----
+# _best_pan_window rejects a candidate run with MORE than _PAN_MAX_GROUPS (512) ASCII
+# digit-groups outright (redaction.py:337 — the redaction-path DoS guard). This is a
+# DELIBERATE, documented leak-vs-DoS cost bound (the _PAN_MAX_GROUPS comment): a
+# Luhn-valid PAN embedded in a run of >512 separated digit-groups is left RAW and
+# egresses in cleartext. The cap is set very generously (a card is <=19 groups, so 512
+# groups is ~26 cards) so no realistic payload is dropped. Neither edge was pinned, so
+# the leak-vs-DoS tradeoff was unverified and could silently worsen if the cap were
+# lowered. These two tests PIN the boundary: (1) AT the cap the card is STILL masked
+# (correctness holds up to the bound); (2) ABOVE the cap the run is left raw (the
+# accepted, bounded cost). Lowering the cap makes test (1) FAIL at 512 groups (the safe
+# range shrank) and forces the tradeoff back into review instead of regressing unnoticed.
+# NOT asserting the leak is desirable — asserting the boundary is exactly where the code
+# documents it.
+def _single_digit_group_run(n_groups: int, tail: str) -> str:
+    """``n_groups`` space-separated single '1' digits, then a space, then ``tail`` —
+    one contiguous _PAN_CANDIDATE match (single-space-separated digits, no wider sep)."""
+    return " ".join(["1"] * n_groups) + " " + tail
+
+
+def _candidate_group_count(text: str) -> int:
+    """ASCII digit-group count of the SINGLE candidate run in ``text`` (mirrors the
+    ``ng`` count _best_pan_window uses to decide accept-vs-reject)."""
+    m = R._PAN_CANDIDATE.search(text)
+    assert m is not None, f"no PAN candidate in {text!r}"
+    return len(R._ASCII_DIGIT_RUN.findall(m.group(0)))
+
+
+def test_pan_at_max_groups_cap_is_still_masked_never_raw():
+    # A run whose group count is EXACTLY _PAN_MAX_GROUPS ((cap-4) leading single-digit
+    # strays + the 4 groups of a spaced Visa PAN) sits at the accept boundary: the card
+    # MUST still mask. Pins the SAFE edge — if the cap is lowered, the group count
+    # exceeds the new bound, _best_pan_window returns None, and this FAILS (surfacing
+    # the shrunk safe range rather than a silent PCI regression).
+    cap = R._PAN_MAX_GROUPS
+    pan = "4111 1111 1111 1111"
+    contiguous = "4111111111111111"
+    text = _single_digit_group_run(cap - 4, pan)  # (cap-4) strays + 4 PAN groups = cap
+    assert _candidate_group_count(text) == cap, "setup: not exactly at the cap"
+    out = R._redact_pan(text, "deadbeefdeadbeef")
+    despaced = re.sub(r"[ \t\r\n]", "", _WIRE.sub("", out))
+    assert "CARD" in out, f"card AT the cap was NOT masked: {out[-80:]!r}"
+    assert contiguous not in despaced, (
+        f"raw PAN survived AT the cap (cap={cap}): {out[-80:]!r}"
+    )
+
+
+def test_pan_above_max_groups_cap_is_left_raw_documented_dos_bound():
+    # DELIBERATE, DOCUMENTED cost bound: a candidate run with MORE than _PAN_MAX_GROUPS
+    # ASCII digit-groups is rejected by _best_pan_window (None) and the embedded
+    # Luhn-valid PAN is left RAW. This pins the accepted leak-vs-DoS tradeoff so a future
+    # change (lower the cap, or flip reject → silent drop) is a deliberate, reviewed
+    # decision — not unnoticed drift. If the guard is HARDENED so the PAN masks even
+    # above the cap, this test is EXPECTED to fail and must be updated deliberately.
+    cap = R._PAN_MAX_GROUPS
+    pan = "4111 1111 1111 1111"
+    contiguous = "4111111111111111"
+    text = _single_digit_group_run(cap + 4, pan)  # (cap+4) strays + 4 PAN = cap+4 > cap
+    assert _candidate_group_count(text) > cap, "setup: not above the cap"
+    m = R._PAN_CANDIDATE.search(text)
+    assert R._best_pan_window(m.group(0)) is None, (
+        "over-cap run should be rejected outright by the DoS guard"
+    )
+    out = R._redact_pan(text, "deadbeefdeadbeef")
+    despaced = re.sub(r"[ \t\r\n]", "", _WIRE.sub("", out))
+    assert "CARD" not in out, (
+        "over-cap run unexpectedly emitted a CARD — the DoS-guard boundary moved; "
+        "re-review the leak-vs-DoS tradeoff and re-pin this test"
+    )
+    # The bounded cost ABOVE the cap: the PAN egresses raw. Pinning it makes the tradeoff
+    # explicit and change-visible (a lowered cap widens this raw window into realistic
+    # payloads and must not pass silently).
+    assert contiguous in despaced, (
+        "above-cap run no longer leaves the PAN raw — behavior changed; if this is the "
+        "intended fix (cap raised / scan hardened), update this test deliberately"
+    )
+
+
 # ---- PCI HIGH: the RIGHT (real-card) window is masked; no bogus meta, no stranded
 # real card digit. A stray digit adjacent to a valid PAN can form a WRONG Luhn-valid
 # window (a longer/shifted run) whose first6/last4 is bogus and which strands a real
@@ -902,6 +980,47 @@ def test_image_blob_in_params_is_tagged_not_refused():
     out = redact_params({"attachment": blob})
     assert [t for t, _ in _tokens(out["attachment"])] == ["IMAGE"]
     assert "Z" * 700 not in str(out)
+
+
+# ---- E6.1 PRECEDENCE SEAM: _maybe_image_tag runs on the WHOLE value BEFORE the ----
+# matcher chain (redaction.py:872 / :906) — so a value that is SIMULTANEOUSLY a long,
+# high-entropy, base64-charset run AND carries structured PII embedded contiguously is
+# classified as an IMAGE blob and DROPPED-as-IMAGE (routed to Tier-2), NOT typed-token
+# redacted field-by-field. The base64 alphabet ([A-Za-z0-9+/=]) includes digits, so a
+# contiguous PAN's raw digits sit inside a base64 run without breaking the charset match.
+# This behavior is fail-SAFE (the whole blob is dropped, the embedded PII does NOT egress
+# raw — verified below), so it is NOT a leak; but the IMAGE-vs-text classification
+# boundary for a PII-bearing base64-shaped string was untested. This pins it: the value
+# is tagged IMAGE ONLY (no CARD/typed token fired), and the embedded PAN does NOT survive
+# in cleartext. MUST FAIL if the seam changes so a PII-bearing blob egresses its raw PII
+# (e.g. image detection moved AFTER the matchers, or the blob passed through raw).
+def test_pii_bearing_base64_blob_is_dropped_as_image_not_egressed_raw():
+    import base64
+    import os
+
+    pan = "4111111111111111"  # contiguous Luhn-valid Visa; all digits are base64-safe
+    core = base64.b64encode(os.urandom(500)).decode("ascii").replace("=", "A")
+    # Embed the PAN contiguously in the middle of a >=512-char high-entropy base64 run.
+    value = core[:300] + pan + core[300:]
+    assert len(value) >= R._IMAGE_MIN_LEN, "setup: blob not long enough to be IMAGE"
+    assert R._BASE64_BLOB.match(value), "setup: value is not a bare base64-charset run"
+    assert R._shannon_entropy(value) >= R._IMAGE_ENTROPY_MIN, "setup: entropy too low"
+
+    res = redact_detailed(value)
+    # Precedence: the WHOLE value is classified IMAGE and dropped — the text matchers
+    # (incl. the PAN matcher) never run on the embedded PII.
+    assert res.types == ("IMAGE",), (
+        f"PII-bearing base64 blob was NOT dropped-as-IMAGE (seam changed?): {res.types}"
+    )
+    assert [t for t, _ in _tokens(res.text)] == ["IMAGE"], (
+        f"expected a single IMAGE marker, got {res.text[:60]!r}"
+    )
+    # fail-SAFE: dropping the blob must not leave the embedded PAN in cleartext.
+    assert pan not in res.text, (
+        f"embedded PAN egressed raw despite IMAGE classification: {res.text[:60]!r}"
+    )
+    # And it is NOT mis-classified as a low-entropy secret / carded field.
+    assert "CARD" not in res.text and "SECRET" not in res.text
 
 
 # ---- E7.2: URL query-secret strip ------------------------------------------ #
