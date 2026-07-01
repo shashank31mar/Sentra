@@ -326,6 +326,52 @@ async def test_phase_deny_meters_even_when_audit_fails():
     assert body["violation_type"] == "PHASE_UNHANDLED"
 
 
+@pytest.mark.asyncio
+async def test_phase_deny_survives_metrics_failure():
+    """§9 metering split is resilient to a METRICS failure — the symmetric twin of
+    `test_phase_deny_meters_even_when_audit_fails`.
+
+    `_phase_not_implemented_deny` guards audit and metrics as TWO INDEPENDENT
+    (sibling) best-effort seams. The audit-fails test covers the audit→metrics
+    direction; this covers the OTHER seam: if `publish_validation_metrics` raises,
+    the metrics `except Exception` (routes.py, `noqa: BLE001`) must SWALLOW it and
+    the helper must STILL return the fail-secure DENY unchanged — a CloudWatch
+    outage must never turn a phase-DENY into a 500 (tenet 2: fail secure, never
+    fail open; the DENY is the safe verdict and must survive).
+
+    This FAILS if the metrics `except` branch is removed/reordered: the RuntimeError
+    would propagate out of `_phase_not_implemented_deny` instead of being caught, so
+    the `await` below would raise and the DENY body would never be returned. Drives
+    the helper directly with an audit that succeeds + a metrics publish that raises,
+    and asserts BOTH seams were attempted and the DENY is intact."""
+    from app.api.models import ValidationRequest
+    from app.api.routes import _phase_not_implemented_deny
+
+    req = ValidationRequest(**_today_payload(phase="content"))
+
+    audit = Mock()
+    audit.log_decision = AsyncMock(return_value=None)
+    metrics = Mock()
+    metrics.publish_validation_metrics = AsyncMock(
+        side_effect=RuntimeError("cloudwatch put-metric-data throttled")
+    )
+
+    with patch("app.utils.audit_logger.AuditLogger", return_value=audit), \
+         patch("app.utils.metrics_publisher.MetricsPublisher", return_value=metrics):
+        # Must NOT raise — the metrics except swallows the RuntimeError.
+        body = await _phase_not_implemented_deny(
+            req, reason="phase_handler_not_implemented:content"
+        )
+
+    # Both seams were attempted (metrics raised and was swallowed).
+    audit.log_decision.assert_awaited_once()
+    metrics.publish_validation_metrics.assert_awaited_once()
+    # The fail-secure DENY is returned unchanged despite the metrics publish failing.
+    assert body["decision"] == "DENY"
+    assert body["reason"] == "phase_handler_not_implemented:content"
+    assert body["violation_type"] == "PHASE_UNHANDLED"
+
+
 # ============================================================ B2.4 GUARD 1 defensive branch
 
 @pytest.mark.asyncio
