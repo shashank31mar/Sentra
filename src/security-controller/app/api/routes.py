@@ -244,6 +244,13 @@ async def _phase_not_implemented_deny(request: "ValidationRequest", reason: str)
     WS-L replaces the call site with the real D2/D3/D5 handler when it ships."""
     from app.utils.audit_logger import AuditLogger
 
+    # Audit and metrics are TWO INDEPENDENT best-effort seams, guarded by SIBLING
+    # try/excepts — NOT nested. A nested metrics block (inside the audit try) would
+    # be skipped entirely when audit raises, so an audit failure would silently
+    # UN-METER the phase-DENY — contradicting §9 (the known-but-unbuilt DENY must
+    # appear in the Decisions stream as a DENY, mirroring _identity_deny) and the
+    # "guarded separately" promise below. Keep them siblings so a failure in one
+    # never suppresses the other, and neither ever changes the DENY we return.
     try:
         await AuditLogger().log_decision(
             decision="DENY",
@@ -253,19 +260,21 @@ async def _phase_not_implemented_deny(request: "ValidationRequest", reason: str)
             validation_result={"reason": reason, "violation_type": "PHASE_UNHANDLED"},
             latency_ms=0.0,
         )
-        # Count the phase-DENY in the same CloudWatch streams a normal verdict uses
-        # so it shows up in Decisions as a DENY (contrast the unknown-phase 422,
-        # which must NOT be metered — §9). Fire-and-forget, guarded separately so a
-        # metrics failure never changes the DENY we return.
-        try:
-            from app.utils.metrics_publisher import MetricsPublisher
-            await MetricsPublisher().publish_validation_metrics(
-                decision="DENY", latency_ms=0.0, agent_id=request.agent_id, trust_score=0.0,
-            )
-        except Exception:  # noqa: BLE001 — metrics are best-effort; the DENY still returns
-            logger.warning("phase-DENY metric publish failed", exc_info=True)
     except Exception:  # noqa: BLE001 — audit is best-effort; the DENY still returns
         logger.warning("phase-DENY audit failed", exc_info=True)
+
+    # Count the phase-DENY in the same CloudWatch streams a normal verdict uses
+    # so it shows up in Decisions as a DENY (contrast the unknown-phase 422, which
+    # must NOT be metered — §9). Fire-and-forget, guarded separately (SIBLING of the
+    # audit try above) so a metrics failure never changes the DENY, and — critically
+    # — an AUDIT failure never skips this metric publish.
+    try:
+        from app.utils.metrics_publisher import MetricsPublisher
+        await MetricsPublisher().publish_validation_metrics(
+            decision="DENY", latency_ms=0.0, agent_id=request.agent_id, trust_score=0.0,
+        )
+    except Exception:  # noqa: BLE001 — metrics are best-effort; the DENY still returns
+        logger.warning("phase-DENY metric publish failed", exc_info=True)
 
     return {
         "decision": "DENY",
