@@ -63,14 +63,27 @@ async def test_avalidate_explicit(make_guard, fake_client):
     assert decision.allowed is True
 
 
-async def test_async_content_decorator_threads_phase(make_guard, fake_client):
-    """WS-B (LLD 30 §4): a @guard.content on an async fn threads phase +
-    content_text through the same async path as @guard.tool (reuses
-    _avalidate_or_raise)."""
+@pytest.mark.parametrize(
+    "decorator_name, expected_phase, expected_op",
+    [("content", "content", "READ"), ("output", "output", "READ"),
+     ("memory", "memory", "WRITE")],
+)
+async def test_async_content_decorators_thread_phase(
+    make_guard, fake_client, decorator_name, expected_phase, expected_op
+):
+    """WS-B (LLD 30 §4): each content-bearing decorator (@guard.content /
+    @guard.output / @guard.memory) on an async fn threads phase + content_text
+    (and the per-phase operation_type default: content/output=READ, memory=WRITE)
+    through the same async path as @guard.tool (reuses _avalidate_or_raise). This
+    is the async twin of test_guard_content_sets_phase_and_content_text — it must
+    cover all three surfaces, else a regression in async phase-threading for
+    output/memory (a phase not forwarded to avalidate) would pass green."""
     guard = make_guard()
     fake_client.set_default({"decision": "ALLOW"})
 
-    @guard.content()
+    decorator = getattr(guard, decorator_name)
+
+    @decorator()
     async def ingest(doc):
         return {"seen": doc}
 
@@ -78,5 +91,6 @@ async def test_async_content_decorator_threads_phase(make_guard, fake_client):
         result = await ingest("d")
 
     assert result == {"seen": "d"}
-    assert fake_client.last["phase"] == "content"
+    assert fake_client.last["phase"] == expected_phase
     assert fake_client.last["content_text"] == "untrusted-doc-body"
+    assert fake_client.last["operation_type"] == expected_op
