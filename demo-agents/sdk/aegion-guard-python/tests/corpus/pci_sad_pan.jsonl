@@ -42,3 +42,8 @@
 {"id": "neg-order-number", "kind": "NONE", "text": "your order 987654321 is ready"}
 {"id": "neg-bare-3-digit", "kind": "NONE", "text": "there are 123 items in stock"}
 {"id": "neg-year-amount", "kind": "NONE", "text": "in 2026 the total was 4500 dollars"}
+{"id": "pan-2stray-groups-before", "kind": "PAN", "pan": "4111111111111111", "text": "ref 12 34 4111 1111 1111 1111"}
+{"id": "pan-3stray-groups-before", "kind": "PAN", "pan": "4111111111111111", "text": "ref 12 34 56 4111 1111 1111 1111"}
+{"id": "pan-stray-groups-both-sides", "kind": "PAN", "pan": "4111111111111111", "text": "ref 12 34 4111 1111 1111 1111 56"}
+{"id": "sadpan-cvv-999-before-sep-pan", "kind": "SAD_AND_PAN", "pan": "4111111111111111", "sad": "999", "text": "cvv 999 4111 1111 1111 1111"}
+{"id": "sadpan-cvv-2stray-before-sep-pan", "kind": "SAD_AND_PAN", "pan": "4111111111111111", "sad": "123", "text": "cvv 123 456 4111 1111 1111 1111"}

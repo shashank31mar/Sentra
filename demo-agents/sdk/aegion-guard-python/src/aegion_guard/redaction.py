@@ -235,11 +235,41 @@ _PAN_SEP = r"[ \t\r\n\-./,_]"
 # digit run at the double separator so a CRLF-wrapped card still egressed RAW (R2-C1
 # whitespace form). The bound is 2 (not unbounded ``*``) so the loose candidate cannot
 # span a large gap and mis-associate two distant numbers; the group-windowed Luhn scan
-# (:func:`_best_pan_window`, which trims WHOLE ASCII digit-groups) re-bounds any
-# over-capture to the actual card regardless of how many separator chars sat between
-# groups, so widening the run count never mis-masks a non-card run nor drops the
-# surrounding text.
-_PAN_CANDIDATE = re.compile(rf"(?<!\d)(\d{_PAN_SEP}{{0,2}}){{12,18}}\d(?!\d)")
+# (:func:`_best_pan_window`, which slides a 13-19-digit window across WHOLE ASCII
+# digit-groups) re-bounds any over-capture to the actual card regardless of how many
+# separator chars sat between groups, so widening the run count never mis-masks a
+# non-card run nor drops the surrounding text.
+#
+# The candidate captures the WHOLE run of separated digit-groups (``\d(?:SEP{0,2}\d)*``)
+# — NOT a fixed 13-19-digit window. The earlier ``{12,18}\d`` upper cap was a PCI
+# fail-open (R3-C1): a run of 20+ digits across groups (``ref 12 34 4111 1111 1111
+# 1111`` — two 2-digit strays + a 16-digit card = 20 digits) matched only the FIRST 19
+# digits, so the regex ended mid-card (before the card's trailing group) and handed
+# ``_best_pan_window`` a fragment with no complete card window — the full Visa PAN then
+# egressed RAW (and a variant mis-tokenized the leading strays as ``PHONE`` while
+# stranding raw card digits behind a marker that falsely looked redacted, an E1.4
+# no-partial-PAN violation). Capturing the whole group-run and letting
+# :func:`_best_pan_window` slide a 13-19-digit Luhn window across ALL sub-runs (it trims
+# WHOLE leading/trailing groups) re-bounds the capture — however many stray groups
+# precede/follow the card — to the actual card, so the card is always found and only the
+# card substring is tokenized. The Luhn gate + the ``13 <= length <= 19`` window bound
+# still reject a genuine long number (order id / concatenated timestamp): with no
+# separator it is one group and the whole contiguous run must itself be a valid PAN to
+# card. The number of ASCII digit-groups the window scan considers is capped
+# (:data:`_PAN_MAX_GROUPS`) so a pathological many-group run cannot drive the scan into a
+# redaction-path DoS.
+_PAN_CANDIDATE = re.compile(rf"(?<!\d)\d(?:{_PAN_SEP}{{0,2}}\d)*(?!\d)")
+# A real PAN is 13-19 digits, so at most 19 single-digit groups form one card window.
+# The sliding-window scan (:func:`_best_pan_window`) is O(groups * 19) — bounded per
+# start position by the 19-digit card ceiling — so it is LINEAR in the group count, not
+# quadratic; a long digit-group run is cheap to scan (~66ms for 5000 groups). This cap
+# is therefore a conservative belt-and-suspenders guard against a truly pathological
+# input (tens of thousands of groups), set high enough that NO realistic payload —
+# including a multi-card run (each card is <=19 groups, so 500 groups is ~26 cards) — is
+# ever dropped and left to egress raw. Beyond the cap the run cannot be scanned as a
+# card and is left for later matchers; the value is intentionally generous so this is a
+# cost bound, not a correctness bound (a real card is never silently skipped).
+_PAN_MAX_GROUPS = 512
 
 # ASCII digit RUNS only. A PAN written in non-ASCII \d-matching digits (Arabic-Indic,
 # Devanagari, or a fullwidth digit that slipped NFKC) must NOT be treated as a card:
@@ -265,28 +295,38 @@ _PAN_STD_LENGTHS: Tuple[int, ...] = (16, 15, 14, 13, 19, 18, 17)
 def _best_pan_window(raw: str) -> "Tuple[int, int, str] | None":
     """Re-bound an over-captured PAN candidate to the actual Luhn-valid card.
 
-    ``raw`` is one ``_PAN_CANDIDATE`` match, which may have swallowed one or more
-    separated leading/trailing digit-GROUPS that are not part of the card (loose
-    boundary by design — see _PAN_CANDIDATE). A stray digit can only attach to the
-    card *through a separator* (space/hyphen); a purely contiguous run is a single
-    group and cannot be trimmed. So we split ``raw`` into ASCII digit-groups on its
-    separators and try the sub-runs formed by dropping 0..k WHOLE leading/trailing
-    groups — never an internal sub-window, and never a partial group. Trimming whole
-    groups only (not arbitrary digits) is what keeps a legitimate long *contiguous*
-    number (an order id / concatenated timestamp) from being mis-masked: with no
-    separator it is one group, so the whole run must itself be Luhn-valid to count as
-    a card — preserving the E1.1 false-positive gate the Luhn check exists for.
+    ``raw`` is one ``_PAN_CANDIDATE`` match — the WHOLE run of separated digit-groups,
+    which may have swallowed one or more separated leading AND/OR trailing digit-GROUPS
+    that are not part of the card (loose boundary by design — see _PAN_CANDIDATE; the
+    candidate no longer caps at 19 digits, so the run can be far longer than a card).
+    A stray digit can only attach to the card *through a separator*; a purely contiguous
+    run is a single group and cannot be trimmed. So we split ``raw`` into ASCII
+    digit-groups on its separators and SLIDE a contiguous group-window across the run,
+    considering every ``groups[lead:trail]`` sub-run whose total digit length is a card
+    length (13-19) — never an internal partial group. Because a card is at most 19
+    digits, we only need to extend a window until it exceeds 19 digits, then advance the
+    start — a true 13-19-digit sliding window over the group run, NOT the old
+    drop-0..k-whole-groups-from-each-end scan (which, coupled with the 19-digit-capped
+    candidate, could never even see a card that started past the first 19 digits — the
+    R3-C1 fail-open). Considering interior windows (not just end-trims) is what lets the
+    card be found when strays sit on BOTH sides ("ref 12 34 <card> 56"). Sliding by whole
+    groups only (never arbitrary digits) still keeps a legitimate long *contiguous*
+    number (order id / concatenated timestamp) from being mis-masked: with no separator
+    it is one group, so the whole run must itself be Luhn-valid to card — preserving the
+    E1.1 false-positive gate the Luhn check exists for.
 
     Among the Luhn-valid group-windows we select, in order: (1) the one whose length
     is a real card length (:data:`_PAN_STD_LENGTHS`) — so an injected adjacent digit
     that merely *extends* a card into a longer Luhn-valid run cannot win and emit a
     bogus first6/last4 while stranding a real card digit in cleartext; (2) the fewest
-    trimmed groups (closest to the capture); (3) the fewest leading trims. Returns
-    ``(start, end, digits)`` where ``raw[start:end]`` is the exact card substring to
-    tokenize (only genuinely non-card leading/trailing groups are preserved as
-    cleartext — never a card digit), or ``None`` if no group-window is a valid PAN (a
+    stray groups outside the window (closest to a clean card); (3) the leftmost start.
+    Returns ``(start, end, digits)`` where ``raw[start:end]`` is the exact card
+    substring to tokenize (only genuinely non-card leading/trailing groups are preserved
+    as cleartext — never a card digit), or ``None`` if no group-window is a valid PAN (a
     genuine non-card run degrades to "leave as-is" — never emitted raw *as a card* nor
-    mis-masked).
+    mis-masked). A run with more than :data:`_PAN_MAX_GROUPS` ASCII digit-groups cannot
+    be a formatted card (a card is <=19 groups) and is rejected outright so the scan
+    stays bounded (redaction-path DoS guard).
     """
     # ASCII digit-groups with their (start, end) span in ``raw``; non-ASCII digits
     # are excluded so they are never counted toward a card (see _ASCII_DIGIT_RUN).
@@ -294,46 +334,68 @@ def _best_pan_window(raw: str) -> "Tuple[int, int, str] | None":
         (m.start(), m.end(), m.group(0)) for m in _ASCII_DIGIT_RUN.finditer(raw)
     ]
     ng = len(groups)
-    if ng == 0 or sum(len(g[2]) for g in groups) < 13:
+    if ng == 0 or ng > _PAN_MAX_GROUPS or sum(len(g[2]) for g in groups) < 13:
         return None
     best_key: "Tuple[int, int, int] | None" = None
     best_span: "Tuple[int, int, str] | None" = None
     for lead in range(ng):
-        for trail in range(ng - lead):
-            sub = groups[lead : ng - trail] if trail else groups[lead:]
-            if not sub:
+        # Slide the window end forward from ``lead`` while the accumulated digit count
+        # can still form a card (<=19). This bounds the inner loop to at most 19 groups
+        # regardless of how long the over-captured run is, so the scan is O(ng * 19).
+        length = 0
+        for end_idx in range(lead, ng):
+            length += len(groups[end_idx][2])
+            if length > 19:
+                break  # any further extension only grows the window — advance ``lead``
+            if length < 13:
                 continue
+            sub = groups[lead : end_idx + 1]
             digits = "".join(g[2] for g in sub)
-            length = len(digits)
-            if not (13 <= length <= 19) or not _luhn_ok(digits):
+            if not _luhn_ok(digits):
                 continue
             try:
                 len_priority = _PAN_STD_LENGTHS.index(length)
             except ValueError:  # pragma: no cover — 13..19 are all listed
                 len_priority = len(_PAN_STD_LENGTHS)
-            key = (len_priority, lead + trail, lead)
+            # strays outside the window = groups before ``lead`` + groups after ``end``.
+            strays = lead + (ng - 1 - end_idx)
+            key = (len_priority, strays, lead)
             if best_key is None or key < best_key:
                 best_key = key
                 best_span = (sub[0][0], sub[-1][1], digits)
     return best_span
 
 
-def _redact_pan(text: str, nonce: str) -> str:
-    def repl(m: "re.Match[str]") -> str:
-        raw = m.group(0)
-        window = _best_pan_window(raw)
-        if window is None:
-            return raw  # not a card — leave for later matchers / as-is
-        start, end, digits = window
-        # PCI: first6/last4 ONLY. Middle digits are GONE; never emit the full PAN.
-        meta = f"{digits[:6]}:{digits[-4:]}"
-        token = _wire_token(nonce, "CARD", meta)
-        # Preserve any non-card characters the loose candidate over-captured (a
-        # separated leading/trailing digit or its separator) so ONLY the card
-        # substring is replaced and the surrounding text is never dropped.
-        return f"{raw[:start]}{token}{raw[end:]}"
+def _redact_all_pan_windows(raw: str, nonce: str) -> str:
+    """Tokenize EVERY Luhn-valid card window inside one candidate run (M-3).
 
-    return _PAN_CANDIDATE.sub(repl, text)
+    A single ``_PAN_CANDIDATE`` match can now (with the whole-group-run candidate)
+    span MORE THAN ONE card — e.g. two space-adjacent PANs
+    ("4111 1111 1111 1111 5555 5555 5555 4444") capture as one 32-digit run. Masking
+    only the single best window would tokenize the first card and egress the second
+    RAW (a PCI fail-open). So we mask the best window, then RECURSE on the cleartext
+    prefix and suffix around it, tokenizing every further card until none remains.
+    Only the card substrings are replaced; genuinely non-card leading/trailing groups
+    (and the separators between cards) are preserved as cleartext.
+    """
+    window = _best_pan_window(raw)
+    if window is None:
+        return raw  # not a card — leave for later matchers / as-is
+    start, end, digits = window
+    # PCI: first6/last4 ONLY. Middle digits are GONE; never emit the full PAN.
+    meta = f"{digits[:6]}:{digits[-4:]}"
+    token = _wire_token(nonce, "CARD", meta)
+    # Recurse on the prefix/suffix so a SECOND (or third) card adjacent to this one is
+    # also masked — never leave a full PAN raw in the tail of a multi-card run.
+    prefix = _redact_all_pan_windows(raw[:start], nonce) if raw[:start] else ""
+    suffix = _redact_all_pan_windows(raw[end:], nonce) if raw[end:] else ""
+    return f"{prefix}{token}{suffix}"
+
+
+def _redact_pan(text: str, nonce: str) -> str:
+    return _PAN_CANDIDATE.sub(
+        lambda m: _redact_all_pan_windows(m.group(0), nonce), text
+    )
 
 
 # --- SAD (CVV/track/PIN) : format-anchored -> ⟦…:SAD⟧ (PCI never-store) ------- #
@@ -370,21 +432,40 @@ def _redact_sad(text: str, nonce: str) -> str:
         # matches only the LEADING digit-group of a space/hyphen-separated card that
         # trails a SAD label (e.g. "pin is 4111 1111 1111 1111" captures just "4111").
         # SAD runs BEFORE PAN, so if we tokenized "4111" to SAD here the remaining
-        # "1111 1111 1111" is 12 digits — below _PAN_CANDIDATE's 13-digit floor — so
-        # the PAN matcher would never fire and 12 real card digits would egress in
-        # cleartext (a partially-redacted PAN, which E1.4 forbids). Guard: if the run
-        # STARTING at this value group (separator-joined) contains a Luhn-valid 13-19
-        # digit PAN, DECLINE the SAD match (return the matched text unchanged) so the
-        # later ``_redact_pan`` tokenizes the WHOLE card (its loose candidate treats the
-        # label prefix as over-captured non-card text). The frozen SAD-first order is
-        # preserved — SAD just steps aside for the more-specific PAN when its value is a
-        # card's leading group. A genuine short SAD ("pin is 4821") has no Luhn-valid
-        # trailing run, so it still tokenizes to SAD exactly as before.
+        # "1111 1111 1111" is 12 digits — below the PAN floor — so the PAN matcher would
+        # never fire and 12 real card digits would egress in cleartext (a
+        # partially-redacted PAN, which E1.4 forbids). We look at the separator-joined
+        # run STARTING at this value group and ask :func:`_best_pan_window` whether it
+        # contains a Luhn-valid 13-19 digit card, and — critically — WHERE that card
+        # window starts within the run:
+        #
+        #   * window starts at run offset 0 (the SAD value IS the card's leading group,
+        #     e.g. "pin is 4111 1111 1111 1111" / "pin is 4111.1111.1111.1111"): DECLINE
+        #     the SAD match so ``_redact_pan`` tokenizes the WHOLE card. There is no
+        #     separate SAD value here — the digits are the card. (R2-C2.)
+        #   * window starts AFTER offset 0 (a stray group precedes the card, so the SAD
+        #     value is a SEPARATE value in front of the card, e.g.
+        #     "cvv 999 4111 1111 1111 1111" where 999 is the CVV and 4111… is the card):
+        #     redact BOTH. Drop the SAD value to a no-meta ``<SAD>`` HERE, and leave the
+        #     trailing card text (which sits AFTER this match's end) for ``_redact_pan``.
+        #     Declining here would leak the CVV RAW while only the card masked (R3-H1,
+        #     SAD never-store violated). The SAD guard must never trade a real SAD
+        #     redaction for the card redaction — it redacts the SAD AND lets PAN redact
+        #     the card.
+        #
+        # A genuine short SAD ("pin is 4821") has no Luhn-valid trailing run at all
+        # (window is None), so it tokenizes to SAD exactly as before.
         value_start = m.start(2)
         run_match = _SAD_VALUE_PAN_RUN.match(text, value_start)
-        if run_match is not None and _best_pan_window(run_match.group(0)) is not None:
-            return m.group(0)  # leave for _redact_pan — do NOT partially redact a card
-        # Keep the label, drop the value into a no-meta SAD token.
+        if run_match is not None:
+            window = _best_pan_window(run_match.group(0))
+            if window is not None and window[0] == 0:
+                # The SAD value is the card's own leading group — decline; PAN masks the
+                # whole card. Do NOT partially redact a card.
+                return m.group(0)
+        # Either no trailing card, or the card starts AFTER this SAD value (a separate
+        # CVV/PIN before a card). Keep the label, drop THIS value into a no-meta SAD
+        # token; any trailing separated card is redacted by _redact_pan next.
         return f"{m.group(1)}: {_wire_token(nonce, 'SAD')}"
 
     return _SAD_ANCHORED.sub(repl, text)
@@ -415,43 +496,21 @@ def _redact_email(text: str, nonce: str) -> str:
 # --- URL -> ⟦…:URL⟧ (HIPAA SH) — before phone so an in-URL number isn't a phone #
 _URL = re.compile(r"\bhttps?://[^\s<>⟦⟧\"']+")
 
-# E7.2 — Tier-1 URL query-secret strip. A URL whose query carries a bearer secret
-# (``?token=…`` / ``?api_key=…`` / ``?access_token=…`` / ``?sig=…`` and friends)
-# must not egress that secret in cleartext even though the whole URL is already
-# tokenized to ⟦…:URL⟧ below. This is a SUPPLEMENT to the (later, server-side)
-# FR-2.9 destination allow-list, not a replacement and not a parallel URL subsystem
-# (E7.2). Because the whole URL becomes a single opaque ⟦…:URL⟧ token, the secret
-# value is removed with it — but we assert the strip explicitly so a future change
-# that emits any part of the URL cleartext still drops the secret. The param-name
-# list is the common bearer-secret set; matched case-insensitively.
-_URL_SECRET_QUERY = re.compile(
-    r"(?i)([?&](?:access_token|api_key|apikey|token|auth|key|secret|sig|"
-    r"signature|password|pwd|session)=)[^&\s#]+"
-)
-
-
-def _strip_url_query_secrets(url: str, nonce: str) -> str:
-    """Replace a secret-bearing query value inside a URL with a SECRET token (E7.2).
-
-    Runs on the raw URL substring BEFORE the whole thing is tokenized to URL, so a
-    ``?token=<secret>`` value never survives even if a later change were to emit
-    part of the URL in cleartext. The param name is kept (structural signal); the
-    value becomes a ⟦…:SECRET⟧ marker.
-    """
-    return _URL_SECRET_QUERY.sub(
-        lambda m: f"{m.group(1)}{_wire_token(nonce, 'SECRET')}", url
-    )
-
 
 def _redact_url(text: str, nonce: str) -> str:
     def repl(m: "re.Match[str]") -> str:
-        # The whole URL — path, query, and any ``?token=<secret>`` value — collapses
-        # into ONE opaque ⟦…:URL⟧ token, so the bearer-secret query value is dropped
-        # here by construction; there is no partial-URL cleartext to strip (E7.2).
-        # The dedicated :func:`_strip_url_query_secrets` helper is the guard for a
-        # FUTURE change that would emit part of a URL in cleartext; it is exercised
-        # directly by ``test_url_query_secret_stripped`` (calling it here and
-        # discarding the result would be a wasted regex pass on every URL).
+        # E7.2 — Tier-1 URL query-secret strip. The whole URL — scheme, host, path,
+        # query, AND any bearer-secret query value (``?token=…`` / ``?api_key=…`` /
+        # ``?access_token=…`` / ``?sig=…``) — collapses into ONE opaque ⟦…:URL⟧ token, so
+        # the secret query value is removed WITH the URL, in cleartext-nothing-survives
+        # fashion. There is no partial-URL emitted, so there is no residual query secret
+        # to strip separately — a dedicated ``_strip_url_query_secrets`` helper (removed:
+        # it was dead code never on this path, a false second layer flagged in review)
+        # would only be needed if a future change emitted part of a URL in cleartext.
+        # This is a SUPPLEMENT to the (later, server-side) FR-2.9 destination allow-list,
+        # not a replacement and not a parallel URL subsystem (E7.2). The behavioural
+        # guarantee (a query secret never egresses in cleartext) is pinned by
+        # ``test_url_query_secret_stripped`` against the real ``redact()`` output.
         return _wire_token(nonce, "URL")
 
     return _URL.sub(repl, text)
@@ -620,6 +679,29 @@ _SECRET_PREFIXES = ("AKIA", "ASIA", "AIza", "ghp_", "gho_", "xoxb", "xoxp")
 # exceed it.
 _HEX_SECRET = re.compile(r"^[0-9a-fA-F]{32,}$")
 
+# A POSITIVE filesystem/URI path signal — a scheme (``s3://``, ``file://``, ``http``),
+# a leading ``/`` (POSIX absolute path), a drive letter (``C:/``), or a filename
+# extension (``.log`` / ``.json`` / ``.xlsx``) in any segment. Used to keep the R2-M2
+# path passthrough EXPLICIT: a candidate only passes through as a path when it carries
+# one of these real path markers. The earlier passthrough was purely negative ("no
+# segment independently qualifies as a secret"), which let a slash-DENSE secret whose
+# chunks are individually too short to qualify (``a1B2/c3D4/e5F6/…``) slip through as if
+# it were a path — a credential fail-open (residual MEDIUM, NFR-7 (a)). Anchoring the
+# passthrough to a positive path signal, and testing the separator-stripped core when
+# NO path signal is present, closes that class while still preserving the param signal
+# the PDP needs for Cedar param-bounds / sequence checks on the financial-action
+# beachhead (a real ``s3://…`` / ``/var/log/…`` / ``C:/…`` / ``…/settings.json`` path
+# still passes through).
+_PATH_SIGNAL = re.compile(
+    r"^[a-z][a-z0-9+.\-]*://"        # scheme:// (s3://, file://, https://)
+    r"|^/"                            # POSIX absolute path
+    r"|^[A-Za-z]:/"                   # Windows drive path (C:/)
+    r"|(?:^|/)[^/]+\.[A-Za-z0-9]{1,6}(?:/|$)"  # a segment with a filename extension
+)
+# Separators that chunk a secret into path-shaped pieces; stripped before the
+# whole-core entropy test so a slash/underscore/hyphen-DENSE secret is still detected.
+_SECRET_CHUNK_SEP = re.compile(r"[/_\-]")
+
 
 def _redact_secret(text: str, nonce: str) -> str:
     def repl(m: "re.Match[str]") -> str:
@@ -636,18 +718,28 @@ def _redact_secret(text: str, nonce: str) -> str:
         # credential material, not prose, so this adds recall with negligible FP risk.
         if _HEX_SECRET.match(cand):
             return _wire_token(nonce, "SECRET")
-        # A path/URI-shaped candidate ("s3://bucket/reports/q3/financials",
-        # "/var/log/app/output") contains '/' but is NOT a secret — over-masking it to
-        # ⟦…:SECRET⟧ destroys the param signal the PDP needs for Cedar param-bounds /
-        # sequence checks on the financial-action beachhead (R2-M2, over-mask not a
-        # leak, but it degrades enforcement). A path is distinguished from a
-        # slash-bearing base64 secret structurally: split on '/', and if NO single
-        # segment independently qualifies as a secret (mixed high-entropy or long
-        # hex), it is a path → pass through. A real base64 secret with a slash still
-        # has a qualifying segment, so this never lets a genuine secret leak.
-        if "/" in cand and not any(
-            _segment_is_secretish(seg) for seg in cand.split("/") if seg
-        ):
+        # Slash-bearing candidate: a filesystem/URI path or a separator-chunked secret?
+        # Over-masking a real path to ⟦…:SECRET⟧ destroys the param signal the PDP needs
+        # for Cedar param-bounds / sequence checks on the financial-action beachhead
+        # (R2-M2), but passing a chunked secret through leaks a credential (residual
+        # MEDIUM, NFR-7 (a)). Precedence (security-first, path-preserving):
+        #   1. any single ``/``-segment is itself secret-shaped -> SECRET (a base64
+        #      secret with a slash always has a long qualifying chunk).
+        #   2. otherwise a POSITIVE path/URI signal (:data:`_PATH_SIGNAL`) with no
+        #      secret segment -> pass through as a path (R2-M2).
+        #   3. otherwise (slash-DENSE, no path signal, no long chunk) test the
+        #      separator-STRIPPED core: a slash/underscore/hyphen-chunked secret
+        #      (``a1B2/c3D4/e5F6/…``) whose chunks are individually too short to qualify
+        #      is caught here -> SECRET; a genuine low-entropy relative path
+        #      (``reports/q3/summary``) fails the core test and passes through.
+        if "/" in cand:
+            if any(_segment_is_secretish(seg) for seg in cand.split("/") if seg):
+                return _wire_token(nonce, "SECRET")
+            if _PATH_SIGNAL.search(cand):
+                return cand  # a real path/URI — preserve the param signal (R2-M2)
+            core = _SECRET_CHUNK_SEP.sub("", cand)
+            if _segment_is_secretish(core, high_entropy_floor=4.5):
+                return _wire_token(nonce, "SECRET")
             return cand
         # Require mixed charset (upper+lower+digit) OR very high entropy so a long
         # lowercase English word isn't masked as a secret.
@@ -658,14 +750,20 @@ def _redact_secret(text: str, nonce: str) -> str:
     return _SECRET_CANDIDATE.sub(repl, text)
 
 
-def _segment_is_secretish(cand: str) -> bool:
+def _segment_is_secretish(cand: str, *, high_entropy_floor: float = 4.0) -> bool:
     """Does ``cand`` look like secret material on its own (charset + entropy)?
 
     The shared gate for :func:`_redact_secret`: a candidate (or a single ``/``-
-    delimited segment of one) is secret-shaped when it is long enough AND either has
-    a mixed upper+lower+digit charset over the entropy floor, or is very high entropy,
-    or is a long pure-hex run. Used both to decide a whole candidate and to keep a
-    filesystem/URI path (no secret-shaped segment) from being over-masked (R2-M2).
+    delimited segment of one, or a separator-stripped core) is secret-shaped when it is
+    long enough AND either has a mixed upper+lower+digit charset over the entropy floor,
+    or is very high entropy, or is a long pure-hex run. Used to decide a whole candidate,
+    to keep a filesystem/URI path (no secret-shaped segment) from being over-masked
+    (R2-M2), and to catch a separator-chunked secret by its stripped core.
+
+    ``high_entropy_floor`` is the "very high entropy alone (charset not tri-mixed)"
+    bar. It defaults to 4.0 for a contiguous candidate; the separator-stripped core of a
+    slash-DENSE run is tested at a stricter 4.5 so a mildly-mixed real path core does not
+    trip the non-mixed entropy arm (only a genuinely random chunked secret does).
     """
     if len(cand) < _SECRET_MIN_LEN:
         return False
@@ -678,7 +776,7 @@ def _segment_is_secretish(cand: str) -> bool:
     entropy = _shannon_entropy(cand)
     if entropy < _SECRET_ENTROPY_MIN:
         return False
-    return mixed or entropy >= 4.0
+    return mixed or entropy >= high_entropy_floor
 
 
 # --------------------------------------------------------------------------- #

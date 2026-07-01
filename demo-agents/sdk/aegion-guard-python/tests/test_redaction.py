@@ -163,6 +163,75 @@ def test_pan_multi_stray_digit_group_still_tokenized_never_raw(text, pan):
     assert pan[:13] not in out and pan[-13:] not in out
 
 
+# ---- PCI CRITICAL (R3-C1): a PAN that SLIDES PAST the fixed-width candidate window --
+# The candidate regex used to cap at ``{12,18}\d`` (a 13-19-digit window). A run of 20+
+# digits across separated groups (2+ stray leading groups + a 16-digit card) matched
+# only the FIRST 19 digits — the regex ENDED MID-CARD (before the card's last group),
+# handing _best_pan_window a fragment with no complete card, so the full Visa PAN
+# egressed RAW (and a variant mis-tokenized the strays as PHONE while stranding raw card
+# digits). The candidate now captures the WHOLE group-run and _best_pan_window slides a
+# 13-19-digit window across ALL sub-runs. MUST FAIL if the candidate re-acquires a fixed
+# upper digit cap (the run then never contains a full card window). ------------------ #
+@pytest.mark.parametrize(
+    "text,pan",
+    [
+        ("ref 12 34 4111 1111 1111 1111", "4111111111111111"),    # 2 stray 2-digit groups (20 digits total)
+        ("ref 12 34 56 4111 1111 1111 1111", "4111111111111111"),  # 3 stray 2-digit groups (22 digits total)
+        ("ref 12 34 4111 1111 1111 1111 56", "4111111111111111"),  # stray groups on BOTH sides
+        ("id 98 76 5555 5555 5555 4444", "5555555555554444"),      # MC card past a 2-group prefix
+    ],
+)
+def test_pan_multi_group_run_wider_than_window_never_egresses_raw(text, pan):
+    out = redact(text)
+    # RELEASE-BLOCKING: the full contiguous PAN must NEVER survive anywhere.
+    assert pan not in out, f"raw PAN {pan!r} leaked in {out!r} (R3-C1 fail-open)"
+    toks = _tokens(out)
+    cards = [t for t, _ in toks if t == "CARD"]
+    assert cards == ["CARD"], f"card not tokenized once for {text!r}: {out!r}"
+    # The card was masked to its REAL first6/last4, and no partial card was mis-tokenized
+    # as PHONE/SECRET (the R3-C1 variant symptom).
+    card_meta = next(meta for t, meta in toks if t == "CARD")
+    assert card_meta == f"{pan[:6]}:{pan[-4:]}", f"wrong CARD meta for {text!r}: {out!r}"
+    assert "PHONE" not in {t for t, _ in toks}, f"partial card mis-tokenized as PHONE: {out!r}"
+    # No 13+ digit run survives in cleartext once the wire tokens are stripped.
+    stripped = _WIRE.sub("", out)
+    assert not any(len(r) >= 13 for r in re.findall(r"\d+", stripped)), (
+        f"13+ digit run survived in cleartext for {text!r}: {out!r}"
+    )
+
+
+# ---- PCI CRITICAL: TWO adjacent cards in ONE candidate run — both must mask -------
+# The whole-group-run candidate can capture MORE THAN ONE card in a single match (two
+# space-adjacent PANs = one 32-digit run). Masking only the single best window would
+# tokenize the first card and egress the second RAW. _redact_all_pan_windows recurses on
+# the prefix/suffix so EVERY card masks. MUST FAIL if _redact_pan reverts to a single
+# window per candidate (the trailing card then leaks). ------------------------------ #
+@pytest.mark.parametrize(
+    "text,pans",
+    [
+        ("cards 4111 1111 1111 1111 5555 5555 5555 4444",
+         ["4111111111111111", "5555555555554444"]),
+        ("4111111111111111 5555555555554444",
+         ["4111111111111111", "5555555555554444"]),
+        ("ref 12 34 4111 1111 1111 1111 5555 5555 5555 4444",
+         ["4111111111111111", "5555555555554444"]),
+    ],
+)
+def test_multiple_adjacent_pans_in_one_run_all_tokenized(text, pans):
+    out = redact(text)
+    toks = _tokens(out)
+    cards = [t for t, _ in toks if t == "CARD"]
+    assert len(cards) == len(pans), (
+        f"expected {len(pans)} CARD tokens, got {toks} for {text!r}: {out!r}"
+    )
+    for pan in pans:
+        assert pan not in out, f"raw PAN {pan!r} leaked in {out!r}"
+    # No card survives once tokens + separators are stripped.
+    despaced = re.sub(r"[ \t\r\n\-./,_]", "", _WIRE.sub("", out))
+    for pan in pans:
+        assert pan not in despaced, f"separated PAN {pan!r} survived: {out!r}"
+
+
 # ---- PCI HIGH: the RIGHT (real-card) window is masked; no bogus meta, no stranded
 # real card digit. A stray digit adjacent to a valid PAN can form a WRONG Luhn-valid
 # window (a longer/shifted run) whose first6/last4 is bogus and which strands a real
@@ -279,6 +348,48 @@ def test_sad_label_before_separated_pan_never_leaks_card_digits(text):
     assert not re.search(r"\d{4,}", outside), (
         f"raw >=4-digit card run survived for {text!r}: {out!r}"
     )
+
+
+# ---- PCI HIGH (R3-H1): a SEPARATE SAD value immediately before a separated PAN ------
+# When the SAD value is a DISTINCT group sitting before the card (``cvv 999 4111 1111
+# 1111 1111`` — 999 is the CVV, 4111… is the card), the SAD guard used to DECLINE the
+# whole match (stepping aside for _redact_pan), so the CVV egressed RAW while only the
+# card masked — a SAD never-store violation. BOTH must now redact: the SAD value dropped
+# to a no-meta <SAD> AND the trailing card tokenized. MUST FAIL if the guard reverts to
+# declining whenever the trailing run contains a card (the CVV then leaks raw). This is
+# distinct from the case where the SAD value IS the card's own leading group ("pin is
+# 4111 1111 1111 1111"), which correctly declines to let PAN mask the whole card. ---- #
+@pytest.mark.parametrize(
+    "text,sad_value,pan",
+    [
+        ("cvv 999 4111 1111 1111 1111", "999", "4111111111111111"),
+        ("pin is 321 4012 8888 8888 1881", "321", "4012888888881881"),
+        ("security code 456 5555 5555 5555 4444", "456", "5555555555554444"),
+    ],
+)
+def test_sad_value_before_separated_pan_redacts_both_never_leaks_cvv(text, sad_value, pan):
+    out = redact(text)
+    toks = _tokens(out)
+    # BOTH controls fired: a no-meta SAD (the CVV dropped) AND the card tokenized.
+    assert ("SAD", None) in toks, f"CVV/SAD value not dropped for {text!r}: {out!r}"
+    cards = [(t, meta) for t, meta in toks if t == "CARD"]
+    assert len(cards) == 1 and cards[0][1] == f"{pan[:6]}:{pan[-4:]}", (
+        f"card not tokenized to real first6/last4 for {text!r}: {out!r}"
+    )
+    # The raw CVV value is GONE (never-store) and the full PAN never egresses.
+    assert sad_value not in out, f"raw CVV {sad_value!r} leaked (R3-H1) in {out!r}"
+    assert pan not in out, f"raw PAN {pan!r} leaked in {out!r}"
+
+
+def test_sad_value_IS_card_leading_group_declines_to_card_only():
+    # Negative control paired with the above: when the SAD value is the card's OWN
+    # leading group, there is no separate CVV — the whole card must tokenize and NO
+    # spurious SAD token appears (the guard declines correctly). MUST FAIL if the guard
+    # over-eagerly drops the leading group to <SAD> (re-opening the R2-C2 partial-PAN).
+    out = redact("pin is 4111 1111 1111 1111")
+    toks = _tokens(out)
+    assert [t for t, _ in toks] == ["CARD"], f"expected card-only, got {out!r}"
+    assert ("SAD", None) not in toks, f"spurious SAD on card leading group: {out!r}"
 
 
 # ---- HIPAA Safe-Harbor structured identifiers ------------------------------ #
@@ -773,19 +884,15 @@ def test_image_blob_in_params_is_tagged_not_refused():
     ],
 )
 def test_url_query_secret_stripped(secret_param, secret_val):
-    # A secret-bearing query value must not egress in cleartext (E7.2). The whole
-    # URL tokenizes to URL, and the secret value is stripped from the (raw) URL
-    # first — asserted directly on the strip helper so it can't silently regress.
+    # A secret-bearing query value must not egress in cleartext (E7.2). The whole URL
+    # collapses to one opaque ⟦…:URL⟧ token, so the query secret is removed WITH the
+    # URL — asserted on the real redact() output (the negative control: the raw secret
+    # value must be absent, and the URL must be tokenized, not passed through raw).
     url = f"https://api.example.com/x?{secret_param}={secret_val}&page=2"
     out = redact(f"call {url}")
-    # The URL is tokenized (whole-URL opaque token) — no raw secret survives.
-    assert secret_val not in out
-    # And the dedicated strip helper removes the secret value while keeping the
-    # param name (structural signal) — a negative control for E7.2.
-    stripped = R._strip_url_query_secrets(url, "0" * 16)
-    assert secret_val not in stripped
-    assert f"{secret_param}=" in stripped          # param name kept
-    assert "page=2" in stripped                     # non-secret query kept
+    assert secret_val not in out                    # no raw query secret survives
+    assert "https://api.example.com" not in out     # URL not emitted in cleartext
+    assert ("URL", None) in _tokens(out)            # the URL was tokenized
 
 
 # ---- new_nonce public helper ----------------------------------------------- #
@@ -1022,3 +1129,46 @@ def test_r2m2_path_exclusion_does_not_leak_slash_bearing_secret():
     out = redact(f"token={secret}")
     assert ("SECRET", None) in _tokens(out), f"slash-bearing secret leaked: {out!r}"
     assert secret not in out
+
+
+# ---- residual MEDIUM: slash-DENSE secret whose chunks are individually too short --
+# The old path exclusion was purely NEGATIVE ("no single '/'-segment qualifies as a
+# secret"), so a slash-DENSE credential chunked into short (<20-char) pieces
+# (``a1B2/c3D4/e5F6/…``) had no qualifying segment and passed through RAW as if it were
+# a path — a credential fail-open (NFR-7 (a)). The passthrough is now anchored to a
+# POSITIVE path/URI signal; a slash-dense run with NO path signal is tested on its
+# separator-stripped core and masked. MUST FAIL if the passthrough reverts to the
+# negative-only per-segment test (the chunked secret then egresses raw). ------------ #
+@pytest.mark.parametrize(
+    "secret",
+    [
+        "a1B2/c3D4/e5F6/g7H8/i9J0/k1L2/m3N4",   # mixed-charset, 4-char chunks
+        "Zk3/Qp9/Lm2/Xr7/Bv4/Nt8/Wc1/Hj6/Yd0",  # mixed-charset, 3-char chunks
+        "aB3d-Ef9k-L2mN-8pQ4-rS6t-Uv1x-Y7zA",   # hyphen-dense (same class)
+    ],
+)
+def test_slash_dense_secret_with_short_chunks_is_masked(secret):
+    out = redact(f"cred {secret}")
+    assert ("SECRET", None) in _tokens(out), (
+        f"slash/hyphen-dense secret egressed RAW (residual MEDIUM): {out!r}"
+    )
+    assert secret not in out, f"raw chunked secret leaked in {out!r}"
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "/App/v2/config/Prod1/settings.json",   # mixed-charset versioned config path
+        "C:/Users/Alice/Documents/Q3-2026.xlsx",  # Windows drive path w/ extension
+        "reports/q3/financials/summary",         # low-entropy relative path (no signal)
+    ],
+)
+def test_slash_dense_fix_still_passes_real_paths(path):
+    # Guard the R2-M2 side of the MEDIUM fix: a REAL path/URI (even a mixed-charset,
+    # versioned one) must still pass through so the PDP keeps its param signal. The fix
+    # anchors passthrough to a positive path signal / low-entropy core — it must not
+    # start over-masking legitimate paths. MUST FAIL if the core-entropy test is too
+    # loose and swallows a real path.
+    out = redact(path)
+    assert "SECRET" not in out, f"real path over-masked to SECRET: {out!r}"
+    assert path in out, f"real path altered: {out!r}"

@@ -44,13 +44,17 @@ _ROWS = _load()
 _PAN_ROWS = [r for r in _ROWS if r["kind"] == "PAN"]
 _SAD_ROWS = [r for r in _ROWS if r["kind"] == "SAD"]
 _NEG_ROWS = [r for r in _ROWS if r["kind"] == "NONE"]
+# A SAD value immediately before a SEPARATED trailing PAN: BOTH must be redacted —
+# the SAD value dropped to a no-meta <SAD> AND the trailing card tokenized (R3-H1).
+_SAD_AND_PAN_ROWS = [r for r in _ROWS if r["kind"] == "SAD_AND_PAN"]
 
 
-def test_corpus_has_all_three_classes():
+def test_corpus_has_all_classes():
     # Guard against a truncated/mis-shaped corpus silently making the gate vacuous.
     assert len(_PAN_ROWS) >= 15, "PAN corpus too small to be a real 0-miss gate"
     assert len(_SAD_ROWS) >= 5
     assert len(_NEG_ROWS) >= 3
+    assert len(_SAD_AND_PAN_ROWS) >= 2  # R3-H1 combined SAD-before-separated-PAN rows
 
 
 @pytest.mark.parametrize("row", _PAN_ROWS, ids=[r["id"] for r in _PAN_ROWS])
@@ -77,6 +81,16 @@ def test_pci_zero_miss_every_pan_carded_first6_last4(row):
     assert not any(len(run) >= 13 for run in re.findall(r"\d+", stripped)), (
         f"[{row['id']}] a 13+ digit run survived in cleartext: {out!r}"
     )
+    # A SEPARATED card (``4111 1111 1111 1111`` / ``4111-1111-...``) leaks its digits
+    # WITHOUT any contiguous 13+ run (the separators break it into 4-digit groups), so
+    # the contiguous scan above misses it. ALSO strip the PAN inter-group separators and
+    # assert the full PAN digit sequence does not survive in the token-free cleartext.
+    # This is what catches an R3-C1 revert: a spaced/dashed multi-group card that
+    # egressed raw with no contiguous 13+ run still contains the PAN once despaced.
+    despaced = re.sub(r"[ \t\r\n\-./,_]", "", stripped)
+    assert pan not in despaced, (
+        f"[{row['id']}] separated PAN survived in cleartext once despaced: {out!r}"
+    )
 
 
 @pytest.mark.parametrize("row", _SAD_ROWS, ids=[r["id"] for r in _SAD_ROWS])
@@ -99,3 +113,33 @@ def test_negative_rows_not_masked_as_card_or_sad(row):
     types = {t for t, _ in _tokens(out)}
     assert "CARD" not in types, f"[{row['id']}] false-positive CARD: {out!r}"
     assert "SAD" not in types, f"[{row['id']}] false-positive SAD: {out!r}"
+
+
+@pytest.mark.parametrize(
+    "row", _SAD_AND_PAN_ROWS, ids=[r["id"] for r in _SAD_AND_PAN_ROWS]
+)
+def test_pci_zero_miss_sad_before_separated_pan_redacts_both(row):
+    # R3-H1: a SAD value (CVV/PIN) sitting immediately before a SEPARATED trailing PAN
+    # (e.g. "cvv 999 4111 1111 1111 1111") must have BOTH redacted — the SAD value
+    # dropped to a no-meta <SAD> AND the trailing card tokenized to <CARD:first6:last4>.
+    # The pre-fix bug DECLINED the SAD match entirely (stepping aside for the PAN), so
+    # the CVV egressed RAW while only the card masked — a SAD never-store violation.
+    pan = re.sub(r"\D", "", row["pan"])
+    out = redact(row["text"])
+    toks = _tokens(out)
+    # BOTH tokens present: a no-meta SAD and exactly one first6/last4 CARD.
+    assert ("SAD", None) in toks, f"[{row['id']}] SAD value not dropped: {out!r}"
+    cards = [(t, meta) for t, meta in toks if t == "CARD"]
+    assert len(cards) == 1, f"[{row['id']}] expected one CARD, got {toks}: {out!r}"
+    assert cards[0][1] == f"{pan[:6]}:{pan[-4:]}", (
+        f"[{row['id']}] wrong CARD meta {cards[0][1]!r}: {out!r}"
+    )
+    # The raw SAD value is GONE (never-store); the full PAN never egresses; and no
+    # 13+ digit run survives in cleartext once the wire tokens are stripped.
+    assert row["sad"] not in out, f"[{row['id']}] raw SAD value leaked: {out!r}"
+    assert not re.search(r":SAD:", out), f"[{row['id']}] SAD carried meta: {out!r}"
+    assert pan not in out, f"[{row['id']}] full PAN leaked: {out!r}"
+    stripped = _WIRE.sub("", out)
+    assert not any(len(run) >= 13 for run in re.findall(r"\d+", stripped)), (
+        f"[{row['id']}] a 13+ digit run survived in cleartext: {out!r}"
+    )
