@@ -2,6 +2,7 @@
 
     AegionGuardError
     ├── ConfigError          (missing/invalid config at init — fail fast)
+    ├── BadRequest           (the controller rejected the request as malformed — HTTP 422)
     ├── IdentityError        (the `identity` extra is missing, or a token couldn't be minted)
     ├── ToolDenied           (the controller returned DENY, or fail-secure tripped)
     │   └── UnknownAgentError(controller reports the agent_id is not registered)
@@ -9,6 +10,8 @@
 
 `ToolDenied` is the normal "blocked" signal a caller catches. `SentraUnavailable`
 only ever escapes when the integrator has explicitly opted out of fail-secure.
+`BadRequest` is the developer-actionable "you sent a malformed request" signal
+(e.g. a bad `phase` value) — distinct from a security DENY and from an outage.
 """
 from __future__ import annotations
 
@@ -27,6 +30,21 @@ class ConfigError(AegionGuardError, ValueError):
 
     Subclasses ``ValueError`` so existing ``except ValueError`` handlers still
     catch it, while ``except AegionGuardError`` catches all SDK errors.
+    """
+
+
+class BadRequest(AegionGuardError, ValueError):
+    """Raised when the controller rejects the request as malformed — HTTP 422.
+
+    WS-B (LLD 30 §3.6): a developer-actionable, NON-recoverable error, distinct
+    from both a security ``ToolDenied`` and a ``SentraUnavailable`` outage. The
+    canonical trigger is a bad ``phase`` value (a typo / an unsupported phase):
+    the controller 422s it as a validation error — NOT a verdict — and the SDK
+    surfaces it here so the integrator fixes their request instead of silently
+    failing secure. Raised in ``_send`` BEFORE the wrapped tool runs.
+
+    Subclasses ``ValueError`` so an existing ``except ValueError`` still catches
+    it, while ``except AegionGuardError`` catches all SDK errors. stdlib-only.
     """
 
 

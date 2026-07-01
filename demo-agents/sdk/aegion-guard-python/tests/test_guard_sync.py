@@ -1,9 +1,11 @@
 """Sync decorator + decision behavior (run / block / default-DENY / fail-secure)."""
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
-from aegion_guard import ToolDenied, UnknownAgentError
+from aegion_guard import BadRequest, ToolDenied, UnknownAgentError
 from aegion_guard.client import TransportError
 from aegion_guard.exceptions import SentraUnavailable
 
@@ -178,3 +180,180 @@ def test_platform_and_region_propagate(make_guard, fake_client):
 
     assert fake_client.last["platform"] == "bedrock"
     assert fake_client.last["cloud_region"] == "us-east-1"
+
+
+# ================================================================ WS-B (LLD 30)
+# Per-phase decorator surface + phase/content_text on the wire + the 422 branch.
+
+
+def test_guard_tool_still_request(make_guard, fake_client):
+    """@guard.tool still produces a payload with NO phase/content_text key and
+    behaves identically to before (regression against the _phase_decorator
+    refactor — the no-op guarantee, §1.4)."""
+    guard = make_guard()
+    fake_client.set_default({"decision": "ALLOW"})
+
+    @guard.tool()
+    def read_thing():
+        return "ran"
+
+    with guard.session(session_id="s1", user_input="hi"):
+        assert read_thing() == "ran"
+
+    assert "phase" not in fake_client.last
+    assert "content_text" not in fake_client.last
+
+
+def test_tool_payload_has_no_phase_key(make_guard, fake_client):
+    """Explicit pin of §2.4 byte-identity / the §4.2 footgun: a @guard.tool
+    payload carries neither phase nor content_text."""
+    guard = make_guard()
+
+    @guard.tool(operation_type="WRITE")
+    def do_write(x):
+        return x
+
+    with guard.session(session_id="s1", user_input="hi"):
+        do_write(1)
+
+    assert "phase" not in fake_client.last
+    assert "content_text" not in fake_client.last
+
+
+@pytest.mark.parametrize(
+    "surface,phase,expected_op",
+    [("content", "content", "READ"), ("output", "output", "READ"),
+     ("memory", "memory", "WRITE")],
+)
+def test_guard_content_sets_phase_and_content_text(
+    make_guard, fake_client, surface, phase, expected_op
+):
+    """A per-phase decorator's built payload has phase == <phase>, a populated
+    content_text, and the per-phase operation_type default (B3.2 + B3.3)."""
+    guard = make_guard()
+    fake_client.set_default({"decision": "ALLOW"})
+
+    decorator = getattr(guard, surface)
+
+    @decorator()
+    def handle(doc):
+        return "ran"
+
+    with guard.session(session_id="s1", user_input="the-untrusted-content"):
+        handle("payload")
+
+    assert fake_client.last["phase"] == phase
+    assert fake_client.last["content_text"] == "the-untrusted-content"
+    assert fake_client.last["operation_type"] == expected_op
+
+
+def test_new_decorators_reuse_tool_machine(make_guard, fake_client):
+    """A @guard.content on a DENY raises ToolDenied (same _raise_if_blocked path
+    as @guard.tool); on ALLOW it runs the wrapped fn (§4.4)."""
+    guard = make_guard()
+
+    ran = {"called": False}
+
+    @guard.content()
+    def ingest(doc):
+        ran["called"] = True
+        return "ok"
+
+    # DENY (e.g. the server's phase_handler_not_implemented fail-secure DENY).
+    fake_client.set_default({"decision": "DENY", "reason": "phase_handler_not_implemented:content"})
+    with guard.session(session_id="s1", user_input="doc"):
+        with pytest.raises(ToolDenied):
+            ingest("d")
+    assert ran["called"] is False
+
+    # ALLOW → the wrapped fn runs (once a real WS-L handler ships this is the path).
+    fake_client.set_default({"decision": "ALLOW"})
+    with guard.session(session_id="s1", user_input="doc"):
+        assert ingest("d") == "ok"
+    assert ran["called"] is True
+
+
+def test_build_request_phase_default_backcompat(make_guard, fake_client):
+    """_build_request called with no phase behaves as phase="request" (no key
+    emitted) — the added param did not change existing call sites (B3.2)."""
+    guard = make_guard()
+    payload = guard._build_request(
+        tool_name="t", tool_params={}, operation_type="READ",
+        session_id="s1", user_input="hi", request_id=None, context=None,
+    )
+    assert "phase" not in payload
+    assert "content_text" not in payload
+
+
+def test_sdk_has_no_runtime_dependency():
+    """pyproject [project].dependencies stays [] — stdlib-only, no runtime dep
+    added by the per-phase surface or the 422 branch (§4.1 / LLD 23 §2)."""
+    pyproject = Path(__file__).resolve().parents[1] / "pyproject.toml"
+    text = pyproject.read_text(encoding="utf-8")
+    try:
+        import tomllib  # Python 3.11+
+        data = tomllib.loads(text)
+        assert data["project"]["dependencies"] == []
+    except ModuleNotFoundError:  # Python 3.9/3.10 — stay stdlib-only, parse the line.
+        import re
+        m = re.search(r"^dependencies\s*=\s*\[(.*?)\]", text, re.MULTILINE | re.DOTALL)
+        assert m is not None, "dependencies key not found in pyproject.toml"
+        assert m.group(1).strip() == "", "runtime dependencies must stay empty"
+
+
+# ------------------------------------------------------------------ B4.2 the 422 split
+
+
+def test_422_raises_bad_request_AND_fn_never_ran(make_guard, fake_client):
+    """A transport 422 raises BadRequest (not ToolDenied/validation_unavailable),
+    and the wrapped fn never ran — the raise happens in _send before the wrapper
+    calls fn (§3.6 invariant)."""
+    guard = make_guard(fail_secure=True)
+    fake_client.queue(TransportError("validate returned HTTP 422", retryable=False, status_code=422))
+    ran = {"called": False}
+
+    @guard.content()
+    def ingest(doc):
+        ran["called"] = True
+        return "ok"
+
+    with guard.session(session_id="s1", user_input="doc"):
+        with pytest.raises(BadRequest):
+            ingest("d")
+    assert ran["called"] is False
+
+
+def test_status_code_none_fails_secure_deny(make_guard, fake_client):
+    """A TransportError with status_code None (timeout/connection) yields the
+    fail-secure DENY validation_unavailable, NOT BadRequest."""
+    guard = make_guard(fail_secure=True)
+    fake_client.queue(TransportError("timed out", retryable=False, status_code=None))
+
+    @guard.tool()
+    def read_thing():
+        return "ran"
+
+    with guard.session(session_id="s1", user_input="hi"):
+        with pytest.raises(ToolDenied) as exc:
+            read_thing()
+    assert not isinstance(exc.value, BadRequest)
+    assert exc.value.reason == "validation_unavailable"
+
+
+@pytest.mark.parametrize("code", [500, 502, 503])
+def test_5xx_fails_secure_deny(make_guard, fake_client, code):
+    """A TransportError with a 5xx status yields the fail-secure DENY, NOT
+    BadRequest — only == 422 raises; everything else fails secure (§3.6 footgun).
+    Must fail if a coercion refactor lets a 5xx skip fail-secure."""
+    guard = make_guard(fail_secure=True)
+    fake_client.queue(TransportError(f"HTTP {code}", retryable=False, status_code=code))
+
+    @guard.content()
+    def ingest(doc):
+        return "ran"
+
+    with guard.session(session_id="s1", user_input="doc"):
+        with pytest.raises(ToolDenied) as exc:
+            ingest("d")
+    assert not isinstance(exc.value, BadRequest)
+    assert exc.value.reason == "validation_unavailable"
