@@ -845,6 +845,52 @@ def test_r2c1_separated_pan_is_carded_never_raw(text, pan):
     )
 
 
+# ---- R2-C1 (CRITICAL, whitespace-separator completion): _PAN_SEP omitted TAB and
+# newline, and the candidate allowed only ONE separator char between groups, so a PAN
+# pasted from a spreadsheet/TSV cell (TAB-delimited), a multi-line field (LF), or a
+# Windows/multi-line paste (two-char CRLF) egressed RAW as a partial-digit run — the
+# same PCI fail-open class R2-C1 widened punctuation separators to close, but the
+# whitespace forms were left open. The design intent of _PAN_SEP is to cover
+# spreadsheet/formatted-field pastes, where TAB is the canonical delimiter, so the
+# omission was inconsistent. MUST FAIL if _PAN_SEP drops \t/\r/\n OR if _PAN_CANDIDATE /
+# _SAD_VALUE_PAN_RUN drop the up-to-two-separator ({0,2}) run (CRLF is two chars).
+@pytest.mark.parametrize(
+    "text,pan",
+    [
+        ("card 4111\t1111\t1111\t1111 on file", "4111111111111111"),   # TAB (TSV)
+        ("4111\n1111\n1111\n1111", "4111111111111111"),                # LF (multiline)
+        ("4111\r\n1111\r\n1111\r\n1111", "4111111111111111"),          # CRLF (two-char)
+        ("row 4111, 1111, 1111, 1111 end", "4111111111111111"),        # comma+space (TSV cell)
+        ("amex 3782\t822463\t10005 ok", "378282246310005"),            # TAB, Amex-15
+        ("pin is 4111\r\n1111\r\n1111\r\n1111", "4111111111111111"),    # SAD label + CRLF card
+    ],
+)
+def test_r2c1_whitespace_separated_pan_is_carded_never_raw(text, pan):
+    out = redact(text)
+    toks = _tokens(out)
+    # SAD must step aside for the whole card even across a CRLF (no partial-PAN, R2-C2).
+    assert ("SAD", None) not in toks, f"SAD wrongly ate a card group in {out!r}"
+    cards = [(t, meta) for t, meta in toks if t == "CARD"]
+    assert len(cards) == 1, f"expected one CARD for {text!r}, got {toks}: {out!r}"
+    assert cards[0][1] == f"{pan[:6]}:{pan[-4:]}", (
+        f"wrong CARD meta {cards[0][1]!r} for {text!r}"
+    )
+    assert pan not in out, f"raw PAN leaked for {text!r}: {out!r}"
+    # No 12+ raw card-digit run survives in cleartext (partial-PAN, E1.4).
+    stripped = _WIRE.sub("", out)
+    assert not any(len(run) >= 12 for run in re.findall(r"\d+", stripped)), (
+        f"12+ raw card digits survived (partial-PAN) for {text!r}: {out!r}"
+    )
+
+
+def test_r2c1_whitespace_pan_does_not_join_distant_numbers():
+    # NEGATIVE CONTROL: the up-to-two-separator run must NOT let two distant, unrelated
+    # numbers merge into a bogus Luhn-valid card. Neither run is 13-19 digits nor Luhn-
+    # valid, so no CARD is emitted and no over-mask occurs (bounds the {0,2} widening).
+    out = redact("order 12345678 ref 87654321")
+    assert "CARD" not in out, f"distant numbers wrongly joined into a card: {out!r}"
+
+
 # ---- R2-C2 (CRITICAL): a SAD label before a dot/slash-separated PAN produced a
 # partial-redacted PAN — SAD ate the leading group and 12 real card digits egressed
 # behind a marker that FALSELY looked redacted (worse than a plain miss; E1.4 no
@@ -892,6 +938,38 @@ def test_r2h1_lowercase_hex_credential_masked(hexval):
     out = redact(f"apikey={hexval}")
     assert ("SECRET", None) in _tokens(out), f"hex secret not masked: {out!r}"
     assert hexval not in out, f"raw hex credential leaked in {out!r}"
+
+
+# ---- R2-H1 (HIGH, uppercase/mixed-case completion): the hex-secret rule was
+# lowercase-only (``^[0-9a-f]{32,}$``), so an UPPER-case or mixed-case hex digest/token
+# (upper SHA1/SHA256/MD5, an uppercase HMAC signature, an uppercase hex session key)
+# egressed RAW while its lowercase twin was masked — the leak was charset-CASE-
+# dependent (an all-upper hex run has no lowercase char so ``mixed=False``, and a
+# 16-symbol hex alphabet caps Shannon entropy at ~3.7 < 4.0, so the mixed-charset gate,
+# the ≥4.0 fallback, AND a lowercase-only _HEX_SECRET ALL miss it). MUST FAIL if
+# _HEX_SECRET reverts to lowercase-only (credential leak, NFR-7 (a)). The lowercase
+# twin is asserted too, so the test pins that behaviour is case-INDEPENDENT.
+@pytest.mark.parametrize(
+    "hexval",
+    [
+        "DA39A3EE5E6B4B0D3255BFEF95601890AFD80709",                          # UPPER SHA1 (40)
+        "D41D8CD98F00B204E9800998ECF8427E",                                  # UPPER MD5 (32)
+        "DA39A3EE5E6B4B0D3255BFEF95601890AFD80709DA39A3EE5E6B4B0D3255BFEF",  # UPPER SHA256-len (64)
+        "Da39A3ee5E6b4B0d3255BfeF95601890afD80709",                         # MIXED-case hex (40)
+    ],
+)
+def test_r2h1_uppercase_and_mixed_hex_credential_masked(hexval):
+    out = redact(f"apikey={hexval}")
+    assert ("SECRET", None) in _tokens(out), (
+        f"upper/mixed hex secret not masked (case-dependent leak): {out!r}"
+    )
+    assert hexval not in out, f"raw hex credential leaked in {out!r}"
+    # Case-INDEPENDENCE: the lowercase twin of the same digest is masked identically.
+    lower = hexval.lower()
+    lout = redact(f"apikey={lower}")
+    assert ("SECRET", None) in _tokens(lout) and lower not in lout, (
+        f"lowercase twin behaves differently — masking must be case-independent: {lout!r}"
+    )
 
 
 # ---- R2-M1 (MEDIUM): a space- or dot-separated SSN egressed RAW — the matcher was
