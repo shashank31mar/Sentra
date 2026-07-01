@@ -1,0 +1,44 @@
+{"id": "pan-canonical-visa", "kind": "PAN", "pan": "4111111111111111", "text": "charge 4111111111111111 now"}
+{"id": "pan-canonical-visa2", "kind": "PAN", "pan": "4012888888881881", "text": "card on file 4012888888881881"}
+{"id": "pan-canonical-mc", "kind": "PAN", "pan": "5555555555554444", "text": "bill 5555555555554444 monthly"}
+{"id": "pan-canonical-mc2", "kind": "PAN", "pan": "5105105105105100", "text": "the mastercard 5105105105105100 was declined"}
+{"id": "pan-canonical-amex", "kind": "PAN", "pan": "378282246310005", "text": "amex 378282246310005 approved"}
+{"id": "pan-canonical-discover", "kind": "PAN", "pan": "6011111111111117", "text": "discover 6011111111111117 on account"}
+{"id": "pan-canonical-diners", "kind": "PAN", "pan": "30569309025904", "text": "diners 30569309025904 charged"}
+{"id": "pan-canonical-19", "kind": "PAN", "pan": "4917610000000000003", "text": "long pan 4917610000000000003 accepted"}
+{"id": "pan-spaced-visa", "kind": "PAN", "pan": "4111111111111111", "text": "my card is 4111 1111 1111 1111 thanks"}
+{"id": "pan-spaced-visa2", "kind": "PAN", "pan": "4012888888881881", "text": "use 4012 8888 8888 1881 please"}
+{"id": "pan-spaced-mc", "kind": "PAN", "pan": "5555555555554444", "text": "5555 5555 5555 4444 is the number"}
+{"id": "pan-spaced-amex", "kind": "PAN", "pan": "378282246310005", "text": "amex 3782 822463 10005 on file"}
+{"id": "pan-dashed-visa", "kind": "PAN", "pan": "4111111111111111", "text": "card 4111-1111-1111-1111 expires soon"}
+{"id": "pan-dashed-visa2", "kind": "PAN", "pan": "4012888888881881", "text": "4012-8888-8888-1881 was used"}
+{"id": "pan-dashed-mc", "kind": "PAN", "pan": "5105105105105100", "text": "charge 5105-1051-0510-5100 immediately"}
+{"id": "pan-prose-lead", "kind": "PAN", "pan": "4111111111111111", "text": "Please refund the payment made with card number 4111111111111111 to the original account holder."}
+{"id": "pan-prose-mid", "kind": "PAN", "pan": "5555555555554444", "text": "The customer said their card 5555555555554444 was charged twice last week."}
+{"id": "pan-prose-spaced", "kind": "PAN", "pan": "378282246310005", "text": "I entered 3782 822463 10005 at checkout but it failed the first time."}
+{"id": "pan-adjacent-lead-digit", "kind": "PAN", "pan": "4111111111111111", "text": "pay 5 4111111111111111"}
+{"id": "pan-adjacent-trail-digit", "kind": "PAN", "pan": "4111111111111111", "text": "4111111111111111 0 remaining"}
+{"id": "pan-adjacent-lead-group", "kind": "PAN", "pan": "4111111111111111", "text": "amount 100 4111 1111 1111 1111"}
+{"id": "pan-adjacent-trail-group", "kind": "PAN", "pan": "4111111111111111", "text": "4111 1111 1111 1111 999 done"}
+{"id": "pan-dot-visa", "kind": "PAN", "pan": "4111111111111111", "text": "card 4111.1111.1111.1111 on file"}
+{"id": "pan-slash-visa", "kind": "PAN", "pan": "4111111111111111", "text": "pasted 4111/1111/1111/1111 today"}
+{"id": "pan-comma-visa", "kind": "PAN", "pan": "4111111111111111", "text": "csv row 4111,1111,1111,1111 imported"}
+{"id": "pan-underscore-visa", "kind": "PAN", "pan": "4111111111111111", "text": "field 4111_1111_1111_1111 set"}
+{"id": "pan-dot-mc", "kind": "PAN", "pan": "5555555555554444", "text": "bill 5555.5555.5555.4444 monthly"}
+{"id": "pan-slash-amex", "kind": "PAN", "pan": "378282246310005", "text": "amex 3782/822463/10005 approved"}
+{"id": "sad-pin-before-dot-pan", "kind": "PAN", "pan": "4111111111111111", "text": "pin is 4111.1111.1111.1111"}
+{"id": "sad-cvv-before-slash-pan", "kind": "PAN", "pan": "4111111111111111", "text": "cvv 4111/1111/1111/1111"}
+{"id": "sad-seccode-before-dot-mc", "kind": "PAN", "pan": "5105105105105100", "text": "security code 5105.1051.0510.5100"}
+{"id": "sad-cvv-colon", "kind": "SAD", "text": "cvv: 123"}
+{"id": "sad-cvv2-space", "kind": "SAD", "text": "CVV2 4567"}
+{"id": "sad-cvc-eq", "kind": "SAD", "text": "cvc=987"}
+{"id": "sad-cid-amex", "kind": "SAD", "text": "cid 1234"}
+{"id": "sad-pin-prose", "kind": "SAD", "text": "the pin is 4821"}
+{"id": "sad-security-code", "kind": "SAD", "text": "security code: 999"}
+{"id": "sad-track", "kind": "SAD", "text": "track2 4863"}
+{"id": "sad-pin-hash", "kind": "SAD", "text": "PIN # 730192"}
+{"id": "neg-luhn-fail-16", "kind": "NONE", "text": "order 1234567890123456 shipped"}
+{"id": "neg-luhn-fail-visa-like", "kind": "NONE", "text": "ref 4111111111111112 invalid"}
+{"id": "neg-order-number", "kind": "NONE", "text": "your order 987654321 is ready"}
+{"id": "neg-bare-3-digit", "kind": "NONE", "text": "there are 123 items in stock"}
+{"id": "neg-year-amount", "kind": "NONE", "text": "in 2026 the total was 4500 dollars"}

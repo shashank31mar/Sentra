@@ -26,11 +26,13 @@ from .exceptions import (
     BadRequest,
     ConfigError,
     IdentityError,
+    RedactionError,
     SentraUnavailable,
     ToolDenied,
     UnknownAgentError,
 )
 from .guard import AegionGuard, Decision, infer_operation_type
+from .redaction import redact, redact_detailed, redact_params
 
 # Identity (signing) helpers live behind the optional `identity` extra. Importing
 # the names is safe (lazy crypto/JWT imports inside); using them requires the extra.
@@ -58,7 +60,11 @@ __all__ = [
     "BadRequest",
     "ConfigError",
     "IdentityError",
+    "RedactionError",
     "AegionGuardError",
+    "redact",
+    "redact_detailed",
+    "redact_params",
     "AgentIdentity",
     "JwtSigner",
     "generate_keypair",
