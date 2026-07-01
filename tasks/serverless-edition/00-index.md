@@ -6,24 +6,34 @@
 
 > **Doc-role map (canonical order: HLD → LLD → tasks).** There is **one `ws-*.md` per workstream** here. Its content evolves through the pipeline: it starts as the workstream **SCOPE** (boundary, dependency edges, real `file:line` anchors, footguns, acceptance criteria); once that workstream's **implementation-grade LLD** (`lld/NN-*.md`) is approved, the same `ws-*.md` is **rewritten to carry the granular buildable tasks** generated *from* that LLD (milestones → granular tasks → acceptance-criteria checklist) — the LLD remains the source of truth. So a `ws-*.md` is either *scope-stage* (LLD not yet written) or *tasks-stage* (LLD approved, tasks generated); the "LLD" column below tracks which. LLDs are written **one at a time**, reviewed individually.
 >
-> **Stage so far:** WS-K → [lld/27](../../lld/27-serverless-production-activation.md) ✅ **BUILT + verified live 2026-06-30** (verification-only — DEV stacks ARE prod; K6 purge deferred, K2.5/K5 N-A) · WS-I → [lld/28](../../lld/28-cedar-policy-engine.md) ✅ **Group 1 BUILT + deployed 2026-06-30** (image milestone-89; Group 2 still spike-gated) · WS-E → [lld/29](../../lld/29-redaction.md) ✅ (LLD approved; tasks not yet generated) · all others = scope-stage.
+> **Stage so far (LLDs, each: write → review-lld → grill → revise → render):**
+> - **WS-K → [lld/27](../../lld/27-serverless-production-activation.md)** — LLD ✅ (review-lld; grill not run — pre-standing-gate); **CODE ✅ BUILT + verified live 2026-06-30** (verification-only, DEV stacks ARE prod; K6 purge deferred, K2.5/K5 N-A).
+> - **WS-I → [lld/28](../../lld/28-cedar-policy-engine.md)** — LLD ✅ (review-lld; grill not run — pre-standing-gate); **CODE 🟡 Group-1 BUILT + deployed 2026-06-30** (image milestone-89; Group-2 spike-gated, not started).
+> - **WS-E → [lld/29](../../lld/29-redaction.md)** — LLD ✅ **grilled** (compliance F1–F4 closed); tasks-stage doc generated (container milestone E2); code not started (spike-gated).
+> - **WS-B → [lld/30](../../lld/30-multiphase-contract.md)** — LLD ✅ **grilled + reconciled** (unknown→422 flip propagated across HLD/lld29/ws-b/ws-l; 5/5 consistency gate pass 2026-07-01); **tasks-stage doc ✅** (B1–B4, 31 named unit + 6 integ tests, Phase-3 shared-contract sweep 6/6 PASS); code not started (ready to build).
+> - **WS-L** — scope-stage; consolidated LLD (→ lld/31) not yet authored (author WS-C first — WS-L consumes its node contract).
+> - **all others (WS-0/A/C/D/F/G/H/J)** = scope-stage.
+> **Grill is now a standing gate on every LLD going forward** (no back-fill on 27/28). See the per-workstream table's LLD/Code columns for the authoritative status.
 
 ## Workstreams
 
-| WS | Doc | Scope (one line) | Owner | Blocking? |
-|----|-----|------------------|-------|-----------|
-| **WS-0** | [ws-0-measure-first-spike.md](ws-0-measure-first-spike.md) | The measure-first spike (HLD §8): escalation rate + escalated-path p99 + masked-vs-unmasked recall-delta on a real refund/payment agent → dated, founder-signed packet. | TBD | **GATING** — gates A, C, E (and D via C) |
-| **A** | [ws-a-local-floor-bundle.md](ws-a-local-floor-bundle.md) | FR-1.7 local floor: signed policy bundle + stdlib in-process interpreter (closed non-Cedar subset), background poll, fail-closed staleness, revocation epoch, anti-rollback. | TBD | spike-gated |
-| **B** | [ws-b-multiphase-contract.md](ws-b-multiphase-contract.md) | FR-3.4 multi-phase `/v1/validate` contract: additive `phase` enum + per-phase decorator + unknown→fail-secure DENY. | TBD | no — start now |
-| **C** | [ws-c-dag-scheduler.md](ws-c-dag-scheduler.md) | FR-2.8 cost-annotated DAG scheduler: tier-0 short-circuit → tier-1 parallel (generalizes existing ML-last); replaces fixed sequential pipeline. | TBD | spike-gated → feeds D |
-| **D** | [ws-d-decision-trail.md](ws-d-decision-trail.md) | Decision-trail: record what actually ran + not-run markers (gated by DENY/cost); deny-overrides unchanged; per-tenant full-tier mode. | TBD | spike-gated (via C) |
-| **E** | [ws-e-redaction.md](ws-e-redaction.md) | FR-3.13 two-tier redactor: edge structured-token PII/PCI (P0 hard gate) + **server-side semantic PHI (P0, first-wave, BAA)**; ADR-032. | TBD | spike-gated |
-| **F** | [ws-f-prompt-signatures.md](ws-f-prompt-signatures.md) | Prompt-signature growth with TP corpus + benign-FP corpus + CI gate as a prerequisite before any rule auto-grows. | TBD | no — start now |
-| **G** | [ws-g-console.md](ws-g-console.md) | SOC console: tenant-scoped multi-tenant view + exhaustive decision/source view (FR-6.4 gap). | TBD | no — start now |
-| **H** | [ws-h-metering.md](ws-h-metering.md) | Durable meter ledger + billing surface (metered validations, off the response path). | TBD | no — start now |
-| **I** | [ws-i-cedar-engine.md](ws-i-cedar-engine.md) | Hosted Cedar engine + **bundle-emit**: emit the deterministic bundle from authoritative Cedar; own the interpreter↔`cedarpy` differential corpus. | TBD | no — start now (pairs with A) |
-| **J** | [ws-j-canary-tests.md](ws-j-canary-tests.md) | Canary + e2e test harness spanning all workstreams (continuous green-and-correct gate). | TBD | no — spans all |
-| **K** | [ws-k-production-activation.md](ws-k-production-activation.md) | FR-10.5 production activation: Cedar-authoritative + TENANCY_V2 enforcing in prod; the first go-live predecessor. | TBD | no — start now; **first go-live gate** |
+**Status legend** — **LLD:** ✅ done (reviewed+grilled+rendered) · ✍️ scope-only (LLD not authored) · —. **Code:** ✅ done/deployed · 🟡 partial · ⬜ not started.
+
+| WS | Doc | Scope (one line) | LLD | Code | Blocking? |
+|----|-----|------------------|-----|------|-----------|
+| **WS-0** | [ws-0-measure-first-spike.md](ws-0-measure-first-spike.md) | The measure-first spike (HLD §8): escalation rate + escalated-path p99 + masked-vs-unmasked recall-delta on a real refund/payment agent → dated, founder-signed packet. | ✍️ scope | ⬜ | **GATING** — gates A, C, E (and D via C) |
+| **A** | [ws-a-local-floor-bundle.md](ws-a-local-floor-bundle.md) | FR-1.7 local floor: signed policy bundle + stdlib in-process interpreter (closed non-Cedar subset), background poll, fail-closed staleness, revocation epoch, anti-rollback. | ✍️ scope | ⬜ | spike-gated |
+| **B** | [ws-b-multiphase-contract.md](ws-b-multiphase-contract.md) | FR-3.4 multi-phase `/v1/validate` contract: additive `phase` enum + per-phase decorator; unknown/typo → 422 validation error, known-but-unbuilt → fail-secure DENY. | **✅ [lld/30](../../lld/30-multiphase-contract.md)** | ⬜ **tasks ready** (B1–B4, 31 named UTs + integ; Phase-3 sweep 6/6 PASS) | no — start now |
+| **C** | [ws-c-dag-scheduler.md](ws-c-dag-scheduler.md) | FR-2.8 cost-annotated DAG scheduler: tier-0 short-circuit → tier-1 parallel (generalizes existing ML-last); replaces fixed sequential pipeline. | ✍️ scope | ⬜ | spike-gated → feeds D |
+| **D** | [ws-d-decision-trail.md](ws-d-decision-trail.md) | Decision-trail: record what actually ran + not-run markers (gated by DENY/cost); deny-overrides unchanged; per-tenant full-tier mode. | ✍️ scope | ⬜ | spike-gated (via C) |
+| **E** | [ws-e-redaction.md](ws-e-redaction.md) | FR-3.13 two-tier redactor: edge structured-token PII/PCI (P0 hard gate) + **server-side semantic PHI (P0, first-wave, BAA)**; ADR-032. | **✅ [lld/29](../../lld/29-redaction.md)** | ⬜ | spike-gated |
+| **F** | [ws-f-prompt-signatures.md](ws-f-prompt-signatures.md) | Prompt-signature growth with TP corpus + benign-FP corpus + CI gate as a prerequisite before any rule auto-grows. | ✍️ scope | ⬜ | no — start now |
+| **G** | [ws-g-console.md](ws-g-console.md) | SOC console: tenant-scoped multi-tenant view + exhaustive decision/source view (FR-6.4 gap). | ✍️ scope | ⬜ | no — start now |
+| **H** | [ws-h-metering.md](ws-h-metering.md) | Durable meter ledger + billing surface (metered validations, off the response path). | ✍️ scope | ⬜ | no — start now |
+| **I** | [ws-i-cedar-engine.md](ws-i-cedar-engine.md) | Hosted Cedar engine + **bundle-emit**: emit the deterministic bundle from authoritative Cedar; own the interpreter↔`cedarpy` differential corpus. | **✅ [lld/28](../../lld/28-cedar-policy-engine.md)** | 🟡 **Group-1 done** (deployed 2026-06-30, image `milestone-89`); Group-2 spike-gated | no — start now (pairs with A) |
+| **J** | [ws-j-canary-tests.md](ws-j-canary-tests.md) | Canary + e2e test harness spanning all workstreams (continuous green-and-correct gate). | ✍️ scope | ⬜ | no — spans all |
+| **K** | [ws-k-production-activation.md](ws-k-production-activation.md) | FR-10.5 production activation: Cedar-authoritative + TENANCY_V2 enforcing in prod; the first go-live predecessor. | **✅ [lld/27](../../lld/27-serverless-production-activation.md)** | ✅ **done (verification-only, 2026-06-30, live)** — K6 purge deferred per founder; K2.5/K5 N-A | no — start now; **first go-live gate** |
+| **L** | [ws-l-detection-depth.md](ws-l-detection-depth.md) | **Detection depth — ALL IN ONE (FR-3.2/3.5–3.12/3.14/3.15):** D1–D7 layers + the **distilled model (FR-3.12, P0)** + the heavy-tier escalation model + the **offline reclassify-with-heavy-mode / retrain loop (FR-3.14)** + multimodal. Consolidates LLD 19 (models) + LLD 20 (D1–D7) as the Serverless build-of-record; layers register as nodes into WS-C's DAG. | ✍️ scope (→ lld/31) | ⬜ | spike-gated → **needs WS-C's node-registry contract** (author WS-C first) |
 
 ## Dependency graph
 
@@ -66,7 +76,9 @@ Edges: WS-0 **gates** A, C, E (and D via C) · WS-C → WS-D · WS-A **pairs wit
 
 > **Gate date: _________ (WS-0 packet signed by founder; fill on completion).**
 
-Until that date is filled, A/C/D/E stay at LLD-planning only — no build tasks open. B/F/G/H/I/K are unaffected and proceed in parallel.
+Until that date is filled, A/C/D/E/L stay at LLD-planning only — no build tasks open. B/F/G/H/I/K are unaffected and proceed in parallel.
+
+> **WS-L authoring order (added 2026-07-01).** WS-L (detection depth) is **P0 build-wave priority** but its **layer nodes plug into WS-C's scheduler node-registry / cost-tier / dependency-edge contract** — so WS-C's LLD is authored **before** WS-L's, or WS-L guesses a contract it doesn't own. WS-L consolidates **LLD 19** (tiered models) + **LLD 20** (D1–D7) as the Serverless build-of-record (those two are marked superseded-for-Serverless with a forward pointer, retained as origin design). "Everything P0" = build-wave priority; the honest **authoring queue** is: non-spike-gated LLDs (H, G, F) → then the spike-gated cluster **WS-C → WS-L → WS-D** (ideally after the WS-0 packet signs, since the AgentCore kill-check can reshape the deep-tier thesis).
 
 ## Build order
 

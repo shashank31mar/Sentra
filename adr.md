@@ -1154,6 +1154,319 @@ Two entry points remain, each with the right auth model:
 
 ---
 
+## ADR-029: In-Process Local Enforcement via Signed Policy Bundle
+
+**Date**: June 2026
+**Status**: Accepted
+
+### Context
+
+Every guarded action is a blocking WAN POST to the hosted PDP ([guard.py:391](demo-agents/sdk/aegion-guard-python/src/aegion_guard/guard.py#L391)) — the deterministic floor pays a ~0.6–1.2 s round-trip, and an agent stops enforcing entirely if the PDP is unreachable (violates NFR-4). FR-1.7 splits the PDP into the hosted engine **plus an in-process SDK evaluator** for the deterministic tier (tool allow/deny, parameter bounds, sequence, prompt-signature, and egress destination/host/path/port matching). A cached local evaluator is only safe if its policy is fresh, revocable, and fails closed when stale. Because the SDK is stdlib-only by design (`dependencies = []`, LLD 23 §2) and `cedarpy==4.8.4` ships native-wheel-only with no `py3-none-any` fallback, the SDK **cannot** embed the Cedar engine.
+
+### Decision
+
+The SDK evaluates a **pure-Python, stdlib-only interpreter of a *derived data bundle*** — not `cedarpy` in-process. The control plane publishes a **bundle** (allow/deny + parameter-bounds + sequence + prompt-signature + egress rules compiled from the authoritative Cedar policy) plus a **manifest of per-file SHA-256 hashes signed as a JWT**. The SDK:
+
+- **Background-polls** on a timer (never on the validate path), using **conditional GET / ETag → 304** so an unchanged bundle is near-free; **keeps last-good** on any fetch failure.
+- **Verifies the JWT signature + every file hash before swapping** a bundle in; rejects a tampered/unsigned bundle (fail-secure).
+- Enforces a **fail-closed max-staleness bound computed from a monotonic clock** (`time.monotonic`, not wall clock) — past the bound the local floor reverts to a deny-by-default floor (deny dangerous tools, allow only an explicit safe set).
+- Reads a **revocation-epoch item** (the LLD 26 §3.6 `revoked-since` pattern) at most once per short interval to invalidate stale-epoch bundles below the poll interval.
+- Enforces **anti-rollback**: a monotonic `bundle_version` + `nbf`/`iat` **inside the JWT-signed payload**; the SDK rejects any version `<=` the highest seen (keep-last-good is bounded by it).
+
+**Signing-key lifecycle**: rotation with a **dual-sign overlap window sized below the max-staleness bound**; the bundle-signing pubkey is a **distinct keypair from the per-agent `kid`-LRU**, pinned at SDK build/install time; **per-tenant(-group) signing keys** bound blast radius; a **key-compromise path** (rotate + force-rotate pin + reject `kid`) distinct from bundle-version revocation. Signature verify uses the SDK crypto extra; for **money-movement tenants the crypto-verify path is REQUIRED** (hash-only is not edge-cache-safe behind a CDN). The verifier is either a confirmed-portable pure-Python ES256 (`ecdsa==0.19.2`, `py2.py3-none-any`, verify-only-no-secret rationale) or a costed per-platform packaging path — at least one preserves the drop-in promise.
+
+### Rationale
+
+- **Tenet C** (refresh out-of-band, decide in-process), **tenet 1** (control plane never on the validate path — only the background timer talks to it), **tenet 2** (stale-past-bound fails closed, not open).
+- A stale policy that still ALLOWs is the most devastating failure — staleness is a **safety** mechanism, not a freshness nicety; the bound + revocation epoch cap how long a no-longer-valid ALLOW can survive.
+- The interpreter is a **closed, non-Turing lookup table**, not a second Cedar engine: the bundle-emit step is an **allowlist** of supported constructs and **fail-closed-escalates everything else** (an out-of-subset `forbid` is never silently dropped — a dropped forbid = ALLOW-by-omission = silent fail-open). A differential conformance test asserts interpreter ≡ `cedarpy` on that closed subset.
+
+### Consequences
+
+- ✅ Deterministic-tier common path resolves in-process (tens of ms) with no WAN round-trip; an unreachable PDP no longer stops enforcement (NFR-4).
+- ✅ Tampered/unsigned/stale/rolled-back bundles are all rejected fail-secure; blocking the refresh endpoint forces deny-by-default, never a frozen ALLOW.
+- ✅ Per-tenant signing contains a key leak; monotonic-clock staleness defeats wall-clock rewind.
+- ⚠️ A pure-Python interpreter must stay differentially equivalent to `cedarpy` on the closed subset — a divergence where the edge ALLOWs what the server would DENY is a silent fail-open; the differential corpus (incl. egress + subset-boundary cases) is a hard build requirement.
+- ⚠️ The crypto extra / per-platform packaging punctures the stdlib-only invariant for money-movement tenants — the LLD must pick and cost one path.
+- ⚠️ A bundle-distribution outage longer than the staleness bound could fleet-degrade every customer at once — mitigated by multi-region CDN + HSM-backed multi-region signer + a bound sized above signing-path recovery (Appendix H); NFR-3 must be demonstrated, not asserted.
+
+### Alternatives Considered
+
+1. **Push / long-poll (server-initiated)** — Rejected: maintaining server-held connections to a churning ephemeral Lambda/Function fleet is heavy and stateful, and a cold-started instance still needs a pull to bootstrap.
+2. **DDB-signal-only (no cached bundle)** — Rejected as the policy source: re-introduces a per-call DDB read on the hot path + a cross-tenant hot partition. Kept only as the cheap revocation-epoch layer.
+3. **No local eval (hosted-only status quo)** — Rejected: fails the two reasons the split exists — latency stays a WAN round-trip and an unreachable PDP means no enforcement.
+4. **Embed `cedarpy` in the SDK** — Rejected: native-wheel-only, breaks the stdlib-only vendor-unchanged invariant LLD 23 exists to protect.
+
+### References
+
+- **HLD**: [hld/serverless-edition.md](hld/serverless-edition.md) §6.2(a), Appendix C (interpreter soundness), Appendix D (signing-key lifecycle), Appendix H (availability/fail-closed sizing)
+- **LLD 23** (SDK interpreter — must not add a native dep), **LLD 24** (latency), **new Cedar LLD** (hosted-side bundle-emit + interpreter↔`cedarpy` differential corpus)
+- **Verified**: `cedarpy==4.8.4` native-wheel-only (pypi.org/project/cedarpy/4.8.4); `ecdsa==0.19.2` `py2.py3-none-any` verify-only (pypi.org/project/ecdsa/0.19.2)
+
+---
+
+## ADR-030: Cost-Annotated DAG Scheduler for the Validation Pipeline
+
+**Date**: June 2026
+**Status**: Accepted
+
+### Context
+
+The validation pipeline is today a **fixed sequential chain**: trust → policy/Cedar → cross-agent → prompt-signature → context → abuse → ML classifier (ML moved last in WS24 M4.1), each `await`ed in order ([validation_service.py:220](src/security-controller/app/services/validation_service.py#L220)). Adding the D1–D7 defense-in-depth layers to a sequential chain grows p99 with every added layer — the NFR-1/NFR-2 latency budget breaks. Moving ML last is already a frontier-first *partial* optimization; the design needs to generalize it rather than keep patching a sequential baseline.
+
+### Decision
+
+Model the validators as nodes in a **cost-annotated directed acyclic graph** (cost = latency class; edges = real data dependencies):
+
+- **Tier-0** — cheap deterministic checks (trust, Cedar, cross-agent, prompt-signature, context/sequence, abuse; ~1–5 ms each) run first **with short-circuit**: a DENY here stops before any model runs.
+- **Tier-1** — expensive models (ML classifier, D1–D7) are **gathered in parallel** (latency = max of independent nodes, not sum) only for the survivors that passed tier-0. Dependency edges express the real D1–D7 ordering (D2 taint → D4 information-flow control → D5 output DLP), which runs sequentially and sums.
+
+The **static two-phase split** (all-cheap-then-all-expensive) is the first implementable milestone *inside* this DAG; the DAG generalizes it without re-architecture when a dependency edge is needed. Replaces the fixed-sequential pipeline at [validation_service.py:220](src/security-controller/app/services/validation_service.py#L220). Realizes AD-4.
+
+### Rationale
+
+- **Tenet 5** (latency scales with risk — a cheap DENY skips model cost) and **tenet 4** (independent layers run in parallel, no single point of detection failure).
+- A flat two-phase model cannot express the D1–D7 dependency chain (taint must precede IFC must precede output-DLP); the moment a layer consumes another's output it needs a re-write — the exact late-add the architecture-bender rule rejects.
+- Depth that adds *independent* detectors is near-free (parallel-gather); depth that *extends a chain* still adds its own latency — the scheduler removes the all-sequential cost, not genuine data-dependency cost.
+
+### Consequences
+
+- ✅ Adding independent detectors no longer grows p99 linearly; a tier-0 DENY pays for none of the expensive tier.
+- ✅ The D1–D7 dependency ordering is expressible as edges, not hard-coded sequence.
+- ⚠️ The scheduler's run model must be reconciled with the audit trail (a skipped detector must be recorded "not-run") — see ADR-031.
+- ⚠️ Escalated (tier-1) calls on Serverless still pay the full WAN + Bedrock-inference latency; the DAG bounds server-side ordering, not the WAN leg (§6.4).
+
+### Alternatives Considered
+
+1. **Static two-phase split only (no DAG)** — Rejected: cannot carry D1–D7 dependencies; needs a re-write the moment a layer consumes another's output. Kept as the first milestone *inside* the DAG.
+2. **Keep the sequential chain** — Rejected: latency grows linearly with each added layer — precisely the failure the scheduler exists to prevent.
+
+### References
+
+- **HLD**: [hld/serverless-edition.md](hld/serverless-edition.md) §6.2(c)
+- **LLD 20** (D1–D7), controller pipeline (**LLD 03**)
+- Realizes **AD-4** (deterministic-first, parallel models)
+
+---
+
+## ADR-031: Record-What-Ran Decision Trail Reconciled with the Scheduler
+
+**Date**: June 2026
+**Status**: Accepted
+
+### Context
+
+FR-6.8 wants the audit to record **every** detector that ran and its verdict; the combiner today **short-circuits on first DENY** so later layers don't run ([validation_service.py:220](src/security-controller/app/services/validation_service.py#L220)), and ADR-030's scheduler *also* gates expensive detectors behind cheap ones. A full record and running as little as possible appear to conflict — two requirements touch the same run model and must define **one** execution model or they contradict. This is the single most important reconciliation in the HLD.
+
+### Decision
+
+**"Record what ran, force nothing extra."** The scheduler runs tier-0 (with short-circuit) + tier-1 parallel for survivors (exactly ADR-030); the trail records **every layer that actually executed** with its verdict + source + latency, and on a short-circuit DENY explicitly records the prefix that ran plus marks later layers **"not-run (gated by earlier DENY/cost)."** No extra detectors are run just to fill the record. The `Signal[]` collected via `_capture()` ([validation_service.py:237](src/security-controller/app/services/validation_service.py#L237)) is the seed; the change is the **run model** (persist not-run markers + keep the trail under the scheduler), **not** the DenyOverrides algorithm ([deny_overrides.py](src/security-controller/app/combiners/deny_overrides.py) — any DENY wins → priority → confidence → alphabetical source — stays byte-for-byte).
+
+A **tunable per-tenant/per-session high-assurance mode** runs the full deterministic tier for the trail even after a DENY (offered as a setting, not the default). The persisted trail captures: **(1) coverage** (every detector that could run for the phase, which ran vs. not-run, each with verdict/source/latency); **(2) block point + why, with depth** (state/layer + reason + prompt + tool & parameters + caller→target agent + IP/source); **(3) both outcomes** (ALLOW and DENY, not deny-only); **(4) the phase** (`request|content|output|memory`).
+
+### Rationale
+
+- **Tie-breaker B** (record what ran; don't over-execute to get a trail), **tenet 5** (don't pay for layers risk didn't warrant), **tenet 3** (every verdict names its deciding source and is auditable — the not-run markers keep the trail honest about what didn't run).
+- Running all layers on every request would blow the latency budget and re-incur the exact cost the scheduler exists to avoid.
+
+### Consequences
+
+- ✅ The trail is complete about *what ran* and honest about *what didn't* (and why), with no extra detector cost.
+- ✅ High-assurance tenants can opt into a full deterministic trail via a tunable mode.
+- ✅ The DenyOverrides algorithm is out of scope of this change — no behavioral drift in verdict combination.
+- ⚠️ The signal store / trail record shape (LLD 17) must carry the not-run markers + `winning_source` + the four-field detail set — a schema deliverable, not just a code change.
+
+### Alternatives Considered
+
+1. **Always run all layers, every request** — Rejected: blows the latency budget, contradicts tenet 5 (a tier-0 DENY would still pay for D1–D7).
+2. **Always-run-cheap-tier-then-short-circuit** (full deterministic trail, gate only the expensive tier) — a small constant overhead on every DENY; kept as the **tunable high-assurance mode** inside the recommendation, not the default.
+
+### References
+
+- **HLD**: [hld/serverless-edition.md](hld/serverless-edition.md) §6.2(d)
+- **LLD 17** (signal store / trail shape)
+- Related: ADR-030 (scheduler run model); the §6.4 escalate-async fence (money-movement hard fail-closed) is referenced from this run-model
+
+---
+
+## ADR-032: Two-Tier Input Redaction and the Three-Clause NFR-7 Amendment
+
+**Date**: June 2026
+**Status**: Accepted
+
+### Context
+
+Serverless is the only edition where customer content leaves the boundary. The SDK auto-captures `tool_params` + `user_input` and POSTs them **un-redacted** today ([guard.py:325](demo-agents/sdk/aegion-guard-python/src/aegion_guard/guard.py#L325)). The owner flagged this serious. A pure regex/checksum scrubber reliably catches *structured* identifiers (card numbers, SSNs, emails, high-entropy secrets) but not *free-text/semantic* PHI (names, conditions, addresses in prose). An earlier position routed all PHI to in-VPC on the reasoning that raw PHI reaching our cloud "breaks NFR-7" — but that rested on a self-imposed bar stricter than HIPAA, which explicitly contemplates a business associate processing PHI under a BAA (45 CFR 160.103).
+
+### Decision
+
+A **two-tier redactor**:
+
+- **Tier 1 — structured PII/PCI, inline at the edge.** The redactor **ships in the SDK** (same stdlib-only install) and runs **before egress**. Deterministic: regex + Luhn card check + secret/credential entropy + lite-NER. **Structure-preserving**: sensitive *values* are replaced with **typed tokens** (`<CARD>`, `<SSN>`, `<EMAIL>`, `<SECRET>`) so detection still operates on the redacted text; **any pre-existing token-shaped substring in the input is escaped/namespaced first** so attacker text can never spoof a redactor-emitted token. Raw structured PII never leaves. **Hard GA gate** for any sensitive-data customer. Redaction runs on **every egressing phase** (request/content/output/memory), not just `request`.
+- **Tier 2 — free-text PHI, server-side under a BAA (P0).** Free-text semantic PHI is redacted by a **server-side semantic NER layer** — too heavy for the stdlib edge (CPU spaCy ~50 ms+, transformer NER ~700 ms). Compliance basis is **containment** (redaction = defense-in-depth). Self-hosted **Presidio (MIT)** — **no managed subprocessor**; the latency form is a **warm ONNX-int8 microservice**. Raw free-text PHI transits under a BAA, is processed **transiently, never retained, never logged, with no human access**, then discarded. **This is P0 — it ships in the first-wave Serverless build**, gated only by a measured recall target + counsel's BAA sign-off. This is how **HIPAA/PHI customers use Serverless.**
+
+The **Nitro Enclave** (a TEE upgrading the claim to "never readable") is a **demoted roadmap note, NOT the GA basis**. **In-VPC** stays the floor for **air-gapped / no-egress mandates only**.
+
+**NFR-7 is amended to three clauses**: **(a)** no raw retention on any edition (not logs, audit, meter, feedback store, or crash dumps); **(b)** an opt-in, DPA-scoped, retention-bounded **redacted** feedback store (redacted records only, never raw); **(c)** **PHI-transit-under-BAA** — free-text PHI may transit to the hosted PDP under a BAA, processed transiently / not retained / not logged / no human access (replaces the old "raw never leaves the customer boundary"). Anchored to **HIPAA Safe Harbor (45 CFR 164.514(b)(2))** + **PCI-DSS** (PAN mask, SAD never-store) + **GDPR Recital 26** (masking is pseudonymisation, still personal data).
+
+### Rationale
+
+- **Tenet 6** (the data boundary is the customer's — set by edition + the BAA) and **tenet 2** (deterministic structured redaction fails safe inline).
+- Because *our* SDK is what pulls `tool_params`/`user_input` across the wire, *we* must redact what *we* capture — before the network POST; the customer cannot be burdened or trusted to pre-redact for our detection.
+- The honest claim is "transient + not-retained + not-logged + no human access under a BAA," **not** "machine-unreadable by us" (the redaction code reads the value to scrub it) — the enclave is what would upgrade that later.
+
+### Consequences
+
+- ✅ Structured PII/PCI never leaves the edge; HIPAA/PHI customers can use Serverless under a BAA at GA (not routed to in-VPC).
+- ✅ The redactor rides the SDK install — no separate component to deploy.
+- ⚠️ Edge redaction strips the very values the deep tier would read — the **masked-vs-unmasked recall-delta** is unmeasured and is a **precondition of locking the redaction GA gate** (Appendix G), not a residual to defer.
+- ⚠️ No-retention of raw PHI is a **hard engineering invariant the LLD must PROVE** (no raw in logs/feedback/crash dumps) — under clause (c) a logging bug is a *reportable breach*, not just an NFR miss.
+- ⚠️ Image/binary content (FR-3.15) and the server-side `REDACT`-verdict rewrite path (FR-3.7) are scoped **out/stubbed** explicitly (blocked from egress or routed to in-VPC until designed).
+- ⚠️ Supersedes the old "PHI → in-VPC only" conclusion and Option-B's blanket "hosted redaction always violates NFR-7" *for the BAA-covered PHI case* — a propagate-change target across PRD/ARCHITECTURE/STRATEGY/sub-PRD (NFR-7 3-clause form).
+- ⚠️ Tier-2 server-side NER is a **happens-before barrier** on the PHI content path — redaction completes *before* any audit/detector/persist read of that content; the parallel/off-path latency optimization applies only to the verdict-return of non-PHI-bearing calls ([LLD 29](lld/29-redaction.md) §4.1/§5.3, grill finding F1). A PHI-bearing free-text call pays the NER latency on the **critical path** (≤900 ms ML budget), not hidden behind the floor.
+
+### Alternatives Considered
+
+1. **Hosted-side redaction (redact after arrival)** — Rejected for structured PII: the boundary is already crossed; no-retention doesn't undo that the value transited. (Retained, under a BAA, only for the free-text-PHI case where the semantic model is unavoidably server-side.)
+2. **Customer pre-redacts before calling us** — Rejected: can't burden the customer to redact for *our* detection, can't trust a self-asserted "already clean," and the SDK auto-captures raw `tool_params` they never touched.
+3. **Managed subprocessor (Comprehend Medical / Google DLP)** — Rejected as the basis: adds a subprocessor + a network round-trip; self-hosted Presidio keeps the processing in-boundary under our BAA.
+
+### References
+
+- **HLD**: [hld/serverless-edition.md](hld/serverless-edition.md) §6.2(e), Appendix I (mechanism/standard/enclave), Appendix F (data-class allowlist), Appendix G (redaction gate pass/fail)
+- **LLD 29** (redaction), **LLD 23** (SDK edge redactor), **LLD 17** (feedback store)
+- **Standards**: 45 CFR 164.514(b)(2) (HIPAA Safe Harbor), 45 CFR 160.103 (business associate), PCI-DSS, GDPR Recital 26
+
+---
+
+## ADR-033: Durable Meter-Event Pipeline (Billing Source of Truth)
+
+**Date**: June 2026
+**Status**: Accepted
+
+### Context
+
+We charge per **governed agent** (not per check), consistent with ARCHITECTURE §2.10 ("metering per validation would tax coverage"). But every event write today is **fire-and-forget** ([validation_service.py:512](src/security-controller/app/services/validation_service.py#L512) via `_fire_and_forget`; metrics swallow failures, [metrics_publisher.py:126](src/security-controller/app/utils/metrics_publisher.py#L126)) and the signal store has **no DynamoDB Streams** — so neither the CloudWatch counters nor the audit store can be a billing source of truth (a dropped write is silently lost, and there is no stream to drive a rollup). ADR-029's local floor compounds this: most benign calls resolve in-process and never reach the server, so per-server-call billing would structurally under-count and couple the bill to the threat mix.
+
+### Decision
+
+A **new durable meter-event pipeline** (adapted from the internal Synapse multi-tenant metering pattern — durable source-of-truth + dedup-on-unique-id + recomputed aggregate + hourly audit re-drive):
+
+- **`sentra-meter-events`** (durable source of truth): PK `tenant_id`, SK `request_id` (idempotency key); attrs `agent_id`, `event_time`, `decision`, `phase`, `sku`, `usage_unit=1`, `processed`, `claimed_tenant_id`, `expires_at` (TTL ~13 mo). Write = conditional `PutItem attribute_not_exists(request_id)`, **AWAITED with back-off retry (durable-before-ack)** → **DLQ on exhausted retry, never silently dropped**. **DynamoDB Streams ENABLED.**
+- **`sentra-usage-rollup`** (aggregate): PK `tenant_id`, SK `billing_period#agent_id`; aggregation = **recomputed SUM over the period (idempotent)** so a re-driven event changes nothing.
+- **Streams → aggregator Lambda → rollup**; an **hourly EventBridge-Scheduler audit Lambda** finds `processed=false`/missing events and **re-drives** them.
+
+The **charged dimension stays per governed agent**; the per-call event is the usage/evidence substrate, not the billable unit. **Governed-agent presence is registered on the durable bundle-fetch + low-frequency heartbeat path** (not per-call beacons), so an agent that never escalates is still counted. Edge-resolved usage bills off a **non-durable edge beacon** (not covered by the ledger's no-miss) — tolerable because tiers are coarse order-of-magnitude bands and existence is registered durably. **CloudWatch counters (`Decisions{tenant_id}`, `ValidationsTotal{AgentId}`) are demoted to ops/dashboards only.**
+
+**Spoof/identity-DENY dual-tag split**: spoof-DENYs are counted against the **claimed tenant for the SECURITY/visibility view only** (rate-limited/capped + written with a **durable** audit write so a flood can't erase the evidence), and against **`_unverified` for billing/quota** — **never** the claimed tenant's quota/rate budget (the `claimed_tenant_id` is attacker-asserted; drawing quota from it would be a third-party quota-exhaustion DoS).
+
+### Rationale
+
+- **Tenet D** — an unattributable/lost verdict is a metering and isolation defect; billing needs a ledger that never silently loses an event, which the best-effort counters cannot be.
+- Charging per governed agent is the **correct** unit given the local floor: governed-agent count doesn't depend on how many calls reach the server; volume loss only sets a coarse tier band.
+- Metering on an attacker-controllable key (`claimed_tenant_id`) is a hazard, not just a billing line — hence the dual-tag split.
+
+### Consequences
+
+- ✅ No-miss (server-arrived events), exactly-once (conditional-put dedup + idempotent recomputed-SUM), re-drivable after a large-scale event (Streams + hourly audit).
+- ✅ Spoof-DENYs are visible in the victim tenant's security view without letting an attacker exhaust that tenant's quota.
+- ⚠️ Net-new COGS: an awaited meter `PutItem` per escalated call (roughly doubles per-call DDB write cost for escalated calls) + per-escalation Bedrock inference — both bounded by the escalation rate (residual #6), which becomes the single biggest COGS variable.
+- ⚠️ Edge-beacon volume is not no-miss; billing error must be bounded to **NFR-12 (≥99.9%)** as an LLD acceptance criterion, plus a **DLQ-drain runbook/SLA** (Appendix H).
+- ⚠️ Partially supersedes ARCHITECTURE §2.10's "no separate metering path" mechanism claim (the per-agent *charged dimension* is unchanged and re-affirmed) — a propagate-change target.
+
+### Alternatives Considered
+
+1. **Reuse the existing fire-and-forget CloudWatch/audit counters as the billing ledger** — Rejected: best-effort writes are silently lost and there is no stream to drive a rollup; kept ops-only.
+2. **Per-server-call billable unit** — Rejected: the local floor makes most benign calls invisible to the server, so it structurally under-counts and taxes coverage (couples the bill to threat mix).
+3. **Credit the `claimed_tenant_id` on a spoof to billing/quota** — Rejected: attacker-asserted key → third-party quota-exhaustion DoS.
+
+### References
+
+- **HLD**: [hld/serverless-edition.md](hld/serverless-edition.md) §6.5, Appendix H (loss model + DLQ-drain runbook)
+- **LLD 17** + a new metering LLD; **ARCHITECTURE §2.10** (charged dimension re-affirmed; mechanism sentence reconciled)
+
+---
+
+## ADR-034: The Deterministic Floor Is Non-Disableable; No Customer Detection Dial
+
+**Date**: June 2026
+**Status**: Accepted
+
+### Context
+
+A customer-facing light/medium/strong/extra-strong detection dial was considered. Today's differentiation is thin (ML is shadow-only, D1–D7 is roadmap), and a "light" tier is a **one-way door** — selling a weaker mode then retracting it is hard. The focus now is basic billing, not a detection-strength SKU.
+
+### Decision
+
+The customer-selectable detection-strength dial is **NOT built now**. For now **all detectors are enabled and NOTHING is customer-disableable** (revisit later). **Invariant, locked as an ADR**: whatever modes ever exist, the **Cedar + prompt-signature deterministic floor is NON-DISABLEABLE in every mode and every edition** — so a future "mode" can never mean "unprotected." The **local-floor kill-switch** disables only the **edge evaluation *location*** (the SDK falls back to the hosted PDP for the decision), **never enforcement itself** — the floor is still evaluated, just server-side.
+
+### Rationale
+
+- **Tenet 4** (defense in depth — no removable floor) and **tenet 8** (honest staging — don't sell a weaker mode before the depth exists to tier).
+- A "light" detection tier is a one-way door; guarding the floor as non-disableable prevents a future mode from becoming a hole.
+
+### Consequences
+
+- ✅ No mode or edition can ever run "unprotected" — the deterministic floor is always on.
+- ✅ Product surface stays simple (basic billing, not a detection-strength SKU).
+- ✅ The kill-switch is an operability lever (evaluate locally vs. hosted), not a way to turn enforcement off.
+- ⚠️ Customers who want a lighter/cheaper posture are not served by a dial now — revisited only when the depth exists to tier honestly.
+
+### Alternatives Considered
+
+1. **Ship the light/medium/strong dial now** — Rejected: a one-way door on thin differentiation; ML is shadow-only and D1–D7 is roadmap, so the tiers wouldn't be honest.
+2. **Allow the deterministic floor to be disabled in a "light" mode** — Rejected: makes "mode" mean "unprotected" — the exact hole the invariant guards against.
+
+### References
+
+- **HLD**: [hld/serverless-edition.md](hld/serverless-edition.md) §6.2(h)
+- **LLD 28** §5.6 (local-floor kill-switch semantics); controller pipeline / config
+
+---
+
+## ADR-035: Console Federation (SAML + OIDC + SCIM) Behind an IdP-Neutral Seam — Scoped, Deferred
+
+**Date**: June 2026
+**Status**: Accepted
+
+### Context
+
+The web console authenticates operators via Cognito OIDC but is **not tenant-scoped** (no tenant claim, no membership mapping, no RBAC — sub-PRD §4.10). Worse, today's console derives tenant **cosmetically from the email domain** (`web/console/src/lib/auth.ts:54-56` marks it "DISPLAY-ONLY, NON-AUTHORITATIVE") — as an *authority* that breaks isolation (a contractor with a customer's domain maps to the wrong tenant). The runtime fix keeps Cognito now and hardens the seam (refines AD-8/ADR-019); this ADR pre-designs the eventual provider switch so it is cheap when made.
+
+### Decision
+
+Write the **SAML + OIDC + SCIM federation** design **now**, but **defer the actual provider switch (done last)** — it touches too much to do early. Two insurance moves are taken now so the switch is cheap: **(1)** the tenant-root identity is renamed from "Cognito `sub`" to an **IdP-neutral "verified operator subject"** behind **ONE claim-extraction seam** (only that seam changes when federation lands); **(2)** this ADR pre-designs SAML + OIDC + SCIM so the switch is not improvised later.
+
+**Server-derived `sentra-tenant-members` membership is the tenant authority — NEVER the email domain.** IdP group claims map to roles (**owner | admin | editor | viewer** + reserved `_platform`). A multi-tenant operator gets a tenant switcher: the API accepts an **`X-Aegion-Tenant`** header **validated server-side against the membership set** (deny if not a member) before honoring it; default = the operator's sole/primary tenant. `require_role` (LLD 26 §6.3) is the server-side authority; UI role-gating is UX only, never the boundary. This blends into the already-designed LLD 26 §5–6 — not reinvented.
+
+### Rationale
+
+- **Tenet 7** (multi-tenant from the foundation, not retrofitted) and the reuse discipline (matches the Splunk/Datadog/Auth0/Okta org→membership→role pattern, IdP pluggable beneath a stable membership/role layer).
+- Email-domain inference cannot be the isolation boundary — a spoofable/multi-domain signal; the membership table is the fix.
+- Cognito natively federates SAML/OIDC later as a config add, so pre-designing the seam makes the switch a configuration change, not a re-platform.
+
+### Consequences
+
+- ✅ The current email-domain isolation weakness (Option-B security issue) is closed — every tenant decision resolves server-side against `sentra-tenant-members`.
+- ✅ When federation lands, only the claim-extraction seam changes, not every call site.
+- ✅ RBAC + server-validated tenant switcher ship now on the hardened Cognito substrate.
+- ⚠️ SAML-now vs OIDC-now is an open sequencing sub-question (non-blocking residual).
+- ⚠️ SCIM deprovisioning + the full provider switch are **deferred** — scoped here, done last; until then Cognito is the substrate.
+
+### Alternatives Considered
+
+1. **Cognito-only email-domain inference as the authority** — Rejected: this is today's security issue; a spoofable/multi-domain signal cannot be the isolation boundary.
+2. **Bespoke RBAC from scratch** — Rejected: reinvents the proven Auth0-Organizations / Splunk-Cloud org→tenant→role pattern; a hand-rolled authz model is a security-risk surface.
+3. **Switch the identity provider now** — Rejected: touches too much to do early; the seam + deferred ADR make it cheap to do last.
+
+### References
+
+- **HLD**: [hld/serverless-edition.md](hld/serverless-edition.md) §6.2(f)
+- **LLD 26 §5–6** (`web/console` tenancy/RBAC — the anchor; LLD 04/Streamlit decommissioned)
+- **Refines AD-8 / ADR-019**
+
+---
+
 ## Future ADRs to Consider (Post-MVP)
 
 - **ADR-023**: Migration from ECS Fargate to EKS
@@ -1165,7 +1478,7 @@ Two entry points remain, each with the right auth model:
 
 ---
 
-**Document Version**: 2.2
-**Last Updated**: May 22, 2026
+**Document Version**: 2.3
+**Last Updated**: June 30, 2026
 **Status**: Active - Reference during implementation
 **Next Review**: Post-MVP (after Week 4)
