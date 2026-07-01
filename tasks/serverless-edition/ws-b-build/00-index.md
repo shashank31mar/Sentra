@@ -11,7 +11,7 @@
 
 | WS | Doc | Scope (one line) | LLD | Code | Blocking? |
 |----|-----|------------------|-----|------|-----------|
-| **ws-b-multiphase-contract** | [../ws-b-multiphase-contract.md](../ws-b-multiphase-contract.md) | FR-3.4 multi-phase `/v1/validate` contract: additive optional `phase` enum + `content_text` on `ValidationRequest`; server routing (unknown/typo → HTTP 422, known-but-unbuilt {content,output,memory} → fail-secure 200 DENY `phase_handler_not_implemented`); per-phase SDK decorators (`@guard.content/output/memory`) threading `phase` as an arg; SDK `TransportError.status_code` + `BadRequest` (422 halts before fn; 5xx/timeout → fail-secure DENY). | ✅ [lld/30](../../../lld/30-multiphase-contract.md) | ⬜ **tasks ready** (B1–B4) | no — greenfield, build now |
+| **ws-b-multiphase-contract** | [tasks/serverless-edition/ws-b-multiphase-contract.md](tasks/serverless-edition/ws-b-multiphase-contract.md) | FR-3.4 multi-phase `/v1/validate` contract: additive optional `phase` enum + `content_text` on `ValidationRequest`; server routing (unknown/typo → HTTP 422, known-but-unbuilt {content,output,memory} → fail-secure 200 DENY `phase_handler_not_implemented`); per-phase SDK decorators (`@guard.content/output/memory`) threading `phase` as an arg; SDK `TransportError.status_code` + `BadRequest` (422 halts before fn; 5xx/timeout → fail-secure DENY). | ✅ [lld/30](../../../lld/30-multiphase-contract.md) | ⬜ **tasks ready** (B1–B4) | no — greenfield, build now |
 
 ## Dependency graph
 
