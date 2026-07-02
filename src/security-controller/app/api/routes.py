@@ -378,6 +378,34 @@ async def get_session_signals(
     )
 
 
+@router.get("/sessions/{session_id}/trail")
+async def get_session_trail(
+    session_id: str,
+    request_id: str,
+) -> Dict:
+    """WS-D / LLD 33 §9A — the full decision trail for one request (FR-6.8 / NFR-10).
+
+    Returns the four buckets (ran / ran-ABSTAIN / ran-ERROR / not-run) in coverage
+    order with derived display names + counts + recomputed `winning_source` /
+    `block_point`. The READ endpoint WS-G (console) calls to render the
+    Decision-detail view.
+
+    Contract:
+      * `request_id` is REQUIRED — the primary form is session-scoped because the
+        DDB PK is session-scoped (`tenant_session_id`); a request_id alone is not a
+        partition key (§9A.1 FOOTGUN). No new query, no new index.
+      * Tenant-scoped STRUCTURALLY by the tenant-composite PK (§9A.3): a Query
+        against the wrong tenant's partition returns zero rows. NO `require_role()`
+        — a data-plane read matching `GET /v1/sessions/{id}/signals`, NOT a
+        control-plane mutation (this path does NOT share the X-Operator-Email
+        policy-CRUD IDOR).
+      * `next_token: null` — a single trail (~7 rows) fits one un-paged Query.
+    """
+    return _decisions_service().get_session_trail(
+        session_id=session_id, request_id=request_id,
+    )
+
+
 @router.get("/decisions")
 async def scan_decisions(
     since: Optional[str] = None,

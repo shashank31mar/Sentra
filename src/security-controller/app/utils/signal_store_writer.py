@@ -145,6 +145,61 @@ def _build_item(
     return _to_ddb_value(item)
 
 
+def _build_marker_item(
+    marker,
+    *,
+    session_id: str,
+    request_id: str,
+    timestamp_ms: int,
+    timestamp_iso: str,
+    expires_at: int,
+) -> dict[str, Any]:
+    """Construct the DDB item for one NotRunMarker — WS-D / LLD 33 §6.2, KD-7.
+
+    A marker row shares the request partition with the ran `Signal` rows (SAME PK
+    + SK shape `{request_id}#{timestamp_ms}#{source}`) so the console reads ran +
+    not-run in ONE Query. It is deliberately NOT built via `_build_item`:
+    `_build_item` unconditionally reads `signal.decision`/`signal.priority`
+    (:113-114) — a marker has neither, so it would raise or (worse) stamp a stray
+    `decision` a reader mis-parses as a ran vote. The marker builder writes ONLY
+    the marker-distinguishing attrs (`record_type`/`source`/`reason`/`phase`).
+
+    KD-7 reuse (do NOT re-implement): `decision_date` is the SAME `timestamp_iso[:10]`
+    inline slice `_build_item` uses at :119; `expires_at` is the value the caller
+    computes once in `write_signals` (:207); `tenancy.stamp_signal_item` (:144) is
+    the genuinely-shared tenant-key helper. So GSI-2 date, 90-day TTL, and tenant
+    PK are INHERITED — not recomputed.
+
+    SEC / info-disclosure: markers do NOT copy `user_input[:200]`, `tool_params`,
+    or `source_ip` (`_shared_attrs_from_request`). That block-context depth lives on
+    the ran rows + the `sentra.combined` CloudWatch event (same partition);
+    duplicating it onto up-to-6 marker rows multiplies the still-unredacted-pre-DLP
+    content surface at zero audit value (§6.2 FOOTGUN).
+    """
+    sk = f"{request_id}#{timestamp_ms}#{marker.source}"
+    item = {
+        "session_id": session_id,
+        "sk": sk,
+        "request_id": request_id,
+        "timestamp_ms": timestamp_ms,
+        "timestamp_iso": timestamp_iso,
+        "source": marker.source,
+        "record_type": marker.record_type,   # the row-type discriminator — NOT a decision
+        "reason": marker.reason,
+        "phase": marker.phase,
+        "expires_at": expires_at,
+        # decision_date is the GSI-2 partition key — the SAME inline slice
+        # _build_item uses at :119 (there is NO standalone decision_date helper).
+        "decision_date": timestamp_iso[:10],
+    }
+    # Invariant (ii) at STORAGE (LLD 33 §6.1): a marker row MUST NOT carry a
+    # `decision`. This is a guard, not a hope — the separation is enforced at
+    # persistence, not just at combine().
+    assert "decision" not in item, "marker row MUST NOT carry a decision (invariant ii at storage)"
+    tenancy.stamp_signal_item(item)          # SAME shared tenant-key helper as ran rows (:144)
+    return _to_ddb_value(item)
+
+
 class SignalStoreWriter:
     """Sync best-effort BatchWriteItem with budgeted retry.
 
@@ -219,6 +274,49 @@ class SignalStoreWriter:
                 expires_at=expires_at,
             )
             for sig in signals
+        ]
+        return self._batch_write_with_retry(items)
+
+    def write_not_run_markers(
+        self,
+        *,
+        session_id: str,
+        request_id: str,
+        markers: Sequence,
+        now: Optional[datetime] = None,
+    ) -> tuple[int, int]:
+        """Persist NotRunMarker rows on the SAME partition as the ran signals —
+        WS-D / LLD 33 §6.2. Returns (success_count, failure_count).
+
+        NO new writer, NO new table — markers ride the SAME `SignalStoreWriter`,
+        the SAME BatchWriteItem chunks, the SAME time budget + retry as the ran
+        signals, keyed on the same `{request_id}#{timestamp_ms}#{source}` SK shape
+        so the console's single-partition Query returns ran + not-run together.
+
+        Never raises into the validation path (LLD 17 §11) — the caller
+        (`audit_logger.log_signals`) is fire-and-forget and increments
+        `TrailPersistFailures` on any failure count.
+        """
+        if not markers:
+            return (0, 0)
+
+        if now is None:
+            now = datetime.now(timezone.utc)
+        timestamp_iso = _isoformat_ms_z(now)
+        _assert_canonical_iso(timestamp_iso)
+        timestamp_ms = int(now.timestamp() * 1000)
+        expires_at = int((now + timedelta(days=self.ttl_days)).timestamp())
+
+        items = [
+            _build_marker_item(
+                marker,
+                session_id=session_id,
+                request_id=request_id,
+                timestamp_ms=timestamp_ms,
+                timestamp_iso=timestamp_iso,
+                expires_at=expires_at,
+            )
+            for marker in markers
         ]
         return self._batch_write_with_retry(items)
 

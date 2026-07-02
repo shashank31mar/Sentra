@@ -80,3 +80,68 @@ def default_priority(source: str) -> int:
     or new validator doesn't crash the pipeline — it just loses tie-breaks.
     """
     return DEFAULT_PRIORITIES.get(source, 0)
+
+
+# ============================================================
+# WS-D / LLD 33 — decision-trail coverage + display tables (§5.2, additive).
+# All four live in this ONE existing file — one source of truth shared by the
+# trail builder (build_trail / coverage_set), the scheduler-absent fallback, and
+# the read API's display derivation. `trail_builder.py` never spells a `sentra.*`
+# literal — it references the `Source.SENTRA_*` constants through these tables.
+# ============================================================
+
+# `_step_timings` label → coverage-set validator Source. Bridges the SHORT step
+# labels (`"ml"`) to the DOTTED Source constants (`sentra.ml_classifier`).
+STEP_LABEL_TO_SOURCE: dict[str, str] = {
+    "trust": Source.SENTRA_TRUST,
+    "policy": Source.SENTRA_POLICY,        # cedar OR legacy — SAME source
+    "cross_agent": Source.SENTRA_CROSS_AGENT,
+    "sigma": Source.SENTRA_SIGMA,
+    "context": Source.SENTRA_CONTEXT,
+    "abuse": Source.SENTRA_ABUSE,
+    "ml": Source.SENTRA_ML_CLASSIFIER,
+}
+# DELIBERATELY UNMAPPED (plumbing, NOT detectors): session, pipeline, handle,
+# abuse_policy_load, policy_fallback. `policy_fallback` is the legacy re-run after
+# a Cedar abstain (validation_service.py:424) — the SAME logical policy layer, so
+# mapping it would DOUBLE-COUNT policy as two invoked sources (§11.2). The
+# rollout-era double-fire (`policy` + `policy_fallback` both in _step_timings)
+# MUST collapse to a single `sentra.policy` invoked source (T-TRAIL-06).
+
+# Request-phase coverage, in pipeline order — the WS-D coverage source TODAY, since
+# WS-C's pure `coverage_sources(phase)` accessor is NOT YET BUILT (§5.1 / §13 gap #4).
+STATIC_FALLBACK_ORDER: list[str] = [
+    Source.SENTRA_TRUST,
+    Source.SENTRA_POLICY,
+    Source.SENTRA_CROSS_AGENT,
+    Source.SENTRA_SIGMA,
+    Source.SENTRA_CONTEXT,
+    Source.SENTRA_ABUSE,
+    Source.SENTRA_ML_CLASSIFIER,
+]
+
+# Raw source → human label (§9A.2.2). The raw source string stays the join key
+# (DDB SK component + DenyOverrides tie-break); the API ADDS `display_name` on
+# read, never stores it. `sentra.sigma → "Prompt-signature rules"` is the
+# serverless narrative rename of "Sigma" — the RAW string stays `sentra.sigma` (a
+# code rename would break the SK + the combiner join key). An unknown source falls
+# through to its raw string via `.get(source, source)`, never crashes — so a
+# future WS-L D-layer renders as its raw name until its label is added here.
+SOURCE_DISPLAY_NAMES: dict[str, str] = {
+    Source.SENTRA_TRUST: "Trust score",
+    Source.SENTRA_POLICY: "Policy (Cedar)",
+    Source.SENTRA_SIGMA: "Prompt-signature rules",
+    Source.SENTRA_ML_CLASSIFIER: "ML classifier",
+    Source.SENTRA_CONTEXT: "Context integrity",
+    Source.SENTRA_ABUSE: "Abuse / rate",
+    Source.SENTRA_CROSS_AGENT: "Cross-agent",
+}
+
+# Raw state → human label (§9A.2.2). The raw `state` stays the four-bucket
+# discriminator; the API ADDS `state_label` on read.
+STATE_DISPLAY_NAMES: dict[str, str] = {
+    "ran": "Ran",
+    "ran_abstain": "Ran — abstained",
+    "ran_error": "Ran — error (fail-secure)",
+    "not_run": "Not run",
+}

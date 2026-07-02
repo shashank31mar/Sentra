@@ -91,7 +91,35 @@ class AuditLogger:
         if self._signal_store is None:
             self._signal_store = SignalStoreWriter()
         return self._signal_store
-    
+
+    async def _emit_trail_metric(self, method_name: str, **kwargs) -> None:
+        """Off-path, swallowed emit of a WS-D trail observability metric
+        (`TrailPersistFailures` / `CombinedEventPersistFailures`). Lazily builds a
+        MetricsPublisher (reused via `_metrics_publisher`, shared with the persist-
+        gate alarm). NEVER raises into the audit path — a metrics gap must never
+        turn a marker loss into a 500 (LLD 33 §9.2)."""
+        publisher = getattr(self, "_metrics_publisher", None)
+        if publisher is None:
+            try:
+                from app.utils.metrics_publisher import MetricsPublisher
+                publisher = MetricsPublisher()
+                self._metrics_publisher = publisher
+            except Exception:  # noqa: BLE001 — the metric is best-effort
+                return
+        emit = getattr(publisher, method_name, None)
+        if emit is None:
+            return
+        try:
+            tenant_id = ""
+            try:
+                from app.utils import tenancy
+                tenant_id = tenancy.current_tenant()
+            except Exception:  # noqa: BLE001 — tenant tag is best-effort
+                tenant_id = ""
+            await emit(tenant_id=tenant_id, **kwargs)
+        except Exception:  # noqa: BLE001 — a metric emit must never break audit
+            logger.debug("trail-persist metric emit skipped (%s)", method_name, exc_info=True)
+
     def _ensure_log_group_exists(self):
         """Create log group if it doesn't exist"""
         try:
@@ -161,6 +189,7 @@ class AuditLogger:
         session: Dict[str, Any],
         signals: List[Signal],
         latency_ms: float = 0.0,
+        markers: Optional[List[Any]] = None,
     ):
         """Dual-write per-validator signals to DDB + a combined CloudWatch event.
 
@@ -170,6 +199,14 @@ class AuditLogger:
         - CloudWatch event: existing single-event-per-validation format,
           augmented with a `signals[]` array carrying the contributors.
 
+        WS-D / LLD 33 §9.1: also persists the decision-trail `markers` (not-run /
+        abstain / error rows) through the SAME `SignalStoreWriter`
+        (`write_not_run_markers`) on the SAME request partition, and stamps `phase`
+        on the ran rows (the one summary field durable per-row, §6.3). A marker
+        write failure increments `TrailPersistFailures` and NEVER 500s a clean
+        verdict — the whole method is fire-and-forget (D4.2). `combine()` (:198) is
+        UNCHANGED.
+
         Args:
             request: ValidationRequest dict.
             session: Session context dict.
@@ -178,6 +215,9 @@ class AuditLogger:
                 `decision`/`reason` fields on the CloudWatch event so the
                 existing CloudWatch consumers keep working unchanged.
             latency_ms: validate_tool_call latency.
+            markers: WS-D decision-trail NotRunMarker rows (not-run/abstain/error)
+                to persist alongside the ran signals. Absent/empty → no marker
+                write (byte-identical to the pre-WS-D path).
         """
         # Pick the dominant signal for legacy CW fields. We use the same
         # deny-overrides semantics as the combiner — sigma-DENY beats
@@ -226,6 +266,11 @@ class AuditLogger:
             )
         except Exception as e:
             logger.exception(f"Failed to write audit log to CloudWatch: {e}")
+            # WS-D / LLD 33 §9.2.1 — the `sentra.combined` reconstruction-of-record
+            # write is the durable copy of `winning_source`/`block_point`. Losing it
+            # AND the markers is the only case where the reconstructable complement is
+            # actually lost, so it is separately alarmable. Off-path, swallowed.
+            await self._emit_trail_metric("publish_combined_event_persist_failure")
 
         # DDB dual-write (fast-read substrate).
         if signals:
@@ -241,6 +286,29 @@ class AuditLogger:
             except Exception as e:
                 # Per LLD 17 §11: never raise into validation path.
                 logger.warning(f"signal_store.write.failure (dual-write): {e}")
+
+        # WS-D / LLD 33 §9.1 — persist the decision-trail markers on the SAME
+        # partition via the SAME writer (write_not_run_markers). A dropped trail
+        # thins the fast-read view (FR-6.8 / NFR-10) but must NEVER 500 a clean
+        # verdict: swallow the failure, emit `TrailPersistFailures`, return clean
+        # (D4.2). A partial failure count (some rows lost) also alarms.
+        if markers:
+            try:
+                writer = self._get_signal_store()
+                _success, failure = writer.write_not_run_markers(
+                    session_id=request.get("session_id") or "unknown",
+                    request_id=request.get("request_id") or "unknown",
+                    markers=markers,
+                )
+                if failure:
+                    await self._emit_trail_metric(
+                        "publish_trail_persist_failure", count=failure
+                    )
+            except Exception as e:  # noqa: BLE001 — a marker loss is a fast-read gap, never a 500
+                logger.warning(f"trail marker write failure (non-blocking): {e}")
+                await self._emit_trail_metric(
+                    "publish_trail_persist_failure", count=len(markers)
+                )
 
     def _guard_persist(
         self, request: Dict[str, Any], *, combined_reason: Optional[str] = None
@@ -374,6 +442,12 @@ class AuditLogger:
             "cloud_region": request.get("cloud_region"),
             "operation_type": request.get("operation_type"),
             "trust_score_before": trust_score_before,
+            # WS-D / LLD 33 §6.3 — stamp `phase` on the ran rows. It is the ONE
+            # summary field that must be durable per-row so the read API can
+            # classify ran + marker rows into the same phase-scoped trail. Markers
+            # get it via `_build_marker_item`; ran rows get it here. Defaults to
+            # "request" so a pre-WS-B caller's row still carries a phase.
+            "phase": request.get("phase") or "request",
         }
         # WS-E2 (LLD 29 §5.3): persist the per-phase content field for content/
         # output/memory phases. By this point it has passed the persist-gate — it is

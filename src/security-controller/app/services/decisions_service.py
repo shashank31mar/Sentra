@@ -111,6 +111,154 @@ class DecisionsService:
             "next_token": None,  # single-partition Query; not paged in MVP (LLD 21 §11.1)
         }
 
+    def get_session_trail(
+        self,
+        session_id: str,
+        request_id: str,
+    ) -> dict[str, Any]:
+        """Return the full decision trail for one request — WS-D / LLD 33 §9A.
+
+        The READ endpoint WS-G (console) calls. EXTENDS the existing per-session
+        read convention: it reuses `get_session_signals`'s single-partition Query
+        (`{pk} = :sid AND begins_with(sk, :rid)`) — no new datastore, no new
+        partition, no new index — and adds two things:
+
+          (a) it INCLUDES the marker rows (rows carrying `record_type`, which
+              `get_session_signals` returns but does not classify);
+          (b) it classifies every row into ran / ran_abstain / ran_error / not_run
+              (the SAME four buckets the writer's classifier §7.2 produces — no
+              second taxonomy) and DERIVES the summary/counts + display names +
+              recomputed `winning_source`/`block_point` on read (§9A.2, §6.3).
+
+        Tenant isolation is STRUCTURAL: `get_session_signals` keys the Query on the
+        tenant-composite PK (`tenant_session_id` when v2), so a Query against the
+        wrong tenant's partition returns ZERO rows — it cannot be forgotten like a
+        filter (§9A.3). Pagination: a single request's trail is small (~7 rows, up
+        to ~14 with WS-L) → the full trail returns in one un-paged response,
+        `next_token: null` (matching `get_session_signals`).
+        """
+        from app.combiners.sources import (
+            SOURCE_DISPLAY_NAMES,
+            STATE_DISPLAY_NAMES,
+            STATIC_FALLBACK_ORDER,
+        )
+
+        raw = self.get_session_signals(session_id=session_id, request_id=request_id)
+        rows = raw.get("signals", [])
+
+        # Partition rows: a marker carries `record_type`; a ran row carries a
+        # `decision` (§6.2 partitioning rule). A row is a MARKER iff record_type is
+        # present — otherwise it is a ran signal. This is the reader's `state`
+        # derivation, the SAME four buckets the writer classified into.
+        ran_rows: dict[str, dict] = {}
+        marker_rows: dict[str, dict] = {}
+        phase = "request"
+        for it in rows:
+            src = it.get("source")
+            if not src:
+                continue
+            rt = it.get("record_type")
+            if it.get("phase"):
+                phase = it.get("phase")
+            if rt in ("not_run", "abstain", "error"):
+                marker_rows[src] = it
+            elif it.get("decision") is not None:
+                ran_rows[src] = it
+
+        # Recompute winning_source / block_point on read from the ran DENY rows
+        # (§6.3) — the durable copy lives on the `sentra.combined` CloudWatch event,
+        # never DDB. null on an ALLOW; block_point == winning_source on a DENY.
+        ran_signals = [_item_to_signal(it) for it in ran_rows.values()]
+        decision = "ALLOW"
+        winning_source = None
+        if ran_signals:
+            try:
+                combined = self._combiner.combine(ran_signals)
+                decision = combined.decision
+                winning_source = (combined.metadata or {}).get("winning_source")
+            except ValueError:
+                pass
+        block_point = winning_source if decision == "DENY" else None
+
+        # Coverage order: STATIC_FALLBACK_ORDER today (§5.1), extended by any
+        # source seen on a row but not in the static list (a future WS-L D-layer),
+        # appended in stable first-seen order so it still renders (never dropped).
+        cov_order = list(STATIC_FALLBACK_ORDER)
+        for src in list(ran_rows) + list(marker_rows):
+            if src not in cov_order:
+                cov_order.append(src)
+
+        _MARKER_STATE = {"not_run": "not_run", "abstain": "ran_abstain", "error": "ran_error"}
+        coverage: list[dict[str, Any]] = []
+        ran_count = abstain_count = error_count = not_run_count = 0
+        for src in cov_order:
+            if src in ran_rows:
+                it = ran_rows[src]
+                state = "ran"
+                ran_count += 1
+                entry = {
+                    "source": src,
+                    "state": state,
+                    "decision": it.get("decision"),
+                    "reason": it.get("reason"),
+                    "latency_ms": it.get("latency_ms"),
+                }
+            elif src in marker_rows:
+                it = marker_rows[src]
+                state = _MARKER_STATE.get(it.get("record_type"), "not_run")
+                if state == "ran_abstain":
+                    abstain_count += 1
+                elif state == "ran_error":
+                    error_count += 1
+                else:
+                    not_run_count += 1
+                entry = {
+                    "source": src,
+                    "state": state,
+                    "decision": None,
+                    "reason": it.get("reason"),
+                    "latency_ms": None,
+                }
+            else:
+                # In coverage but neither a ran row nor a persisted marker was found
+                # (e.g. a marker write was shed under backpressure). Surface it as
+                # not_run so the trail still reconciles to coverage_total.
+                state = "not_run"
+                not_run_count += 1
+                entry = {
+                    "source": src,
+                    "state": state,
+                    "decision": None,
+                    "reason": "no row persisted (marker shed / not written)",
+                    "latency_ms": None,
+                }
+            # ADD display fields on READ (never stored — a stored label drifts the
+            # moment the map changes). `source`/`state` stay RAW machine values; an
+            # unknown source falls through to its raw string, never null/crash.
+            entry["display_name"] = SOURCE_DISPLAY_NAMES.get(src, src)
+            entry["state_label"] = STATE_DISPLAY_NAMES.get(state, state)
+            coverage.append(entry)
+
+        return {
+            "session_id": session_id,
+            "request_id": request_id,
+            "phase": phase,
+            "winning_source": winning_source,
+            "winning_source_display": (
+                SOURCE_DISPLAY_NAMES.get(winning_source, winning_source)
+                if winning_source else None
+            ),
+            "block_point": block_point,
+            "decision": decision,
+            "coverage": coverage,
+            "coverage_total": len(coverage),
+            "ran_count": ran_count,
+            "abstain_count": abstain_count,
+            "ran_error_count": error_count,
+            "not_run_count": not_run_count,
+            "next_token": None,  # single-partition Query; a single trail fits one page
+        }
+
     def get_session_decisions(
         self,
         session_id: str,
