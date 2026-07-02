@@ -417,8 +417,8 @@ sequenceDiagram
 - [ ] Destination control **reuses FR-2.9** (OWASP positive allow-list; deny 169.254.169.254 + private ranges) — no new URL subsystem; Tier-1 strips URL-query secrets as a supplement.
 
 **E8 — tests + gates**
-- [ ] Tier-1 matcher UTs pass (matchers + grammar + per-phase + fail-secure + image-mode + stdlib guard).
-- [ ] The **HARD PCI SAD/PAN 0-miss test** (`corpus/pci_sad_pan.jsonl` + `test_pci_deterministic.py`) passes — release-blocking, SEPARATE from the fuzzy target.
+- [x] Tier-1 matcher UTs pass (matchers + grammar + per-phase + fail-secure + image-mode + stdlib guard). <!-- SDK unit suite green: `cd demo-agents/sdk/aegion-guard-python && PYTHONPATH=src python3 -m pytest tests/ -q` @ 44947ea8d26f0772a3e104b0c64632632c62c994 (image-mode facet is server-side Tier-2, not in this Tier-1 slice) -->
+- [x] The **HARD PCI SAD/PAN 0-miss test** (`corpus/pci_sad_pan.jsonl` + `test_pci_deterministic.py`) passes — release-blocking, SEPARATE from the fuzzy target. <!-- SDK unit suite green: `cd demo-agents/sdk/aegion-guard-python && PYTHONPATH=src python3 -m pytest tests/ -q` @ 44947ea8d26f0772a3e104b0c64632632c62c994 -->
 - [ ] The NO-RAW-PHI negative-control test passes (incl. frame-local/APM); the "skip-store but forward raw" and "logs raw body" variants make it FAIL.
 - [ ] The redaction-recall eval harness runs on the obfuscated/non-US/narrative corpus; the **recall NUMBER/threshold is WS-0-GATED** (structured-token GA-gate lock gated on the WS-0 recall-delta + §15.5 (i)-(iii)).
 - [ ] The LIVE e2e integration test (real ALB + DDB + `phi-ner`, no mocks) passes post-deploy/pre-promote; no-raw-in-logs is release-blocking.
