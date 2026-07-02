@@ -1,0 +1,103 @@
+# phi-ner — Tier-2 server-side free-text PHI redactor (WS-E / E2.1, LLD 29 §4/§9.3)
+#
+# A SEPARATE model-serving image (NOT co-located on security-controller). Runs the
+# served `phi-ner` FastAPI app (src/security-controller/app/redaction/phi_ner.py
+# create_served_app) warm/always-on behind CloudMap `phi-ner.sentra.internal`.
+#
+# Build from Sentra root:
+#   docker build -f docker/Dockerfile.phi-ner -t sentra/phi-ner:latest .
+#
+# SELF-HOST, NO NEW SUBPROCESSOR (§4.1 FOOTGUN — the load-bearing reason, not cost):
+#   The model is self-hosted so raw free-text PHI NEVER leaves AegionAI's own
+#   controller/BAA boundary. Every managed de-id API (AWS Comprehend Medical,
+#   Google DLP, Nightfall) would make a third party OUR subprocessor and push raw
+#   PHI out — self-defeating for a compliance vendor. There is NO managed-de-id-API
+#   client baked here. (Comprehend Medical is a fallback-ONLY validation path,
+#   flagged + off by default — NOT wired in this image.)
+#   Whole self-host stack is permissively licensed: Presidio = MIT, the distilled
+#   clinical NER (Medical-NER) + base deberta-v3 = MIT.
+#
+# COLD-START OFF THE HOT PATH (§4.1 FOOTGUN): the ONNX model artifact is baked in at
+# build time (or pulled ONCE at boot from S3) and loaded EAGERLY at startup — never
+# lazy-loaded per request. The service is warm/always-on (CDK min_capacity>=1) so a
+# model-load cold-start is not on the <=900 ms path.
+
+FROM python:3.11-slim
+
+WORKDIR /app
+
+# System deps:
+#  * curl — the container health-check (`GET /health`, matches the CDK HealthCheck).
+#  * tesseract-ocr — the Tesseract binary for the FUTURE `redact`-mode image path
+#    (§3.6 / E1.5). Baked here so the image-redaction build does not need a new base;
+#    the text redactor does not invoke it (§1.3(c) image-redaction engine is a named
+#    later build — the binary is present, the pipeline is not wired in this stage).
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    curl \
+    tesseract-ocr \
+    && rm -rf /var/lib/apt/lists/*
+
+# Python deps. The served app imports FastAPI/uvicorn/pydantic (same pins as the
+# controller) + the self-host NER stack (Presidio + onnxruntime for the distilled
+# int8 model). Copy the controller requirements for the shared web stack, then add
+# the NER extras.
+COPY src/security-controller/requirements.txt ./requirements-controller.txt
+RUN pip install --no-cache-dir -r requirements-controller.txt
+
+# Self-host NER stack (MIT). Pinned; installed as a dedicated layer so the model
+# tooling caches independently of the app code.
+#   presidio-analyzer  — MIT, the regex+NER hybrid recognizers
+#   onnxruntime        — the distilled PHI-NER model runtime (int8-quantized)
+RUN pip install --no-cache-dir \
+    "presidio-analyzer==2.2.355" \
+    "onnxruntime==1.17.0"
+
+# The distilled PHI-NER model exported to ONNX (int8). BAKED IN at build (preferred)
+# or pulled ONCE at boot from S3 into this path — NEVER lazy-per-request (§4.1).
+# The model artifact itself is delivered by the build pipeline / model registry
+# (out of scope for this synth-only stage — the combined deploy step, 00-index.md);
+# the served app reads PHI_NER_MODEL_DIR for its location.
+ENV PHI_NER_MODEL_DIR=/models/phi-ner-onnx-int8
+
+# Served application code. The phi-ner app IS the redaction module + its deps under
+# app/ (the served app is built by app.redaction.phi_ner:create_served_app).
+# NOTE: no `COPY config/` — there is no root-level `config/` in the build context
+# (only cdk/config, src/dashboard/config), so that COPY failed the build; and the
+# served app reads nothing from /config (its only env is set below / by the task
+# def). Copy ONLY the served app package so no root-level secrets/venvs are baked
+# into this raw-PHI image (the repo gitignores .dockerignore; the build context is
+# kept minimal by copying just app/).
+COPY src/security-controller/app/ ./app/
+
+EXPOSE 8080
+
+# F4 in-container isolation (§9.6) — the transient invariant is meaningless if the
+# framework logs the input, so NER-framework INPUT logging is OFF in prod. These
+# env vars are the deployment control (the CDK construct sets the same set on the
+# task def; baked here so a locally-run image is safe by default too):
+ENV PHI_NER_INPUT_LOGGING=off \
+    TRANSFORMERS_VERBOSITY=error \
+    TRANSFORMERS_NO_ADVISORY_WARNINGS=1 \
+    TOKENIZERS_PARALLELISM=false \
+    ORT_LOG_SEVERITY_LEVEL=3 \
+    PHI_NER_MODEL_EAGER_LOAD=1
+
+# Least-privilege: the process that handles raw free-text PHI must NOT run as root
+# (a compromise via a transformers/onnxruntime/presidio vuln or the endpoint should
+# not land root in the task). Create a dedicated non-root user, give it the app and
+# model dirs, and drop to it before CMD. The model dir is pre-created + owned so an
+# at-boot S3 pull (§4.1) can still write the artifact as the non-root user.
+RUN useradd --system --create-home --uid 10001 phiner \
+    && mkdir -p "$PHI_NER_MODEL_DIR" \
+    && chown -R phiner:phiner /app "$PHI_NER_MODEL_DIR"
+USER phiner
+
+# Health check — liveness on the served /health route.
+HEALTHCHECK --interval=30s --timeout=5s --start-period=300s --retries=3 \
+    CMD curl -f http://localhost:8080/health || exit 1
+
+# Run the SERVED phi-ner app (its own app, NOT the controller's app.main:app).
+# The factory build eager-loads the model at startup (warm), so the cold start is
+# a boot cost, not a per-request cost.
+CMD ["uvicorn", "app.redaction.phi_ner:create_served_app", "--factory", \
+     "--host", "0.0.0.0", "--port", "8080", "--workers", "1"]
