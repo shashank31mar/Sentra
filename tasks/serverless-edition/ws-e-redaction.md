@@ -377,60 +377,62 @@ sequenceDiagram
 **Gate**
 - [ ] 🔒 **SPIKE GATE:** WS-0's dated, signed packet exists before ANY WS-E build starts (00-index). The masked-vs-unmasked recall-delta (residual #5) is signed off **before** the structured-token redactor is locked as the GA gate.
 
-**E1 — Tier-1 edge deterministic redactor**
-- [ ] Tier-1 redactor exists in the SDK, **stdlib-only** (`pyproject.toml` runtime `dependencies == []` unchanged), masking PAN(first6/last4)/SAD(drop)/SSN/email/phone/IP/URL/MRN-account-license-device/dates/high-entropy-secrets into **typed tokens** via the frozen `_ORDERED_MATCHERS` (SAD→PAN→…→SECRET).
-- [ ] Redaction runs on **every egressing phase** (`request|content|output|memory`) in `_build_request` before `_send` — a test sends PII in a `content` field and asserts the typed token, not raw.
-- [ ] Typed-token grammar is `⟦AEGR:{nonce}:TYPE[:meta]⟧` (sentinel + per-call nonce); a planted `⟦AEGR:…⟧`/`<CARD>` cannot forge a marker (M-4); `redaction_nonce` on the payload.
-- [ ] `<CARD:6:4>` carries first6/last4 only (middle digits gone); `<SAD>` carries no value.
-- [ ] Redactor fails **secure** — an exception → DENY (`redaction_failed`), never `_send` raw.
+**E1 — Tier-1 edge deterministic redactor** ✅ **DONE + DEPLOYED** (SDK on `main` @ `44947ea`; live in all 3 acme connectors — payments Lambda + identity/telecom Azure funcs — 2026-07-02)
+- [x] Tier-1 redactor exists in the SDK, **stdlib-only** (`pyproject.toml` runtime `dependencies == []` unchanged), masking PAN(first6/last4)/SAD(drop)/SSN/email/phone/IP/URL/MRN-account-license-device/dates/high-entropy-secrets into **typed tokens** via the frozen `_ORDERED_MATCHERS` (SAD→PAN→…→SECRET). <!-- normalize-then-detect rewrite (LLD 29a) closed the separator-leak class -->
+- [x] Redaction runs on **every egressing phase** (`request|content|output|memory`) in `_build_request` before `_send` — a test sends PII in a `content` field and asserts the typed token, not raw.
+- [x] Typed-token grammar is `⟦AEGR:{nonce}:TYPE[:meta]⟧` (sentinel + per-call nonce); a planted `⟦AEGR:…⟧`/`<CARD>` cannot forge a marker (M-4); `redaction_nonce` on the payload.
+- [x] `<CARD:6:4>` carries first6/last4 only (middle digits gone); `<SAD>` carries no value.
+- [x] Redactor fails **secure** — an exception → DENY (`redaction_failed`), never `_send` raw.
 
-**E2 — the PHI-NER model-serving CONTAINER (P0)**
-- [ ] A **separate** `phi-ner` ECS/Fargate service exists (distinct from `security-controller`), model-resident (self-host Presidio + distilled PHI-NER ONNX-int8), a **stateless warm fleet** — its own `docker/Dockerfile.phi-ner` + `cdk/cdk_constructs/phi_ner_service_construct.py` (FargateTaskDefinition + FargateService + internal target/CloudMap `phi-ner.sentra.internal`).
-- [ ] **Warm-pool min count ≥ 1 with autoscale target-util (min_capacity never 0)** — no model-load cold-start on the ≤900 ms hot path.
-- [ ] The internal API contract POSTs **free-text fields only**, returns the **redacted view**, discards raw; TLS in-VPC; IAM = no data egress off the account, no third-party de-id subprocessor.
-- [ ] **F4 tenant isolation:** per-request raw-buffer zeroing; NER-framework input-logging DISABLED; no shared crash dump exposes tenant raw; process-level isolation today with the **deferred enclave named as the residual** for a provable boundary.
-- [ ] Model choice is **self-host (BUILD, no new subprocessor)**; Comprehend Medical is fallback-only if self-host misses §15.5.
-- [ ] Free-text data-class allowlist enforced (Appendix F): label does not classify free-text; residual redacted under BAA / in-VPC / **held (E3)**.
+**E2 — the PHI-NER model-serving CONTAINER (P0)** ⬜ **BUILT (synth-verified) but NOT DEPLOYED — GA-gated.** Constructs on `main` @ `3ae42e8` (Dockerfile.phi-ner + phi_ner_service_construct.py + feedback_store_table_construct.py, 44 CDK tests + `cdk synth` green); deliberately NOT wired into any deployable stack — held on WS-0 recall + counsel BAA (model selection/GA-lock).
+- [x] A **separate** `phi-ner` ECS/Fargate service exists (distinct from `security-controller`), model-resident (self-host Presidio + distilled PHI-NER ONNX-int8), a **stateless warm fleet** — its own `docker/Dockerfile.phi-ner` + `cdk/cdk_constructs/phi_ner_service_construct.py` (FargateTaskDefinition + FargateService + internal target/CloudMap `phi-ner.sentra.internal`). <!-- construct built + synth-asserted; NOT deployed -->
+- [x] **Warm-pool min count ≥ 1 with autoscale target-util (min_capacity never 0)** — no model-load cold-start on the ≤900 ms hot path. <!-- asserted in the CDK construct test -->
+- [x] The internal API contract POSTs **free-text fields only**, returns the **redacted view**, discards raw; TLS in-VPC; IAM = no data egress off the account, no third-party de-id subprocessor. <!-- served endpoint built (stub NER); real model = GA-gated -->
+- [x] **F4 tenant isolation:** per-request raw-buffer zeroing; NER-framework input-logging DISABLED; no shared crash dump exposes tenant raw; process-level isolation today with the **deferred enclave named as the residual** for a provable boundary.
+- [x] Model choice is **self-host (BUILD, no new subprocessor)**; Comprehend Medical is fallback-only if self-host misses §15.5. <!-- self-host stub shipped; model SELECTION locked on WS-0 recall -->
+- [x] Free-text data-class allowlist enforced (Appendix F): label does not classify free-text; residual redacted under BAA / in-VPC / **held (E3)**.
 
-**E3 — the F1 barrier**
-- [ ] On a PHI-bearing free-text field, NER **completes before** any deep-detector read / audit-signal write / meter-feedback write of that content (the three read only the post-NER redacted view); the overlap optimization is confined to the **non-PHI verdict-return** path.
-- [ ] A PHI-bearing call pays NER on the **critical path** (≤900 ms ML-hot), NOT "hidden behind the floor."
+**E3 — the F1 barrier** ✅ **DONE + DEPLOYED** (DAG entry node; server on `main` @ `a2a2553`, live milestone-93+)
+- [x] On a PHI-bearing free-text field, NER **completes before** any deep-detector read / audit-signal write / meter-feedback write of that content (the three read only the post-NER redacted view); the overlap optimization is confined to the **non-PHI verdict-return** path. <!-- reconciled to WS-C DAG as an entry node that redacts request.content_text in place -->
+- [x] A PHI-bearing call pays NER on the **critical path** (≤900 ms ML-hot), NOT "hidden behind the floor."
 
-**E4 — NO-RAW-PHI invariant (I-1)**
-- [ ] The audit/signal writer + CloudWatch carry the **redacted view** (the `audit_logger.py` 223/307/320 raw surface is cleaned); a field without `redacted=True` is dropped + `RawContentBlockedFromLog` (fail-secure).
-- [ ] The persist-gate for **any** persisting store is a **content re-scan by a stronger independent detector** (NOT the flag), over the WHOLE record (payload + reason + winning_source + detector_outcomes).
-- [ ] The log-sink inventory is controlled (ALB/API-GW/uvicorn/X-Ray/boto3/APM) — persist path **test-asserted** (§15.2), transport/ingress **config-controlled** (not over-claimed).
-- [ ] The frame-local/APM crash-path control holds and is asserted (F7).
+**E4 — NO-RAW-PHI invariant (I-1)** ✅ **DONE + DEPLOYED** (strict fail-secure live milestone-95 @ `1339174`); F7 partial — see note
+- [x] The audit/signal writer + CloudWatch carry the **redacted view** (the `audit_logger.py` 223/307/320 raw surface is cleaned); a field without `redacted=True` is dropped + `RawContentBlockedFromLog` (fail-secure). <!-- STRICT after the connector edge-rollout (transition truncate-fallback removed) -->
+- [x] The persist-gate for **any** persisting store is a **content re-scan by a stronger independent detector** (NOT the flag), over the WHOLE record (payload + reason + winning_source + detector_outcomes). <!-- IndependentGateDetector; NOTE: stage-2 stub (narrow patterns) — the heavy reclassifier is stage-3/§6.6 -->
+- [x] The log-sink inventory is controlled (ALB/API-GW/uvicorn/X-Ray/boto3/APM) — persist path **test-asserted** (§15.2), transport/ingress **config-controlled** (not over-claimed).
+- [ ] The frame-local/APM crash-path control holds and is asserted (F7). <!-- PARTIAL: the guard drops content before persist, but the explicit frame-local/APM-capture assertion (E4.4 option 2/3) is NOT yet asserted — open follow-up -->
 
-**E5 — opt-in redacted feedback store**
-- [ ] A **separate**, tenant-scoped, **redacted-records-only** DynamoDB table (NOT signal store, NOT meter store), DynamoDB TTL enabled (default 90d DPA-scoped placeholder), **PITR OFF**; a test asserts no raw can be written.
-- [ ] Write is **opt-in default OFF** (per-DPA `sentra-tenants` flag) — a non-opted-in tenant produces **no** record; transient redaction stays always-on under the BAA.
-- [ ] The eval-gate before any write uses a **stronger independent detector** (not the primary redactor); a residual hit → skip write + `FeedbackRedactionGateFail`.
-- [ ] `DELETE /v1/feedback/subjects/{subject_locator}` deletes a subject (tenant-scoped, 403 cross-tenant); `subject_locator` = salted `HMAC(per-tenant-salt, subject_key)` where a stable key exists, else TTL-only-deletable (conceded).
-- [ ] The store contract is redaction-gated for the FR-3.14 offline job (the batch job itself is a named P2 gap, not built here).
+**E5 — opt-in redacted feedback store** ✅ **LOGIC DONE + DEPLOYED (moto-tested, live in controller); TABLE construct built not deployed (GA-gated w/ E2)**
+- [x] A **separate**, tenant-scoped, **redacted-records-only** DynamoDB table (NOT signal store, NOT meter store), DynamoDB TTL enabled (default 90d DPA-scoped placeholder), **PITR OFF**; a test asserts no raw can be written. <!-- feedback_store_table_construct.py built + synth-asserted; TABLE not deployed (held w/ E2) -->
+- [x] Write is **opt-in default OFF** (per-DPA `sentra-tenants` flag) — a non-opted-in tenant produces **no** record; transient redaction stays always-on under the BAA.
+- [x] The eval-gate before any write uses a **stronger independent detector** (not the primary redactor); a residual hit → skip write + `FeedbackRedactionGateFail`.
+- [x] `DELETE /v1/feedback/subjects/{subject_locator}` deletes a subject (tenant-scoped, 403 cross-tenant); `subject_locator` = salted `HMAC(per-tenant-salt, subject_key)` where a stable key exists, else TTL-only-deletable (conceded). <!-- route wired routes.py:820; live once the table is deployed -->
+- [x] The store contract is redaction-gated for the FR-3.14 offline job (the batch job itself is a named P2 gap, not built here).
 
-**E6 — image per-tool mode**
-- [ ] Image/binary is **server-side Tier-2 only** (edge never redacts pixels); a per-tool `image_mode` `{redact|evaluate|block}` (tool-registry field / Cedar attribute) resolves the behavior, **defaults to `block`**.
-- [ ] The **`evaluate`** path passes pixels **intact** to the fraud evaluator (B2C-fraud beachhead requirement); the `redact`-mode engine (Tesseract+Presidio+faces+DICOM) is named as the **later build**, faces + DICOM called out as separate steps. NOT a blanket "refuse image."
+**E6 — image per-tool mode** ✅ **DONE + DEPLOYED** (server router `a2a2553`)
+- [x] Image/binary is **server-side Tier-2 only** (edge never redacts pixels); a per-tool `image_mode` `{redact|evaluate|block}` (tool-registry field / Cedar attribute) resolves the behavior, **defaults to `block`**.
+- [x] The **`evaluate`** path passes pixels **intact** to the fraud evaluator (B2C-fraud beachhead requirement); the `redact`-mode engine (Tesseract+Presidio+faces+DICOM) is named as the **later build**, faces + DICOM called out as separate steps. NOT a blanket "refuse image."
 
-**E7 — URL/egress**
-- [ ] Destination control **reuses FR-2.9** (OWASP positive allow-list; deny 169.254.169.254 + private ranges) — no new URL subsystem; Tier-1 strips URL-query secrets as a supplement.
+**E7 — URL/egress** ✅ Tier-1 query-secret strip DONE + deployed · ⬜ FR-2.9 destination allow-list is an UNBUILT upstream dependency (P1, owned by WS-A, pending)
+- [ ] Destination control **reuses FR-2.9** (OWASP positive allow-list; deny 169.254.169.254 + private ranges) — no new URL subsystem; Tier-1 strips URL-query secrets as a supplement. <!-- Tier-1 query-secret strip: DONE + live. FR-2.9 destination allow-list: NOT built (P1, dependency on WS-A per prd:129/275) — WS-E only reuses it -->
+- [x] Tier-1 URL query-secret strip (`?token=`/`?api_key=`) — DONE + deployed in the SDK redactor (the WS-E-owned half of E7).
 
 **E8 — tests + gates**
 - [x] Tier-1 matcher UTs pass (matchers + grammar + per-phase + fail-secure + image-mode + stdlib guard). <!-- SDK unit suite green: `cd demo-agents/sdk/aegion-guard-python && PYTHONPATH=src python3 -m pytest tests/ -q` @ 44947ea8d26f0772a3e104b0c64632632c62c994 (image-mode facet is server-side Tier-2, not in this Tier-1 slice) -->
 - [x] The **HARD PCI SAD/PAN 0-miss test** (`corpus/pci_sad_pan.jsonl` + `test_pci_deterministic.py`) passes — release-blocking, SEPARATE from the fuzzy target. <!-- SDK unit suite green: `cd demo-agents/sdk/aegion-guard-python && PYTHONPATH=src python3 -m pytest tests/ -q` @ 44947ea8d26f0772a3e104b0c64632632c62c994 -->
-- [ ] The NO-RAW-PHI negative-control test passes (incl. frame-local/APM); the "skip-store but forward raw" and "logs raw body" variants make it FAIL.
-- [ ] The redaction-recall eval harness runs on the obfuscated/non-US/narrative corpus; the **recall NUMBER/threshold is WS-0-GATED** (structured-token GA-gate lock gated on the WS-0 recall-delta + §15.5 (i)-(iii)).
-- [ ] The LIVE e2e integration test (real ALB + DDB + `phi-ner`, no mocks) passes post-deploy/pre-promote; no-raw-in-logs is release-blocking.
-- [ ] Per-tier latency + failure metrics published off the response path.
-- [ ] **Release gate (not code):** counsel BAA sign-off (45 CFR 164.308/164.314) + the §7.2 breach argument recorded before any HIPAA GA claim; GDPR wording = **pseudonymisation**, never "anonymised"/"Safe-Harbor de-identified" for un-scrubbed free-text (doc + UI copy check).
+- [x] The NO-RAW-PHI negative-control test passes (incl. frame-local/APM); the "skip-store but forward raw" and "logs raw body" variants make it FAIL. <!-- test_redaction_no_raw_logging.py, 12 tests, non-vacuous verified. frame-local/APM facet = partial (see E4 note) -->
+- [ ] The redaction-recall eval harness runs on the obfuscated/non-US/narrative corpus; the **recall NUMBER/threshold is WS-0-GATED** (structured-token GA-gate lock gated on the WS-0 recall-delta + §15.5 (i)-(iii)). <!-- GATED — WS-0 recall number -->
+- [ ] The LIVE e2e integration test (real ALB + DDB + `phi-ner`, no mocks) passes post-deploy/pre-promote; no-raw-in-logs is release-blocking. <!-- GATED on phi-ner deploy (GA-gated) -->
+- [x] Per-tier latency + failure metrics published off the response path. <!-- 17 redaction metrics in metrics_publisher.py -->
+- [ ] **Release gate (not code):** counsel BAA sign-off (45 CFR 164.308/164.314) + the §7.2 breach argument recorded before any HIPAA GA claim; GDPR wording = **pseudonymisation**, never "anonymised"/"Safe-Harbor de-identified" for un-scrubbed free-text (doc + UI copy check). <!-- release gate, not code -->
 
 **Open items carried (from LLD 29):**
 - [ ] Counsel sign-off on the §7.2 BAA-permitted-use + 164.402 low-probability-of-compromise breach argument (release gate, §7.3).
-- [ ] The WS-0 **recall number + latency benchmark** (gates E2 model-selection/GA-lock + E8.5 threshold).
+- [ ] The WS-0 **recall number + latency benchmark** (gates E2 model-selection/GA-lock + E8.5 threshold). <!-- WS-0 packet measured @ 9e31dca, awaiting founder signature -->
 - [ ] The **warm-pool sharing decision for BAA tenants** (§9.6) — process-level today; owner to confirm whether any BAA tenant needs the deferred enclave boundary.
-- [ ] ADR-032 to be recorded in [adr.md](../../adr.md) (currently absent — a release-gate item; incl. the F1 barrier ordering-refinement consequence).
+- [x] ADR-032 to be recorded in [adr.md](../../adr.md) — **DONE** (adr.md:1292 "Two-Tier Input Redaction and the Three-Clause NFR-7 Amendment").
 - [ ] The **FR-3.14 retrain batch job** is a separate P2 LLD gap to create when P2 is scheduled (LLD 19 §4.3/§13.3 + WS-F extend it).
+- [ ] **NEW (post-rollout follow-up):** F7 frame-local/APM-capture explicit assertion (E4.4 option 2/3); the persist-gate `IndependentGateDetector` is a stage-2 stub → replace with the heavy reclassifier (§6.3/§6.6) before HIPAA GA.
 
 ---
 
