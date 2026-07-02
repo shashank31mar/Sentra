@@ -570,9 +570,14 @@ def _redact_sad(text: str, nonce: str) -> str:
                 # whole card. Do NOT partially redact a card.
                 return m.group(0)
         # Either no trailing card, or the card starts AFTER this SAD value (a separate
-        # CVV/PIN before a card). Keep the label, drop THIS value into a no-meta SAD
-        # token; any trailing separated card is redacted by _redact_pan next.
-        return f"{m.group(1)}: {_wire_token(nonce, 'SAD')}"
+        # CVV/PIN before a card). Keep the label AND the original connector text
+        # (e.g. "cvv is 999" -> "cvv is <SAD>", NOT "cvv: <SAD>"): only the VALUE is
+        # dropped into a no-meta SAD token, so benign surrounding text the PDP sees is
+        # left byte-for-byte intact. ``connector`` is the exact matched text between
+        # the label group and the value group. Any trailing separated card (a value
+        # that starts after this match's end) is redacted by _redact_pan next.
+        connector = text[m.end(1) : m.start(2)]
+        return f"{m.group(1)}{connector}{_wire_token(nonce, 'SAD')}"
 
     return _SAD_ANCHORED.sub(repl, text)
 
@@ -635,11 +640,19 @@ def _redact_ssn(text: str, nonce: str) -> str:
         value_start = m.start(2)
         digits, idx_map, _boundaries = _normalize_digits(value)
         if len(digits) >= 9 and _is_ssn(digits[:9]):
-            # Original span of the first 9 SSN digits within the whole text.
-            span_start = value_start + idx_map[0]
+            # Keep the label AND the original connector text between label and value
+            # (e.g. "ssn is 078-05-1120" -> "ssn is <SSN>", NOT "ssn: <SSN>"): only
+            # the SSN value is tokenized, so benign surrounding text is left intact.
+            # ``connector`` is the exact matched text between the label and value
+            # groups. Any leading value chars BEFORE the 9 SSN digits (idx_map[0] > 0)
+            # and the trailing text after them are preserved verbatim.
+            connector = text[m.end(1) : value_start]
+            lead = value[: idx_map[0]]
             span_end = value_start + idx_map[8] + 1
             tail = text[span_end : m.end()]
-            return f"{label}: {_wire_token(nonce, 'SSN')}{tail}"
+            return (
+                f"{label}{connector}{lead}{_wire_token(nonce, 'SSN')}{tail}"
+            )
         return m.group(0)
 
     return _SSN_ANCHORED.sub(repl, text)
@@ -949,16 +962,34 @@ _Matcher = Tuple[str, Callable[[str, str], str]]
 _ORDERED_MATCHERS: Tuple[_Matcher, ...] = (
     ("SAD", _redact_sad),               # never-store, most-specific, first
     ("CARD", _redact_pan),              # Luhn-gated, before any bare-numeric
-    # EMAIL/URL run BEFORE LABELLED_ID: a label word adjacent to an email/URL
+    # URL runs BEFORE EMAIL (E7.2 whole-URL-collapse — the fix for the userinfo
+    # leak). A URL can embed an ``@`` in its userinfo authority
+    # (``https://apikey123@payments.internal.corp/transfer?acct=999``): the EMAIL
+    # regex (``local@dotted-TLD``) matches ``apikey123@payments.internal.corp``,
+    # so if EMAIL ran first it would tokenize the userinfo mid-URL and the URL
+    # matcher — running next on the plaintext OUTSIDE that EMAIL token — would then
+    # stop at the emitted ``⟦`` bracket, leaving the scheme prefix, PATH, and QUERY
+    # STRING (account/amount, any ``?sig=`` short query secret below the SECRET
+    # length/hex floor) in CLEARTEXT to the hosted PDP (NFR-7 (a) / E1.4 fail-open;
+    # contradicts the whole-URL-collapse promise). Running URL FIRST collapses the
+    # ENTIRE URL — scheme, userinfo, host, path, query — into ONE opaque ⟦…:URL⟧
+    # token; EMAIL then runs only on the plaintext gaps outside that token, so a
+    # standalone email elsewhere in the same value is still caught while the in-URL
+    # userinfo is already gone. Ordering the two is safe because the URL grammar
+    # (``https?://…``) and a bare email are disjoint on their anchors — a bare
+    # ``jsmith@acme.com`` with no scheme is untouched by URL and still tokenized by
+    # EMAIL next.
+    #
+    # BOTH still run BEFORE LABELLED_ID: a label word adjacent to an email/URL
     # (e.g. "license jsmith@acme.com") would otherwise let LABELLED_ID's value
     # capture grab the local-part ("jsmith") and tokenize it as a LICENSE id,
     # leaving the raw domain ("@acme.com") in cleartext — a partial-redaction
     # PII leak that egresses to the hosted PDP (NFR-7 (a); E1.4 never egress a
-    # partially-redacted value). Running the whole-email/URL matchers first
+    # partially-redacted value). Running the whole-URL/email matchers first
     # tokenizes the entire value; the residual "⟦…⟧" bracket then breaks the
     # LABELLED_ID value capture, so no double-tokenization occurs.
+    ("URL", _redact_url),               # before EMAIL (userinfo @) and LABELLED_ID/IP/PHONE
     ("EMAIL", _redact_email),
-    ("URL", _redact_url),               # before LABELLED_ID and IP/PHONE
     ("LABELLED_ID", _redact_labelled_id),  # format-anchored MRN/account/license/device
     ("SSN", _redact_ssn),
     ("IP", _redact_ip),
@@ -1003,28 +1034,67 @@ _BASE64_BLOB = re.compile(r"^[A-Za-z0-9+/]+={0,2}$")
 _IMAGE_MIN_LEN = 512          # a real inlined image blob is large; prose is not
 _IMAGE_ENTROPY_MIN = 4.5      # base64 of compressed/image bytes is high-entropy
 
+# A JWT header always begins ``eyJ`` (base64url of ``{"``). A long single-segment
+# high-entropy base64 run with a known credential prefix (``_SECRET_PREFIXES``) or the
+# JWT header is a SECRET, not an IMAGE: the bare-base64-blob IMAGE heuristic
+# (>=512 chars, high entropy, base64 charset) would otherwise mis-classify a long
+# credential token as an image and route it to Tier-2 with the WRONG type. Both
+# outcomes DROP the value (fail-safe — never egressed raw), but the type handed to the
+# PDP must be SECRET so the credential signal is not mis-routed / lost. A ``data:image``
+# URI is unambiguous and stays IMAGE regardless of this check.
+_JWT_HEADER_PREFIX = "eyJ"
 
-def _maybe_image_tag(value: str, nonce: Optional[str]) -> Optional[str]:
-    """Return an ⟦…:IMAGE⟧ marker if ``value`` looks like an image/binary blob,
-    else ``None`` (the caller then treats it as text) — E6.1.
 
-    Two shapes are detected: an explicit ``data:image/...;base64,`` URI, and a bare
-    long high-entropy base64 run (an inlined attachment). Detection is deliberately
-    conservative — a real image blob is large and near-max-entropy, whereas prose,
-    IDs, and even a long secret token are shorter and/or lower entropy — so this
-    never mis-tags text (which must still flow through the deterministic matchers).
-    The raw blob is dropped entirely: the edge routes it to Tier-2, it is never
-    pixel-redacted and never egressed raw.
+def _maybe_blob_type(value: str) -> Optional[str]:
+    """Classify ``value`` as a whole-value binary/credential blob, or ``None``.
+
+    Returns the resolved TYPE — ``"IMAGE"`` or ``"SECRET"`` — for a value the edge
+    handles as a single opaque blob (dropped, never egressed raw, routed to Tier-2),
+    or ``None`` when the value is ordinary text that must flow through the
+    deterministic matcher chain. E6.1 / FR-3.15.
+
+    Three shapes are recognised:
+
+    * an explicit ``data:image/...;base64,`` URI -> ``IMAGE`` (unambiguous);
+    * a bare long high-entropy base64 run whose leading bytes are a known credential
+      format — a ``_SECRET_PREFIXES`` prefix or the JWT header ``eyJ`` -> ``SECRET``.
+      Without this the bare-base64-blob IMAGE heuristic below would mis-classify a
+      long credential token (a >=512-char single-segment API token / JWT-like string,
+      no separators) as an IMAGE and hand the PDP the WRONG type. Both paths DROP the
+      value (fail-safe — never egressed raw), but the credential signal must reach the
+      PDP typed SECRET, not IMAGE, so it is not mis-routed / lost;
+    * any other bare long high-entropy base64 run (an inlined attachment) -> ``IMAGE``.
+
+    Detection is deliberately conservative — a real image blob is large and
+    near-max-entropy, whereas prose, IDs, and even a shorter secret token are shorter
+    and/or lower entropy — so this never mis-tags ordinary text. A shorter credential
+    (below :data:`_IMAGE_MIN_LEN`) is not seen here at all; it is caught by the SECRET
+    matcher in the chain, which already prefix-anchors the same credential formats.
     """
     stripped = value.strip()
-    n = nonce if nonce is not None else _make_nonce()
     if _DATA_URI_IMAGE.match(stripped):
-        return _wire_token(n, "IMAGE")
+        return "IMAGE"
     if (
         len(stripped) >= _IMAGE_MIN_LEN
         and _BASE64_BLOB.match(stripped)
         and _shannon_entropy(stripped) >= _IMAGE_ENTROPY_MIN
     ):
+        # A base64-blob-shaped value that carries a known credential prefix (or the
+        # JWT header) is a SECRET, not an IMAGE — type it correctly for the PDP.
+        if stripped.startswith(_SECRET_PREFIXES) or stripped.startswith(
+            _JWT_HEADER_PREFIX
+        ):
+            return "SECRET"
+        return "IMAGE"
+    return None
+
+
+def _maybe_image_tag(value: str, nonce: Optional[str]) -> Optional[str]:
+    """Back-compat shim: return an ⟦…:IMAGE⟧ marker for an image/binary blob, else
+    ``None``. Kept for the E6.1 precedence-seam tests; new code uses
+    :func:`_maybe_blob_type` (which also resolves the SECRET-vs-IMAGE boundary)."""
+    if _maybe_blob_type(value) == "IMAGE":
+        n = nonce if nonce is not None else _make_nonce()
         return _wire_token(n, "IMAGE")
     return None
 
@@ -1060,12 +1130,18 @@ def redact_detailed(value: str, *, nonce: Optional[str] = None) -> RedactionResu
         )
     try:
         nonce = nonce if nonce is not None else _make_nonce()
-        # E6.1: a content field (or user_input) may itself be an inlined image/
-        # binary blob. Tag + route it (never pixel-redact, never egress raw) before
-        # running the text matchers on what would otherwise be a huge base64 run.
-        image_tag = _maybe_image_tag(value, nonce)
-        if image_tag is not None:
-            return RedactionResult(text=image_tag, types=("IMAGE",))
+        # E6.1: a content field (or user_input) may itself be a whole-value binary/
+        # credential blob. Tag + route it (never pixel-redact, never egress raw)
+        # before running the text matchers on what would otherwise be a huge base64
+        # run. :func:`_maybe_blob_type` resolves the SECRET-vs-IMAGE boundary: a long
+        # base64-shaped credential (known prefix / JWT header) is dropped as SECRET,
+        # not mis-typed IMAGE — both fail-safe (dropped), but the PDP gets the right
+        # type so the credential signal is not mis-routed.
+        blob_type = _maybe_blob_type(value)
+        if blob_type is not None:
+            return RedactionResult(
+                text=_wire_token(nonce, blob_type), types=(blob_type,)
+            )
         # Unicode NFKC-normalize FIRST (before neutralization/matching). This folds
         # compatibility-obfuscated PII — fullwidth digits (`４111`), homoglyphs and
         # other compatibility variants — back to their ASCII canonical form so the
