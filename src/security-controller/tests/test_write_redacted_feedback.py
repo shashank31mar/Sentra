@@ -9,7 +9,7 @@ verified, not just the store in isolation:
 
   * the phase gate (request phase → early return, NO write);
   * the `tenant_feedback_opt_in` resolution (non-opted-in → no record; opted-in → write);
-  * the FeedbackGateFail swallow path (a residual → skipped, never raised to caller);
+  * the FeedbackRedactionGateFail swallow path (a residual → skipped, never raised to caller);
   * the generic exception swallow path (a store hiccup never surfaces to the verdict);
   * the subject_key extraction (§6.4) — `subject_id`/`subject`/`user_id` → a durable
     `subject_locator`; none present → TTL-only (no locator). This is the MEDIUM gap:
@@ -25,7 +25,7 @@ from moto import mock_aws
 
 from app.api.models import ValidationRequest
 from app.config import settings
-from app.redaction.feedback_store import FeedbackGateFail, SUBJECT_LOCATOR_GSI
+from app.redaction.feedback_store import FeedbackRedactionGateFail, SUBJECT_LOCATOR_GSI
 from app.services.validation_service import (
     _subject_key_from_context,
     write_redacted_feedback,
@@ -201,9 +201,9 @@ def test_subject_key_extraction_priority_and_types():
 @pytest.mark.asyncio
 async def test_eval_gate_residual_is_swallowed_not_raised(feedback_env):
     """A residual identifier that survives into the would-be-persisted record trips the
-    eval-gate → FeedbackGateFail INSIDE the store; the wrapper SWALLOWS it (the skip is
+    eval-gate → FeedbackRedactionGateFail INSIDE the store; the wrapper SWALLOWS it (the skip is
     the security action) and never raises to the fire-and-forget caller. No record is
-    written. Must FAIL if the wrapper lets FeedbackGateFail propagate."""
+    written. Must FAIL if the wrapper lets FeedbackRedactionGateFail propagate."""
     with _opt_in(True):
         # A raw SSN in the reason is a residual the IndependentGateDetector catches.
         await write_redacted_feedback(
@@ -216,7 +216,7 @@ async def test_eval_gate_residual_is_swallowed_not_raised(feedback_env):
 @pytest.mark.asyncio
 async def test_unredacted_request_is_gate_failed_not_written(feedback_env):
     """If the barrier did NOT stamp `redacted=True` (a content field that never went
-    through a redaction pass), the store's redacted-only check raises FeedbackGateFail,
+    through a redaction pass), the store's redacted-only check raises FeedbackRedactionGateFail,
     which the wrapper swallows — no raw content is persisted. Must FAIL if an un-flagged
     record is written."""
     with _opt_in(True):

@@ -6,7 +6,9 @@ the §6.2-schema table via moto and exercise the write/DSAR logic against it.
 """
 from __future__ import annotations
 
+import asyncio
 import time
+from unittest.mock import AsyncMock, patch
 
 import boto3
 import pytest
@@ -14,7 +16,7 @@ from moto import mock_aws
 
 from app.config import settings
 from app.redaction.feedback_store import (
-    FeedbackGateFail,
+    FeedbackRedactionGateFail,
     FeedbackRecord,
     FeedbackStore,
     SUBJECT_LOCATOR_GSI,
@@ -101,7 +103,7 @@ def test_opted_in_tenant_writes_redacted_record(feedback_env):
 def test_unredacted_payload_rejected(feedback_env):
     """A raw (un-redacted) payload cannot be written — redacted-only invariant."""
     store = FeedbackStore()
-    with pytest.raises(FeedbackGateFail):
+    with pytest.raises(FeedbackRedactionGateFail):
         store.write_if_opted_in(_record(), opted_in=True, redacted=False)
     assert store.query_by_tenant("t_a") == []
 
@@ -114,7 +116,7 @@ def test_residual_identifier_blocks_write(feedback_env):
     FeedbackRedactionGateFail. Must FAIL if the gate re-runs the primary (circular,
     F3) or trusts the flag."""
     store = FeedbackStore()
-    with pytest.raises(FeedbackGateFail):
+    with pytest.raises(FeedbackRedactionGateFail):
         store.write_if_opted_in(
             _record(payload={"content_text": "ssn 123-45-6789"}),
             opted_in=True, redacted=True,
@@ -126,7 +128,7 @@ def test_residual_in_reason_blocks_write(feedback_env):
     """§6.2 FOOTGUN: a residual in the `reason` (not the payload) also blocks the
     write — the eval-gate scans the WHOLE record, not just the payload."""
     store = FeedbackStore()
-    with pytest.raises(FeedbackGateFail):
+    with pytest.raises(FeedbackRedactionGateFail):
         store.write_if_opted_in(
             _record(reason="blocked: contained 123-45-6789"),
             opted_in=True, redacted=True,
@@ -250,3 +252,48 @@ def test_no_salt_yields_ttl_only_locator():
     one); the record is TTL-only-deletable."""
     assert derive_subject_locator("acct-42", tenant_id="t_a", salt="") is None
     assert derive_subject_locator(None, tenant_id="t_a", salt="s") is None
+
+
+# --------------------------------------------------------- alarm task lifetime (R2-L1)
+
+@pytest.mark.asyncio
+async def test_gate_fail_alarm_task_completes_not_gc_dropped():
+    """`_alarm_gate_fail` must schedule the FeedbackRedactionGateFail publish AND keep a
+    strong ref so the loop cannot GC the task before it runs (mirrors
+    audit_logger._ALARM_TASKS). REGRESSION: the pre-fix code did a bare
+    `create_task(coro)` and discarded the return value — a weakly-referenced task the
+    event loop could collect mid-flight, silently dropping the alarm. This test asserts
+    the coroutine actually completes (the publisher is awaited) after draining
+    `_ALARM_TASKS`. Must FAIL if the task ref is dropped OR the publish never scheduled."""
+    import app.redaction.feedback_store as fs
+
+    fs._ALARM_TASKS.clear()
+    emit = AsyncMock()
+    fake_publisher = type("P", (), {"publish_feedback_redaction_gate_fail_metric": emit})
+    with patch("app.utils.metrics_publisher.MetricsPublisher", return_value=fake_publisher()):
+        store = FeedbackStore.__new__(FeedbackStore)  # no AWS client needed for the alarm
+        store._alarm_gate_fail(["SSN"])
+        # The task was retained (strong ref), not immediately discarded.
+        assert len(fs._ALARM_TASKS) == 1
+        # Drain: the alarm coroutine runs to completion.
+        await asyncio.gather(*list(fs._ALARM_TASKS), return_exceptions=True)
+
+    emit.assert_awaited_once()
+    assert emit.await_args.kwargs["detected_classes"] == ["SSN"]
+    # The done-callback cleaned the set back to empty (it does not grow unbounded).
+    assert fs._ALARM_TASKS == set()
+
+
+def test_gate_fail_alarm_no_running_loop_closes_coro_no_error():
+    """In a sync context (no running loop) the alarm closes the coroutine and never
+    raises — the write path is never broken by an alarm hiccup (§6.3)."""
+    import app.redaction.feedback_store as fs
+
+    fs._ALARM_TASKS.clear()
+    emit = AsyncMock()
+    fake_publisher = type("P", (), {"publish_feedback_redaction_gate_fail_metric": emit})
+    with patch("app.utils.metrics_publisher.MetricsPublisher", return_value=fake_publisher()):
+        store = FeedbackStore.__new__(FeedbackStore)
+        # No running loop here → must not raise, must not leak a task.
+        store._alarm_gate_fail(["SSN"])
+    assert fs._ALARM_TASKS == set()

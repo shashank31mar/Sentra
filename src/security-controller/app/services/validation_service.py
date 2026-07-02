@@ -176,7 +176,7 @@ async def write_redacted_feedback(
         return  # request phase carries no persistable free-text content
     try:
         from app.redaction.feedback_store import (
-            FeedbackGateFail,
+            FeedbackRedactionGateFail,
             FeedbackRecord,
             get_feedback_store,
             tenant_feedback_opt_in,
@@ -207,7 +207,7 @@ async def write_redacted_feedback(
             redacted=bool(getattr(request, "redacted", False)),
             subject_key=_subject_key_from_context(request.context),
         )
-    except FeedbackGateFail:
+    except FeedbackRedactionGateFail:
         # Eval-gate residual: the write is correctly SKIPPED (alarm already emitted
         # inside the store). Not an error to propagate.
         logger.warning("feedback eval-gate blocked a residual record; skipped (correct)")

@@ -48,8 +48,14 @@ logger = logging.getLogger(__name__)
 # CDK construct; the moto tests create it under the same name.
 SUBJECT_LOCATOR_GSI = "subject-locator-index"
 
+# Strong refs to in-flight FeedbackRedactionGateFail alarm coroutines so the event
+# loop's weak reference can't GC an alarm task mid-flight (mirrors audit_logger's
+# _ALARM_TASKS discipline, audit_logger.py:42/:334-336). The done-callback discards,
+# so the set does not grow. A dropped task would mean the alarm silently never emits.
+_ALARM_TASKS: set = set()
 
-class FeedbackGateFail(Exception):
+
+class FeedbackRedactionGateFail(Exception):
     """The would-be-persisted record failed the redaction eval-gate (§6.3) — a
     residual identifier survived. The write is skipped, never stored raw."""
 
@@ -89,11 +95,24 @@ def _record_scan_text(record: FeedbackRecord) -> str:
 def derive_subject_locator(subject_key: Optional[str], *, tenant_id: str, salt: str) -> Optional[str]:
     """Derive the DSAR `subject_locator` (§6.4).
 
-    Where a stable subject key exists (an authenticated subject_id / a structured
-    value present BEFORE masking), return `HMAC(per-tenant-salt, subject_key)` — a
-    per-tenant salted hash so it is neither cross-tenant-linkable nor reversible to
+    Where a stable subject key exists, return `HMAC(per-tenant-salt, subject_key)` —
+    a per-tenant salted hash so it is neither cross-tenant-linkable nor reversible to
     the raw identifier. Where none exists → None (the record is TTL-only-deletable,
     §6.2; do NOT claim subject-targeted deletability for it).
+
+    TRUST NOTE (§6.4, honest-guarantee): `subject_key` is an UNTRUSTED grouping hint.
+    In the live path it is sourced from caller-supplied `request.context`
+    (`subject_id`/`subject`/`user_id` — validation_service._subject_key_from_context),
+    which is NOT identity-verified — a caller could omit it, spoof it, or reuse
+    another subject's value. So the locator only *groups* records that share the same
+    caller-asserted key; it is not proof of who the data subject is. The GDPR
+    guarantee we actually make is therefore the narrow, honest one (LLD 29 §6.4,
+    "never claim blanket deletability"): every record is TTL-deletable, and
+    subject-TARGETED erasure is available ONLY where a stable key was supplied. If a
+    verified session principal is ever threaded here, PREFER it over the context hint;
+    until then the honest claim is TTL + best-effort subject grouping, not
+    verified-subject erasure. Behavior is UNCHANGED by this note — it documents the
+    trust boundary, it does not narrow or widen what is written.
     """
     if not subject_key:
         return None
@@ -125,7 +144,7 @@ class FeedbackStore:
     ) -> Optional[str]:
         """Write a redacted record ONLY when all gates pass. Returns the written
         `record_id`, or None when the tenant is not opted in (§6.5 — a non-opted-in
-        tenant produces NO record). Raises :class:`FeedbackGateFail` on a residual.
+        tenant produces NO record). Raises :class:`FeedbackRedactionGateFail` on a residual.
 
         Gate order (each stricter than the last):
           1. OPT-IN (§6.5, default OFF): not opted in → return None, write nothing.
@@ -140,14 +159,14 @@ class FeedbackStore:
 
         # 2. Redacted-only (I-1): never store an un-redacted payload.
         if not redacted:
-            raise FeedbackGateFail(["not-redacted"])
+            raise FeedbackRedactionGateFail(["not-redacted"])
 
         # 3. Eval-gate — a STRONGER INDEPENDENT re-scan over the whole record (NOT
         # the Tier-2 primary; that would be circular, F3).
         residual = get_gate_detector().find_residual(_record_scan_text(record))
         if residual:
             self._alarm_gate_fail(residual)
-            raise FeedbackGateFail(residual)
+            raise FeedbackRedactionGateFail(residual)
 
         record_id = f"{_now_ms()}#{uuid.uuid4().hex}"
         salt = self._tenant_salt(record.tenant_id)
@@ -249,9 +268,16 @@ class FeedbackStore:
             emit = MetricsPublisher().publish_feedback_redaction_gate_fail_metric
             coro = emit(detected_classes=detected_classes)
             try:
-                asyncio.get_running_loop().create_task(coro)
+                loop = asyncio.get_running_loop()
             except RuntimeError:
-                coro.close()
+                coro.close()  # no running loop (sync context); the debug log is the record
+            else:
+                # Hold a strong ref until the task completes — a bare create_task()
+                # is only weakly referenced by the loop and can be GC'd before it
+                # runs, silently dropping the alarm (mirrors audit_logger.py:334-336).
+                task = loop.create_task(coro)
+                _ALARM_TASKS.add(task)
+                task.add_done_callback(_ALARM_TASKS.discard)
         except Exception:  # noqa: BLE001 — the alarm must never break the write path
             logger.debug("FeedbackRedactionGateFail alarm skipped", exc_info=True)
 
