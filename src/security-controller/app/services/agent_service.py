@@ -10,6 +10,7 @@ Aggregates agent metadata from multiple sources:
 Requirements: LLD 05 Section 3.1, 3.2, 3.3
 Task 10: CloudWatch Metrics and Alarms
 """
+import asyncio
 import logging
 import time
 from typing import Any, Dict, List, Optional
@@ -105,6 +106,28 @@ class AgentService:
     def policies_metadata_table(self):
         return self.dynamodb.Table(tenancy.table_name('policies_metadata'))
 
+    def _scan_all_agents_sync(self) -> List[Dict]:
+        """Paginated tenant-scoped scan of the agent registry (synchronous boto3).
+
+        Extracted so :meth:`list_agents` can run it via ``asyncio.to_thread`` —
+        the raw ``query_or_scan`` loop otherwise blocks the sole event loop.
+        """
+        agents: List[Dict] = []
+        last_evaluated_key = None
+        registry_table = self.agent_registry_table
+        while True:
+            if last_evaluated_key:
+                response = tenancy.query_or_scan(
+                    registry_table, ExclusiveStartKey=last_evaluated_key
+                )
+            else:
+                response = tenancy.query_or_scan(registry_table)
+            agents.extend(response.get('Items', []))
+            last_evaluated_key = response.get('LastEvaluatedKey')
+            if not last_evaluated_key:
+                break
+        return agents
+
     async def list_agents(self, enrich: bool = True, managed_only: bool = False) -> Dict:
         """
         List all agents with optional runtime statistics.
@@ -133,28 +156,13 @@ class AgentService:
                 self._publish_metrics("GetAgents", time.time() - start_time, cache_hit)
                 return cached_data
             
-            # Load agent metadata from DynamoDB with pagination support
+            # Load agent metadata from DynamoDB with pagination support.
+            # The paginated scan is synchronous boto3 → run it on a worker thread
+            # so it does not block the sole asyncio loop and serialize the
+            # dashboard's concurrent reads (RCA 2026-07-02).
             logger.info("Loading agents from sentra-agent-registry")
-            agents = []
-            last_evaluated_key = None
-            
-            # Paginate through all results (handles tables with >1MB of data)
-            registry_table = self.agent_registry_table
-            while True:
-                if last_evaluated_key:
-                    response = tenancy.query_or_scan(
-                        registry_table, ExclusiveStartKey=last_evaluated_key
-                    )
-                else:
-                    response = tenancy.query_or_scan(registry_table)
-                
-                agents.extend(response.get('Items', []))
-                
-                # Check if there are more pages
-                last_evaluated_key = response.get('LastEvaluatedKey')
-                if not last_evaluated_key:
-                    break
-            
+            agents = await asyncio.to_thread(self._scan_all_agents_sync)
+
             logger.debug(f"Loaded {len(agents)} agents from DynamoDB")
 
             # WS-21 D1/T05: show agents from ALL cloud providers (no platform/
@@ -188,7 +196,8 @@ class AgentService:
             # agent-policy-management §4.4/T22: surface active_policy_id (the
             # binding iff its policy is lifecycle-active). Batch-load all policy
             # statuses ONCE, then map — no per-agent lookup (D / no N+1).
-            status_map = self._load_policy_status_map()
+            # Synchronous projected scan → worker thread (don't block the loop).
+            status_map = await asyncio.to_thread(self._load_policy_status_map)
             for agent in agents:
                 agent['active_policy_id'] = self._active_policy_id(
                     agent.get('attached_policy_id'), status_map.get(agent.get('attached_policy_id'))
@@ -197,7 +206,6 @@ class AgentService:
             # Enrich if requested (default behavior for backward compatibility)
             if enrich:
                 # Parallel enrichment using asyncio.gather for better performance
-                import asyncio
                 enrichment_tasks = [self._enrich_agent_metadata(agent) for agent in agents]
                 enriched_results = await asyncio.gather(*enrichment_tasks, return_exceptions=True)
                 

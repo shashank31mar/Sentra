@@ -4,6 +4,7 @@ Metrics Publisher for Security Controller
 Publishes custom metrics to CloudWatch for monitoring and alerting.
 All metrics publishing is asynchronous (fire-and-forget) to avoid blocking validation.
 """
+import asyncio
 import logging
 from typing import Optional
 
@@ -311,10 +312,13 @@ class MetricsPublisher:
             quarantined_count: Number of quarantined sessions
             suspended_count: Number of suspended sessions
         
-        Note: Fire-and-forget. Metrics failures don't block operations.
+        Note: Fire-and-forget. Metrics failures don't block operations. The
+        synchronous ``put_metric_data`` runs on a worker thread so it never
+        blocks the event loop (RCA 2026-07-02: this WRITE sat on a read path).
         """
         try:
-            self.cloudwatch.put_metric_data(
+            await asyncio.to_thread(
+                self.cloudwatch.put_metric_data,
                 Namespace=self.namespace,
                 MetricData=[
                     {
@@ -329,9 +333,9 @@ class MetricsPublisher:
                     }
                 ]
             )
-            
+
             logger.debug(f"Published session metrics: quarantined={quarantined_count}, suspended={suspended_count}")
-            
+
         except Exception as e:
             logger.exception(f"Failed to publish session metrics (non-blocking): {e}")
             # Don't raise - metrics publishing should not block operations

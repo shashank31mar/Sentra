@@ -693,8 +693,14 @@ class SessionManager:
         """WS-21 T20: count sessions in a given quarantine_status (fleet-wide).
 
         Used for the overview 'quarantined' KPI. Uses Select=COUNT so DDB does
-        the counting server-side.
+        the counting server-side. The paginated ``fleet_scan`` is synchronous
+        boto3, so it runs on a worker thread (``to_thread``) — a raw scan on the
+        sole asyncio loop serialized the dashboard's concurrent reads (RCA
+        2026-07-02: 4 concurrent reads each ~1.5s, finishing together).
         """
+        return await asyncio.to_thread(self._count_sessions_by_status_sync, status)
+
+    def _count_sessions_by_status_sync(self, status: str) -> int:
         try:
             from boto3.dynamodb.conditions import Attr
 
@@ -723,8 +729,13 @@ class SessionManager:
         """WS-21 T20: count distinct agents whose average session trust < threshold.
 
         Backs the overview 'agents_below_threshold' KPI. Best-effort full scan
-        (acceptable at MVP scale); aggregates per-agent average in memory.
+        (acceptable at MVP scale); aggregates per-agent average in memory. The
+        synchronous scan runs on a worker thread so it does not block the loop
+        (see :meth:`count_sessions_by_status`).
         """
+        return await asyncio.to_thread(self._count_agents_below_trust_sync, threshold)
+
+    def _count_agents_below_trust_sync(self, threshold: float = 70.0) -> int:
         try:
             scores: Dict[str, list] = {}
             scan_kwargs = {'ProjectionExpression': 'agent_id, trust_score'}

@@ -393,8 +393,14 @@ async def scan_decisions(
     For cross-session views. The cursor is an opaque base64 token —
     consumers must round-trip it unchanged.
     """
+    import asyncio
+
     try:
-        return _decisions_service().scan_decisions(
+        # scan_decisions is synchronous boto3 (paged DDB Query). Offload to a
+        # worker thread so it doesn't block the sole event loop and serialize
+        # the dashboard's concurrent reads (RCA 2026-07-02).
+        return await asyncio.to_thread(
+            _decisions_service().scan_decisions,
             since=since, until=until, agent_id=agent_id,
             decision=decision, threat_type=threat_type, session_id=session_id,
             limit=limit, cursor=cursor,
@@ -514,22 +520,40 @@ async def get_metrics_overview(range: str = "24h") -> Dict:
             status_code=400,
             detail=f"range must be one of {sorted(_VALID_METRIC_RANGES)}",
         )
+    import asyncio
+
     from app.services.metrics_query_service import MetricsQueryService
     from app.services.agent_service import AgentService
     from app.utils.session_manager import SessionManager
 
     mq = MetricsQueryService()
-    cw = mq.overview(range)
-    distribution = await AgentService().get_cloud_provider_distribution()
     session_manager = SessionManager()
-    quarantined = await session_manager.count_sessions_by_status("quarantined")
-    suspended = await session_manager.count_sessions_by_status("suspended")
-    below_threshold = await session_manager.count_agents_below_trust(70.0)
+
+    # RCA 2026-07-02: these five reads are independent and each does blocking
+    # AWS I/O (CloudWatch GetMetricData/ListMetrics + fleet DDB scans). On the
+    # single event loop they were serialized (4 concurrent dashboard reads each
+    # ~1.5s, finishing together). Offload the synchronous CloudWatch calls to
+    # worker threads and run all five CONCURRENTLY so this handler's wall time is
+    # the MAX of the reads, not their SUM. (The count_* / distribution methods
+    # already offload their own blocking scans via asyncio.to_thread.)
+    cw, attack_categories, distribution, quarantined, suspended, below_threshold = await asyncio.gather(
+        asyncio.to_thread(mq.overview, range),
+        asyncio.to_thread(mq.attack_category_count),
+        AgentService().get_cloud_provider_distribution(),
+        session_manager.count_sessions_by_status("quarantined"),
+        session_manager.count_sessions_by_status("suspended"),
+        session_manager.count_agents_below_trust(70.0),
+    )
 
     # WS-21 T01: keep the CloudWatch session gauges (QuarantinedSessions /
     # SuspendedSessions) fresh. The controller has no scheduler, so we emit the
-    # fleet gauge on dashboard reads (cadence = dashboard load). Fire-and-forget;
-    # the console itself reads the counts above straight from DDB.
+    # fleet gauge on dashboard reads (cadence = dashboard load). The PutMetricData
+    # WRITE now runs on a worker thread inside publish_session_metrics (RCA
+    # 2026-07-02), so awaiting it no longer blocks the event loop for other
+    # in-flight requests — it only adds its own ~one-RTT to THIS response. A true
+    # off-response-path emitter (background scheduler) is a follow-up; we do NOT
+    # use a bare create_task here (an unreferenced task can be GC'd before it
+    # runs → silently dropped metric).
     from app.utils.metrics_publisher import MetricsPublisher
     await MetricsPublisher().publish_session_metrics(quarantined, suspended)
 
@@ -537,7 +561,7 @@ async def get_metrics_overview(range: str = "24h") -> Dict:
         "range": range,
         "threats_blocked": cw["threats_blocked"],
         "threats_blocked_delta_pct": None,  # P0: prior-window compare not wired
-        "attack_categories": mq.attack_category_count(),
+        "attack_categories": attack_categories,
         "active_agents": distribution["total_nodes"],
         "clouds": distribution["clouds"],
         "trust_score": cw["trust_score"],
@@ -570,10 +594,16 @@ async def get_decisions_timeseries(range: str = "24h", bucket: str = "1h") -> Di
             status_code=400,
             detail=f"range must be one of {sorted(_VALID_METRIC_RANGES)}",
         )
+    import asyncio
+
     from app.services.metrics_query_service import MetricsQueryService
 
     try:
-        return MetricsQueryService().decisions_timeseries(range, bucket)
+        # Synchronous CloudWatch GetMetricData → worker thread (don't block the
+        # loop / serialize the dashboard's concurrent reads — RCA 2026-07-02).
+        return await asyncio.to_thread(
+            MetricsQueryService().decisions_timeseries, range, bucket
+        )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
 

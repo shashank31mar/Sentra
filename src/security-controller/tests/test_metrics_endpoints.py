@@ -146,3 +146,49 @@ class TestDecisionsTimeseries:
     def test_timeseries_rejects_bad_range(self, client):
         resp = client.get("/v1/metrics/decisions-timeseries?range=bogus")
         assert resp.status_code == 400
+
+
+class TestOverviewConcurrency:
+    """RCA 2026-07-02 regression guard: the overview handler must dispatch its
+    independent reads CONCURRENTLY, not serially await them. Blocking boto3 on
+    the sole event loop was serializing the dashboard's 4 concurrent XHRs (each
+    ~1.5s, finishing together). If someone reverts to sequential
+    `await a; await b; await c`, the overlap below collapses and this fails."""
+
+    def test_overview_reads_run_concurrently(
+        self, client, mock_metrics_query, mock_agent_dist,
+        mock_session_counts, mock_metrics_publisher,
+    ):
+        import asyncio
+        import time
+
+        # Each DDB-backed read sleeps 100ms. Serial => >=300ms just for the three
+        # session counts; concurrent (asyncio.gather) => ~100ms overlapped.
+        async def _slow_count(*_args, **_kwargs):
+            await asyncio.sleep(0.1)
+            return 3
+
+        async def _slow_below(*_args, **_kwargs):
+            await asyncio.sleep(0.1)
+            return 1
+
+        async def _slow_dist():
+            await asyncio.sleep(0.1)
+            return {
+                "total_nodes": 5, "clouds": 2,
+                "providers": [{"cloud_provider": "aws", "label": "AWS", "count": 5, "pct": 100}],
+            }
+
+        mock_session_counts.count_sessions_by_status.side_effect = _slow_count
+        mock_session_counts.count_agents_below_trust.side_effect = _slow_below
+        mock_agent_dist.get_cloud_provider_distribution.side_effect = _slow_dist
+
+        start = time.perf_counter()
+        resp = client.get("/v1/metrics/overview?range=24h")
+        elapsed = time.perf_counter() - start
+
+        assert resp.status_code == 200
+        # 4 x 100ms overlapped reads. Serial execution would be >=400ms; concurrent
+        # is ~100ms. Use a generous 300ms ceiling so the test is not flaky on a
+        # loaded CI box while still proving overlap (serial can't beat 400ms).
+        assert elapsed < 0.3, f"overview reads did not overlap (took {elapsed:.3f}s — serialized?)"

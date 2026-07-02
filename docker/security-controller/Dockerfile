@@ -39,5 +39,11 @@ EXPOSE 8080
 HEALTHCHECK --interval=30s --timeout=3s --start-period=40s --retries=3 \
     CMD curl -f http://localhost:8080/v1/health || exit 1
 
-# Run application
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8080"]
+# Run application.
+# --workers 2: the task is 2 vCPU+ (compute_stack cpu=4096); a single uvicorn
+# worker = one asyncio loop, so any un-offloaded blocking call stalls the whole
+# task. Two workers give process-level parallelism as a backstop to the
+# to_thread offloading on the dashboard read path (RCA 2026-07-02). In-process
+# caches (agent list, sigma rules, policy bundles) are already invalidated
+# cross-instance (WS24 M2.3/M3.1), so >1 worker is safe.
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8080", "--workers", "2"]
