@@ -133,6 +133,24 @@ async def test_barrier_none_content_text_abstains():
     assert result.is_abstain
 
 
+@pytest.mark.asyncio
+async def test_barrier_none_content_text_stamps_redacted_flag():
+    """A None-content pass is a completed (no-op) redaction pass, so `redacted` must
+    be True — mirroring PhiNerClient.redact_free_text's None/empty handling
+    (phi_ner.py: a None/empty field is a redacted no-op view). REGRESSION: leaving it
+    False made an opted-in tenant's genuine null-content feedback record get REFUSED
+    by the eval-gate as `not-redacted` and mislogged as a "residual record; skipped
+    (correct)" — surfacing a benign no-op as a redaction-gate residual (§5.3 pt 3)."""
+    nodes = build_dag(_svc(), "content", {"platform": None, "cloud_region": None})
+    node = _find_ner_node(nodes)
+    req = _content_req(content_text=None)
+    assert req.redacted is False  # precondition — caller sent it un-flagged
+    result = await node.run(req, {"tenant_id": "t_x"})
+    assert result.is_abstain
+    assert req.redacted is True
+    assert req.model_dump()["redacted"] is True
+
+
 # ------------------------------------------------------------ egress-fail-closed (E3)
 
 @pytest.mark.asyncio
@@ -321,3 +339,48 @@ async def test_barrier_outage_never_forwards_raw_negative_control():
     # The raw content must NOT survive the outage on the field.
     assert req.content_text != _RAW_CONTENT
     assert _RAW_NAME not in req.content_text
+
+
+# ------------------------------------------------------- tenant-fallback safety (WS-E2)
+
+def test_tenant_for_ner_default_is_designed_not_an_error():
+    """PROVING TEST (code-respond REJECT of registry.py:186 'silently falls back to
+    default' LOW): `_tenant_for_ner` returning "default" is the DESIGNED P0a behavior,
+    not an error to fail closed on. `tenancy.current_tenant()` is a contextvar that
+    defaults to "default" (tenancy.py: 'P0a: always returns "default"'). So the
+    proposed fix (fail the pass to NerUnavailable on a 'default' resolution) would
+    HOLD/DROP content on every request in P0a — a regression, not a hardening."""
+    from app.services.scheduler.registry import _tenant_for_ner
+    # No session tenant + the P0a contextvar default → "default", cleanly (no raise).
+    assert _tenant_for_ner({}) == "default"
+    # A session-supplied tenant is honored via current_tenant()'s contextvar in prod;
+    # the fallback only engages when tenancy resolution itself raises.
+
+
+def test_ner_markers_are_nonce_namespaced_not_tenant_namespaced():
+    """PROVING TEST (disproves the registry.py:186 harm claim): the reviewer claims a
+    'default' tenant fallback makes 'redacted markers share a default namespace across
+    tenants'. FALSE — the redactor namespaces its typed markers by the per-call NONCE,
+    not by tenant_id (phi_ner TokenizingRedactor emits `⟦AEGR:{nonce}:{kind}⟧`;
+    tenant_id is accepted but not part of the marker). So two tenants that both resolve
+    to "default" but carry different nonces produce DIFFERENT, non-colliding markers —
+    the tenant fallback cannot cause a cross-tenant marker collision.
+
+    NON-VACUOUS: if the marker were tenant-namespaced and a 'default' collapse actually
+    merged the two tenants' namespaces, the two redacted views would share an identical
+    marker for the same input and this inequality assertion would FAIL."""
+    from app.redaction.phi_ner import get_phi_ner_client
+    client = get_phi_ner_client()
+    text = f"Patient {_RAW_NAME} here."
+    # Both under the SAME resolved tenant ("default"), different per-call nonces.
+    v1 = client.redact_free_text(text, nonce="nonceA", tenant_id="default")
+    v2 = client.redact_free_text(text, nonce="nonceB", tenant_id="default")
+    assert _RAW_NAME not in v1.text and _RAW_NAME not in v2.text
+    assert "⟦AEGR:nonceA:NAME⟧" in v1.text
+    assert "⟦AEGR:nonceB:NAME⟧" in v2.text
+    assert v1.text != v2.text  # nonce, not tenant, is the namespace
+    # And the SAME nonce yields the SAME marker regardless of the tenant_id passed —
+    # confirming tenant_id is not a namespacing input, so its "default" fallback is inert.
+    v_ta = client.redact_free_text(text, nonce="nonceA", tenant_id="tenant_a")
+    v_tb = client.redact_free_text(text, nonce="nonceA", tenant_id="tenant_b")
+    assert v_ta.text == v_tb.text

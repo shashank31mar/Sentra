@@ -168,6 +168,49 @@ def test_dsar_cross_tenant_deletes_nothing(feedback_env):
     assert len(store.query_by_tenant("t_a")) == 1
 
 
+def test_dsar_delete_paginates_over_page_boundary(feedback_env):
+    """DELETE-by-subject must remove EVERY record for the subject even when the GSI
+    query spans multiple pages (DynamoDB truncates a query page at 1 MB and returns
+    LastEvaluatedKey). REGRESSION: the pre-fix code issued ONE query and deleted only
+    the first page, leaving residual PHI while reporting an under-count as complete —
+    a silent GDPR-erasure breach (§6.4 "delete every record").
+
+    We force multi-page behaviour deterministically by wrapping the table so every
+    `query` carries a small `Limit` (moto then returns LastEvaluatedKey per page).
+    The production `delete_subject` supplies no Limit; only its LastEvaluatedKey loop
+    can consume all pages — so this FAILS against the single-query implementation.
+    """
+    store = FeedbackStore()
+    n = 5
+    for _ in range(n):
+        store.write_if_opted_in(_record(), opted_in=True, redacted=True, subject_key="acct-42")
+    locator = derive_subject_locator("acct-42", tenant_id="t_a",
+                                     salt=store._tenant_salt("t_a"))
+
+    real_table = store._table()
+
+    class _PagedTable:
+        """Delegates to the real table but forces one-item query pages, so the GSI
+        query genuinely paginates (LastEvaluatedKey on every page but the last)."""
+
+        def query(self, **kw):
+            kw.setdefault("Limit", 1)
+            return real_table.query(**kw)
+
+        def batch_writer(self):
+            return real_table.batch_writer()
+
+        def delete_item(self, **kw):
+            return real_table.delete_item(**kw)
+
+    store._table = lambda: _PagedTable()  # type: ignore[method-assign]
+    deleted = store.delete_subject(locator, tenant_id="t_a")
+    assert deleted == n  # every page consumed, not just the first
+    # Restore the real table for the isolation read; all n records gone.
+    store._table = lambda: real_table  # type: ignore[method-assign]
+    assert store.query_by_tenant("t_a") == []
+
+
 def test_no_subject_key_is_ttl_only(feedback_env):
     """A record with no stable subject key gets NO subject_locator (TTL-only-
     deletable, §6.4) — we do not claim subject-targeted deletion for it."""

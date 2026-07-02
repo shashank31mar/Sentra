@@ -180,7 +180,14 @@ def build_dag(service, phase: str, stamp_ctx: Dict) -> List[ValidatorNode]:
 
         text = getattr(req, "content_text", None)
         if text is None:
-            # Nothing to redact (guarded by build_dag's append condition too).
+            # Nothing to redact (guarded by build_dag's append condition too). This
+            # IS a completed (no-op) redaction pass — mirror PhiNerClient.redact_free_text's
+            # None/empty handling (phi_ner.py: a None/empty field is a redacted no-op
+            # view) and stamp `redacted=True`. Without it, an opted-in tenant's genuine
+            # null-content record would be REFUSED by the feedback eval-gate as
+            # `not-redacted` and logged as a "residual record; skipped (correct)" —
+            # surfacing a benign no-op as a redaction-gate residual (LLD 29 §5.3 pt 3).
+            req.redacted = True
             return ValidationResult.abstain("redaction.ner: no content_text")
 
         nonce = getattr(req, "redaction_nonce", None)

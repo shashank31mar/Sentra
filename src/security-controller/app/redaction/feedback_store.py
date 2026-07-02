@@ -175,23 +175,48 @@ class FeedbackStore:
 
     # ---- DSAR / deletion (§6.4) ------------------------------------------- #
     def delete_subject(self, subject_locator: str, *, tenant_id: str) -> int:
-        """Delete every record for a subject in THIS tenant via the subject_locator
+        """Delete EVERY record for a subject in THIS tenant via the subject_locator
         GSI (§6.4). Tenant-scoped: the query filters on `tenant_id`, so tenant A
         cannot delete tenant B's records (the route enforces the 403; this method
-        never crosses the tenant boundary). Returns the number deleted."""
+        never crosses the tenant boundary). Returns the number deleted.
+
+        MUST paginate: a DynamoDB `query` page truncates at 1 MB and returns
+        `LastEvaluatedKey` for the rest. A subject that accumulated many feedback
+        records (up to the 90-day TTL) can span multiple pages; deleting only page 1
+        would leave residual PHI behind while the DSAR route reports success — a
+        silent GDPR-erasure breach against the §6.4 "delete every record" claim.
+
+        Collect ALL matching primary keys across every page FIRST, then delete — do
+        NOT interleave deletes with the paginated query. Deleting the item the current
+        `LastEvaluatedKey` points at and then resuming from that (now-absent) cursor
+        makes the engine resume PAST it and skip the remaining page — items would
+        survive. Query-all-then-delete keeps the pagination cursor stable, then a
+        `BatchWriteItem` writer erases the collected keys."""
         table = self._table()
-        resp = table.query(
-            IndexName=SUBJECT_LOCATOR_GSI,
-            KeyConditionExpression="subject_locator = :sl",
-            FilterExpression="tenant_id = :t",
-            ExpressionAttributeValues={":sl": subject_locator, ":t": tenant_id},
-        )
-        items = resp.get("Items", [])
-        deleted = 0
-        for it in items:
-            table.delete_item(Key={"tenant_id": it["tenant_id"], "record_id": it["record_id"]})
-            deleted += 1
-        return deleted
+        keys: List[Dict[str, str]] = []
+        start_key: Optional[Dict[str, Any]] = None
+        while True:
+            kwargs: Dict[str, Any] = {
+                "IndexName": SUBJECT_LOCATOR_GSI,
+                "KeyConditionExpression": "subject_locator = :sl",
+                "FilterExpression": "tenant_id = :t",
+                "ExpressionAttributeValues": {":sl": subject_locator, ":t": tenant_id},
+            }
+            if start_key is not None:
+                kwargs["ExclusiveStartKey"] = start_key
+            resp = table.query(**kwargs)
+            for it in resp.get("Items", []):
+                keys.append({"tenant_id": it["tenant_id"], "record_id": it["record_id"]})
+            start_key = resp.get("LastEvaluatedKey")
+            if not start_key:
+                break
+        # BatchWriteItem (25/req, auto-batched + retried by the resource writer) so a
+        # large subject's erasure is not a delete-per-item round-trip storm.
+        if keys:
+            with table.batch_writer() as batch:
+                for key in keys:
+                    batch.delete_item(Key=key)
+        return len(keys)
 
     def query_by_tenant(self, tenant_id: str, limit: int = 100) -> List[Dict[str, Any]]:
         """Tenant-scoped read (isolation guard for the tests): a query PK-scoped to
