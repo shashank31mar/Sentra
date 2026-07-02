@@ -47,3 +47,15 @@
 {"id": "pan-stray-groups-both-sides", "kind": "PAN", "pan": "4111111111111111", "text": "ref 12 34 4111 1111 1111 1111 56"}
 {"id": "sadpan-cvv-999-before-sep-pan", "kind": "SAD_AND_PAN", "pan": "4111111111111111", "sad": "999", "text": "cvv 999 4111 1111 1111 1111"}
 {"id": "sadpan-cvv-2stray-before-sep-pan", "kind": "SAD_AND_PAN", "pan": "4111111111111111", "sad": "123", "text": "cvv 123 456 4111 1111 1111 1111"}
+{"id": "pan-3space-visa", "kind": "PAN", "pan": "4111111111111111", "text": "card 4111   1111   1111   1111 here"}
+{"id": "pan-3space-mc", "kind": "PAN", "pan": "5555555555554444", "text": "bill 5555   5555   5555   4444 monthly"}
+{"id": "pan-tab-visa", "kind": "PAN", "pan": "4111111111111111", "text": "tsv 4111\t1111\t1111\t1111 imported"}
+{"id": "pan-tab-amex", "kind": "PAN", "pan": "378282246310005", "text": "amex 3782\t822463\t10005 ok"}
+{"id": "pan-crlf-visa", "kind": "PAN", "pan": "4111111111111111", "text": "4111\r\n1111\r\n1111\r\n1111"}
+{"id": "pan-mixed-sep-visa", "kind": "PAN", "pan": "4111111111111111", "text": "form 4111-1111.1111 1111 saved"}
+{"id": "pan-comma-space-visa", "kind": "PAN", "pan": "4111111111111111", "text": "row 4111, 1111, 1111, 1111 end"}
+{"id": "pan-multigroup-4stray-before", "kind": "PAN", "pan": "5555555555554444", "text": "ref 12 34 56 78 5555 5555 5555 4444"}
+{"id": "neg-16digit-non-iin", "kind": "NONE", "text": "invoice 1000000000000008 paid"}
+{"id": "neg-luhn-valid-non-iin", "kind": "NONE", "text": "meter 9999999999999995 reading"}
+{"id": "neg-two-distant-8digit-runs", "kind": "NONE", "text": "order 12345678    ref 87654321 done"}
+{"id": "neg-15digit-non-iin-luhn", "kind": "NONE", "text": "tracking 100000000000009 shipped"}

@@ -187,88 +187,157 @@ def _shannon_entropy(s: str) -> float:
 
 
 # --------------------------------------------------------------------------- #
+# IIN (Issuer Identification Number) prefix validation (29a §2.1 table).
+#
+# A Luhn-valid 13-19-digit run is necessary but NOT sufficient to be a real PAN:
+# roughly 1-in-10 random digit runs are Luhn-valid, so Luhn alone over-masks long
+# order ids / concatenated timestamps that happen to pass mod-10. The IIN prefix
+# (the leading digits of the PAN) is the second, structural gate: a real card
+# starts with an issuer-assigned prefix from a small, well-known set. Requiring a
+# valid IIN prefix on TOP of Luhn (both must hold) sharply narrows the false-positive
+# surface without dropping any real card, because every issuing network's range is
+# covered below. This is the ``format+validity`` half of NORMALIZE-THEN-DETECT for
+# PAN: strip separators, then gate on (Luhn AND IIN-prefix AND card length).
+#
+# Ranges are the standard major-industry-identifier / IIN assignments:
+#   Visa            4                     (13/16/19)
+#   Mastercard      51-55, 2221-2720      (16)
+#   Amex            34, 37                (15)
+#   Discover        6011, 644-649, 65, 622126-622925 (16/19)
+#   Diners Club     300-305, 3095, 36, 38-39, 54-55  (14/16)
+#   JCB             3528-3589             (16-19)
+#   UnionPay        62, 81                (16-19)
+#   Maestro         50, 56-69             (12-19; the broad ranges above already cover)
+# Kept as prefix-length buckets so the check is pure arithmetic (stdlib-only,
+# 29a §5.3) — no table lookup library. A run whose length is a card length and whose
+# leading digits fall in ANY bucket is IIN-valid.
+# --------------------------------------------------------------------------- #
+_PAN_MIN_LEN = 12       # shortest real card (Maestro) — 29a §2.1
+_PAN_MAX_LEN = 19       # longest real card (Visa/UnionPay/JCB 19)
+
+
+def _iin_ok(digits: str) -> bool:
+    """Does ``digits`` begin with a valid issuer IIN prefix (29a §2.1)?
+
+    Pure arithmetic over the leading digits (stdlib-only). Necessary-together with
+    :func:`_luhn_ok`: a run must pass BOTH to be treated as a card, which stops a
+    Luhn-coincidental order id / timestamp from being masked as a PAN (E1.1) while
+    never dropping a real card (every issuing network's range is covered).
+    """
+    if len(digits) < _PAN_MIN_LEN:
+        return False
+    d1 = int(digits[0])
+    d2 = int(digits[:2])
+    d3 = int(digits[:3])
+    d4 = int(digits[:4])
+    d6 = int(digits[:6])
+    # Visa
+    if d1 == 4:
+        return True
+    # Mastercard (51-55) + 2-series BIN (2221-2720)
+    if 51 <= d2 <= 55 or 2221 <= d4 <= 2720:
+        return True
+    # Amex
+    if d2 in (34, 37):
+        return True
+    # Diners Club (300-305, 3095, 36, 38, 39)
+    if 300 <= d3 <= 305 or d4 == 3095 or d2 in (36, 38, 39):
+        return True
+    # JCB (3528-3589)
+    if 3528 <= d4 <= 3589:
+        return True
+    # Discover (6011, 644-649, 65, 622126-622925)
+    if d4 == 6011 or 644 <= d3 <= 649 or d2 == 65 or 622126 <= d6 <= 622925:
+        return True
+    # UnionPay (62, 81)
+    if d2 in (62, 81):
+        return True
+    # Maestro (50, 56-69) — broad debit ranges (56-69 already partly covered above)
+    if d2 == 50 or 56 <= d2 <= 69:
+        return True
+    return False
+
+
+def _is_pan(digits: str) -> bool:
+    """A pure-ASCII digit run is a PAN iff it is a card length AND passes BOTH the
+    Luhn mod-10 checksum AND a valid issuer IIN prefix (29a §2.1 / §5.3).
+
+    This is the single validity predicate used by every PAN path (the normalize-
+    then-detect window scan, and the SAD footgun guard) so the accept criteria never
+    diverge across call sites. Both gates are pure arithmetic — stdlib-only.
+    """
+    return (
+        _PAN_MIN_LEN <= len(digits) <= _PAN_MAX_LEN
+        and _luhn_ok(digits)
+        and _iin_ok(digits)
+    )
+
+
+# --------------------------------------------------------------------------- #
 # Matchers. Each is (name, callable) where the callable takes (text, nonce) and
 # returns the text with its class of values replaced by wire tokens. Order is a
 # security control: _ORDERED_MATCHERS is frozen highest-harm/most-specific first.
 # --------------------------------------------------------------------------- #
 
-# --- PAN (card) : regex candidate -> windowed Luhn -> ⟦…:CARD:first6:last4⟧ --- #
-# 13-19 digits, optionally separated into groups by up to TWO of {space, TAB, newline
-# (CR or LF), hyphen, dot, slash, comma, underscore} chars between groups (a two-char
-# ``\r\n`` CRLF from a Windows/multi-line paste, or ``,`` + space from a TSV/CSV cell). The separator set is DELIBERATELY
-# wide: a PAN pasted from a spreadsheet, a TSV/CSV cell, a formatted field, or a
-# multi-line form commonly carries a non-standard group separator
-# (``4111.1111.1111.1111``, ``4111/1111/…``, ``4111_1111…``, ``4111,1111,…``, a
-# TAB-delimited ``4111\t1111\t…`` from a spreadsheet/TSV, or a newline-wrapped
-# ``4111\n1111\n…`` from a multiline field) — and with a set that omitted TAB/newline
-# those whitespace-delimited forms egressed the card RAW (R2-C1, PCI fail-open, M-3 /
-# NFR-7 (a)): the design intent of this class is to cover exactly the spreadsheet /
-# formatted-field paste, where TAB is the canonical delimiter, so omitting it was
-# inconsistent with the stated intent. :data:`_PAN_SEP` is the single canonical
-# separator class shared by :data:`_PAN_CANDIDATE` and the SAD footgun run
-# (:data:`_SAD_VALUE_PAN_RUN`) so the accepted separators stay in lock-step (widening
-# one without the other re-opens R2-C1/R2-C2). NOTE the SSN matcher (:data:`_SSN`)
-# deliberately keeps its OWN narrower ``[ .\-]`` class (dash/space/dot only — ``/``,
-# ``,``, ``_`` are date/thousands/identifier shapes, not SSN forms), so it is not
-# driven by ``_PAN_SEP`` and this widening does not touch it.
+# --- PAN (card) : NORMALIZE-THEN-DETECT -> ⟦…:CARD:first6:last4⟧ (M-3) -------- #
+# ARCHITECTURAL MODEL (29a §2.1 / ROUND-4). The earlier design enumerated an
+# ever-growing separator CLASS in the candidate regex (space, TAB, CR/LF, hyphen,
+# dot, slash, comma, underscore, up to two at a time). That in-place-separator-regex
+# approach is fundamentally leak-prone: every separator shape a real paste can carry
+# (3+ spaces, a TAB, a slash, a mix) is a SEPARATE regex arm, and any form the class
+# forgot egressed the card RAW (the R2/R3/R4 separator-leak class: R2 separated-PAN,
+# R3 multi-group, R4 3-space/tab/slash PAN + tab/slash SSN). Enumerating separators
+# can only ever chase the leak; it cannot close the class.
 #
-# The candidate boundary is DELIBERATELY loose: because a separator is also a valid
-# inter-group separator, the candidate can over-capture one OR MORE separated
-# leading/trailing digit-GROUPS that are NOT part of the card (e.g. "pay 5 4111 1111
-# 1111 1111", "amount 100 4111111111111111", "99 4111 1111 1111 1111" or
-# "4111111111111111 12"). If we ran Luhn once on the whole captured run it would be
-# 17-19 digits, fail Luhn, and — fatally — the old all-or-nothing path returned the
-# run RAW, so a real PAN egressed in cleartext (PCI fail-open, M-3 / NFR-7 (a)). The
-# group-windowed Luhn scan below re-bounds the candidate to the actual card, so an
-# over-captured candidate degrades to redacting the card, never to emitting it raw and
-# never to emitting the WRONG window (a longer/shifted Luhn-valid run formed by an
-# injected adjacent digit — which would leak a real card digit in cleartext and put an
-# injected digit into the first6/last4 meta; see _best_pan_window). The digit-only
-# ``(?<!\d)``/``(?!\d)`` boundary (not ``[\w-]``) is required now that ``_`` is an
-# accepted separator: a ``\w`` boundary would refuse a card whose own separator is an
-# underscore. The Luhn gate + group-window scan bound false positives, so the loose
-# boundary never mis-masks a non-card run.
-_PAN_SEP = r"[ \t\r\n\-./,_]"
-# Up to TWO separator chars may sit between digit groups (``{0,2}``), not just one:
-# a multi-line/Windows paste separates groups with a two-char ``\r\n`` (CRLF), and a
-# TSV/CSV cell boundary can be ``,`` + space — a single-separator quantifier broke the
-# digit run at the double separator so a CRLF-wrapped card still egressed RAW (R2-C1
-# whitespace form). The bound is 2 (not unbounded ``*``) so the loose candidate cannot
-# span a large gap and mis-associate two distant numbers; the group-windowed Luhn scan
-# (:func:`_best_pan_window`, which slides a 13-19-digit window across WHOLE ASCII
-# digit-groups) re-bounds any over-capture to the actual card regardless of how many
-# separator chars sat between groups, so widening the run count never mis-masks a
-# non-card run nor drops the surrounding text.
+# NORMALIZE-THEN-DETECT closes the ENTIRE class by construction, not by enumeration:
+#   1. capture a bounded WINDOW that may contain digits and ANY run of non-alphanumeric
+#      separator characters (:data:`_PAN_CANDIDATE`);
+#   2. STRIP every non-alphanumeric separator from the window and keep a map from each
+#      surviving ASCII digit back to its ORIGINAL index (:func:`_normalize_digits`);
+#   3. slide a card-length Luhn+IIN-valid window over the pure digit string
+#      (:func:`_best_pan_window`) — validity is checked on NORMALIZED digits, so a card
+#      split by ANY separator (even a separator no regex enumerated) is detected;
+#   4. MAP the winning digit span back over the ORIGINAL text and tokenize exactly that
+#      substring (:func:`_redact_all_pan_windows`), leaving genuinely non-card text as-is.
+# Because step 2 removes ALL separators before validation, no separator variant can
+# hide a card: the detector never sees the separators at all. Adding a new exotic
+# separator to a paste can no longer re-open a leak — it is stripped, not enumerated.
 #
-# The candidate captures the WHOLE run of separated digit-groups (``\d(?:SEP{0,2}\d)*``)
-# — NOT a fixed 13-19-digit window. The earlier ``{12,18}\d`` upper cap was a PCI
-# fail-open (R3-C1): a run of 20+ digits across groups (``ref 12 34 4111 1111 1111
-# 1111`` — two 2-digit strays + a 16-digit card = 20 digits) matched only the FIRST 19
-# digits, so the regex ended mid-card (before the card's trailing group) and handed
-# ``_best_pan_window`` a fragment with no complete card window — the full Visa PAN then
-# egressed RAW (and a variant mis-tokenized the leading strays as ``PHONE`` while
-# stranding raw card digits behind a marker that falsely looked redacted, an E1.4
-# no-partial-PAN violation). Capturing the whole group-run and letting
-# :func:`_best_pan_window` slide a 13-19-digit Luhn window across ALL sub-runs (it trims
-# WHOLE leading/trailing groups) re-bounds the capture — however many stray groups
-# precede/follow the card — to the actual card, so the card is always found and only the
-# card substring is tokenized. The Luhn gate + the ``13 <= length <= 19`` window bound
-# still reject a genuine long number (order id / concatenated timestamp): with no
-# separator it is one group and the whole contiguous run must itself be a valid PAN to
-# card. The number of ASCII digit-groups the window scan considers is capped
-# (:data:`_PAN_MAX_GROUPS`) so a pathological many-group run cannot drive the scan into a
-# redaction-path DoS.
-_PAN_CANDIDATE = re.compile(rf"(?<!\d)\d(?:{_PAN_SEP}{{0,2}}\d)*(?!\d)")
-# A real PAN is 13-19 digits, so at most 19 single-digit groups form one card window.
-# The sliding-window scan (:func:`_best_pan_window`) is O(groups * 19) — bounded per
-# start position by the 19-digit card ceiling — so it is LINEAR in the group count, not
-# quadratic; a long digit-group run is cheap to scan (~66ms for 5000 groups). This cap
-# is therefore a conservative belt-and-suspenders guard against a truly pathological
-# input (tens of thousands of groups), set high enough that NO realistic payload —
-# including a multi-card run (each card is <=19 groups, so 500 groups is ~26 cards) — is
-# ever dropped and left to egress raw. Beyond the cap the run cannot be scanned as a
-# card and is left for later matchers; the value is intentionally generous so this is a
-# cost bound, not a correctness bound (a real card is never silently skipped).
+# The candidate window is DELIBERATELY loose so it never breaks a card at a separator:
+# a maximal run of ASCII digits and separator chars (with a digit at each end). Non-card
+# leading/trailing digit-GROUPS an over-capture swallows ("pay 5 <card>", "amount 100
+# <card>", "ref 12 34 <card> 56") are re-bounded to the real card by the digit-index
+# window scan (which trims WHOLE non-card groups). The digit-anchored boundary
+# ``(?<![0-9A-Za-z])`` / ``(?![0-9A-Za-z])`` keeps the window from biting into an
+# adjacent word/underscore-joined identifier while still admitting ``_``-separated cards
+# (``_`` is stripped as a separator inside, not a boundary). A run whose separator span
+# between two digits exceeds :data:`_PAN_SEP_MAX_GAP` chars is NOT a single formatted
+# card (two distant numbers) and is broken there, so the loose window cannot merge two
+# unrelated numbers into a bogus Luhn+IIN card.
+_PAN_SEP_MAX_GAP = 3      # max consecutive non-alnum separator chars between two card
+                          # digit groups (covers ", " / " / " / "\r\n" / up to 3 spaces)
+# A window is a digit, then any number of (up-to-gap separator run + digit) repeats.
+# ``[^0-9A-Za-z]`` is EVERY non-alphanumeric char — no separator is enumerated, so no
+# separator shape can be forgotten (the whole point of normalize-then-detect). The
+# ``{1,GAP}`` gap bound stops the window from spanning a large prose gap between two
+# unrelated numbers; a wider gap simply ends the window (the loose boundary never
+# mis-merges two distant numbers into a card). The boundary is alnum (not ``\d``) so a
+# card is never glued to an adjacent word, yet an ``_``-separated card still matches
+# (``_`` is non-alnum → a valid interior separator, and NOT a boundary char).
+_PAN_CANDIDATE = re.compile(
+    rf"(?<![0-9A-Za-z])[0-9](?:[^0-9A-Za-z]{{1,{_PAN_SEP_MAX_GAP}}}?[0-9]|[0-9])*"
+    r"(?![0-9A-Za-z])"
+)
+# A real PAN is at most 19 digits. The normalize-then-detect scan is O(digits * 19) —
+# for each start position we extend at most until the window exceeds 19 digits — so it
+# is LINEAR in the digit count. This cap bounds a pathological many-digit window so the
+# scan cannot become a redaction-path DoS. Set very generously (a card is <=19 digits,
+# so 512 digits is ~26 cards) so NO realistic payload — including a multi-card run — is
+# ever dropped and left to egress raw. A window with more digits than the cap cannot be
+# scanned as a card and is left for later matchers; this is a documented cost bound, not
+# a correctness bound (a real card is never silently skipped below the cap). Kept as a
+# DIGIT count (was a group count) — normalize-then-detect works on stripped digits, not
+# separated groups, so the bound is on the total digit length of the window.
 _PAN_MAX_GROUPS = 512
 
 # ASCII digit RUNS only. A PAN written in non-ASCII \d-matching digits (Arabic-Indic,
@@ -281,102 +350,129 @@ _PAN_MAX_GROUPS = 512
 # for a card, never partially emitted). See Appendix G (ii) / LLD 29 §14.4.
 _ASCII_DIGIT_RUN = re.compile(r"[0-9]+")
 
-# Standard PAN lengths, most-common first. When an over-captured candidate has more
-# than one Luhn-valid group-window, we prefer the one whose length is a real card
-# length (Visa/MC/Discover 16, Amex 15, then the rarer 14/13, then the over-length
-# 19/18/17). This anchors selection to the ACTUAL card rather than to whichever window
-# an injected adjacent digit happened to also make Luhn-valid: without it, a longer
-# Luhn-valid run (e.g. injected "004" + card, or card + injected "99") could win,
-# emit a bogus first6/last4, and strand a real card digit outside the token in
-# cleartext (finding: "Wrong PAN window masked").
-_PAN_STD_LENGTHS: Tuple[int, ...] = (16, 15, 14, 13, 19, 18, 17)
+# Standard PAN lengths, most-common first. When an over-captured window has more than
+# one valid card sub-window, we prefer the one whose length is a real card length
+# (Visa/MC/Discover 16, Amex 15, then the rarer 14/13, then the over-length 19/18/17,
+# then Maestro 12). This anchors selection to the ACTUAL card rather than to whichever
+# window an injected adjacent digit happened to also make Luhn+IIN-valid: without it a
+# longer valid run (injected "004" + card, or card + injected "99") could win, emit a
+# bogus first6/last4, and strand a real card digit in cleartext ("Wrong PAN window").
+_PAN_STD_LENGTHS: Tuple[int, ...] = (16, 15, 14, 13, 19, 18, 17, 12)
+
+
+def _normalize_digits(raw: str) -> "Tuple[str, List[int], List[int]]":
+    """Strip ALL non-alphanumeric separators; return (ASCII-digit string, index map,
+    group-boundary offsets).
+
+    The heart of NORMALIZE-THEN-DETECT: a card window may be split by ANY separator
+    (space/TAB/CR/LF/hyphen/dot/slash/comma/underscore/…) — we do not enumerate them,
+    we simply keep only the ASCII digits and record, for the i-th kept digit, its
+    ORIGINAL index in ``raw`` (``idx_map[i]``). Detection then runs on the pure digit
+    string; a winning digit span ``[a:b)`` maps back to the original substring
+    ``raw[idx_map[a] : idx_map[b-1] + 1]`` so ONLY the card characters (digits AND the
+    interleaved separators between them) are tokenized, and surrounding text is intact.
+    Non-ASCII ``\\d`` digits are EXCLUDED (never counted toward a card — see
+    _ASCII_DIGIT_RUN / the non-ASCII partial-PAN leak).
+
+    ``boundaries`` is the set of digit-string offsets that begin a NEW contiguous
+    ASCII-digit group in ``raw`` (offset 0 plus each offset preceded by a separator).
+    The card-window scan starts/ends ONLY at these boundaries so a stray digit can
+    attach to a card only *through a separator* — a purely contiguous run is one group
+    and must validate as a WHOLE (never an interior sub-window), preserving the E1.1
+    false-positive gate (a 16-digit non-card order id is not sliced into a valid card).
+    """
+    digits: List[str] = []
+    idx_map: List[int] = []
+    boundaries: List[int] = []
+    prev_orig = -2
+    for i, ch in enumerate(raw):
+        if "0" <= ch <= "9":  # ASCII digit only
+            if i != prev_orig + 1:
+                # a separator (or the run start) sits before this digit -> group start
+                boundaries.append(len(digits))
+            digits.append(ch)
+            idx_map.append(i)
+            prev_orig = i
+    return "".join(digits), idx_map, boundaries
 
 
 def _best_pan_window(raw: str) -> "Tuple[int, int, str] | None":
-    """Re-bound an over-captured PAN candidate to the actual Luhn-valid card.
+    """Re-bound an over-captured PAN candidate to the actual card (NORMALIZE-THEN-DETECT).
 
-    ``raw`` is one ``_PAN_CANDIDATE`` match — the WHOLE run of separated digit-groups,
-    which may have swallowed one or more separated leading AND/OR trailing digit-GROUPS
-    that are not part of the card (loose boundary by design — see _PAN_CANDIDATE; the
-    candidate no longer caps at 19 digits, so the run can be far longer than a card).
-    A stray digit can only attach to the card *through a separator*; a purely contiguous
-    run is a single group and cannot be trimmed. So we split ``raw`` into ASCII
-    digit-groups on its separators and SLIDE a contiguous group-window across the run,
-    considering every ``groups[lead:trail]`` sub-run whose total digit length is a card
-    length (13-19) — never an internal partial group. Because a card is at most 19
-    digits, we only need to extend a window until it exceeds 19 digits, then advance the
-    start — a true 13-19-digit sliding window over the group run, NOT the old
-    drop-0..k-whole-groups-from-each-end scan (which, coupled with the 19-digit-capped
-    candidate, could never even see a card that started past the first 19 digits — the
-    R3-C1 fail-open). Considering interior windows (not just end-trims) is what lets the
-    card be found when strays sit on BOTH sides ("ref 12 34 <card> 56"). Sliding by whole
-    groups only (never arbitrary digits) still keeps a legitimate long *contiguous*
-    number (order id / concatenated timestamp) from being mis-masked: with no separator
-    it is one group, so the whole run must itself be Luhn-valid to card — preserving the
-    E1.1 false-positive gate the Luhn check exists for.
+    ``raw`` is one ``_PAN_CANDIDATE`` window — digits interleaved with ANY separators,
+    which may have swallowed non-card leading AND/OR trailing digit GROUPS ("pay 5 <card>",
+    "ref 12 34 <card> 56"). We (1) strip ALL separators to the pure ASCII digit string
+    (:func:`_normalize_digits`), keeping the contiguous-group boundaries; (2) slide a
+    card-length window over the digit string, considering ONLY windows that START and END
+    on a group boundary, and accept any that is a valid PAN — a card length AND Luhn mod-10
+    AND a valid issuer IIN prefix (:func:`_is_pan`); (3) MAP the winning digit span back to
+    the ORIGINAL coordinates in ``raw`` so the exact card substring (digits + interleaved
+    separators) can be tokenized. Because validity is tested on the SEPARATOR-FREE digit
+    string, a card split by any separator shape is detected by construction — closing the
+    entire R2/R3/R4 separator-leak class without enumerating separators.
 
-    Among the Luhn-valid group-windows we select, in order: (1) the one whose length
-    is a real card length (:data:`_PAN_STD_LENGTHS`) — so an injected adjacent digit
-    that merely *extends* a card into a longer Luhn-valid run cannot win and emit a
-    bogus first6/last4 while stranding a real card digit in cleartext; (2) the fewest
-    stray groups outside the window (closest to a clean card); (3) the leftmost start.
-    Returns ``(start, end, digits)`` where ``raw[start:end]`` is the exact card
-    substring to tokenize (only genuinely non-card leading/trailing groups are preserved
-    as cleartext — never a card digit), or ``None`` if no group-window is a valid PAN (a
-    genuine non-card run degrades to "leave as-is" — never emitted raw *as a card* nor
-    mis-masked). A run with more than :data:`_PAN_MAX_GROUPS` ASCII digit-groups cannot
-    be a formatted card (a card is <=19 groups) and is rejected outright so the scan
-    stays bounded (redaction-path DoS guard).
+    Group-aligned windowing is what keeps a legitimate long *contiguous* number (order id
+    / concatenated timestamp) from being sliced into a valid card: with no separator it is
+    one group, so the WHOLE run must itself be a valid PAN to card (an interior 15-digit
+    sub-window of a 16-digit contiguous non-card run is NOT considered — it does not start
+    on a group boundary). A stray digit can only attach to a card through a separator.
+
+    Among valid windows we select, in order: (1) a real card length
+    (:data:`_PAN_STD_LENGTHS`) — an injected adjacent digit that merely extends a card
+    into a longer valid run cannot win and emit a bogus first6/last4; (2) the fewest
+    stray digits outside the window (closest to a clean card); (3) the leftmost start.
+    Returns ``(orig_start, orig_end, digits)`` where ``raw[orig_start:orig_end]`` is the
+    exact card substring to tokenize, or ``None`` if no window is a valid PAN (a genuine
+    non-card run degrades to "leave as-is" — never emitted raw *as a card* nor mis-masked).
+    A window with more than :data:`_PAN_MAX_GROUPS` ASCII digit-GROUPS cannot be a
+    formatted card and is rejected outright so the scan stays bounded (DoS guard).
     """
-    # ASCII digit-groups with their (start, end) span in ``raw``; non-ASCII digits
-    # are excluded so they are never counted toward a card (see _ASCII_DIGIT_RUN).
-    groups = [
-        (m.start(), m.end(), m.group(0)) for m in _ASCII_DIGIT_RUN.finditer(raw)
-    ]
-    ng = len(groups)
-    if ng == 0 or ng > _PAN_MAX_GROUPS or sum(len(g[2]) for g in groups) < 13:
+    digits, idx_map, boundaries = _normalize_digits(raw)
+    nd = len(digits)
+    ng = len(boundaries)
+    # DoS guard + floor: too many groups to be a formatted card (bounded scan), or fewer
+    # digits than the shortest card. Reject outright (leave as-is / for later matchers).
+    if nd < _PAN_MIN_LEN or ng > _PAN_MAX_GROUPS:
         return None
+    # Group-boundary END offsets: the start of each group AFTER a boundary, plus the end
+    # of the whole digit string (a card can end at the run's tail). Sorted, deduped.
+    ends = sorted(set(boundaries[1:] + [nd]))
     best_key: "Tuple[int, int, int] | None" = None
     best_span: "Tuple[int, int, str] | None" = None
-    for lead in range(ng):
-        # Slide the window end forward from ``lead`` while the accumulated digit count
-        # can still form a card (<=19). This bounds the inner loop to at most 19 groups
-        # regardless of how long the over-captured run is, so the scan is O(ng * 19).
-        length = 0
-        for end_idx in range(lead, ng):
-            length += len(groups[end_idx][2])
-            if length > 19:
-                break  # any further extension only grows the window — advance ``lead``
-            if length < 13:
+    for start in boundaries:
+        for end in ends:
+            length = end - start
+            if length < _PAN_MIN_LEN:
                 continue
-            sub = groups[lead : end_idx + 1]
-            digits = "".join(g[2] for g in sub)
-            if not _luhn_ok(digits):
+            if length > _PAN_MAX_LEN:
+                break  # ``ends`` is sorted — any further end only grows the window
+            sub = digits[start:end]
+            if not _is_pan(sub):  # length + Luhn + IIN prefix, all pure arithmetic
                 continue
             try:
                 len_priority = _PAN_STD_LENGTHS.index(length)
-            except ValueError:  # pragma: no cover — 13..19 are all listed
+            except ValueError:  # pragma: no cover — 12..19 are all listed
                 len_priority = len(_PAN_STD_LENGTHS)
-            # strays outside the window = groups before ``lead`` + groups after ``end``.
-            strays = lead + (ng - 1 - end_idx)
-            key = (len_priority, strays, lead)
+            strays = start + (nd - end)  # non-card digits before + after the window
+            key = (len_priority, strays, start)
             if best_key is None or key < best_key:
                 best_key = key
-                best_span = (sub[0][0], sub[-1][1], digits)
+                # Map the digit span back to the ORIGINAL coordinates: from the first
+                # card digit's original index through the last card digit's index+1.
+                best_span = (idx_map[start], idx_map[end - 1] + 1, sub)
     return best_span
 
 
 def _redact_all_pan_windows(raw: str, nonce: str) -> str:
-    """Tokenize EVERY Luhn-valid card window inside one candidate run (M-3).
+    """Tokenize EVERY valid card window inside one candidate run (M-3).
 
-    A single ``_PAN_CANDIDATE`` match can now (with the whole-group-run candidate)
-    span MORE THAN ONE card — e.g. two space-adjacent PANs
-    ("4111 1111 1111 1111 5555 5555 5555 4444") capture as one 32-digit run. Masking
-    only the single best window would tokenize the first card and egress the second
-    RAW (a PCI fail-open). So we mask the best window, then RECURSE on the cleartext
-    prefix and suffix around it, tokenizing every further card until none remains.
-    Only the card substrings are replaced; genuinely non-card leading/trailing groups
-    (and the separators between cards) are preserved as cleartext.
+    A single ``_PAN_CANDIDATE`` window can span MORE THAN ONE card — two space-adjacent
+    PANs ("4111 1111 1111 1111 5555 5555 5555 4444") capture as one run. Masking only
+    the single best window would tokenize the first card and egress the second RAW (a
+    PCI fail-open). So we mask the best window, then RECURSE on the ORIGINAL cleartext
+    prefix and suffix around it, tokenizing every further card until none remains. Only
+    the card substrings are replaced; genuinely non-card leading/trailing text (and the
+    separators between cards) are preserved as cleartext.
     """
     window = _best_pan_window(raw)
     if window is None:
@@ -410,56 +506,52 @@ _SAD_ANCHORED = re.compile(
     r"(\d{3,6})\b"
 )
 
-# A separator-joined digit run starting at the SAD value group, used by the footgun
-# guard in ``_redact_sad``. Uses the SAME separator set as ``_PAN_CANDIDATE``
-# (:data:`_PAN_SEP`) so the SAD guard sees the whole trailing card regardless of its
-# separator — matched anchored at the SAD-captured leading group. A space/hyphen-only
-# run here (while _PAN_CANDIDATE accepts dots/slashes/etc.) re-opened R2-C2: for
-# "pin is 4111.1111.1111.1111" the guard saw only the leading "4111", declined to
-# step aside, and tokenized it to SAD — stranding the trailing 12 card digits in
-# cleartext behind a marker that falsely looked redacted (worse than a plain miss).
-# Allows up to TWO separator chars between digits in lock-step with ``_PAN_CANDIDATE``
-# (``{0,2}``) so a SAD label before a CRLF/multi-line-separated card
-# ("pin is 4111\r\n1111\r\n1111\r\n1111") still lets the guard see the whole trailing
-# Luhn-valid card and step aside for ``_redact_pan`` — a single-separator run here
-# (while _PAN_CANDIDATE accepts a two-char CRLF) would re-open the R2-C2 partial-PAN.
-_SAD_VALUE_PAN_RUN = re.compile(rf"\d(?:{_PAN_SEP}{{0,2}}\d)*")
+# A candidate window starting at the SAD value group, used by the SAD footgun guard.
+# NORMALIZE-THEN-DETECT (ROUND-4): the same loose :data:`_PAN_CANDIDATE` window shape
+# (digits + ANY separators, gap-bounded) matched anchored at the SAD-captured leading
+# group — so the guard sees the WHOLE trailing card regardless of its separator shape
+# (space / dot / slash / TAB / CRLF / 3-space — every R2/R3/R4 form), by construction,
+# not by an enumerated separator class that could fall behind the PAN matcher (the
+# R2-C2 partial-PAN re-open). Because the guard normalizes-then-detects with the exact
+# same :func:`_best_pan_window`, its separator handling can never diverge from the PAN
+# matcher's.
+_SAD_VALUE_PAN_RUN = re.compile(
+    rf"[0-9](?:[^0-9A-Za-z]{{1,{_PAN_SEP_MAX_GAP}}}?[0-9]|[0-9])*"
+)
 
 
 def _redact_sad(text: str, nonce: str) -> str:
     def repl(m: "re.Match[str]") -> str:
         # SAD footgun (M-3 / NFR-7 (a) — PCI fail-open): the value capture ``(\d{3,6})``
-        # matches only the LEADING digit-group of a space/hyphen-separated card that
-        # trails a SAD label (e.g. "pin is 4111 1111 1111 1111" captures just "4111").
-        # SAD runs BEFORE PAN, so if we tokenized "4111" to SAD here the remaining
-        # "1111 1111 1111" is 12 digits — below the PAN floor — so the PAN matcher would
-        # never fire and 12 real card digits would egress in cleartext (a
-        # partially-redacted PAN, which E1.4 forbids). We look at the separator-joined
-        # run STARTING at this value group and ask :func:`_best_pan_window` whether it
-        # contains a Luhn-valid 13-19 digit card, and — critically — WHERE that card
-        # window starts within the run:
+        # matches only the LEADING digit-group of a separated card that trails a SAD
+        # label (e.g. "pin is 4111 1111 1111 1111" captures just "4111"). SAD runs BEFORE
+        # PAN, so if we tokenized "4111" to SAD here the remaining "1111 1111 1111" is 12
+        # digits — below the PAN floor as a standalone group — so 12 real card digits
+        # could egress in cleartext (a partially-redacted PAN, which E1.4 forbids). We
+        # look at the candidate window STARTING at this value group and ask
+        # :func:`_best_pan_window` (normalize-then-detect) whether it contains a valid
+        # card, and — critically — WHERE that card starts within the window:
         #
-        #   * window starts at run offset 0 (the SAD value IS the card's leading group,
-        #     e.g. "pin is 4111 1111 1111 1111" / "pin is 4111.1111.1111.1111"): DECLINE
-        #     the SAD match so ``_redact_pan`` tokenizes the WHOLE card. There is no
-        #     separate SAD value here — the digits are the card. (R2-C2.)
-        #   * window starts AFTER offset 0 (a stray group precedes the card, so the SAD
-        #     value is a SEPARATE value in front of the card, e.g.
-        #     "cvv 999 4111 1111 1111 1111" where 999 is the CVV and 4111… is the card):
-        #     redact BOTH. Drop the SAD value to a no-meta ``<SAD>`` HERE, and leave the
-        #     trailing card text (which sits AFTER this match's end) for ``_redact_pan``.
-        #     Declining here would leak the CVV RAW while only the card masked (R3-H1,
-        #     SAD never-store violated). The SAD guard must never trade a real SAD
-        #     redaction for the card redaction — it redacts the SAD AND lets PAN redact
-        #     the card.
+        #   * card starts at the SAD value's FIRST digit (the SAD value IS the card's
+        #     leading group, e.g. "pin is 4111 1111 1111 1111" / "pin is 4111.1111…"):
+        #     DECLINE the SAD match so ``_redact_pan`` tokenizes the WHOLE card. There is
+        #     no separate SAD value here — the digits are the card. (R2-C2 / R4.)
+        #   * card starts AFTER the SAD value (a stray group precedes the card, so the
+        #     SAD value is a SEPARATE value in front of the card, e.g.
+        #     "cvv 999 4111 1111 1111 1111" — 999 is the CVV, 4111… the card): redact
+        #     BOTH. Drop the SAD value to a no-meta ``<SAD>`` HERE and leave the trailing
+        #     card (which sits AFTER this match's end) for ``_redact_pan``. Declining
+        #     would leak the CVV RAW while only the card masked (R3-H1, SAD never-store).
         #
-        # A genuine short SAD ("pin is 4821") has no Luhn-valid trailing run at all
-        # (window is None), so it tokenizes to SAD exactly as before.
+        # A genuine short SAD ("pin is 4821") has no valid trailing card (window is None),
+        # so it tokenizes to SAD exactly as before. Comparison is by ORIGINAL index: the
+        # card window's original start equals this SAD value's original start iff the SAD
+        # value is the card's own leading group.
         value_start = m.start(2)
         run_match = _SAD_VALUE_PAN_RUN.match(text, value_start)
         if run_match is not None:
             window = _best_pan_window(run_match.group(0))
-            if window is not None and window[0] == 0:
+            if window is not None and run_match.start() + window[0] == value_start:
                 # The SAD value is the card's own leading group — decline; PAN masks the
                 # whole card. Do NOT partially redact a card.
                 return m.group(0)
@@ -471,18 +563,72 @@ def _redact_sad(text: str, nonce: str) -> str:
     return _SAD_ANCHORED.sub(repl, text)
 
 
-# --- SSN (US) : format-anchored -> ⟦…:SSN⟧ (HIPAA SH) ------------------------ #
-# 3-2-4 grouping with a CONSISTENT separator that is a dash, single space, or dot.
-# Dash-only egressed the space/dot forms ("123 45 6789", "123.45.6789") RAW (R2-M1).
-# The three groups must share one separator (a back-reference) so a mixed/garbage run
-# ("123-45 6789") is not mis-matched; ``/`` , ``,`` and ``_`` are intentionally NOT
-# SSN separators (they are date/thousands/identifier shapes, not SSN forms). The
-# digit boundary keeps it from biting into a longer number.
-_SSN = re.compile(r"(?<!\d)(\d{3})([ .\-])(\d{2})\2(\d{4})(?!\d)")
+# --- SSN (US) : NORMALIZE-THEN-DETECT + validity rules -> ⟦…:SSN⟧ (HIPAA SH) -- #
+# ARCHITECTURAL MODEL (29a §2.1 / ROUND-4). The earlier ``(\d{3})([ .\-])(\d{2})\2
+# (\d{4})`` matched a 3-2-4 grouping with a CONSISTENT enumerated separator (dash /
+# space / dot only). That in-place-separator-regex left the TAB and slash forms
+# ("123\t45\t6789", "123/45/6789") leaking RAW (R4 separator class). Like the PAN
+# matcher, we NORMALIZE-THEN-DETECT: capture a bounded window of digits + ANY
+# separators, strip separators, and validate the pure 9-digit string against the SSN
+# format + issuance validity rules — so no separator shape can hide an SSN.
+#
+# US SSN has NO checksum (unlike a PAN's Luhn) — it is a pure format + issuance-range
+# check (29a §5.3, pure arithmetic). A 9-digit ``AAA-GG-SSSS`` is a valid SSN number
+# iff: area (AAA) is 001-899 EXCEPT 666; group (GG) is 01-99; serial (SSSS) is
+# 0001-9999. (900-999 areas are ITINs / never issued; 000 area, 00 group, 0000 serial
+# are never issued.) Because a bare 9-digit run passing only these loose rules would
+# over-mask ordinary 9-digit numbers (order ids, zip+4 runs), the SSN matcher stays
+# LABEL-ANCHORED: it fires only when an ``ssn`` / ``social security`` label precedes
+# the value (the format+validity check then bounds false positives among labelled
+# numbers). This mirrors the SAD design (label-anchored) and the LLD 29 §3.4 false-
+# positive discipline. ``/`` , ``,`` , ``_`` etc. are all handled as separators now
+# (stripped), because normalize-then-detect does not enumerate a separator class.
+_SSN_ANCHORED = re.compile(
+    r"(?i)\b(ssn|social\s+security(?:\s+(?:no|number|#))?)\b"
+    r"(?:\s*[:=#]\s*|\s+(?:is|was|of|=)\s+|\s+)"
+    r"([0-9](?:[^0-9A-Za-z]{1,3}?[0-9]|[0-9])*)"
+)
+
+
+def _is_ssn(digits: str) -> bool:
+    """Is ``digits`` a validly-issuable US SSN number (29a §5.3)? Pure arithmetic.
+
+    9 digits ``AAA-GG-SSSS`` where area 001-899 (not 666), group 01-99, serial
+    0001-9999. No checksum exists for an SSN — this is the full validity gate.
+    """
+    if len(digits) != 9:
+        return False
+    area = int(digits[:3])
+    group = int(digits[3:5])
+    serial = int(digits[5:])
+    if area == 0 or area == 666 or area >= 900:
+        return False
+    if group == 0:
+        return False
+    if serial == 0:
+        return False
+    return True
 
 
 def _redact_ssn(text: str, nonce: str) -> str:
-    return _SSN.sub(lambda m: _wire_token(nonce, "SSN"), text)
+    def repl(m: "re.Match[str]") -> str:
+        # Normalize the label-anchored value window, then validate. If the FIRST 9
+        # normalized digits are a valid SSN, tokenize the exact original span of those
+        # 9 digits (keeping the label and any trailing text intact). A window that is
+        # not a valid SSN is left as-is (bounds false positives among labelled numbers).
+        label = m.group(1)
+        value = m.group(2)
+        value_start = m.start(2)
+        digits, idx_map, _boundaries = _normalize_digits(value)
+        if len(digits) >= 9 and _is_ssn(digits[:9]):
+            # Original span of the first 9 SSN digits within the whole text.
+            span_start = value_start + idx_map[0]
+            span_end = value_start + idx_map[8] + 1
+            tail = text[span_end : m.end()]
+            return f"{label}: {_wire_token(nonce, 'SSN')}{tail}"
+        return m.group(0)
+
+    return _SSN_ANCHORED.sub(repl, text)
 
 
 # --- email -> ⟦…:EMAIL⟧ (HIPAA SH) ------------------------------------------- #
