@@ -354,7 +354,25 @@ class AuditLogger:
             if not present:
                 return safe  # nothing content-bearing to gate
 
-            # Check 1 — the provenance flag. Not marked redacted → drop all content.
+            # Check 0 — TRANSITION guard (WS-E2 edge-rollout ordering). A request with
+            # NO `redaction_nonce` is from a PRE-EDGE (legacy) agent that has not yet
+            # adopted the Tier-1 SDK (WS-E stage 1) — every new-SDK payload mints a
+            # nonce in guard._build_request. For a legacy request we CANNOT expect the
+            # `redacted` flag, so dropping its content would silently gut the audit
+            # trail for all not-yet-rolled agents. Instead, fall through to the
+            # pre-WS-E2 behavior: the downstream `_shared_attrs_from_request` /
+            # `_build_log_event` writers already TRUNCATE `user_input` to 200 (the
+            # historical audit contract) — no raw-full field is persisted, so this is
+            # not a regression to fail-open, it is exactly the behavior that shipped
+            # before the guard. Enforcement (drop) applies ONLY to edge-rolled agents
+            # (those that DO send a nonce), so a new-SDK agent that fails to redact is
+            # still caught below. This transition branch is removed once the connector
+            # edge-rollout completes (acme-payments Lambda + Azure identity/telecom).
+            if not nonce:
+                return safe
+
+            # Check 1 — the provenance flag. A NONCE-bearing (edge-rolled) request that
+            # is NOT marked redacted is a new-SDK anomaly → drop all content (fail-secure).
             if not flagged:
                 self._drop_and_alarm(safe, present, reason="not-redacted", classes=[])
                 return safe
