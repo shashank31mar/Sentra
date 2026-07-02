@@ -295,8 +295,15 @@ class DecisionsService:
         items = raw["signals"]
 
         # Group by request_id, preserving each item's order within its group.
+        # EXCLUDE WS-D NotRunMarker rows: they share the request partition but
+        # carry no `decision`, so _item_to_signal would coerce them to a phantom
+        # ALLOW vote that corrupts both the per-request signals[] breakdown and
+        # the combine() input (lld/33 invariant ii; get_session_trail is the read
+        # path that surfaces markers as their own four-bucket states).
         groups: dict[str, list[dict]] = {}
         for it in items:
+            if _is_marker_row(it):
+                continue
             rid = it.get("request_id") or "<unknown>"
             groups.setdefault(rid, []).append(it)
 
@@ -473,8 +480,17 @@ class DecisionsService:
         # Group signals by request_id and combine — same as get_session_decisions
         # but across sessions. The dashboard's all-events view can render
         # per-request rows uniformly with the per-session view.
+        # EXCLUDE WS-D NotRunMarker rows before grouping (same rule as
+        # get_session_decisions): a marker carries no `decision`, so it would
+        # otherwise become a phantom ALLOW signal in signals[] AND could be chosen
+        # as the row `rep` (group[-1]) — a marker deliberately omits agent_id /
+        # tool_name / platform / trust_score, so the console row would render those
+        # as None. Filtering here keeps `group` all-ran, so group[-1] is always a
+        # real signal row (lld/33 invariant ii).
         groups: dict[tuple[str, str], list[dict]] = {}
         for it in items:
+            if _is_marker_row(it):
+                continue
             key = (it.get("session_id") or "<unknown>", it.get("request_id") or "<unknown>")
             groups.setdefault(key, []).append(it)
 
@@ -738,6 +754,25 @@ class DecisionsService:
 # ---------------------------------------------------------------------------
 # Module helpers
 # ---------------------------------------------------------------------------
+
+
+# Marker record_type discriminators (WS-D / lld/33 §6.1). A NotRunMarker row
+# carries one of these in `record_type` and, deliberately, NO `decision` field —
+# so it is NOT a ran vote and must never be reconstructed into a Signal. This is
+# the single source of truth for the §6.2 partitioning rule shared by every read
+# path that groups the request partition (get_session_trail inlines the same set).
+_MARKER_RECORD_TYPES = ("not_run", "abstain", "error")
+
+
+def _is_marker_row(item: dict[str, Any]) -> bool:
+    """True iff `item` is a WS-D NotRunMarker row (record_type in {not_run,
+    abstain, error}), not a ran signal. The grouping read paths
+    (get_session_decisions / scan_decisions) MUST exclude these before combining:
+    a marker has no `decision`, so _item_to_signal would coerce it to a phantom
+    ALLOW vote (line below) — a fabricated vote from a layer that never ran, which
+    both corrupts the per-request signals[] breakdown and would feed
+    DenyOverrides.combine() (lld/33 invariant ii)."""
+    return item.get("record_type") in _MARKER_RECORD_TYPES
 
 
 def _item_to_signal(item: dict[str, Any]) -> Signal:

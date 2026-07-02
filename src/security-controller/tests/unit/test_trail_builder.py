@@ -992,3 +992,157 @@ def test_trail_phase_single_phase_is_request():
     ]
     resp = _mk_service_with_rows(rows).get_session_trail(session_id="s1", request_id="r1")
     assert resp["phase"] == "request"
+
+
+# ===========================================================================
+# FIX-B gaps (HIGH) — WS-D markers must NOT contaminate the PRE-EXISTING
+# grouping read paths (get_session_decisions / scan_decisions).
+#
+# Adding NotRunMarker rows (record_type in {not_run,abstain,error}, NO
+# `decision`) onto the SAME request partition regressed two read methods that
+# group EVERY partition row and convert each to a Signal via _item_to_signal:
+#   - a marker has no `decision` → _item_to_signal coerces it to a phantom ALLOW
+#     vote → fabricated ALLOW in signals[] AND fed into DenyOverrides.combine();
+#   - in scan_decisions the row `rep` (group[-1] fallback) could BE a marker,
+#     which omits agent_id/tool_name/platform/trust_score → a console row of
+#     Nones.
+# The fix excludes marker rows (_is_marker_row) before grouping in both paths.
+# These tests fail if the exclusion is reverted.
+# ===========================================================================
+
+def _mk_grouping_service():
+    """A DecisionsService with a real DenyOverrides but no boto3 — used to test
+    the row-grouping read paths against crafted DDB rows."""
+    from app.services.decisions_service import DecisionsService
+    from app.combiners import DenyOverrides
+    svc = DecisionsService.__new__(DecisionsService)
+    svc._combiner = DenyOverrides()
+    return svc
+
+
+def _grouping_rows_deny_with_markers():
+    """A single short-circuit-DENY request: a ran trust ALLOW + ran sigma DENY,
+    plus not-run + abstain markers for the layers that never voted. Markers carry
+    NO decision and (deliberately) no agent_id/tool_name/platform."""
+    return [
+        {"source": Source.SENTRA_TRUST, "decision": "ALLOW", "request_id": "r1",
+         "session_id": "s1", "agent_id": "agent-x", "tool_name": "wire_transfer",
+         "platform": "bedrock", "trust_score_before": 0.9, "timestamp_ms": 100,
+         "timestamp_iso": "2026-07-02T00:00:00.100Z"},
+        {"source": Source.SENTRA_SIGMA, "decision": "DENY", "reason": "injection",
+         "request_id": "r1", "session_id": "s1", "agent_id": "agent-x",
+         "tool_name": "wire_transfer", "platform": "bedrock", "threat_type": "INJECTION",
+         "trust_score_before": 0.9, "timestamp_ms": 200,
+         "timestamp_iso": "2026-07-02T00:00:00.200Z"},
+        # Markers appended LAST so group[-1] would pick one if unfiltered.
+        {"source": Source.SENTRA_CONTEXT, "record_type": "not_run",
+         "reason": "gated by earlier DENY", "request_id": "r1", "session_id": "s1",
+         "timestamp_ms": 300, "timestamp_iso": "2026-07-02T00:00:00.300Z"},
+        {"source": Source.SENTRA_ML_CLASSIFIER, "record_type": "abstain",
+         "reason": "ran; abstained (no vote)", "request_id": "r1", "session_id": "s1",
+         "timestamp_ms": 400, "timestamp_iso": "2026-07-02T00:00:00.400Z"},
+    ]
+
+
+def test_get_session_decisions_excludes_markers_no_phantom_allow():
+    """FIX-B (HIGH, decisions_service.py get_session_decisions): a request
+    partition carrying WS-D markers → the grouped decision's signals[] contains
+    ONLY the two ran signals (trust, sigma), NO phantom ALLOW vote from the
+    not-run/abstain marker layers; the combined verdict stays DENY with
+    winning_source=sentra.sigma. Reverting the marker exclusion makes signals[]
+    length 4 and injects fabricated ALLOW votes."""
+    svc = _mk_grouping_service()
+    svc.get_session_signals = Mock(return_value={"signals": _grouping_rows_deny_with_markers()})
+
+    resp = svc.get_session_decisions(session_id="s1", request_id="r1")
+
+    assert resp["total"] == 1
+    d = resp["decisions"][0]
+    # Only the two RAN signals survive — markers are not votes.
+    assert len(d["signals"]) == 2
+    got_sources = {s["source"] for s in d["signals"]}
+    assert got_sources == {Source.SENTRA_TRUST, Source.SENTRA_SIGMA}
+    # No marker source leaked in as a phantom ALLOW.
+    assert Source.SENTRA_CONTEXT not in got_sources
+    assert Source.SENTRA_ML_CLASSIFIER not in got_sources
+    assert d["combined"]["decision"] == "DENY"
+    assert d["combined"]["winning_source"] == Source.SENTRA_SIGMA
+
+
+def test_get_session_decisions_marker_only_request_yields_no_decision():
+    """FIX-B (HIGH): a request partition with ONLY marker rows (no ran signal)
+    yields NO grouped decision — a request that produced no votes has no combined
+    verdict to render (never a phantom all-ALLOW decision)."""
+    svc = _mk_grouping_service()
+    markers = [
+        {"source": Source.SENTRA_TRUST, "record_type": "not_run",
+         "reason": "skipped for cost/tier", "request_id": "r1", "session_id": "s1",
+         "timestamp_ms": 100},
+        {"source": Source.SENTRA_SIGMA, "record_type": "not_run",
+         "reason": "skipped for cost/tier", "request_id": "r1", "session_id": "s1",
+         "timestamp_ms": 200},
+    ]
+    svc.get_session_signals = Mock(return_value={"signals": markers})
+
+    resp = svc.get_session_decisions(session_id="s1", request_id="r1")
+    assert resp["total"] == 0
+    assert resp["decisions"] == []
+
+
+def test_scan_decisions_excludes_markers_no_phantom_allow_no_none_rep():
+    """FIX-B (HIGH, decisions_service.py scan_decisions): the /v1/decisions
+    threat-feed path must exclude WS-D markers before grouping. Asserts (a) the
+    row's flat fields (agent_id/tool_name) come from a RAN row, never a marker
+    (which omits them → None), and (b) signals[] holds only the ran signals with
+    no phantom ALLOW. Reverting the exclusion makes rep a marker (agent_id=None)
+    and injects fake ALLOW votes."""
+    svc = _mk_grouping_service()
+    # scan_decisions reads via self._ddb().query + self._deserialize_item.
+    # Feed the crafted rows on the first day query, empty thereafter.
+    rows = _grouping_rows_deny_with_markers()
+
+    calls = {"n": 0}
+
+    class _FakeDDB:
+        def query(self, **kwargs):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                return {"Items": rows, "LastEvaluatedKey": None}
+            return {"Items": [], "LastEvaluatedKey": None}
+
+    svc._client = _FakeDDB()
+    svc._deserialize_item = lambda it: it  # rows are already plain dicts
+
+    resp = svc.scan_decisions(limit=50)
+
+    # Exactly one grouped decision.
+    matching = [d for d in resp["decisions"] if d["request_id"] == "r1"]
+    assert len(matching) == 1
+    d = matching[0]
+    # Flat row fields resolved from a RAN row, not a marker (never None).
+    assert d["agent_id"] == "agent-x"
+    assert d["tool_name"] == "wire_transfer"
+    assert d["platform"] == "bedrock"
+    assert d["trust_score"] == 0.9
+    assert d["decision"] == "DENY"
+    assert d["threat_type"] == "INJECTION"
+    # signals[] holds only ran signals — no phantom ALLOW from marker layers.
+    assert len(d["signals"]) == 2
+    got_sources = {s["source"] for s in d["signals"]}
+    assert got_sources == {Source.SENTRA_TRUST, Source.SENTRA_SIGMA}
+    assert d["combined"]["winning_source"] == Source.SENTRA_SIGMA
+
+
+def test_is_marker_row_predicate():
+    """FIX-B: the shared partitioning predicate — a row with a marker record_type
+    is a marker; a ran row (decision, no record_type) is not; a plain edge signal
+    is not."""
+    from app.services.decisions_service import _is_marker_row
+    assert _is_marker_row({"source": "sentra.sigma", "record_type": "not_run"}) is True
+    assert _is_marker_row({"source": "sentra.sigma", "record_type": "abstain"}) is True
+    assert _is_marker_row({"source": "sentra.sigma", "record_type": "error"}) is True
+    assert _is_marker_row({"source": "sentra.sigma", "decision": "DENY"}) is False
+    assert _is_marker_row({"source": "bedrock_guardrail", "decision": "ALLOW"}) is False
+    # Unknown record_type value is NOT treated as a marker (fail toward a ran row
+    # only if it also carries a decision; here neither → not a marker).
+    assert _is_marker_row({"source": "x", "record_type": "weird"}) is False
