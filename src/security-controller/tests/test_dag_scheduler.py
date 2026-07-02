@@ -1382,3 +1382,85 @@ def test_t_cfg_dag_run_mode_default_is_fail_fast():
     finally:
         if saved is not None:
             os.environ["DAG_RUN_MODE"] = saved
+
+
+# --------------------------------------------------------------------------- #
+# T-TIMING — per-node timing instrumentation preserved through the DAG cutover
+# (LLD 31 §6.6 / task C6.3). The pre-DAG pipeline emitted a `validation.timing`
+# structured log carrying a per-step ms breakdown; the refactor claims this is
+# preserved byte-for-byte. These tests pin the LABEL SET the DAG populates so a
+# future edit that drops a sub-step (as the abuse_policy_load regression did —
+# integration-sentinel FIX-B LOW) fails the build instead of silently blinding
+# LLD 24's latency re-baseline.
+# --------------------------------------------------------------------------- #
+@pytest.mark.asyncio
+async def test_t_timing_dag_emits_per_node_labels(mock_session, sample_request, monkeypatch):
+    """All-tier-0-ALLOW + ML ALLOW → the per-request timing dict carries one
+    entry per validator node that ran, keyed by its Source.SENTRA_* label, plus
+    the policy node's own `policy` sub-label. Pins that run_dag's `timed(node.
+    source, ...)` wrapping still records every node (a dropped node = a blinded
+    latency metric)."""
+    from app.services import validation_service as vs
+
+    service = _pipeline_service(mock_session)
+    ml_allow = _allow(Source.SENTRA_ML_CLASSIFIER)
+    ml_allow.confidence = 0.9
+    service.ml_classifier.validate = AsyncMock(return_value=ml_allow)
+
+    # Initialise the per-request timing contextvar exactly as validate_tool_call
+    # does at the top of a real request (validation_service.py M1). Without this
+    # _timed is a documented no-op, so the assertion would be vacuous.
+    token = vs._step_timings.set({})
+    try:
+        await _run_ff(service, sample_request, mock_session, monkeypatch)
+        timings = vs._step_timings.get()
+    finally:
+        vs._step_timings.reset(token)
+
+    assert timings is not None
+    # Every tier-0 node + the tier-1 ML node recorded its own per-node ms.
+    for label in (
+        Source.SENTRA_TRUST,
+        Source.SENTRA_POLICY,
+        Source.SENTRA_CROSS_AGENT,
+        Source.SENTRA_SIGMA,
+        Source.SENTRA_CONTEXT,
+        Source.SENTRA_ABUSE,
+        Source.SENTRA_ML_CLASSIFIER,
+    ):
+        assert label in timings, f"missing per-node timing for {label}: {sorted(timings)}"
+    # The policy node's internal selection sub-label is preserved.
+    assert "policy" in timings
+
+
+@pytest.mark.asyncio
+async def test_t_timing_abuse_policy_load_sub_step_preserved(mock_session, sample_request, monkeypatch):
+    """REGRESSION (integration-sentinel FIX-B LOW): the pre-DAG pipeline timed
+    the abuse node's agent-policy fetch under a DISTINCT `abuse_policy_load`
+    label (old validation_service.py:414) separate from the `sentra.abuse`
+    rate-limit check. The DAG's per-node wrapper only labels the whole node body
+    as `sentra.abuse`, so this sub-step was silently dropped. Assert BOTH labels
+    are present — reverting the in-node `_timed("abuse_policy_load", ...)` fetch
+    makes this FAIL."""
+    from app.services import validation_service as vs
+
+    service = _pipeline_service(mock_session)
+
+    token = vs._step_timings.set({})
+    try:
+        await _run_ff(service, sample_request, mock_session, monkeypatch)
+        timings = vs._step_timings.get()
+    finally:
+        vs._step_timings.reset(token)
+
+    assert "abuse_policy_load" in timings, (
+        "abuse_policy_load timing sub-step dropped — the agent-policy fetch inside "
+        f"the abuse node is no longer wrapped in _timed(); labels={sorted(timings)}"
+    )
+    assert Source.SENTRA_ABUSE in timings, (
+        "the abuse rate-limit check's own per-node timing must remain distinct "
+        "from the policy-load sub-step"
+    )
+    # The two are genuinely distinct labels (policy-load vs rate-limit check),
+    # not one collapsed onto the other.
+    assert "abuse_policy_load" != Source.SENTRA_ABUSE

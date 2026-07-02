@@ -117,7 +117,23 @@ def build_dag(service, phase: str, stamp_ctx: Dict) -> List[ValidatorNode]:
         # absorbs the second resolution (LLD 31 §11 — no 3× reload). This is the
         # node's OWN (get_agent_policy -> check_rate_limit) pair; we deliberately
         # do NOT thread a shared policy-context object through the scheduler.
-        policy = await service.policy_engine.get_agent_policy(req.agent_id)
+        #
+        # OBSERVABILITY (integration-sentinel FIX-B LOW): the pre-DAG pipeline
+        # emitted TWO distinct timing entries for this step — `abuse_policy_load`
+        # (the agent-policy fetch) and `abuse` (the rate-limit check). The DAG's
+        # per-node `timed(node.source, ...)` in run_dag only labels the whole node
+        # body as `sentra.abuse`, so the sub-step `abuse_policy_load` metric was
+        # silently dropped from `validation.timing` (LLD 31 §6.6 claims per-node
+        # timing is preserved byte-for-byte). Restore the sub-step label here — the
+        # same in-node instrumentation pattern `_run_policy_step` uses for its own
+        # `policy` / `policy_fallback` sub-labels. `_timed` is imported lazily to
+        # avoid the validation_service ↔ scheduler import cycle (the same deferred-
+        # import the pipeline seam uses).
+        from app.services.validation_service import _timed
+
+        policy = await _timed(
+            "abuse_policy_load", service.policy_engine.get_agent_policy(req.agent_id)
+        )
         return await service.abuse_detector.check_rate_limit(sess, policy)
 
     async def _run_ml(req: ValidationRequest, sess: Dict) -> ValidationResult:
