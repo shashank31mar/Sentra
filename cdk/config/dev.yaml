@@ -82,6 +82,14 @@ legacy_retired: false
 # — it does NOT disable enforcement (ADR-034). Per-tenant override via sentra-tenants.
 local_floor_enabled: true
 
+# ML threat classifier (WS-C / LLD 31 §6.5, task C7.2 — founder-requested). Turns the
+# `sentra.ml_classifier` tier-1 node ON. With WS-C the classifier is OUT OF SHADOW —
+# `ml_classifier_shadow_mode` is removed and the node ALWAYS enforces — so this flag is
+# now the only gate on whether ML runs at all; it MUST be true for the ML DENY to block.
+# Pre-launch (dev IS prod, no customer traffic yet); WS-F benign-FP graduation gate is the
+# named safeguard before real traffic (LLD 31 §14.2).
+ml_classifier_enabled: true
+
 # VPC Configuration
 vpc:
   cidr: "10.0.0.0/16"
