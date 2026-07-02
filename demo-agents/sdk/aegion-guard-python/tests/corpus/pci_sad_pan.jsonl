@@ -59,3 +59,8 @@
 {"id": "neg-luhn-valid-non-iin", "kind": "NONE", "text": "meter 9999999999999995 reading"}
 {"id": "neg-two-distant-8digit-runs", "kind": "NONE", "text": "order 12345678    ref 87654321 done"}
 {"id": "neg-15digit-non-iin-luhn", "kind": "NONE", "text": "tracking 100000000000009 shipped"}
+{"id": "pan-letter-glued-prefix", "kind": "PAN", "pan": "4111111111111111", "text": "card4111111111111111"}
+{"id": "pan-letter-glued-suffix", "kind": "PAN", "pan": "4111111111111111", "text": "4111111111111111x"}
+{"id": "pan-letter-glued-label", "kind": "PAN", "pan": "378282246310005", "text": "amex378282246310005 approved"}
+{"id": "pan-key-value-suffix", "kind": "PAN", "pan": "4111111111111111", "text": "pan=4111111111111111end"}
+{"id": "neg-letter-glued-luhn-fail", "kind": "NONE", "text": "ref4111111111111112xyz"}
