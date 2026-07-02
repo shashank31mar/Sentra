@@ -357,6 +357,126 @@ def test_tenant_for_ner_default_is_designed_not_an_error():
     # the fallback only engages when tenancy resolution itself raises.
 
 
+# =========================================================== E6 IMAGE ROUTER — LIVE PATH
+#
+# REGRESSION (integration-sentinel HIGH): the E6 image-mode router had ZERO call sites
+# — an image field was never actually routed, so the fail-secure default-block routing
+# never executed in production. These tests drive the router THROUGH the real barrier
+# node's `run` (its only live call site) to prove an image-tagged `content_text` is
+# routed by the per-tool mode — not silently passed through the NER text pass.
+
+_IMAGE_MARKER = "⟦AEGR:deadbeef:IMAGE⟧"
+
+
+def _image_req(**over):
+    return _content_req(content_text=_IMAGE_MARKER, tool_name="upload_photo", **over)
+
+
+def _svc_with_tool_mode(mode):
+    """A service stub whose tool-registry get_item returns `image_mode=mode` (or an
+    item without the attr / no item when mode is a sentinel)."""
+    svc = _svc()
+    engine = Mock()
+    table = Mock()
+    if mode is _NO_ITEM:
+        table.get_item = Mock(return_value={})
+    elif mode is _NO_ATTR:
+        table.get_item = Mock(return_value={"Item": {"tool_id": "upload_photo"}})
+    else:
+        table.get_item = Mock(return_value={"Item": {"tool_id": "upload_photo", "image_mode": mode}})
+    engine.dynamodb = Mock()
+    engine.dynamodb.Table = Mock(return_value=table)
+    svc.policy_engine = engine
+    return svc
+
+
+_NO_ITEM = object()   # tool not in registry
+_NO_ATTR = object()   # tool present, no image_mode attribute
+
+
+@pytest.mark.asyncio
+async def test_image_field_routes_evaluate_forwards_intact():
+    """`evaluate` (B2C-fraud beachhead): the image marker is forwarded INTACT to the
+    evaluator — content_text unchanged, node metadata records the forward."""
+    node = _find_ner_node(build_dag(_svc_with_tool_mode("evaluate"), "content",
+                                    {"platform": None, "cloud_region": None}))
+    req = _image_req()
+    result = await node.run(req, {"tenant_id": "t_x"})
+    assert req.content_text == _IMAGE_MARKER          # intact
+    assert result.metadata["image_mode"] == "evaluate"
+    assert result.metadata["image_forwarded_intact"] is True
+    assert req.redacted is True
+
+
+@pytest.mark.asyncio
+async def test_image_field_defaults_block_when_tool_has_no_mode():
+    """FOOTGUN (§3.6): a tool with no explicit `image_mode` → BLOCK (fail-secure). The
+    image is refused (replaced by the block sentinel), NEVER forwarded. Must FAIL if
+    the default were evaluate / pass-through."""
+    node = _find_ner_node(build_dag(_svc_with_tool_mode(_NO_ATTR), "content",
+                                    {"platform": None, "cloud_region": None}))
+    req = _image_req()
+    result = await node.run(req, {"tenant_id": "t_x"})
+    assert req.content_text != _IMAGE_MARKER          # NOT forwarded intact
+    assert req.content_text == "⟦AEGR:image_blocked⟧"
+    assert result.metadata["image_mode"] == "block"
+    assert result.metadata["image_forwarded_intact"] is False
+
+
+@pytest.mark.asyncio
+async def test_image_field_missing_tool_fails_secure_block():
+    """A tool absent from the registry (or a registry read failure) → BLOCK — the
+    resolver returns None, the router defaults BLOCK. Fail-secure toward hold."""
+    node = _find_ner_node(build_dag(_svc_with_tool_mode(_NO_ITEM), "content",
+                                    {"platform": None, "cloud_region": None}))
+    req = _image_req()
+    result = await node.run(req, {"tenant_id": "t_x"})
+    assert result.metadata["image_mode"] == "block"
+    assert result.metadata["image_forwarded_intact"] is False
+
+
+@pytest.mark.asyncio
+async def test_image_field_redact_mode_holds_pending_not_raw():
+    """`redact`: the engine is a named LATER build, so until it ships the field is the
+    redact-pending sentinel — the image is NOT forwarded raw (fail-secure toward hold,
+    never toward evaluate)."""
+    node = _find_ner_node(build_dag(_svc_with_tool_mode("redact"), "content",
+                                    {"platform": None, "cloud_region": None}))
+    req = _image_req()
+    result = await node.run(req, {"tenant_id": "t_x"})
+    assert req.content_text == "⟦AEGR:image_redact_pending⟧"
+    assert result.metadata["image_mode"] == "redact"
+    assert result.metadata["image_forwarded_intact"] is False
+
+
+@pytest.mark.asyncio
+async def test_image_field_does_not_go_through_text_ner_pass():
+    """An image-tagged field is routed by mode, NOT fed to the free-text NER redactor
+    (which cannot scrub pixels). Assert the NER client is never called for an image
+    field — the router short-circuits the text pass."""
+    node = _find_ner_node(build_dag(_svc_with_tool_mode("evaluate"), "content",
+                                    {"platform": None, "cloud_region": None}))
+    req = _image_req()
+    with patch("app.redaction.phi_ner.PhiNerClient.redact_free_text") as ner:
+        await node.run(req, {"tenant_id": "t_x"})
+    ner.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_free_text_still_takes_ner_pass_not_image_route():
+    """NON-VACUOUS control: a NON-image content_text (ordinary free-text PHI) still
+    goes through the NER text pass, NOT the image router. Proves the image branch is
+    gated on the marker, not firing on everything."""
+    node = _find_ner_node(build_dag(_svc_with_tool_mode("block"), "content",
+                                    {"platform": None, "cloud_region": None}))
+    req = _content_req()  # ordinary free text, no IMAGE marker
+    result = await node.run(req, {"tenant_id": "t_x"})
+    # Went through the NER pass (redaction_classes), NOT the image route (image_mode).
+    assert "redaction_classes" in (result.metadata or {})
+    assert "image_mode" not in (result.metadata or {})
+    assert _RAW_NAME not in req.content_text
+
+
 def test_ner_markers_are_nonce_namespaced_not_tenant_namespaced():
     """PROVING TEST (disproves the registry.py:186 harm claim): the reviewer claims a
     'default' tenant fallback makes 'redacted markers share a default namespace across

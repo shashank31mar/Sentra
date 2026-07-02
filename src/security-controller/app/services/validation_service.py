@@ -121,6 +121,33 @@ def _fire_and_forget(coro, label: str) -> None:
     task.add_done_callback(_on_done)
 
 
+# The identity keys in `ValidationRequest.context` a stable DSAR subject key can be
+# derived from, in priority order (LLD 29 §6.4). `user_id` is the documented context
+# identity convention (models.py:118); `subject_id`/`subject` are the explicit DSAR
+# subject keys when a caller supplies one. WITHOUT `user_id` here, every live feedback
+# record from a real caller (which populates `user_id`, not `subject_id`) would get
+# subject_key=None → no subject_locator → TTL-only-deletable, and the DSAR
+# delete-by-subject route (§6.4) could never target it (integration-sentinel MEDIUM).
+_SUBJECT_CONTEXT_KEYS = ("subject_id", "subject", "user_id")
+
+
+def _subject_key_from_context(context: Optional[Dict]) -> Optional[str]:
+    """Extract a stable DSAR subject key from the request context (§6.4).
+
+    Tries the documented identity keys in priority order (:data:`_SUBJECT_CONTEXT_KEYS`)
+    and returns the first non-empty string value, or None when none is present (the
+    record is then TTL-only-deletable — §6.4 does NOT claim subject-targeted deletion
+    for a keyless record). The value is the RAW subject id; the store salts+HMACs it
+    into the `subject_locator` at write time BEFORE any masking (never stored raw)."""
+    if not context:
+        return None
+    for key in _SUBJECT_CONTEXT_KEYS:
+        val = context.get(key)
+        if isinstance(val, str) and val.strip():
+            return val
+    return None
+
+
 async def write_redacted_feedback(
     request: ValidationRequest,
     *,
@@ -178,7 +205,7 @@ async def write_redacted_feedback(
             record,
             opted_in=opted_in,
             redacted=bool(getattr(request, "redacted", False)),
-            subject_key=(request.context or {}).get("subject_id") if request.context else None,
+            subject_key=_subject_key_from_context(request.context),
         )
     except FeedbackGateFail:
         # Eval-gate residual: the write is correctly SKIPPED (alarm already emitted

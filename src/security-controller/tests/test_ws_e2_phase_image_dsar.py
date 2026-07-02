@@ -108,6 +108,83 @@ def test_redact_engine_named_gaps():
     assert set(REDACT_ENGINE_GAPS) == {"faces", "dicom_metadata"}
 
 
+# ================================================= E6 router transform (route_image_content)
+
+def test_content_has_image_detects_marker():
+    """`content_has_image` fires only on a Tier-1 IMAGE marker (nonce'd or bare), not
+    on ordinary text or a non-IMAGE marker (e.g. a NAME token)."""
+    from app.redaction.image_mode import content_has_image
+    assert content_has_image("⟦AEGR:deadbeef:IMAGE⟧") is True
+    assert content_has_image("⟦AEGR:IMAGE⟧") is True
+    assert content_has_image("prefix ⟦AEGR:abc123:IMAGE⟧ suffix") is True
+    assert content_has_image("just some prose about an image of a cat") is False
+    assert content_has_image("⟦AEGR:abc:NAME⟧ was here") is False
+    assert content_has_image("") is False
+    assert content_has_image(None) is False
+
+
+def test_route_evaluate_forwards_intact():
+    """`evaluate` forwards the field INTACT (pixels reach the evaluator)."""
+    from app.redaction.image_mode import route_image_content, ImageMode
+    marker = "⟦AEGR:n:IMAGE⟧"
+    r = route_image_content(marker, raw_mode="evaluate")
+    assert r.mode is ImageMode.EVALUATE
+    assert r.content_text == marker          # unchanged
+    assert r.forwarded_intact is True
+
+
+def test_route_block_refuses_egress():
+    """`block` (and the default) replaces the field with the block sentinel — never
+    forwards. Must FAIL if block forwarded intact."""
+    from app.redaction.image_mode import route_image_content, ImageMode
+    r = route_image_content("⟦AEGR:n:IMAGE⟧", raw_mode="block")
+    assert r.mode is ImageMode.BLOCK
+    assert r.content_text == "⟦AEGR:image_blocked⟧"
+    assert r.forwarded_intact is False
+
+
+def test_route_default_and_unresolvable_fail_secure_block():
+    """A None / unknown mode fails toward BLOCK, never EVALUATE (§3.6 FOOTGUN)."""
+    from app.redaction.image_mode import route_image_content, ImageMode
+    for bad in (None, "passthru", "", "  "):
+        r = route_image_content("⟦AEGR:n:IMAGE⟧", raw_mode=bad)
+        assert r.mode is ImageMode.BLOCK
+        assert r.forwarded_intact is False
+
+
+def test_route_redact_holds_pending_not_intact():
+    """`redact` holds behind the redact-pending sentinel (engine = later build) — the
+    image is NOT forwarded intact."""
+    from app.redaction.image_mode import route_image_content, ImageMode
+    r = route_image_content("⟦AEGR:n:IMAGE⟧", raw_mode="redact")
+    assert r.mode is ImageMode.REDACT
+    assert r.content_text == "⟦AEGR:image_redact_pending⟧"
+    assert r.forwarded_intact is False
+
+
+def test_resolve_tool_image_mode_reads_registry_item():
+    """`resolve_tool_image_mode` reads the tool-registry `image_mode` attribute and
+    fails secure (None) on any hiccup so the caller BLOCKs — never evaluate-by-omission."""
+    from app.redaction.image_mode import resolve_tool_image_mode
+
+    svc = Mock()
+    table = Mock()
+    table.get_item = Mock(return_value={"Item": {"tool_id": "t", "image_mode": "evaluate"}})
+    svc.policy_engine.dynamodb.Table = Mock(return_value=table)
+    assert resolve_tool_image_mode(svc, "t") == "evaluate"
+
+    # No tool_name → None (caller BLOCKs).
+    assert resolve_tool_image_mode(svc, None) is None
+
+    # Missing item → None.
+    table.get_item = Mock(return_value={})
+    assert resolve_tool_image_mode(svc, "t") is None
+
+    # Read error → None (fail-secure).
+    table.get_item = Mock(side_effect=RuntimeError("ddb down"))
+    assert resolve_tool_image_mode(svc, "t") is None
+
+
 # ==================================================================== DSAR route (E5.4)
 #
 # AuthZ contract (security-review HIGH/MEDIUM): the destructive DSAR delete is gated

@@ -190,6 +190,45 @@ def build_dag(service, phase: str, stamp_ctx: Dict) -> List[ValidatorNode]:
             req.redacted = True
             return ValidationResult.abstain("redaction.ner: no content_text")
 
+        # WS-E2 / LLD 29 §3.6 (E6.2/E6.3) — IMAGE FIELD ROUTING (the E6 router's LIVE
+        # call site). The Tier-1 edge tagged a whole-value image/binary blob into
+        # `content_text` as an `⟦AEGR:{nonce}:IMAGE⟧` marker (the raw pixels were
+        # dropped at the edge — only the marker travels). An image field is NOT free
+        # text (the NER redactor cannot scrub pixels), so it is routed by the per-tool
+        # MODE here, on the content path, BEFORE the free-text NER pass. The mode is
+        # resolved FAIL-SECURE from the tool registry (default / unresolvable →
+        # `block`, §3.6 FOOTGUN — never `evaluate` by omission):
+        #   * evaluate → forward the image INTACT to the fraud/threat evaluator;
+        #   * redact   → replace with the redact-pending sentinel (engine = later build);
+        #   * block    → refuse egress (replace with the block sentinel).
+        # The routed value is stamped redacted=True (a routing decision IS a completed
+        # content pass — the raw is gone), so the audit/feedback consumers inherit the
+        # routed value, never a raw image. Only `evaluate` leaves the field intact.
+        from app.redaction.image_mode import (
+            content_has_image,
+            resolve_tool_image_mode,
+            route_image_content,
+        )
+
+        if content_has_image(text):
+            raw_mode = resolve_tool_image_mode(service, getattr(req, "tool_name", None))
+            route = route_image_content(text, raw_mode=raw_mode)
+            req.content_text = route.content_text
+            req.redacted = True
+            logger.info(
+                "redaction.image routed phase=%s tool=%s mode=%s intact=%s agent=%s",
+                getattr(req, "phase", "?"), getattr(req, "tool_name", "?"),
+                route.mode.value, route.forwarded_intact, req.agent_id,
+            )
+            return ValidationResult(
+                decision="ALLOW",
+                reason=f"redaction.image: routed mode={route.mode.value}",
+                should_deny=False,
+                source=Source.REDACTION_NER,
+                metadata={"image_mode": route.mode.value,
+                          "image_forwarded_intact": route.forwarded_intact},
+            )
+
         nonce = getattr(req, "redaction_nonce", None)
         tenant_id = _tenant_for_ner(sess)
         started = time.perf_counter()
