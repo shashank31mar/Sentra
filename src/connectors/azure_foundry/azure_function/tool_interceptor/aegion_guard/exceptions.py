@@ -1,0 +1,132 @@
+"""Exception hierarchy for Aegion Guard (LLD 23 §3, §8).
+
+    AegionGuardError
+    ├── ConfigError          (missing/invalid config at init — fail fast)
+    ├── BadRequest           (the controller rejected the request as malformed — HTTP 422)
+    ├── IdentityError        (the `identity` extra is missing, or a token couldn't be minted)
+    ├── RedactionError       (edge redaction failed — the guard fails secure to DENY)
+    ├── ToolDenied           (the controller returned DENY, or fail-secure tripped)
+    │   └── UnknownAgentError(controller reports the agent_id is not registered)
+    └── SentraUnavailable    (transport failure AND fail_secure=False)
+
+`ToolDenied` is the normal "blocked" signal a caller catches. `SentraUnavailable`
+only ever escapes when the integrator has explicitly opted out of fail-secure.
+`BadRequest` is the developer-actionable "you sent a malformed request" signal
+(e.g. a bad `phase` value) — distinct from a security DENY and from an outage.
+`RedactionError` is INTERNAL — the guard catches it in ``_build_request`` and
+converts it into a fail-secure DENY (``reason="redaction_failed"``) so a raw or
+partially-redacted payload never egresses (WS-E1, NFR-7 clause (a)); it does not
+normally escape to the caller.
+"""
+from __future__ import annotations
+
+from typing import TYPE_CHECKING, Optional
+
+if TYPE_CHECKING:  # avoid an import cycle; Decision lives in guard.py
+    from .guard import Decision
+
+
+class AegionGuardError(Exception):
+    """Base class for every error raised by the SDK."""
+
+
+class ConfigError(AegionGuardError, ValueError):
+    """Raised at construction time when required configuration is missing.
+
+    Subclasses ``ValueError`` so existing ``except ValueError`` handlers still
+    catch it, while ``except AegionGuardError`` catches all SDK errors.
+    """
+
+
+class BadRequest(AegionGuardError, ValueError):
+    """Raised when the controller rejects the request as malformed — HTTP 422.
+
+    WS-B (LLD 30 §3.6): a developer-actionable, NON-recoverable error, distinct
+    from both a security ``ToolDenied`` and a ``SentraUnavailable`` outage. The
+    canonical trigger is a bad ``phase`` value (a typo / an unsupported phase):
+    the controller 422s it as a validation error — NOT a verdict — and the SDK
+    surfaces it here so the integrator fixes their request instead of silently
+    failing secure. Raised in ``_send`` BEFORE the wrapped tool runs.
+
+    Subclasses ``ValueError`` so an existing ``except ValueError`` still catches
+    it, while ``except AegionGuardError`` catches all SDK errors. stdlib-only.
+    """
+
+
+class IdentityError(AegionGuardError):
+    """Raised when agent data-plane identity cannot be established or minted.
+
+    Distinct from ``ConfigError`` (static misconfiguration caught at init): this
+    covers the runtime/dependency cases — the optional ``identity`` extra
+    (``PyJWT[crypto]``) is not installed, or signing a token failed. Surfaced
+    distinctly so the integrator gets the ``pip install 'aegion-guard[identity]'``
+    hint instead of an opaque ``ImportError``.
+    """
+
+
+class RedactionError(AegionGuardError):
+    """Raised internally when Tier-1 edge redaction cannot complete safely.
+
+    WS-E1 (FR-3.13; LLD 29 §3): the SDK redacts structured PII/PCI out of the
+    egress payload *before* it leaves the customer boundary on the Serverless
+    edition. If the redactor hits an internal failure (a matcher raises, a
+    non-string leaf, a pathologically deep structure), it MUST fail secure —
+    surface this rather than return a raw or partially-redacted value.
+
+    The guard (``_build_request``) catches this and converts it into a DENY
+    ``Decision(reason="redaction_failed")`` — the raw payload is never sent, on
+    any ``fail_secure`` setting (failing OPEN here is an NFR-7 clause-(a) breach).
+    It therefore does not normally propagate to the integrator; it is the internal
+    signal that trips the fail-secure branch. stdlib-only.
+    """
+
+
+class ToolDenied(AegionGuardError):
+    """Raised when a guarded tool call must NOT run.
+
+    Covers two cases that are identical from the caller's perspective — the
+    call did not execute:
+      * the controller returned an authoritative ``DENY``; or
+      * validation could not be completed and ``fail_secure`` is on (default),
+        so the SDK fails closed (``reason="validation_unavailable"``).
+    """
+
+    def __init__(
+        self,
+        reason: str,
+        *,
+        threat_type: Optional[str] = None,
+        decision: "Optional[Decision]" = None,
+    ) -> None:
+        super().__init__(reason)
+        self.reason = reason
+        self.threat_type = threat_type
+        # The full Decision when one exists (real DENY). None on fail-secure
+        # where no well-formed decision was received.
+        self.decision = decision
+
+
+class UnknownAgentError(ToolDenied):
+    """The controller indicates ``agent_id`` is not registered.
+
+    A subclass of ``ToolDenied`` (it is still a block), surfaced distinctly so
+    integrators immediately see the real cause instead of a generic denial.
+
+    NOTE (LLD 23 §12.1 caveat 3): detection is currently best-effort — the
+    controller does not yet emit a stable machine code for this case, so the
+    SDK matches on the denial ``reason`` text. A dedicated ``UNKNOWN_AGENT``
+    ``error_code`` is filed as a WS-21 follow-up; when it lands, switch the
+    mapping in ``guard._is_unknown_agent`` to the code.
+    """
+
+
+class SentraUnavailable(AegionGuardError):
+    """Raised only when validation fails AND ``fail_secure=False``.
+
+    The integrator has opted out of failing closed, so transport problems
+    surface as this error for them to handle (degrade vs. block).
+    """
+
+    def __init__(self, message: str, *, cause: Optional[BaseException] = None) -> None:
+        super().__init__(message)
+        self.cause = cause

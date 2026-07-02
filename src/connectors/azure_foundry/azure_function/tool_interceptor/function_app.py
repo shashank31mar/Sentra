@@ -10,6 +10,8 @@ Architecture (LLD 15 §2.2):
     THIS Function — POST /api/tool/{tool_name}
               |
               | 1. Translate to Sentra ValidationRequest
+              | 1a. Tier-1 EDGE REDACTION (WS-E1, FR-3.13): mask structured PII/PCI
+              |     out of tool_params + user_input BEFORE egress; stamp redacted+nonce
               | 2. POST /v1/validate via AWS API Gateway (WS16 fix)
               | 3. On DENY -> return 403 to Foundry
               | 4. On ALLOW -> execute the mock tool, return result
@@ -33,6 +35,16 @@ import urllib.error
 import urllib.request
 
 import azure.functions as func
+
+# Tier-1 edge redaction (FR-3.13; LLD 29 §3 / WS-E1). VENDORED, not pip-installed:
+# the Function is stdlib-only by design (see the urllib note below — Azure B1 Linux
+# Oryx Remote Build does not reliably install pip deps, WS15 M3 2026-05-23), and the
+# redactor is itself stdlib-only, so we import it as a local package copied next to
+# this module (aegion_guard/redaction.py, byte-identical to the audited SDK version).
+# This mirrors how the SDK vendors unchanged into a Lambda zip / Azure Function
+# (LLD 23 §2). NEVER add aegion_guard to requirements.txt.
+from aegion_guard import redaction
+from aegion_guard.exceptions import RedactionError
 
 # -----------------------------------------------------------------------------
 # Module-level cache for cold-start cost (mirrors _api_key_cache in Bedrock Lambda)
@@ -113,17 +125,47 @@ def validate_with_sentra(
     Function-generated UUID for callers that don't thread it.
     """
     request_id = supplied_request_id or f"azure-{uuid.uuid4().hex[:12]}"
+
+    # Tier-1 edge redaction (FR-3.13; LLD 29 §3 / WS-E1) — mirrors the SDK's
+    # `_build_request` (guard.py). This payload egresses to the hosted PDP over the
+    # cross-cloud path, so structured PII/PCI in `tool_params` + `user_input` MUST be
+    # masked HERE, before it leaves the customer boundary (NFR-7 clause (a): no raw
+    # structured identifier egresses on any edition). Mint ONE per-egress nonce and
+    # thread it through both redacted fields so all genuine markers share the single
+    # `redaction_nonce` the controller's redaction-state guard checks — an attacker
+    # cannot forge a marker bearing this call's nonce (M-4).
+    #
+    # `redacted=True` is stamped ONLY after the redactor actually ran on the fields:
+    # the flag MEANS real redaction happened. Setting it without redacting would leak
+    # raw PII past the controller guard's narrow re-scan stub (a fail-open) — the whole
+    # point of this change. FAIL-SECURE (E1.4): if the redactor raises, we do NOT send
+    # the raw payload — we return a fail-secure DENY, the same shape the transport-error
+    # paths below return, so a redactor failure blocks rather than leaks.
+    try:
+        nonce = redaction.new_nonce()
+        redacted_params = redaction.redact_params(tool_params, nonce=nonce)
+        redacted_input = redaction.redact(user_input, nonce=nonce)
+    except RedactionError as e:
+        # Never egress a raw/partially-redacted payload. Deny, don't leak.
+        logging.error("Tier-1 edge redaction failed: %s", e)
+        return {"decision": "DENY", "reason": "edge redaction failed"}
+
     payload = {
         "request_id": request_id,
         "session_id": session_id,
         "agent_id": AGENT_ID,
         "tool_name": tool_name,
-        "tool_params": tool_params,
-        "user_input": user_input,
+        "tool_params": redacted_params,
+        "user_input": redacted_input,
         "timestamp": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
         "operation_type": "WRITE" if any(w in tool_name for w in ("refund", "modify", "delete")) else "READ",
         "platform": _sentra_platform,
         "cloud_region": _sentra_cloud_region,
+        # Provenance (LLD 29 §3.3/§3.5): declare the payload was edge-redacted and
+        # publish the single per-egress nonce so the PDP recognizes genuine markers.
+        # Set ONLY after the redactor above ran — the flag means redaction happened.
+        "redacted": True,
+        "redaction_nonce": nonce,
     }
     # Use urllib (stdlib) instead of requests — avoids a pip dependency that
     # B1 Linux Oryx Remote Build wasn't picking up during Workstream 15 M3

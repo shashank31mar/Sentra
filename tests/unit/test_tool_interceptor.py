@@ -107,6 +107,14 @@ def function_app(monkeypatch):
     monkeypatch.setenv("SENTRA_PLATFORM", "azure_foundry")
     monkeypatch.setenv("SENTRA_CLOUD_REGION", "centralus")
 
+    # The Function now imports its VENDORED `aegion_guard` redactor package as a
+    # local sibling module (WS-E1 edge redaction). In the real Azure runtime the
+    # Function app root (this dir) is on sys.path, so `from aegion_guard import
+    # redaction` resolves. Mirror that here by putting the module dir on sys.path.
+    module_dir = str(MODULE_PATH.parent)
+    if module_dir not in sys.path:
+        sys.path.insert(0, module_dir)
+
     # Force a fresh import so module-level config picks up the env vars.
     sys.modules.pop("function_app_under_test", None)
     spec = importlib.util.spec_from_file_location("function_app_under_test", MODULE_PATH)
