@@ -162,6 +162,37 @@ def _subject_key_from_context(context: Optional[Dict]) -> Optional[str]:
     return None
 
 
+# WS-E2 / LLD 29 §5.4 (E4.4, F7) — the raw content-bearing fields of a
+# ValidationRequest must not linger in the outer `validate_tool_call` frame's
+# locals: an uncaught exception (or a future APM agent that captures frame
+# locals / repr(request)) would otherwise expose raw PII/PHI in a crash trace.
+# Today's stdlib/JSON logging captures only message+traceback text (not locals),
+# so this is defense-in-depth that makes the NO-RAW invariant hold BY DESIGN
+# rather than by absence-of-an-APM. Called in `validate_tool_call`'s `finally`
+# so the raw object is scrubbed on EVERY exit path (return or exception), once
+# the pipeline + handlers no longer need it.
+_RAW_CONTENT_FIELDS = ("tool_params", "user_input", "content_text")
+
+
+def _scrub_raw_content(request: "ValidationRequest") -> None:
+    """Zero the raw content-bearing fields on `request` in place (fail-quiet).
+
+    Replaces `tool_params` with `{}`, `user_input`/`content_text` with a short
+    scrubbed marker. Structural fields (agent_id, session_id, tool_name, phase,
+    timestamps) are untouched — they carry no PHI and remain useful in a trace.
+    NEVER raises: a scrub hiccup must not convert a clean verdict into a 500."""
+    try:
+        for f in _RAW_CONTENT_FIELDS:
+            if not hasattr(request, f):
+                continue
+            cur = getattr(request, f, None)
+            if cur is None or cur == "" or cur == {}:
+                continue
+            setattr(request, f, {} if isinstance(cur, dict) else "⟦scrubbed⟧")
+    except Exception:  # noqa: BLE001 — scrub is best-effort hardening, never blocks
+        logger.debug("frame-local content scrub skipped (non-blocking)", exc_info=True)
+
+
 async def write_redacted_feedback(
     request: ValidationRequest,
     *,
@@ -465,6 +496,14 @@ class ValidationService:
                 "Internal validation error",
                 start_time
             )
+        finally:
+            # WS-E2 / LLD 29 §5.4 (E4.4, F7) — strip the raw content fields off the
+            # request object on EVERY exit path (clean return OR exception), now that
+            # the pipeline + handlers have run. Minimizes the raw object's lifetime so
+            # a later throwable, a `logger.exception` traceback, or a future
+            # frame-local-capturing APM (Sentry/Datadog) has no raw PII/PHI in this
+            # frame's locals. Safe-by-design, not safe-by-absence-of-an-APM.
+            _scrub_raw_content(request)
     
     async def _run_policy_step(self, request: ValidationRequest) -> ValidationResult:
         """STEP 2 policy-engine selection — the Cedar cutover/shadow/legacy
