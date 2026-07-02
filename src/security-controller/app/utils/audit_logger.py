@@ -135,7 +135,8 @@ class AuditLogger:
         request: Dict[str, Any],
         session: Dict[str, Any],
         validation_result: Optional[Dict[str, Any]] = None,
-        latency_ms: float = 0.0
+        latency_ms: float = 0.0,
+        markers: Optional[List[Any]] = None,
     ):
         """
         Legacy single-signal logger. Preserved for callers that haven't yet
@@ -148,6 +149,13 @@ class AuditLogger:
             session: Session context dict
             validation_result: Result from validator (for DENY)
             latency_ms: Validation latency in milliseconds
+            markers: WS-D decision-trail NotRunMarker rows (LLD 33 §9.1,
+                invariant v). This is the empty-`signals` branch of
+                `_handle_deny`/`_handle_allow`: the request produced no ran
+                signal rows, but the not-run/abstain complement must STILL
+                persist a full trail. Forwarded to `log_signals` so the markers
+                ride the SAME off-path writer — never a second fire-and-forget
+                (D4). Absent/empty → byte-identical to the pre-WS-D path.
         """
         synthesized = self._synthesize_signal_from_legacy(decision, validation_result)
         await self.log_signals(
@@ -155,6 +163,7 @@ class AuditLogger:
             session=session,
             signals=[synthesized],
             latency_ms=latency_ms,
+            markers=markers,
         )
 
     @staticmethod

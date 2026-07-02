@@ -152,18 +152,34 @@ class DecisionsService:
         # derivation, the SAME four buckets the writer classified into.
         ran_rows: dict[str, dict] = {}
         marker_rows: dict[str, dict] = {}
-        phase = "request"
         for it in rows:
             src = it.get("source")
             if not src:
                 continue
             rt = it.get("record_type")
-            if it.get("phase"):
-                phase = it.get("phase")
             if rt in ("not_run", "abstain", "error"):
                 marker_rows[src] = it
             elif it.get("decision") is not None:
                 ran_rows[src] = it
+
+        # Top-level `phase` — DETERMINISTIC, not last-write-wins over iteration
+        # order. Single-phase today (all rows carry `phase=request`); this rule
+        # pins that and stays stable if a request's partition ever holds rows of
+        # differing phase (a future multi-phase request, or a marker stamped
+        # 'request' next to a content-phase ran row): prefer the phase carried by
+        # the RAN rows (the actual decision path) over markers, and iterate a
+        # stable key order (sorted by source) rather than DDB return order so the
+        # reported phase never flips run-to-run. Falls back to marker phase, then
+        # "request".
+        phase = "request"
+        for bucket in (ran_rows, marker_rows):
+            found = next(
+                (bucket[s].get("phase") for s in sorted(bucket) if bucket[s].get("phase")),
+                None,
+            )
+            if found:
+                phase = found
+                break
 
         # Recompute winning_source / block_point on read from the ran DENY rows
         # (§6.3) — the durable copy lives on the `sentra.combined` CloudWatch event,

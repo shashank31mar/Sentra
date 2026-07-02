@@ -781,3 +781,214 @@ def test_trail_route_wired():
         resp = client.get("/v1/sessions/s1/trail", params={"request_id": "r1"})
     assert resp.status_code == 200
     fake.get_session_trail.assert_called_once_with(session_id="s1", request_id="r1")
+
+
+# ===========================================================================
+# D2.4 / D4.1 — the log_signals marker WIRING at the call site (gap close, FIX-B)
+#
+# test_trail_builder covers build_trail() and log_signals(markers=...) in
+# ISOLATION, but nothing exercised _handle_deny/_handle_allow actually THREADING
+# `markers` through to persistence. A revert of `markers=markers` on either
+# handler's persist call would leave the four-bucket trail silently un-persisted
+# and the whole suite green — this is the load-bearing FR-6.8/NFR-10 wiring.
+# ===========================================================================
+
+def _bare_service_for_handler(captured):
+    """A ValidationService with just enough stubbed collaborators for
+    _handle_deny/_handle_allow to run, capturing every audit call's kwargs."""
+    import asyncio
+    from app.services import validation_service as vs
+
+    svc = vs.ValidationService.__new__(vs.ValidationService)  # skip __init__ (no boto3)
+
+    async def _upd_deny(*a, **k):
+        return {"trust_score": 10.0}
+
+    async def _upd_allow(*a, **k):
+        return {"trust_score": 90.0}
+
+    svc.session_manager = MagicMock()
+    svc.session_manager.update_trust_score_deny = _upd_deny
+    svc.session_manager.update_trust_score_allow = _upd_allow
+    svc.metrics_publisher = MagicMock()
+    svc.metrics_publisher.publish_validation_metrics = AsyncMock()
+
+    # audit_logger.log_signals / log_decision are MagicMocks: they record the
+    # call kwargs (including `markers`) the INSTANT the call site invokes them,
+    # before the coroutine is even scheduled — so we assert on those kwargs.
+    audit = MagicMock()
+
+    async def _noop(*a, **k):
+        return None
+
+    audit.log_signals = MagicMock(return_value=_noop())
+    audit.log_decision = MagicMock(return_value=_noop())
+    svc.audit_logger = audit
+    svc._generate_action_id = MagicMock(return_value="act-1")
+    return svc, audit
+
+
+def test_handle_deny_threads_markers_to_log_signals():
+    """FIX-B gap (MEDIUM): _handle_deny with ran signals present forwards the
+    decision-trail `markers` into audit_logger.log_signals. Reverting
+    `markers=markers` on that call turns this red."""
+    import asyncio
+    from app.api.models import ValidationResult
+    from app.services import validation_service as vs
+
+    svc, audit = _bare_service_for_handler({})
+    markers = [NotRunMarker(source=Source.SENTRA_CONTEXT, record_type="not_run")]
+    signals = [_sig(Source.SENTRA_SIGMA, "DENY", reason="x", priority=70)]
+    req = MagicMock()
+    req.session_id = "s1"; req.agent_id = "a1"; req.tool_name = "t"
+    req.platform = None; req.cloud_region = None
+    req.model_dump = MagicMock(return_value={"session_id": "s1", "request_id": "r1"})
+    vr = ValidationResult(decision="DENY", reason="x", should_deny=True,
+                          source=Source.SENTRA_SIGMA, threat_type="INJECTION")
+
+    # Swallow the fire-and-forget coroutines (close them so no "never awaited").
+    def _swallow(coro, label):
+        coro.close()
+
+    with patch.object(vs, "_fire_and_forget", side_effect=_swallow), \
+         patch.object(vs, "write_redacted_feedback", side_effect=lambda *a, **k: _noop_coro()):
+        asyncio.run(svc._handle_deny(req, {}, vr, 0.0, signals=signals, markers=markers))
+
+    audit.log_signals.assert_called_once()
+    assert audit.log_signals.call_args.kwargs["markers"] is markers
+    audit.log_decision.assert_not_called()
+
+
+def test_handle_allow_threads_markers_to_log_signals():
+    """FIX-B gap (MEDIUM): _handle_allow with ran signals present forwards
+    `markers` into audit_logger.log_signals. Reverting it turns this red."""
+    import asyncio
+    from app.api.models import ValidationResult
+    from app.services import validation_service as vs
+
+    svc, audit = _bare_service_for_handler({})
+    markers = [NotRunMarker(source=Source.SENTRA_ML_CLASSIFIER, record_type="abstain")]
+    signals = [_sig(Source.SENTRA_TRUST, "ALLOW", priority=90)]
+    req = MagicMock()
+    req.session_id = "s1"; req.agent_id = "a1"; req.tool_name = "t"
+    req.model_dump = MagicMock(return_value={"session_id": "s1", "request_id": "r1"})
+    vr = ValidationResult(decision="ALLOW", reason="ok", should_deny=False)
+
+    def _swallow(coro, label):
+        coro.close()
+
+    with patch.object(vs, "_fire_and_forget", side_effect=_swallow), \
+         patch.object(vs, "write_redacted_feedback", side_effect=lambda *a, **k: _noop_coro()):
+        asyncio.run(svc._handle_allow(req, {}, 0.0, validation_result=vr,
+                                      signals=signals, markers=markers))
+
+    audit.log_signals.assert_called_once()
+    assert audit.log_signals.call_args.kwargs["markers"] is markers
+    audit.log_decision.assert_not_called()
+
+
+def test_handle_deny_empty_signals_still_persists_markers():
+    """FIX-B gap (LOW): on the empty-`signals` DENY branch (log_decision, not
+    log_signals) the not-run complement must STILL persist a full trail
+    (invariant v). Reverting `markers=markers` on the else-branch log_decision
+    call — which previously silently DROPPED the markers — turns this red."""
+    import asyncio
+    from app.api.models import ValidationResult
+    from app.services import validation_service as vs
+
+    svc, audit = _bare_service_for_handler({})
+    markers = [NotRunMarker(source=Source.SENTRA_TRUST, record_type="not_run")]
+    req = MagicMock()
+    req.session_id = "s1"; req.agent_id = "a1"; req.tool_name = "t"
+    req.platform = None; req.cloud_region = None
+    req.model_dump = MagicMock(return_value={"session_id": "s1", "request_id": "r1"})
+    vr = ValidationResult(decision="DENY", reason="x", should_deny=True,
+                          source=Source.SENTRA_POLICY)
+
+    def _swallow(coro, label):
+        coro.close()
+
+    with patch.object(vs, "_fire_and_forget", side_effect=_swallow), \
+         patch.object(vs, "write_redacted_feedback", side_effect=lambda *a, **k: _noop_coro()):
+        asyncio.run(svc._handle_deny(req, {}, vr, 0.0, signals=[], markers=markers))
+
+    # Empty signals → log_decision branch, but markers MUST be forwarded.
+    audit.log_decision.assert_called_once()
+    assert audit.log_decision.call_args.kwargs["markers"] is markers
+    audit.log_signals.assert_not_called()
+
+
+def test_log_decision_forwards_markers_to_writer():
+    """FIX-B gap (LOW): AuditLogger.log_decision now forwards `markers` into
+    log_signals → write_not_run_markers, so the empty-signals branch persists a
+    full trail. Reverting the `markers=markers` forward in log_decision turns
+    this red (the writer's write_not_run_markers is never called)."""
+    import asyncio
+    from app.utils.audit_logger import AuditLogger
+
+    al = AuditLogger.__new__(AuditLogger)  # skip __init__ (no boto3/CW)
+    al._signal_store = None
+
+    fake_writer = Mock()
+    fake_writer.write_signals = Mock(return_value=(1, 0))
+    fake_writer.write_not_run_markers = Mock(return_value=(1, 0))
+    al._get_signal_store = Mock(return_value=fake_writer)
+    al._emit_trail_metric = AsyncMock()
+    al._write_log_event = AsyncMock()
+    al._guard_persist = Mock(side_effect=lambda req, **kw: req)
+
+    markers = [NotRunMarker(source=Source.SENTRA_SIGMA, record_type="not_run")]
+    asyncio.run(al.log_decision(
+        decision="DENY",
+        request={"session_id": "s1", "request_id": "r1"},
+        session={},
+        validation_result={"reason": "x", "source": Source.SENTRA_POLICY},
+        latency_ms=1.0,
+        markers=markers,
+    ))
+    fake_writer.write_not_run_markers.assert_called_once()
+    assert fake_writer.write_not_run_markers.call_args.kwargs["markers"] is markers
+
+
+def _noop_coro():
+    async def _c():
+        return None
+    return _c()
+
+
+# ===========================================================================
+# D5 — deterministic top-level `phase` derivation (gap close, FIX-B)
+#
+# get_session_trail derived `phase` last-write-wins over ALL rows carrying a
+# `phase` attr. On a mixed-phase partition the reported top-level `phase` was
+# iteration-order dependent (nondeterministic). Pin the intended behavior:
+# prefer the RAN rows' phase, stable regardless of row order.
+# ===========================================================================
+
+def test_trail_phase_deterministic_prefers_ran_over_marker():
+    """FIX-B gap (LOW): a mixed-phase partition (a ran row on one phase, a marker
+    on another) yields a DETERMINISTIC top-level `phase` that prefers the ran
+    rows' phase — and does not flip when the row order is reversed."""
+    ran = _ran_row(Source.SENTRA_TRUST, "ALLOW", phase="content")
+    marker = _marker_row(Source.SENTRA_SIGMA, "not_run", "skipped for cost/tier",
+                         phase="request")
+
+    svc_a = _mk_service_with_rows([ran, marker])
+    svc_b = _mk_service_with_rows([marker, ran])  # reversed row order
+    resp_a = svc_a.get_session_trail(session_id="s1", request_id="r1")
+    resp_b = svc_b.get_session_trail(session_id="s1", request_id="r1")
+
+    # Deterministic (order-independent) AND prefers the ran row's phase.
+    assert resp_a["phase"] == resp_b["phase"] == "content"
+
+
+def test_trail_phase_single_phase_is_request():
+    """FIX-B gap (LOW): the single-phase case today — every row phase=request —
+    reports phase=request (regression guard for the deterministic rewrite)."""
+    rows = [
+        _ran_row(Source.SENTRA_TRUST, "ALLOW"),
+        _ran_row(Source.SENTRA_SIGMA, "DENY", reason="x"),
+        _marker_row(Source.SENTRA_CONTEXT, "not_run", "gated by earlier DENY"),
+    ]
+    resp = _mk_service_with_rows(rows).get_session_trail(session_id="s1", request_id="r1")
+    assert resp["phase"] == "request"

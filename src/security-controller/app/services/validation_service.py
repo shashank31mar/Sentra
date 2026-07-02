@@ -787,12 +787,18 @@ class ValidationService:
                 markers=markers,
             ), "audit")
         else:
+            # No ran signal rows on this DENY (rare/degenerate — the §7.1.1 stamp
+            # normally guarantees the policy DENY produces a signal). The not-run
+            # complement must STILL persist so BOTH ALLOW and DENY carry a full
+            # trail (invariant v); forward `markers` through log_decision → the
+            # SAME off-path log_signals writer (NOT a second fire-and-forget, D4).
             _fire_and_forget(self.audit_logger.log_decision(
                 decision="DENY",
                 request=request.model_dump(),
                 session=session,
                 validation_result=validation_result.model_dump(),
                 latency_ms=latency_ms,
+                markers=markers,
             ), "audit")
 
         # WS-E2 (LLD 29 §6.5) — off-path opt-in redacted-feedback write, fired
@@ -858,12 +864,17 @@ class ValidationService:
                 markers=markers,
             ), "audit")
         else:
+            # No ran signal rows on this ALLOW — persist the not-run complement
+            # anyway so BOTH ALLOW and DENY carry a full trail (invariant v).
+            # Markers ride the SAME off-path log_signals writer via log_decision
+            # (NOT a second fire-and-forget, D4).
             _fire_and_forget(self.audit_logger.log_decision(
                 decision="ALLOW",
                 request=request.model_dump(),
                 session=session,
                 validation_result=None,
                 latency_ms=latency_ms,
+                markers=markers,
             ), "audit")
 
         # WS-E2 (LLD 29 §6.5) — off-path opt-in redacted-feedback write. Inert on
