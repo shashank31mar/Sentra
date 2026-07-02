@@ -50,9 +50,13 @@ def api_template() -> Template:
         "{session_id}",     # T14 + T17
         "decisions",        # T14/T15
         "trail",            # WS-D LLD 33 §9A GET /v1/sessions/{session_id}/trail (per-resource GW: unwired route = 403)
+        "signals",          # LLD 17 §8.2 GET+POST /v1/sessions/{session_id}/signals
         "conversation",     # T16
         "{conversation_id}",
         "quarantine",       # T17
+        "feedback",         # WS-E2 DSAR delete parent /v1/feedback
+        "subjects",         # WS-E2 /v1/feedback/subjects
+        "{subject_locator}",  # WS-E2 DELETE /v1/feedback/subjects/{subject_locator}
         "metrics",                 # T20-T22 parent
         "overview",                # T20
         "platform-distribution",   # T21
@@ -73,6 +77,104 @@ def test_tier_b_resources_synthesized(api_template, path_part):
     api_template.has_resource_properties(
         "AWS::ApiGateway::Resource", {"PathPart": path_part}
     )
+
+
+def _integration_path(uri):
+    """Extract the backend PATH from a synthesized Integration.Uri. The URI is
+    `{nlb_base_url}{path}` built via a CFN Fn::Join: ["", ["http://", <NLB DNS
+    token>, "/v1/..."]] — so the path is the LAST join element (a plain string).
+    Falls back to a plain-string URI (no token) for robustness.
+    """
+    if isinstance(uri, dict) and "Fn::Join" in uri:
+        parts = uri["Fn::Join"][1]
+        tail = parts[-1] if parts else ""
+        return tail if isinstance(tail, str) else ""
+    return uri if isinstance(uri, str) else ""
+
+
+def _method_by_integration_path(api_template, http_method, path, *, exact=False):
+    """Return the synthesized Method resource whose HTTP-integration backend path
+    matches `path` for `http_method`, or None. Pins the method to its BACKEND PATH
+    (not just that *a* method exists). exact=True requires an equal path (needed for
+    /v1/metrics, a prefix of /v1/metrics/overview); else a suffix/contains match.
+    """
+    for props in api_template.find_resources("AWS::ApiGateway::Method").values():
+        p = props.get("Properties", {})
+        if p.get("HttpMethod") != http_method:
+            continue
+        ipath = _integration_path((p.get("Integration", {}) or {}).get("Uri"))
+        if (ipath == path) if exact else (path in ipath):
+            return p
+    return None
+
+
+# Back-compat alias used by the read-method test below.
+def _method_by_integration_suffix(api_template, http_method, path_suffix):
+    return _method_by_integration_path(api_template, http_method, path_suffix)
+
+
+@pytest.mark.parametrize(
+    "http_method,path_suffix,required_query_param",
+    [
+        # The method-level gate the resource-presence test can't give: each read
+        # route's METHOD is wired to the CORRECT backend path with its query param
+        # passed through — catches a method wired to the wrong path / dropped param.
+        ("GET", "/v1/sessions/{session_id}/trail", "request_id"),
+        ("GET", "/v1/sessions/{session_id}/decisions", "request_id"),
+        ("GET", "/v1/sessions/{session_id}/signals", "request_id"),
+    ],
+)
+def test_session_read_methods_wired_to_correct_backend_path(
+    api_template, http_method, path_suffix, required_query_param
+):
+    """Method exists, targets the right integration URI, requires the session_id
+    path param, api-key-gated, and passes its query param through."""
+    method = _method_by_integration_suffix(api_template, http_method, path_suffix)
+    assert method is not None, f"no {http_method} method wired to {path_suffix}"
+    assert method.get("ApiKeyRequired") is True, f"{path_suffix} must be api-key-gated"
+    rp = method.get("RequestParameters", {}) or {}
+    assert rp.get("method.request.path.session_id") is True, (
+        f"{path_suffix} must declare the session_id path param"
+    )
+    assert f"method.request.querystring.{required_query_param}" in rp, (
+        f"{path_suffix} must pass {required_query_param} through the gateway"
+    )
+    integ_params = (method.get("Integration", {}) or {}).get("RequestParameters", {}) or {}
+    assert (
+        f"integration.request.querystring.{required_query_param}" in integ_params
+    ), f"{path_suffix} integration must forward {required_query_param} to the backend"
+
+
+def test_bare_metrics_get_method_wired(api_template):
+    """GET /v1/metrics (bare) is wired distinct from /metrics/{overview,...}."""
+    # /v1/metrics is a prefix of /v1/metrics/overview → require an EXACT path match.
+    method = _method_by_integration_path(api_template, "GET", "/v1/metrics", exact=True)
+    assert method is not None, "GET /v1/metrics (bare) not wired to its backend path"
+    assert method.get("ApiKeyRequired") is True
+
+
+def test_rollback_conversation_post_method_wired(api_template):
+    """POST /v1/rollback/conversation/{conversation_id} is wired with its path param."""
+    method = _method_by_integration_suffix(
+        api_template, "POST", "/v1/rollback/conversation/{conversation_id}"
+    )
+    assert method is not None, "POST /v1/rollback/conversation/{conversation_id} not wired"
+    assert method.get("ApiKeyRequired") is True
+    assert (method.get("RequestParameters", {}) or {}).get(
+        "method.request.path.conversation_id"
+    ) is True
+
+
+def test_feedback_subject_delete_method_wired(api_template):
+    """DELETE /v1/feedback/subjects/{subject_locator} (DSAR) is wired + api-key-gated."""
+    method = _method_by_integration_suffix(
+        api_template, "DELETE", "/v1/feedback/subjects/{subject_locator}"
+    )
+    assert method is not None, "DELETE /v1/feedback/subjects/{subject_locator} not wired"
+    assert method.get("ApiKeyRequired") is True
+    assert (method.get("RequestParameters", {}) or {}).get(
+        "method.request.path.subject_locator"
+    ) is True
 
 
 def test_policy_status_patch_method_synthesized(api_template):

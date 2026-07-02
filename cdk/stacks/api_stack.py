@@ -431,7 +431,7 @@ class ApiStack(Stack):
         )
 
         # /v1/rollback - POST
-        StandardApiEndpoint(
+        rollback_endpoint = StandardApiEndpoint(
             self, "RollbackEndpoint",
             api=self.api,
             parent_resource=v1_resource,
@@ -449,6 +449,22 @@ class ApiStack(Stack):
                 apigateway.MethodResponse(status_code="403"),
                 apigateway.MethodResponse(status_code="501"),  # Not implemented
             ]
+        )
+        # POST /v1/rollback/conversation/{conversation_id} — rollback-by-conversation
+        # variant of the base /rollback above; wired on the rollback resource so it
+        # is reachable through the per-resource Gateway (no proxy).
+        rollback_conversation_resource = (
+            rollback_endpoint.resource.add_resource("conversation").add_resource("{conversation_id}")
+        )
+        rollback_conversation_resource.add_method(
+            "POST",
+            integration=create_http_integration(
+                self.nlb_base_url, "/v1/rollback/conversation/{conversation_id}", "POST",
+                vpc_link=self.api_vpc_link,
+            ),
+            api_key_required=True,
+            request_validator=body_validator,
+            request_parameters={"method.request.path.conversation_id": True},
         )
 
         # ============================================================
@@ -783,6 +799,40 @@ class ApiStack(Stack):
                 "method.request.querystring.request_id": False,
             },
         )
+        # LLD 17 §8.2: the raw per-session signal rows — the read-family sibling of
+        # /decisions and /trail (same single-partition Query, same per-resource
+        # Gateway wiring rule). GET is a pure tenant-scoped read; POST ingests a
+        # signal row (write). Both must be wired here or they 403 undefined-route.
+        session_signals_resource = session_id_resource.add_resource("signals")
+        session_signals_resource.add_method(
+            "GET",
+            integration=create_http_integration(
+                self.nlb_base_url, "/v1/sessions/{session_id}/signals", "GET",
+                vpc_link=self.api_vpc_link,
+                pass_query_params={
+                    "request_id": "method.request.querystring.request_id",
+                    "source": "method.request.querystring.source",
+                },
+            ),
+            api_key_required=True,
+            request_parameters={
+                "method.request.path.session_id": True,
+                "method.request.querystring.request_id": False,
+                "method.request.querystring.source": False,
+            },
+        )
+        # POST /v1/sessions/{session_id}/signals — signal ingest (201). Write path,
+        # api-key-gated + body-validated like the other POST data-plane routes.
+        session_signals_resource.add_method(
+            "POST",
+            integration=create_http_integration(
+                self.nlb_base_url, "/v1/sessions/{session_id}/signals", "POST",
+                vpc_link=self.api_vpc_link,
+            ),
+            api_key_required=True,
+            request_validator=body_validator,
+            request_parameters={"method.request.path.session_id": True},
+        )
 
         # T15: GET /v1/decisions (cross-session GSI-2 feed; Threats + timeseries)
         decisions_resource = v1_resource.add_resource("decisions")
@@ -852,6 +902,25 @@ class ApiStack(Stack):
         # Workstream 21 Phase 2: dashboard metrics endpoints (T20-T22)
         # ============================================================
         metrics_resource = v1_resource.add_resource("metrics")
+
+        # GET /v1/metrics (bare) — CloudWatch summary metrics (since/until window).
+        # Distinct from the /metrics/{overview,platform-distribution,
+        # decisions-timeseries} sub-resources below; wired on the parent resource.
+        metrics_resource.add_method(
+            "GET",
+            integration=create_http_integration(
+                self.nlb_base_url, "/v1/metrics", "GET", vpc_link=self.api_vpc_link,
+                pass_query_params={
+                    "since": "method.request.querystring.since",
+                    "until": "method.request.querystring.until",
+                },
+            ),
+            api_key_required=True,
+            request_parameters={
+                "method.request.querystring.since": False,
+                "method.request.querystring.until": False,
+            },
+        )
 
         # T20: GET /v1/metrics/overview
         metrics_overview_resource = metrics_resource.add_resource("overview")
@@ -1103,6 +1172,15 @@ class ApiStack(Stack):
         _mt_route(platform_tenants_resource, "GET", "/v1/platform/tenants")
         _mt_route(platform_tenants_resource.add_resource("{tenant_id}"), "GET",
                   "/v1/platform/tenants/{tenant_id}", path_params=["tenant_id"])
+
+        # DELETE /v1/feedback/subjects/{subject_locator} — DSAR / GDPR subject delete
+        # (WS-E2 / LLD 29 §6.4). Console MT route: auth is OIDC + require_role("admin")
+        # AT THE CONTROLLER (tenant from the ES256-verified identity, never a header),
+        # so it uses the same _mt_route wiring as the tenancy control-plane routes.
+        _mt_route(
+            v1_resource.add_resource("feedback").add_resource("subjects").add_resource("{subject_locator}"),
+            "DELETE", "/v1/feedback/subjects/{subject_locator}", path_params=["subject_locator"],
+        )
 
         # ============================================================
         # Task 11: CloudWatch Alarms for API Gateway
