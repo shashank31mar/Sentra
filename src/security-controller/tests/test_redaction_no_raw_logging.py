@@ -45,8 +45,9 @@ def _logger():
 # ---------------------------------------------------------- redaction-state guard (E4.1)
 
 def test_unflagged_content_dropped_and_alarmed():
-    """A content-bearing field WITHOUT `redacted=True` is DROPPED (never written
-    raw) and `RawContentBlockedFromLog` is emitted. Fail-secure (E5)."""
+    """An EDGE-ROLLED request (carries `redaction_nonce`) but NOT marked
+    `redacted=True` is DROPPED (never written raw) + `RawContentBlockedFromLog`.
+    Fail-secure (E5) — a new-SDK agent that fails to redact is still caught."""
     lg = _logger()
     metrics = Mock()
     lg._metrics_publisher = metrics
@@ -55,13 +56,37 @@ def test_unflagged_content_dropped_and_alarmed():
     request = {
         "session_id": "s1", "request_id": "r1", "agent_id": "a1",
         "user_input": f"my ssn is {_RAW_SSN}", "tool_params": {},
-        "redacted": False,  # NOT redacted → the guard must drop it
+        "redaction_nonce": "abc123",  # edge-rolled agent (has a nonce) …
+        "redacted": False,            # … but flag not set → the guard must drop it
     }
     safe = lg._guard_persist(request, combined_reason=None)
 
     # The raw value is gone; the field carries the drop marker.
     assert _RAW_SSN not in json.dumps(safe)
     assert safe["user_input"] == _GATE_DROPPED_MARKER
+
+
+def test_legacy_no_nonce_content_preserved_for_downstream_truncation():
+    """TRANSITION (WS-E2 edge-rollout ordering): a PRE-EDGE (legacy) request with NO
+    `redaction_nonce` — a live agent not yet on the Tier-1 SDK — must NOT be dropped
+    by the guard. It falls through to the historical audit contract (downstream
+    `_shared_attrs`/`_build_log_event` truncate user_input to 200), so the audit
+    trail is preserved during rollout. Dropping it would silently gut the trail for
+    every not-yet-rolled agent. This is NOT fail-open: no raw-FULL field is persisted
+    (downstream truncation is the pre-guard behavior that always shipped)."""
+    lg = _logger()
+    request = {
+        "session_id": "s1", "request_id": "r1", "agent_id": "acme-payments-agent",
+        "user_input": "what's my balance?", "tool_params": {"account_id": "12345"},
+        # NO redaction_nonce, NO redacted flag → legacy/pre-edge agent
+    }
+    safe = lg._guard_persist(request, combined_reason=None)
+
+    # The guard did NOT drop the content — it is passed through unchanged for the
+    # downstream truncating writers (the pre-WS-E2 audit behavior).
+    assert safe["user_input"] == "what's my balance?"
+    assert safe["tool_params"] == {"account_id": "12345"}
+    assert _GATE_DROPPED_MARKER not in json.dumps(safe)
 
 
 def test_flagged_but_residual_content_dropped():
@@ -72,6 +97,7 @@ def test_flagged_but_residual_content_dropped():
     request = {
         "session_id": "s1", "request_id": "r1", "agent_id": "a1",
         "user_input": f"contact {_RAW_SSN}", "tool_params": {},
+        "redaction_nonce": "n1",  # edge-rolled agent
         "redacted": True,  # flag lies — a residual survived
     }
     safe = lg._guard_persist(request, combined_reason=None)
@@ -87,7 +113,7 @@ def test_reason_quoting_raw_freetext_is_scanned():
     request = {
         "session_id": "s1", "request_id": "r1", "agent_id": "a1",
         "user_input": "⟦AEGR:x:NAME⟧",  # payload is clean (tokenized)
-        "tool_params": {}, "redacted": True,
+        "tool_params": {}, "redaction_nonce": "n1", "redacted": True,
     }
     # ...but the combiner reason quotes a raw SSN.
     safe = lg._guard_persist(request, combined_reason=f"blocked: message contained {_RAW_SSN}")
@@ -122,9 +148,11 @@ def test_structural_only_record_not_gated():
 
 @pytest.mark.asyncio
 async def test_log_signals_persists_no_raw():
-    """Drive the whole `log_signals` path: a request with raw PII + NOT redacted →
-    the CloudWatch event the writer builds carries the drop marker, not the raw
-    SSN. Asserts on the serialized event (the compliance archive)."""
+    """Drive the whole `log_signals` path: an EDGE-ROLLED request (has a nonce) with
+    raw PII + NOT redacted → the CloudWatch event the writer builds carries the drop
+    marker, not the raw SSN. Asserts on the serialized event (the compliance archive).
+    (A legacy no-nonce request is covered separately by the transition test — it is
+    truncated by the historical writer, not dropped.)"""
     lg = _logger()
     captured = {}
 
@@ -137,6 +165,7 @@ async def test_log_signals_persists_no_raw():
     request = {
         "session_id": "s1", "request_id": "r1", "agent_id": "a1", "tool_name": "t",
         "operation_type": "READ", "user_input": f"ssn {_RAW_SSN}", "tool_params": {},
+        "redaction_nonce": "n1",  # edge-rolled agent → guard enforces (drops unflagged)
         "redacted": False,
     }
     await lg.log_signals(request=request, session={"trust_score": 90.0},
@@ -163,7 +192,8 @@ async def test_log_signals_redacted_content_text_persisted():
     request = {
         "session_id": "s1", "request_id": "r1", "agent_id": "a1", "tool_name": "t",
         "operation_type": "READ", "user_input": "", "tool_params": {},
-        "content_text": "note: ⟦AEGR:x:NAME⟧ seen", "redacted": True,
+        "content_text": "note: ⟦AEGR:x:NAME⟧ seen",
+        "redaction_nonce": "n1", "redacted": True,
     }
     await lg.log_signals(request=request, session={"trust_score": 90.0},
                          signals=[_deny_signal()], latency_ms=1.0)
@@ -191,8 +221,10 @@ def test_negative_control_skip_store_forward_raw_would_fail():
     marker assertion FAIL. Proves the guard's drop is what makes it safe, not a
     no-op."""
     lg = _logger()
+    # An EDGE-ROLLED request (has a nonce) that is unflagged → the guard DROPS it.
     request = {"session_id": "s", "request_id": "r", "agent_id": "a",
-               "user_input": f"ssn {_RAW_SSN}", "tool_params": {}, "redacted": False}
+               "user_input": f"ssn {_RAW_SSN}", "tool_params": {},
+               "redaction_nonce": "n1", "redacted": False}
     safe = lg._guard_persist(request, combined_reason=None)
     # The correct behavior drops it; a "forward raw" variant would keep _RAW_SSN.
     forward_raw_variant = dict(request)  # simulate NOT dropping
