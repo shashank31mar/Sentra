@@ -289,6 +289,16 @@ async def _run_tier1_with_edges(
         # coroutines. Tier-1 (gathered) nodes are READ-ONLY on session by
         # contract (LLD 31 §6.3); ctx keys are upstream SOURCE names, never real
         # session keys, so the merge cannot shadow a session field.
+        #
+        # DENY-vs-abstain upstream semantics (LLD 31 §6.3, integration-sentinel
+        # FIX-B LOW): an upstream *abstain/error* aborts the chain — every
+        # downstream node fails to the deterministic floor (never treats a
+        # missing taint label as clean). An upstream hard-DENY does NOT abort:
+        # the DENY is a real, captured verdict (the deny-overrides combiner is
+        # order-independent, so it wins regardless), and the downstream node
+        # still runs with the denier's result threaded into ctx — defense-in-
+        # depth keeps evaluating the deep tier for the full trail rather than
+        # discarding a downstream detection because an upstream already denied.
         ctx: Dict[str, ValidationResult] = {}
         results: List[ValidationResult] = []
         aborted = False
@@ -298,7 +308,16 @@ async def _run_tier1_with_edges(
                 # downstream node fails to the floor (does NOT run).
                 results.append(_abstain_chain_remainder(node))
                 continue
-            r = stamp(await timed(node.source, node.run(request, {**session, **ctx})))
+            try:
+                r = stamp(await timed(node.source, node.run(request, {**session, **ctx})))
+            except BaseException as exc:  # noqa: BLE001 — re-raised, annotated for diagnostics
+                # Annotate WHICH chain node raised so the outer harvester logs
+                # the actual raiser, not the chain's anchor (c[0]). Still
+                # re-raised below → fail-secure via the outer handler; this only
+                # fixes the diagnostic attribution (integration-sentinel FIX-B
+                # LOW, run.py node_order reconstruction).
+                setattr(exc, "_sentra_raising_source", node.source)
+                raise
             results.append(r)
             if r.is_abstain:
                 aborted = True
@@ -332,14 +351,21 @@ async def _run_tier1_with_edges(
     # abstain flows through this branch untouched (abstain -> floor), matching
     # production (RES-4). Only an *unexpected* raise (a real bug/crash the
     # validator did not handle) fails secure — exactly as production does today.
+    # `settled` is one entry per coroutine: an independent node's own result, or
+    # a chain's list. `node_order[i]` is that coroutine's anchor node — for a
+    # chain it is the topo-FIRST node (c[0]), NOT necessarily the raiser. When a
+    # chain raises in a middle/late node, `run_chain` stamps the actual raiser's
+    # source onto the exception (`_sentra_raising_source`) so the diagnostic log
+    # names the real raiser, not the anchor (integration-sentinel FIX-B LOW).
     node_order: List[ValidatorNode] = list(independent) + [c[0] for c in chains]
     results: List[ValidationResult] = []
     for source_node, outcome in zip(node_order, settled):
         if isinstance(outcome, BaseException):
+            raising_source = getattr(outcome, "_sentra_raising_source", source_node.source)
             logger.error(
                 "tier-1 node raised unexpectedly; failing secure (re-raise -> "
                 "outer handler DENY): %s (%s)",
-                source_node.source,
+                raising_source,
                 outcome,
             )
             raise outcome
