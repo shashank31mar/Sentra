@@ -11,22 +11,46 @@ Covers the code-respond fixes on the SERVED side of the Tier-2 redactor
     the network layer is the sole control (header not required).
   * §9.6 DoS bound — an over-count / over-length body is rejected 413 before any
     regex pass runs.
+  * §5.4 / E3 egress-fail-closed — a redactor OUTAGE (`NerUnavailable`) on the
+    served endpoint returns the honest HTTP 503 with a correlation id and NEVER a
+    fake-200, the raw body, the raw exception message, or a stack trace.
   * Perf/quality — the precompiled clinical-condition alternation still tokenizes
     every lexicon term in one pass.
 
 Non-vacuous: each assertion fails if the corresponding fix regresses (e.g. drop
 the caller check → the no-secret POST would 200; drop the bound → the huge body
-would 200; re-introduce a raw echo → the raw-substring assertion fails).
+would 200; re-introduce a raw echo → the raw-substring assertion fails; revert the
+503 handler to a fake-200 or a raw-leaking body → the fail-closed test fails).
 """
 from __future__ import annotations
+
+from typing import Optional
 
 from fastapi.testclient import TestClient
 
 from app.redaction import phi_ner
-from app.redaction.phi_ner import create_served_app, redact_free_text_fields
+from app.redaction.phi_ner import (
+    NerUnavailable,
+    PhiNerClient,
+    RedactedView,
+    create_served_app,
+    redact_free_text_fields,
+)
 
 
 _RAW = "Patient John Smith has diabetes at 42 Oak Street"
+
+
+class _OutageRedactor:
+    """A :class:`Tier2Redactor` that always fails — models a live model outage.
+
+    The raw exception message deliberately embeds a distinctive raw substring so
+    the test can prove NEITHER the raw input NOR the raw exception text is echoed
+    to the caller on the fail-closed path (only a class name + correlation id).
+    """
+
+    def redact(self, text: str, *, nonce: Optional[str], tenant_id: str) -> RedactedView:
+        raise NerUnavailable(f"model backend down while handling {text!r}")
 
 
 def test_theater_removed_no_ctypes_or_zero_buffer():
@@ -104,3 +128,49 @@ def test_oversized_body_rejected_413(monkeypatch):
     too_long = {"fields": {"a": "z" * 100}, "tenant_id": "t"}
     r = client.post("/v1/redact", json=too_long)
     assert r.status_code == 413, r.text
+
+
+def test_redactor_outage_fails_closed_503(monkeypatch):
+    """§5.4 / E3: a redactor outage on POST /v1/redact is an honest 503, not a 200.
+
+    Injects a failing redactor into the process-wide client so the endpoint's real
+    `except NerUnavailable` handler runs end-to-end. The load-bearing security
+    contract (engineering.md fail-secure + honest 5XX): on an outage the served
+    endpoint MUST
+      * surface the failure as a 5XX (503) — NEVER a fake-200 wrapping an error;
+      * carry a correlation id + a stable machine error code (no free-form leak);
+      * NEVER echo the raw input, the raw exception message, or a stack trace.
+    A regression to a fake-200 or a raw-leaking body fails this test.
+    """
+    monkeypatch.delenv("PHI_NER_CALLER_SECRET", raising=False)
+    # Reset + inject the outage client so the singleton the endpoint resolves fails.
+    monkeypatch.setattr(phi_ner, "_phi_ner_client", PhiNerClient(_OutageRedactor()))
+
+    client = TestClient(create_served_app())
+    r = client.post(
+        "/v1/redact",
+        json={"fields": {"a": _RAW}, "tenant_id": "t1", "nonce": "n1"},
+    )
+
+    # Honest 5XX — not a 200 masking the outage. FastAPI wraps HTTPException.detail
+    # under the standard `detail` envelope (same shape the 401 caller-check uses).
+    assert r.status_code == 503, r.text
+    detail = r.json()["detail"]
+    assert detail["error"] == "redaction_unavailable"
+    assert detail["correlation_id"]  # a non-empty correlation id for the log join
+
+    # No raw, no raw-exception text, no stack trace leaks into the response.
+    blob = r.text
+    for raw_word in ("John", "Smith", "diabetes", "Oak", "42 Oak Street"):
+        assert raw_word not in blob, f"raw {raw_word!r} leaked into 503 body"
+    assert "model backend down" not in blob  # the raw exception message never echoed
+    assert "Traceback" not in blob and "NerUnavailable" not in blob
+
+
+def test_redactor_outage_health_still_ok(monkeypatch):
+    """The outage is scoped to /v1/redact — liveness (/health) is unaffected, so the
+    orchestrator does not tear down a task whose model backend is merely degraded."""
+    monkeypatch.delenv("PHI_NER_CALLER_SECRET", raising=False)
+    monkeypatch.setattr(phi_ner, "_phi_ner_client", PhiNerClient(_OutageRedactor()))
+    client = TestClient(create_served_app())
+    assert client.get("/health").status_code == 200
