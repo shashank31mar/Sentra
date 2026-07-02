@@ -1145,7 +1145,40 @@ def _walk(obj, nonce: Optional[str]):
         # keys go through redact(); a bytes key is binary content the text redactor
         # cannot scrub, refused just like a bytes leaf (FR-3.15 / E1.5). Non-string,
         # non-bytes keys (int/float/bool/None/tuple) are structural — pass through.
-        return {_walk_key(k, nonce): _walk(v, nonce) for k, v in obj.items()}
+        #
+        # Entry-count preservation (R5-M1): typed tokens are lossy by design, so two
+        # DISTINCT PII keys can redact to the SAME wire token —
+        # {"alice@corp.com": ..., "bob@corp.com": ...} both -> ⟦AEGR:{nonce}:EMAIL⟧.
+        # A dict comprehension would silently collapse them (last-write-wins),
+        # dropping entries so the payload arrives at the PDP with FEWER keys than the
+        # agent sent — a security-relevant loss of arity that can flip a decision to
+        # a wrong-ALLOW (the PDP never sees the params it would have denied on). We
+        # therefore disambiguate collisions with a stable ordinal suffix appended
+        # OUTSIDE the wire token (``⟦…⟧#2``) so ``len(out) == len(obj)`` ALWAYS. The
+        # suffix carries only a counter — never any raw key bytes (NFR-7 (a)) — and a
+        # bare ``#n`` cannot masquerade as a marker (only the reserved bracket + nonce
+        # grammar is a genuine token, M-4). First occurrence keeps the plain token;
+        # duplicates take ``#2``, ``#3``, … in the dict's (insertion) order.
+        out: dict = {}
+        seen: dict = {}
+        for k, v in obj.items():
+            rk = _walk_key(k, nonce)
+            walked_v = _walk(v, nonce)
+            if rk in out:
+                n = seen.get(rk, 1) + 1
+                seen[rk] = n
+                disambiguated = f"{rk}#{n}"
+                # Guard the (astronomically unlikely) case where the suffixed form
+                # itself collides with a caller-supplied key — keep bumping so no
+                # entry is ever dropped.
+                while disambiguated in out:
+                    n += 1
+                    seen[rk] = n
+                    disambiguated = f"{rk}#{n}"
+                out[disambiguated] = walked_v
+            else:
+                out[rk] = walked_v
+        return out
     if isinstance(obj, (list, tuple)):
         return [_walk(v, nonce) for v in obj]
     # int / float / bool / None — structural, not content; pass through.
