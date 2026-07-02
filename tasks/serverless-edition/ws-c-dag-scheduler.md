@@ -3,7 +3,7 @@
 > **Doc role:** This is the **TASKS-STAGE build breakdown**, generated from the approved LLD [lld/31-dag-scheduler.md](../../lld/31-dag-scheduler.md) (the LLD remains the source of truth). Milestones → granular tasks, each with real `file:line` anchors, conceptual pseudo-code using real identifiers, named footguns, and **mandatory named unit + integration tests**. A coding agent should build straight from this doc without re-reading the whole LLD. See [00-index.md](00-index.md) for the doc-role map.
 
 **Parent LLD:** [lld/31-dag-scheduler.md](../../lld/31-dag-scheduler.md) (Option A — cost-annotated DAG, tier-0 short-circuit then tier-1 parallel-gather; ADR-030). **Parent HLD:** [hld/serverless-edition.md](../../hld/serverless-edition.md) §6.2(c) + §8 hand-off row *"FR-2.8 scheduler"*.
-**Status:** Tasks ready — buildable and mergeable now. **WS-0 code-merge gate OVERRIDDEN for WS-C (founder decision 2026-07-01, mirroring the WS-E override)** — WS-C builds and merges without waiting for the signed WS-0 spike packet; see Dependencies for the accepted residual (C3 chain-runner).
+**Status:** ✅ **CODE-DONE — all milestones C1–C8 complete; promoted to `main` (code `ed780c3`; propagations/activation `66be5f5`; docstring reconcile `<this commit>`) and DEPLOYED to prod (image `milestone-91`, task-def `:56`, ML enforcing + `DAG_RUN_MODE=fail_fast`, verified serving 2026-07-02).** Controller suite 649 passed / 10 skipped; SDK 197 passed / 2 skipped; verdict-equivalence + T-ML-ENFORCE green. **WS-0 code-merge gate OVERRIDDEN for WS-C (founder decision 2026-07-01, mirroring the WS-E override)** — WS-C built and merged without the signed WS-0 spike packet; see Dependencies for the accepted residual (C3 chain-runner — built, no live consumer until WS-L's D1–D7 land).
 **Owner:** TBD
 **Implements:** FR-2.8 (parallel-gather scheduler over a cost-annotated dependency graph). **Decision:** ADR-030 (cost-annotated DAG replaces the fixed-sequential pipeline). Realizes **AD-4** (deterministic-first, parallel models).
 
@@ -16,16 +16,16 @@
 
 ## Milestone map
 
-| ID | Milestone | Tasks |
-|---|---|---|
-| **C1** | Node registry + cost-tier data model (built ONCE, static) | 3 |
-| **C2** | The scheduler run: tier-0 topological short-circuit → tier-1 gather | 3 |
-| **C3** | Dependency-chain runner (the full Option-A runner) | 2 |
-| **C4** | ML out of shadow + the shared ranking helper | 4 |
-| **C5** | Error model: 5xx on inability-to-evaluate, not fabricated 200-DENY | 2 |
-| **C6** | Golden-baseline differential equivalence + the full test suite | 3 |
-| **C7** | Config + activation (`dag_run_mode` Field; `ml_classifier_enabled: true`) | 2 |
-| **C8** | Doc/consistency propagation (carried, not silent) | 4 |
+| ID | Milestone | Tasks | Status |
+|---|---|---|---|
+| **C1** | Node registry + cost-tier data model (built ONCE, static) | 3 | ✅ DONE |
+| **C2** | The scheduler run: tier-0 topological short-circuit → tier-1 gather | 3 | ✅ DONE |
+| **C3** | Dependency-chain runner (the full Option-A runner) | 2 | ✅ DONE (runner + ctx-threading built + fixture-tested; no live tier-1 chain until WS-L's D1–D7 — accepted WS-0-contingent residual) |
+| **C4** | ML out of shadow + the shared ranking helper | 4 | ✅ DONE (`ml_classifier_shadow_mode` removed; ML always enforces; `pick_top_denier` added) |
+| **C5** | Error model: 5xx on inability-to-evaluate, not fabricated 200-DENY | 2 | ✅ DONE |
+| **C6** | Golden-baseline differential equivalence + the full test suite | 3 | ✅ DONE (T-EQUIV / T-EQUIV-FUZZ / T-DAG-02 green over the enforcing-ML baseline) |
+| **C7** | Config + activation (`dag_run_mode` Field; `ml_classifier_enabled: true`) | 2 | ✅ DONE (Field + validator in `config.py`; `ml_classifier_enabled: true` in both yamls, deployed `milestone-91`) |
+| **C8** | Doc/consistency propagation (carried, not silent) | 4 | ✅ DONE (C8.1 LLD 24 amended; C8.2 prd + 3 validation_service docstrings reconciled to 6-step; C8.3 citations reconciled; C8.4 rename backlog recorded, not performed) |
 
 ---
 

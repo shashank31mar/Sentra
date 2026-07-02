@@ -1,8 +1,10 @@
 """
 Validation Service - Orchestrator for Tool Call Validation
 
-Orchestrates the 5-step validation pipeline by delegating to individual validators.
-Manages session updates and response generation.
+Orchestrates the 6-step deterministic validation pipeline (trust → policy →
+cross-agent → prompt-signature → context → abuse, then ML-last) via the WS-C
+cost-annotated DAG scheduler (FR-2.8 / ADR-030), delegating to individual
+validators. Manages session updates and response generation.
 
 Architecture:
 - This service is the orchestrator only
@@ -121,8 +123,10 @@ def _fire_and_forget(coro, label: str) -> None:
 
 class ValidationService:
     """
-    Orchestrates the 5-step validation pipeline.
-    
+    Orchestrates the 6-step deterministic validation pipeline (trust → policy →
+    cross-agent → prompt-signature → context → abuse, then ML-last) via the
+    WS-C DAG scheduler.
+
     Delegates to individual validators (to be implemented in Tasks 4-8):
     - TrustChecker (Step 1) - app/validators/trust_checker.py
     - PolicyEngine (Step 2) - app/validators/policy_engine.py
@@ -216,7 +220,9 @@ class ValidationService:
                 agent_id=request.agent_id
             ))
 
-            # Run 5-step validation pipeline. signals[] collects every
+            # Run the 6-step deterministic pipeline (trust → policy →
+            # cross-agent → prompt-signature → context → abuse) + ML-last via
+            # the WS-C DAG scheduler. signals[] collects every
             # validator's contribution (Workstream 17 / LLD 17 §3.2). The
             # final ValidationResult is the verdict (short-circuited DENY
             # or full-pipeline ALLOW); signals[] is the full breakdown for
