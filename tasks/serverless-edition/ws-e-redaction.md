@@ -2,7 +2,7 @@
 
 **Workstream:** WS-E (Serverless edition) — two-tier redaction. *(This is the single canonical workstream doc: scope + granular buildable tasks; the design lives in the LLD below.)*
 **Derived from:** [lld/29-redaction.md](../../lld/29-redaction.md) (APPROVED, 17 sections). **The LLD is the SOURCE OF TRUTH** — when this breakdown and the LLD disagree, the LLD wins; fix this file.
-**Status:** **SPIKE-GATED — do NOT start the build until WS-0's dated, signed packet exists** (HLD §8 MEASURE-FIRST GATE; 00-index: WS-E is spike-gated). See the *Spike-gating map* below for which milestones can start the instant WS-0 signs vs which need the recall NUMBER. FR-3.13 / FR-3.14 = **NOT-DONE** (sub-PRD §5) — task normally.
+**Status:** ✅ **CODE-DONE + DEPLOYED to prod (2026-07-02)** — WS-0 gate **founder-overridden 2026-07-01**. Tier-1 edge redactor live in all 3 acme connectors; Tier-2 server barrier + no-raw audit guard (strict fail-secure, milestone-97) + persist-gate + image-router + feedback-store logic + F7 frame-local control live. **HELD (built+synth-verified, NOT deployed — GA-gated on WS-0 recall + counsel BAA):** the `phi-ner` Fargate service + feedback-store DDB table. Remaining = GA-gated / dependency items only (see acceptance checklist). FR-3.13 = **DONE**; FR-3.14 retrain batch job = P2 gap (unchanged). *(Spike-gating map below is historical — retained for the WS-0-dependency rationale.)*
 **Owner:** TBD.
 
 ## Dependencies
@@ -400,7 +400,7 @@ sequenceDiagram
 - [x] The audit/signal writer + CloudWatch carry the **redacted view** (the `audit_logger.py` 223/307/320 raw surface is cleaned); a field without `redacted=True` is dropped + `RawContentBlockedFromLog` (fail-secure). <!-- STRICT after the connector edge-rollout (transition truncate-fallback removed) -->
 - [x] The persist-gate for **any** persisting store is a **content re-scan by a stronger independent detector** (NOT the flag), over the WHOLE record (payload + reason + winning_source + detector_outcomes). <!-- IndependentGateDetector; NOTE: stage-2 stub (narrow patterns) — the heavy reclassifier is stage-3/§6.6 -->
 - [x] The log-sink inventory is controlled (ALB/API-GW/uvicorn/X-Ray/boto3/APM) — persist path **test-asserted** (§15.2), transport/ingress **config-controlled** (not over-claimed).
-- [ ] The frame-local/APM crash-path control holds and is asserted (F7). <!-- PARTIAL: the guard drops content before persist, but the explicit frame-local/APM-capture assertion (E4.4 option 2/3) is NOT yet asserted — open follow-up -->
+- [x] The frame-local/APM crash-path control holds and is asserted (F7). <!-- DONE (milestone-97, `9059071`): strip-early in validate_tool_call's finally scrubs raw content off the request on every exit path (normal+crash); test_frame_local_no_raw.py pins it, non-vacuous. Option-3 (APM include_local_variables=False config row) still open — deferred, no APM installed. -->
 
 **E5 — opt-in redacted feedback store** ✅ **LOGIC DONE + DEPLOYED (moto-tested, live in controller); TABLE construct built not deployed (GA-gated w/ E2)**
 - [x] A **separate**, tenant-scoped, **redacted-records-only** DynamoDB table (NOT signal store, NOT meter store), DynamoDB TTL enabled (default 90d DPA-scoped placeholder), **PITR OFF**; a test asserts no raw can be written. <!-- feedback_store_table_construct.py built + synth-asserted; TABLE not deployed (held w/ E2) -->
@@ -432,7 +432,7 @@ sequenceDiagram
 - [ ] The **warm-pool sharing decision for BAA tenants** (§9.6) — process-level today; owner to confirm whether any BAA tenant needs the deferred enclave boundary.
 - [x] ADR-032 to be recorded in [adr.md](../../adr.md) — **DONE** (adr.md:1292 "Two-Tier Input Redaction and the Three-Clause NFR-7 Amendment").
 - [ ] The **FR-3.14 retrain batch job** is a separate P2 LLD gap to create when P2 is scheduled (LLD 19 §4.3/§13.3 + WS-F extend it).
-- [ ] **NEW (post-rollout follow-up):** F7 frame-local/APM-capture explicit assertion (E4.4 option 2/3); the persist-gate `IndependentGateDetector` is a stage-2 stub → replace with the heavy reclassifier (§6.3/§6.6) before HIPAA GA.
+- [ ] **NEW (pre-HIPAA-GA hardening):** (a) the APM `include_local_variables=False` config-control row (E4.4 option 3) for any FUTURE Sentry/Datadog integration — deferred, no APM installed today; (b) the persist-gate `IndependentGateDetector` is a stage-2 stub → replace with the heavy reclassifier (§6.3/§6.6) before HIPAA GA. *(F7 strip-early + assertion: DONE, milestone-97.)*
 
 ---
 
