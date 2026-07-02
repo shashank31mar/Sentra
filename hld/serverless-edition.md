@@ -128,7 +128,7 @@ Referenced by **stable ID** from [prd/serverless-edition.md](../prd/serverless-e
 
 **The four P0 architecture-benders** — FR-1.7 (in-process local enforcement), FR-3.4 (multi-phase `/v1/validate` contract), FR-2.8 (parallel-gather scheduler), FR-6.8 (full decision-trail).
 
-**Data boundary** — FR-3.13 (input-side redaction), NFR-7 (Serverless trust model: redact-before-egress + no-retention), NFR-12 (metering integrity ≥99.9%). Supporting depth: FR-3.12 (distilled classifier — *server-side fast tier* on Serverless; distilled-at-edge is in-VPC/sidecar, §6.2(e) note), FR-3.2/3.3 (ML tier, shadow), FR-3.5–3.11 (D1–D7), FR-3.7 (output DLP/REDACT).
+**Data boundary** — FR-3.13 (input-side redaction), NFR-7 (Serverless trust model: redact-before-egress + no-retention), NFR-12 (metering integrity ≥99.9%). Supporting depth: FR-3.12 (distilled classifier — *server-side fast tier* on Serverless; distilled-at-edge is in-VPC/sidecar, §6.2(e) note), FR-3.2/3.3 (ML tier — **now enforcing**, shadow removed as part of the FR-2.8 scheduler cutover / ADR-030; the benign-FP graduation gate is WS-F, LLD 31 §6.5/§14.2), FR-3.5–3.11 (D1–D7), FR-3.7 (output DLP/REDACT).
 
 **Console** — FR-13.1 (multi-tenant console), FR-13.2 (exhaustive dashboard set), FR-13.3 (login/tenancy model), FR-6.4 (SOC console, DONE), FR-6.8/6.9 (decision detail + session forensics views).
 
@@ -508,7 +508,7 @@ flowchart LR
 
 **In plain terms.** We are *not* building a customer-facing dial to choose light / medium / strong detection right now. For now every detector is on and nothing can be turned off. The reason: a "light" mode is a one-way door — once we sell a weaker setting it is hard to take back — and today's differentiation is too thin to split into tiers. The one thing locked permanently: the deterministic floor (Cedar policy + prompt-signature rules) can **never** be disabled, in any mode or any edition, so a future "mode" can never mean "unprotected."
 
-**Decision (approved).** The customer-selectable **light / medium / strong / extra-strong detection dial is NOT built now.** For now **ALL detectors are enabled and NOTHING is customer-disableable**; revisit later. **Why:** today's differentiation is thin (ML is shadow-only, D1–D7 is roadmap), and a "light" tier is a **one-way door** (selling a weaker mode then trying to retract it is hard). The focus now is **basic billing**, not a detection-strength SKU.
+**Decision (approved).** The customer-selectable **light / medium / strong / extra-strong detection dial is NOT built now.** For now **ALL detectors are enabled and NOTHING is customer-disableable**; revisit later. **Why:** today's differentiation is thin (ML **now enforces** — shadow removed in the FR-2.8/ADR-030 cutover, LLD 31 §6.5 — but D1–D7 is still roadmap), and a "light" tier is a **one-way door** (selling a weaker mode then trying to retract it is hard). The focus now is **basic billing**, not a detection-strength SKU.
 
 **Invariant (locked as an ADR).** Whatever modes ever exist, the **Cedar + prompt-signature deterministic floor is NON-DISABLEABLE in every mode and every edition** — so a future "mode" can **never** mean "unprotected." This guards against the one-way-door turning into a hole. **New decision → ADR-034.**
 
