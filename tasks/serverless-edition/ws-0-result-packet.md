@@ -1,6 +1,6 @@
 # WS-0 Measure-First Spike — Result Packet
 
-**Status:** 🟢 **ALL MEASUREMENTS COMPLETE — AWAITING FOUNDER SIGNATURE.** Both kill-checks resolved; a/b/c measured on real Bedrock + real WAN (never mocked); thresholds pre-registered BEFORE the runs. Only the founder signature + gate-date fill remain (lld/34 §11.2).
+**Status:** 🟢 **SIGNED 2026-07-02 (founder — Shashank Gupta) — gate date recorded in 00-index.** Both kill-checks resolved; a/b/c measured on real Bedrock + real WAN (never mocked); thresholds pre-registered BEFORE the runs. GA-shaping call ratified: route money-movement to in-VPC (fallback ii). WS-A + WS-E decomposition now unblocked. Sign-off block at the bottom.
 **Owner / sign-off:** Founder (Shashank Gupta) — single named, non-delegable (lld/34 §11.2).
 **Methodology:** [lld/34-measure-first-spike-methodology.md](../../lld/34-measure-first-spike-methodology.md).
 **Gate mechanics:** this packet's completion **date** becomes the gate date in [00-index.md](00-index.md) `:77`, unblocking WS-A / WS-D / WS-E decomposition (WS-C already overridden).
@@ -199,14 +199,14 @@ By signing below, the founder ratifies that: (1) all a/b/c measurements + both k
 | **Per-row disposition** | WS-A **COMMIT** · WS-C **COMMIT** (built/deployed) · WS-D **COMMIT** (promoted) · WS-E **COMMIT** (redaction GA unblocked) · WS-L **PRIORITIZE** (indirect-injection recall ~57–60% is a detector-coverage gap). |
 
 **GA-shaping call — founder decision (tick one):**
-- [ ] Confirm fallback (ii): route money-movement to in-VPC; Serverless keeps deterministic floor + deep tier for non-money-movement / latency-tolerant flows.
+- [x] **Confirm fallback (ii): route money-movement to in-VPC; Serverless keeps deterministic floor + deep tier for non-money-movement / latency-tolerant flows.**
 - [ ] Other (record): _______________________________________________
 
 **Signature:**
 
-> **Signed:** ______________________  (founder — Shashank Gupta)
-> **Date (= the gate date):** ______________ (YYYY-MM-DD)
+> **Signed:** **Shashank Gupta**  (founder — Shashank Gupta)
+> **Date (= the gate date):** **2026-07-02**
 
-**On signing, make exactly these two edits:**
-1. In [00-index.md](00-index.md) `:80`, replace the blank `Gate date: _________` with the signed date.
-2. Change this packet's top-line **Status** from "AWAITING FOUNDER SIGNATURE" to "🟢 **SIGNED <date>** — gate date recorded in 00-index."
+**Two edits made on signing (both applied):**
+1. ✅ [00-index.md](00-index.md) `:80` — gate date set to **2026-07-02**.
+2. ✅ This packet's top-line **Status** flipped to SIGNED (below).
