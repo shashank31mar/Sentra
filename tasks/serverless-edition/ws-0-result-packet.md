@@ -181,4 +181,32 @@ Both kills resolved → the four gated rows can be dispositioned. **This is the 
 
 **Threshold pre-registration** ([PRE_REGISTERED_THRESHOLDS.md](../../harness/ws0/PRE_REGISTERED_THRESHOLDS.md)) committed at `28581a2` **before** the (b)/(c) runs landed at `f0b0f56` — commit order verified.
 
-**Cost/safety note:** the harness is throwaway (NOT checked into CDK/product per founder direction); it read-only-consumed the existing Bedrock setup (did not modify it); real Bedrock spend was incurred on ~6,500 inference calls (Test-3) + 300 (Test-2). Cleanup owed post-signature: delete the throwaway probe DDB credential row + `rm harness/ws0/.probe_identity.json` (see [provision_probe.py](../../harness/ws0/provision_probe.py) output).
+**Cost/safety note:** the harness is throwaway (NOT checked into CDK/product per founder direction); it read-only-consumed the existing Bedrock setup (did not modify it); real Bedrock spend was incurred on ~6,500 inference calls (Test-3) + 300 (Test-2). Cleanup **DONE** 2026-07-02: both throwaway probe DDB credential rows deleted (the 3 real acme keys verified intact) + `harness/ws0/.probe_identity.json` removed.
+
+---
+
+## Founder sign-off (the one remaining human gate — lld/34 §11.2)
+
+By signing below, the founder ratifies that: (1) all a/b/c measurements + both kill-checks are complete and were run on real Bedrock + real WAN, never mocked; (2) the pre-registered thresholds (`28581a2`) preceded the measurement runs (`f0b0f56`); (3) the per-row dispositions in §5 are accepted; and (4) the completion **date signed here becomes the gate date** recorded in [00-index.md](00-index.md) `:80`, formally unblocking WS-A and WS-E decomposition (WS-C/WS-D/WS-E gates were already founder-overridden independently).
+
+**Verdicts being ratified (from §4/§5):**
+
+| Item | Verdict |
+|---|---|
+| **Worst-quadrant numeric kill** (M0-6.1) | **DOES NOT FIRE** — "slow but not blind." Masking does not degrade detection → **redaction GA gate FR-3.13/NFR-7 UNBLOCKED.** |
+| **AgentCore kill** (M0-6.2) | **DOES NOT FIRE** — Gateway-bound (d) + majority not-behind-Gateway (e) → **WS-A COMMITTED** (DEFER-not-DELETE overlay; cross-vendor rationale survives regardless). |
+| **GA-shaping call the founder owns** | Escalated p99 ≈ 3.0–3.5s **blows NFR-2** → the "leave-it-on-synchronously + deep for money-movement on Serverless" latency promise does **not** hold. Evidence points to **fallback (ii): route money-movement to the in-VPC edition** (positioning, not a build-kill). *Founder: confirm this positioning call, or record an alternative.* |
+| **Per-row disposition** | WS-A **COMMIT** · WS-C **COMMIT** (built/deployed) · WS-D **COMMIT** (promoted) · WS-E **COMMIT** (redaction GA unblocked) · WS-L **PRIORITIZE** (indirect-injection recall ~57–60% is a detector-coverage gap). |
+
+**GA-shaping call — founder decision (tick one):**
+- [ ] Confirm fallback (ii): route money-movement to in-VPC; Serverless keeps deterministic floor + deep tier for non-money-movement / latency-tolerant flows.
+- [ ] Other (record): _______________________________________________
+
+**Signature:**
+
+> **Signed:** ______________________  (founder — Shashank Gupta)
+> **Date (= the gate date):** ______________ (YYYY-MM-DD)
+
+**On signing, make exactly these two edits:**
+1. In [00-index.md](00-index.md) `:80`, replace the blank `Gate date: _________` with the signed date.
+2. Change this packet's top-line **Status** from "AWAITING FOUNDER SIGNATURE" to "🟢 **SIGNED <date>** — gate date recorded in 00-index."
