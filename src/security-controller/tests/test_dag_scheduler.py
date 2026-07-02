@@ -1227,3 +1227,158 @@ async def test_t_ctx_iso_top_level_rebind_isolated(mock_session, sample_request)
     )
     assert "d2.taint" not in observed["keys"]
     assert observed["keys"] == set(mock_session.keys())
+
+
+# --------------------------------------------------------------------------- #
+# T-CHAIN-DENY — an upstream hard-DENY does NOT abort the chain (pins the
+# intended chain-DENY semantics before WS-D lands the real D2->D4->D5 chain;
+# integration-sentinel FIX-B LOW, run.py run_chain).
+# --------------------------------------------------------------------------- #
+@pytest.mark.asyncio
+async def test_t_chain_upstream_hard_deny_does_not_abort_downstream(mock_session, sample_request):
+    """A chain-upstream hard-DENY differs from an upstream ABSTAIN: the DENY is a
+    real, captured verdict, so the downstream node STILL runs (defense-in-depth,
+    keep evaluating the deep tier for the trail) with the denier's result threaded
+    into ctx — it does NOT fail to the floor the way an abstain does. The combiner
+    is order-independent, so the upstream DENY still decides the verdict regardless
+    of the downstream node's opinion. Pins the intended semantics WS-D inherits."""
+    D2 = "d2.taint"
+    D4 = "d4.ifc"
+    d4_saw = {}
+
+    async def _d2_deny(req, sess):
+        r = _deny(Source.SENTRA_SIGMA, "INDIRECT_INJECTION")
+        r.metadata = {"enforce": True}
+        return r
+
+    async def _d4(req, sess):
+        # downstream node runs and sees the upstream DENY threaded via ctx
+        d4_saw["ran"] = True
+        d4_saw["ctx_has_d2"] = D2 in sess
+        return _allow(Source.SENTRA_CONTEXT)
+
+    nodes = [
+        ValidatorNode(D2, CostTier.EXPENSIVE_MODEL, _d2_deny, (), order_key=1),
+        ValidatorNode(D4, CostTier.EXPENSIVE_MODEL, _d4, (D2,), order_key=2),
+    ]
+    captured = []
+
+    def capture(r):
+        captured.append(r)
+        return r
+
+    def stamp(r):
+        return r
+
+    async def timed(label, coro):
+        return await coro
+
+    result, signals = await run_dag(
+        nodes, sample_request, mock_session, capture, stamp, timed,
+        mode=FAIL_FAST, all_allow=lambda: _allow(Source.SENTRA_COMBINED),
+        signals=[],
+    )
+    # downstream RAN (contrast test_t_chain_upstream_abstain_fails_downstream_to_floor)
+    assert d4_saw["ran"] is True
+    assert d4_saw["ctx_has_d2"] is True
+    # and the upstream DENY still decides the verdict (order-independent combiner)
+    assert result.decision == "DENY"
+    assert result.should_deny is True
+    assert result.source == Source.SENTRA_SIGMA
+    # neither captured result is an abstain — the chain did NOT fail to the floor
+    assert not any(r.is_abstain for r in captured)
+
+
+# --------------------------------------------------------------------------- #
+# T-CHAIN-RAISE-ATTR — a MIDDLE/LATE chain-node raise fails secure AND the
+# diagnostic log names the actual raiser, not the chain anchor (c[0])
+# (integration-sentinel FIX-B LOW, run.py node_order reconstruction).
+# --------------------------------------------------------------------------- #
+@pytest.mark.asyncio
+async def test_t_chain_middle_node_raise_logs_actual_raiser_not_anchor(
+    mock_session, sample_request, caplog
+):
+    """When a NON-anchor chain node raises, the request still fails secure (the
+    exception is re-raised → outer handler DENY), and the error log attributes the
+    raise to the actual raising node's source, NOT the chain's topo-first anchor.
+    Guards the node_order reconstruction, which keys on c[0] (the anchor)."""
+    import logging
+
+    D2 = "d2.taint"   # anchor (topo-first)
+    D4 = "d4.ifc"     # downstream — the raiser
+
+    async def _d2(req, sess):
+        r = _allow(Source.SENTRA_SIGMA)
+        r.metadata = {"taint": "yes"}
+        return r
+
+    async def _d4_raise(req, sess):
+        raise RuntimeError("d4 IFC exploded")
+
+    nodes = [
+        ValidatorNode(D2, CostTier.EXPENSIVE_MODEL, _d2, (), order_key=1),
+        ValidatorNode(D4, CostTier.EXPENSIVE_MODEL, _d4_raise, (D2,), order_key=2),
+    ]
+
+    def capture(r):
+        return r
+
+    def stamp(r):
+        return r
+
+    async def timed(label, coro):
+        return await coro
+
+    with caplog.at_level(logging.ERROR, logger="app.services.scheduler.run"):
+        with pytest.raises(RuntimeError, match="d4 IFC exploded"):
+            await run_dag(
+                nodes, sample_request, mock_session, capture, stamp, timed,
+                mode=FAIL_FAST, all_allow=lambda: _allow(Source.SENTRA_COMBINED),
+                signals=[],
+            )
+    # the error line names the ACTUAL raiser (D4), not the anchor (D2)
+    tier1_errs = [r.getMessage() for r in caplog.records if "raised unexpectedly" in r.getMessage()]
+    assert tier1_errs, "expected a tier-1 raise error log line"
+    assert D4 in tier1_errs[0]
+    assert D2 not in tier1_errs[0]
+
+
+# --------------------------------------------------------------------------- #
+# T-CFG-COERCE — the dag_run_mode field_validator coerces any unknown
+# DAG_RUN_MODE to the safe default at LOAD time (RES-6 fail-secure). Pins the
+# validator's OWN behavior: monkeypatching settings post-construction bypasses
+# it, so this constructs Settings through the validator
+# (integration-sentinel FIX-B LOW, config.py _coerce_dag_run_mode).
+# --------------------------------------------------------------------------- #
+@pytest.mark.parametrize(
+    "raw, expected",
+    [
+        ("evaluate_none", "fail_fast"),  # unknown value -> safe default
+        ("", "fail_fast"),               # empty string -> safe default
+        ("FAIL_FAST", "fail_fast"),      # case/whitespace not in the set -> safe default
+        ("evaluate_all", "evaluate_all"),  # known value preserved
+        ("fail_fast", "fail_fast"),        # known value preserved
+    ],
+)
+def test_t_cfg_coerce_dag_run_mode(raw, expected):
+    """RES-6: an unknown DAG_RUN_MODE coerces to fail_fast; a known value passes
+    through. Constructs Settings via the DAG_RUN_MODE validation_alias so the
+    @field_validator actually runs (deleting the validator makes this FAIL)."""
+    from app.config import Settings
+
+    s = Settings(DAG_RUN_MODE=raw)
+    assert s.dag_run_mode == expected
+
+
+def test_t_cfg_dag_run_mode_default_is_fail_fast():
+    """With DAG_RUN_MODE unset, the production default is fail_fast (LLD 31 §6.7).
+    Constructed fresh so no env leaks the value in."""
+    import os
+    from app.config import Settings
+
+    saved = os.environ.pop("DAG_RUN_MODE", None)
+    try:
+        assert Settings().dag_run_mode == "fail_fast"
+    finally:
+        if saved is not None:
+            os.environ["DAG_RUN_MODE"] = saved
