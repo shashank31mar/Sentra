@@ -460,6 +460,39 @@ def test_sad_value_fully_removed():
     assert "321" not in out
 
 
+@pytest.mark.parametrize(
+    "text,connector",
+    [
+        ("cvv is 999", " is "),
+        ("pin was 4821", " was "),
+        ("the pin is 4821", " is "),
+        ("cvv = 123", " = "),
+    ],
+)
+def test_sad_preserves_connector_text_between_label_and_value(text, connector):
+    # The SAD value is dropped, but the original connector text between the label and
+    # the value ("is"/"was"/"=") must be PRESERVED — only the value is masked, benign
+    # surrounding text the PDP sees is left intact (not force-rewritten to "label: ").
+    # MUST FAIL if the repl reverts to ``f"{label}: {token}"`` (dropping the connector).
+    out = redact(text)
+    assert ("SAD", None) in _tokens(out)
+    assert connector in out, f"connector {connector!r} dropped in {out!r}"
+    # And the label + connector precede the token in order.
+    label = text.split()[0] if text.split()[0] != "the" else text.split()[1]
+    assert out.startswith(text[: text.index(connector)]) or label in out
+
+
+def test_ssn_preserves_connector_text_between_label_and_value():
+    # The SSN value is masked, but the connector between the "ssn" label and the value
+    # must be preserved verbatim ("ssn is <SSN>", not "ssn: <SSN>"). MUST FAIL if the
+    # SSN repl force-rewrites the connector to ": ".
+    out = redact("ssn is 078-05-1120")
+    assert ("SSN", None) in _tokens(out)
+    assert "078-05-1120" not in out          # value masked
+    assert " is " in out                      # connector preserved
+    assert "ssn: " not in out                 # not force-rewritten
+
+
 # A Luhn-valid PAN that trails a SAD label in SEPARATED form. The SAD value capture
 # ``(\d{3,6})`` bites only the leading group ("4111"); left unguarded, SAD would
 # tokenize just that group and the remaining 12 digits ("1111 1111 1111") — below the
@@ -1230,6 +1263,69 @@ def test_pii_bearing_base64_blob_is_dropped_as_image_not_egressed_raw():
     assert "CARD" not in res.text and "SECRET" not in res.text
 
 
+# ---- E6.1 SECRET-vs-IMAGE boundary: a long secret-shaped base64 blob -------- #
+# A >=512-char high-entropy base64-charset run whose LEADING bytes are a known
+# credential format (a _SECRET_PREFIXES prefix or the JWT header ``eyJ``) must be
+# typed SECRET, not IMAGE. Both drop the value (fail-safe — never egressed raw), but
+# the type handed to the PDP must be SECRET so the credential signal is not mis-routed
+# / lost. MUST FAIL if _maybe_blob_type stops disambiguating the boundary.
+def test_long_credential_prefixed_blob_typed_secret_not_image():
+    import base64
+    import os
+
+    core = base64.b64encode(os.urandom(500)).decode("ascii").replace("=", "A")
+    # Only the base64-charset-safe credential prefixes can reach this bare-base64-blob
+    # path (a ``_``-bearing prefix like ``ghp_`` is not a base64 blob, so it never hits
+    # the IMAGE heuristic — it is caught by the SECRET matcher in the chain instead).
+    for prefix in ("AKIA", "ASIA", "AIza"):
+        assert prefix in R._SECRET_PREFIXES
+        blob = prefix + core
+        assert len(blob) >= R._IMAGE_MIN_LEN
+        assert R._BASE64_BLOB.match(blob), f"setup: {prefix!r} blob not base64-charset"
+        res = redact_detailed(blob)
+        assert res.types == ("SECRET",), (
+            f"{prefix!r}-prefixed blob mis-typed {res.types} (expected SECRET)"
+        )
+        assert [t for t, _ in _tokens(res.text)] == ["SECRET"]
+        assert blob not in res.text            # fail-safe: raw credential dropped
+
+
+def test_long_jwt_like_blob_typed_secret_not_image():
+    # A >=512-char single-segment (no dots) JWT-header-prefixed base64 run must type
+    # SECRET, not IMAGE — the credential signal reaches the PDP correctly typed.
+    import base64
+    import os
+
+    body = base64.b64encode(os.urandom(500)).decode("ascii").replace("=", "A")
+    blob = "eyJ" + body            # eyJ = JWT header base64url of '{"'
+    assert len(blob) >= R._IMAGE_MIN_LEN
+    res = redact_detailed(blob)
+    assert res.types == ("SECRET",), f"JWT-like blob mis-typed {res.types}"
+    assert blob not in res.text
+
+
+def test_long_non_credential_base64_blob_still_image():
+    # A long high-entropy base64 blob WITHOUT a credential prefix stays IMAGE — the
+    # SECRET disambiguation must not accidentally reclassify genuine attachments.
+    import base64
+    import os
+
+    # Force a non-credential leading byte-string (random until it doesn't start with a
+    # known credential prefix / JWT header).
+    while True:
+        blob = base64.b64encode(os.urandom(500)).decode("ascii").replace("=", "A")
+        if not blob.startswith(("AKIA", "ASIA", "AIza", "eyJ")):
+            break
+    res = redact_detailed(blob)
+    assert res.types == ("IMAGE",), f"plain base64 blob mis-typed {res.types}"
+
+
+def test_data_uri_image_always_image_even_with_credential_bytes():
+    # A data:image URI is unambiguous — it stays IMAGE regardless of the SECRET check.
+    res = redact_detailed("data:image/png;base64,AKIA" + "A" * 600)
+    assert res.types == ("IMAGE",)
+
+
 # ---- E7.2: URL query-secret strip ------------------------------------------ #
 @pytest.mark.parametrize(
     "secret_param,secret_val",
@@ -1250,6 +1346,66 @@ def test_url_query_secret_stripped(secret_param, secret_val):
     assert secret_val not in out                    # no raw query secret survives
     assert "https://api.example.com" not in out     # URL not emitted in cleartext
     assert ("URL", None) in _tokens(out)            # the URL was tokenized
+
+
+@pytest.mark.parametrize(
+    "userinfo",
+    [
+        "apikey123@",              # userinfo whose local-part+@host looks like an email
+        "user:secretpw@",          # user:password@ authority
+        "svc.account@",            # dotted local-part
+    ],
+)
+def test_url_with_userinfo_at_sign_collapses_whole_url(userinfo):
+    # RELEASE-BLOCKING (E7.2 whole-URL-collapse fail-open, NFR-7 (a)): a URL whose
+    # authority carries userinfo (``user@host``) embeds an ``@`` that the EMAIL regex
+    # (``local@dotted-TLD``) matches on the userinfo+host. If EMAIL ran before URL the
+    # userinfo tokenized to an EMAIL token mid-URL, the URL matcher then stopped at the
+    # emitted ``⟦`` bracket, and the scheme prefix + PATH + QUERY STRING egressed RAW.
+    # URL now runs FIRST, so the WHOLE URL — scheme, userinfo, host, path, query —
+    # collapses into ONE opaque ⟦…:URL⟧ token. MUST FAIL if URL is reordered after
+    # EMAIL (the userinfo leak re-opens).
+    url = f"https://{userinfo}payments.internal.corp/transfer?amount=5000&acct=999"
+    out = redact(f"POST {url}")
+    # The whole URL is one URL token — nothing structural survives in cleartext.
+    assert ("URL", None) in _tokens(out)
+    assert "payments.internal.corp" not in out   # host gone
+    assert "/transfer" not in out                # path gone
+    assert "acct=999" not in out                 # query secret/params gone
+    assert "amount=5000" not in out
+    assert "https://" not in out                 # scheme prefix not stranded
+    # No EMAIL token was carved out of the userinfo (the URL swallowed it whole).
+    assert ("EMAIL", None) not in _tokens(out)
+
+
+def test_url_with_userinfo_and_short_query_secret_no_cleartext_leak():
+    # A short query secret (16-hex ``?sig=…``) that does NOT trip the SECRET matcher
+    # (>=20 chars / >=32 hex) must still not egress raw — because the whole URL
+    # collapses (E7.2). MUST FAIL if the userinfo leak re-opens (URL truncated at the
+    # EMAIL bracket would leave ``?sig=9f8e7d6c5b4a3210`` in cleartext).
+    out = redact("https://apikey123@payments.internal.corp/x?sig=9f8e7d6c5b4a3210")
+    assert "9f8e7d6c5b4a3210" not in out
+    assert ("URL", None) in _tokens(out)
+
+
+def test_standalone_email_still_tokenized_when_url_runs_first():
+    # Reordering URL before EMAIL must NOT stop a bare (no-scheme) email — disjoint on
+    # anchors (URL needs ``https?://``) — from being tokenized by the EMAIL matcher
+    # that runs next on the plaintext outside any URL token.
+    out = redact("contact jsmith@acme.com about https://acme.com/status")
+    toks = _tokens(out)
+    assert ("EMAIL", None) in toks               # the bare email is caught
+    assert ("URL", None) in toks                 # the URL is caught
+    assert "jsmith@acme.com" not in out
+    assert "acme.com/status" not in out
+
+
+def test_url_precedes_email_in_frozen_order():
+    # Pin the E7.2 userinfo fix in the frozen matcher order so it can't be silently
+    # reverted by swapping the tuple. URL MUST run before EMAIL (a URL's userinfo ``@``
+    # would otherwise be carved out as an EMAIL token, truncating the URL collapse).
+    order = [name for name, _ in R._ORDERED_MATCHERS]
+    assert order.index("URL") < order.index("EMAIL")
 
 
 # ---- new_nonce public helper ----------------------------------------------- #
