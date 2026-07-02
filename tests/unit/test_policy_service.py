@@ -1,44 +1,85 @@
 """
 Unit Tests for PolicyService CRUD Operations
 
-Tests create_policy, update_policy, delete_policy, get_policy_by_id methods.
-Reference: Workstream 11 - LLD 11 Section 5.2
+Tests create_policy, update_policy, delete_policy, get_policy methods.
+Reference: Workstream 11 - LLD 11 Section 5.2 (updated for the post-CT11 /
+workstream-T7 architecture — see the fixture docstring).
 
-Target: >80% coverage on policy_service.py
+Target: exercise the real CRUD contract (create success / validation-failure /
+already-exists; update success / not-found / disabled / auto-increment; delete
+success / not-found / system-policy / idempotent; get found & not-found;
+severity breakdown; version increment).
 """
 
 import pytest
-from unittest.mock import Mock, patch, MagicMock, AsyncMock
-from datetime import datetime
-import hashlib
-import yaml
+from unittest.mock import Mock, patch, PropertyMock, AsyncMock
 
 
-# Mock imports for testing
 @pytest.fixture
 def mock_policy_service():
-    """Create PolicyService with mocked dependencies."""
+    """Create PolicyService with mocked dependencies.
+
+    ARCHITECTURE DRIFT this fixture accounts for (why it no longer looks like
+    the old one that set service.validator / service.s3_store /
+    service.audit_logger / service.metadata_table):
+
+    * PolicyService.__init__ only builds region + boto3 resource/clients + cache.
+      It does NOT hold validator / s3_store / audit_logger / metadata_table
+      attributes anymore.
+    * The write-path deps are LAZY-IMPORTED INSIDE the methods:
+        create_policy / update_policy do
+            from app.services.policy_validator import PolicyValidator
+            from app.utils.s3_policy_store   import S3PolicyStore
+            from app.utils.metrics_publisher import MetricsPublisher
+      so they must be patched WHERE THEY LIVE (their real modules), not on the
+      policy_service module namespace.
+    * The metadata table is a @property `policies_metadata_table` resolved
+      per-call via tenancy.table_name('policies_metadata'). We patch that
+      property to return a single mock table (`mock_table`) so get_item /
+      put_item / update_item are all observable on one object.
+    * There is no AuditLogger: mutations are logged via `_log_audit`
+      (plain logger.info). So there is nothing to assert on an audit-logger
+      mock; instead create/update/delete are verified by their DDB writes.
+
+    Cedar is left at its default (disabled under system python3, no CEDAR_ENABLED
+    env), so `_maybe_write_cedar` is a no-op returning (FORMAT_YAML, None) and no
+    cedarpy import is needed. `settings.s3_bucket` is used for the S3 key/bucket.
+    """
     with patch('app.services.policy_service.boto3'), \
-         patch('app.services.policy_service.PolicyValidator'), \
-         patch('app.services.policy_service.S3PolicyStore'), \
-         patch('app.services.policy_service.AuditLogger'):
+         patch('app.services.policy_service.get_cache_manager') as mock_get_cache:
+
+        # Cache: get() returns None so reads always fall through to DDB; set()
+        # and clear() are no-ops we can observe.
+        cache = Mock()
+        cache.get = Mock(return_value=None)
+        cache.set = Mock()
+        cache.clear = Mock()
+        mock_get_cache.return_value = cache
 
         from app.services.policy_service import PolicyService
         service = PolicyService()
 
-        # Mock dependencies
-        service.metadata_table = Mock()
-        service.validator = Mock()
-        service.s3_store = Mock()
-        service.audit_logger = Mock()
-        service.audit_logger.log_mutation = AsyncMock()
+        # Single mock DynamoDB metadata table behind the read-only property.
+        mock_table = Mock()
+        table_patcher = patch.object(
+            PolicyService, 'policies_metadata_table',
+            new_callable=PropertyMock, return_value=mock_table,
+        )
+        table_patcher.start()
 
-        return service
+        # Expose the mock table + cache for tests to drive/inspect.
+        service._mock_table = mock_table   # test-only handle
+        service._mock_cache = cache        # test-only handle
+
+        try:
+            yield service
+        finally:
+            table_patcher.stop()
 
 
 @pytest.fixture
 def sample_policy_data():
-    """Sample policy data for testing."""
+    """Sample policy data for testing (as a create request would arrive)."""
     return {
         "schema_version": "v1",
         "agent_id": "test-agent",
@@ -60,83 +101,117 @@ def sample_policy_data():
     }
 
 
+def _patch_write_deps(validate_return=(True, None), s3_version="s3-version-123"):
+    """Context managers patching the lazy-imported write-path deps at their
+    real module source. Returns (validator_cls, s3_store_cls, metrics_cls)
+    patch objects so a test can start/inspect them.
+
+    - PolicyValidator().validate_policy(...) -> validate_return
+    - S3PolicyStore(bucket).upload(...) (async) -> s3_version
+    - MetricsPublisher() with async publish_* methods (no-op)
+    """
+    validator_patch = patch('app.services.policy_validator.PolicyValidator')
+    s3_patch = patch('app.utils.s3_policy_store.S3PolicyStore')
+    metrics_patch = patch('app.utils.metrics_publisher.MetricsPublisher')
+
+    validator_cls = validator_patch.start()
+    s3_cls = s3_patch.start()
+    metrics_cls = metrics_patch.start()
+
+    validator_cls.return_value.validate_policy.return_value = validate_return
+
+    s3_instance = s3_cls.return_value
+    s3_instance.upload = AsyncMock(return_value=s3_version)
+
+    metrics_instance = metrics_cls.return_value
+    metrics_instance.publish_policy_validation_metric = AsyncMock()
+    metrics_instance.publish_policy_crud_metric = AsyncMock()
+
+    return (validator_patch, s3_patch, metrics_patch, validator_cls, s3_cls, metrics_cls)
+
+
 class TestPolicyServiceCreate:
     """Tests for create_policy method."""
 
     @pytest.mark.asyncio
     async def test_create_policy_success(self, mock_policy_service, sample_policy_data):
         """Test successful policy creation."""
-        # Setup mocks
-        mock_policy_service.validator.validate_policy.return_value = (True, None)
-        mock_policy_service.metadata_table.get_item.return_value = {}  # Policy doesn't exist
-        mock_policy_service.s3_store.upload = AsyncMock(return_value="s3-version-123")
+        # Policy doesn't exist yet (get_policy -> get_item returns no Item).
+        mock_policy_service._mock_table.get_item.return_value = {}
 
-        # Execute
-        result = await mock_policy_service.create_policy(
-            policy_data=sample_policy_data,
-            operator_email="test@example.com"
-        )
+        vp, sp, mp, validator_cls, s3_cls, metrics_cls = _patch_write_deps(
+            s3_version="s3-version-123")
+        try:
+            result = await mock_policy_service.create_policy(
+                policy_data=sample_policy_data,
+                operator_email="test@example.com"
+            )
+        finally:
+            vp.stop(); sp.stop(); mp.stop()
 
-        # Assert
+        # Assert result envelope
         assert result['success'] is True
         assert result['policy_id'] == "agent-config-test-agent"
         assert result['version'] == "1.0.0"
         assert 's3_key' in result
-        assert 's3_version_id' in result
+        assert result['s3_version_id'] == "s3-version-123"
         assert result['message'] == "Policy created successfully"
 
-        # Verify DynamoDB put_item called
-        mock_policy_service.metadata_table.put_item.assert_called_once()
-        put_item_args = mock_policy_service.metadata_table.put_item.call_args[1]
+        # Verify DynamoDB put_item called with the computed metadata item.
+        mock_policy_service._mock_table.put_item.assert_called_once()
+        put_item_args = mock_policy_service._mock_table.put_item.call_args[1]
         assert put_item_args['Item']['policy_id'] == "agent-config-test-agent"
         assert put_item_args['Item']['agent_id'] == "test-agent"
         assert put_item_args['Item']['status'] == "active"
 
-        # Verify S3 upload called
-        mock_policy_service.s3_store.upload.assert_called_once()
+        # Verify S3 upload happened once, and validation ran.
+        s3_cls.return_value.upload.assert_called_once()
+        validator_cls.return_value.validate_policy.assert_called_once()
 
-        # Verify audit log called
-        mock_policy_service.audit_logger.log_mutation.assert_called_once()
+        # Cache invalidated after a successful create.
+        mock_policy_service._mock_cache.clear.assert_called_once()
 
     @pytest.mark.asyncio
     async def test_create_policy_validation_failure(self, mock_policy_service, sample_policy_data):
-        """Test policy creation with validation failure."""
-        # Setup validation failure
-        mock_policy_service.validator.validate_policy.return_value = (
-            False,
-            ["Agent 'test-agent' not found", "Tool 'tool_1' not found"]
-        )
+        """Test policy creation with validation failure raises ValidationException."""
+        vp, sp, mp, validator_cls, s3_cls, metrics_cls = _patch_write_deps(
+            validate_return=(False, ["Agent 'test-agent' not found", "bad thing"]))
+        try:
+            from app.services.policy_service import ValidationException
+            with pytest.raises(ValidationException):
+                await mock_policy_service.create_policy(
+                    policy_data=sample_policy_data,
+                    operator_email="test@example.com"
+                )
+        finally:
+            vp.stop(); sp.stop(); mp.stop()
 
-        # Execute and expect exception
-        from app.services.policy_service import ValidationException
-        with pytest.raises(ValidationException) as exc_info:
-            await mock_policy_service.create_policy(
-                policy_data=sample_policy_data,
-                operator_email="test@example.com"
-            )
-
-        # Verify no DynamoDB or S3 operations
-        mock_policy_service.metadata_table.put_item.assert_not_called()
-        mock_policy_service.s3_store.upload.assert_not_called()
+        # No DynamoDB or S3 write when validation fails.
+        mock_policy_service._mock_table.put_item.assert_not_called()
+        s3_cls.return_value.upload.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_create_policy_already_exists(self, mock_policy_service, sample_policy_data):
-        """Test policy creation when policy already exists."""
-        # Setup mocks
-        mock_policy_service.validator.validate_policy.return_value = (True, None)
-        mock_policy_service.metadata_table.get_item.return_value = {
+        """Test policy creation when policy already exists raises ConflictException."""
+        # get_policy -> get_item returns an existing Item.
+        mock_policy_service._mock_table.get_item.return_value = {
             'Item': {'policy_id': 'agent-config-test-agent', 'version': '1.0.0'}
         }
 
-        # Execute and expect exception
-        from app.services.policy_service import ConflictException
-        with pytest.raises(ConflictException) as exc_info:
-            await mock_policy_service.create_policy(
-                policy_data=sample_policy_data,
-                operator_email="test@example.com"
-            )
+        vp, sp, mp, validator_cls, s3_cls, metrics_cls = _patch_write_deps()
+        try:
+            from app.services.policy_service import ConflictException
+            with pytest.raises(ConflictException) as exc_info:
+                await mock_policy_service.create_policy(
+                    policy_data=sample_policy_data,
+                    operator_email="test@example.com"
+                )
+        finally:
+            vp.stop(); sp.stop(); mp.stop()
 
         assert "already exists" in str(exc_info.value)
+        # No write on conflict.
+        mock_policy_service._mock_table.put_item.assert_not_called()
 
 
 class TestPolicyServiceUpdate:
@@ -145,51 +220,44 @@ class TestPolicyServiceUpdate:
     @pytest.mark.asyncio
     async def test_update_policy_success(self, mock_policy_service, sample_policy_data):
         """Test successful policy update."""
-        # Setup mocks
-        existing_policy = {
+        # get_policy -> existing active policy.
+        mock_policy_service._mock_table.get_item.return_value = {
             'Item': {
                 'policy_id': 'agent-config-test-agent',
                 'version': '1.0.0',
                 'status': 'active'
             }
         }
-        mock_policy_service.metadata_table.get_item.return_value = existing_policy
-        mock_policy_service.validator.validate_policy.return_value = (True, None)
-        mock_policy_service.s3_store.upload = AsyncMock(return_value="s3-version-456")
 
-        # Update version
         sample_policy_data['version'] = '1.1.0'
 
-        # Execute
-        result = await mock_policy_service.update_policy(
-            policy_id="agent-config-test-agent",
-            policy_data=sample_policy_data,
-            operator_email="test@example.com"
-        )
+        vp, sp, mp, validator_cls, s3_cls, metrics_cls = _patch_write_deps(
+            s3_version="s3-version-456")
+        try:
+            result = await mock_policy_service.update_policy(
+                policy_id="agent-config-test-agent",
+                policy_data=sample_policy_data,
+                operator_email="test@example.com"
+            )
+        finally:
+            vp.stop(); sp.stop(); mp.stop()
 
-        # Assert
         assert result['success'] is True
         assert result['policy_id'] == "agent-config-test-agent"
         assert result['version'] == "1.1.0"
         assert result['previous_version'] == "1.0.0"
         assert result['message'] == "Policy updated successfully"
 
-        # Verify DynamoDB update called
-        mock_policy_service.metadata_table.update_item.assert_called_once()
-
-        # Verify S3 upload called
-        mock_policy_service.s3_store.upload.assert_called_once()
-
-        # Verify audit log
-        mock_policy_service.audit_logger.log_mutation.assert_called_once()
+        # Verify DynamoDB update + S3 upload.
+        mock_policy_service._mock_table.update_item.assert_called_once()
+        s3_cls.return_value.upload.assert_called_once()
+        mock_policy_service._mock_cache.clear.assert_called_once()
 
     @pytest.mark.asyncio
     async def test_update_policy_not_found(self, mock_policy_service, sample_policy_data):
-        """Test update when policy doesn't exist."""
-        # Setup mock - policy not found
-        mock_policy_service.metadata_table.get_item.return_value = {}
+        """Test update when policy doesn't exist raises NotFoundException."""
+        mock_policy_service._mock_table.get_item.return_value = {}
 
-        # Execute and expect exception
         from app.services.policy_service import NotFoundException
         with pytest.raises(NotFoundException):
             await mock_policy_service.update_policy(
@@ -200,18 +268,15 @@ class TestPolicyServiceUpdate:
 
     @pytest.mark.asyncio
     async def test_update_disabled_policy(self, mock_policy_service, sample_policy_data):
-        """Test update of disabled policy (should fail)."""
-        # Setup mock - policy is disabled
-        existing_policy = {
+        """Test update of a disabled policy is forbidden."""
+        mock_policy_service._mock_table.get_item.return_value = {
             'Item': {
                 'policy_id': 'agent-config-test-agent',
                 'version': '1.0.0',
                 'status': 'disabled'
             }
         }
-        mock_policy_service.metadata_table.get_item.return_value = existing_policy
 
-        # Execute and expect exception
         from app.services.policy_service import ForbiddenException
         with pytest.raises(ForbiddenException) as exc_info:
             await mock_policy_service.update_policy(
@@ -224,76 +289,66 @@ class TestPolicyServiceUpdate:
 
     @pytest.mark.asyncio
     async def test_update_policy_auto_increment_version(self, mock_policy_service, sample_policy_data):
-        """Test auto-increment version when not provided."""
-        # Setup mocks
-        existing_policy = {
+        """Test auto-increment version when the edit omits version."""
+        mock_policy_service._mock_table.get_item.return_value = {
             'Item': {
                 'policy_id': 'agent-config-test-agent',
                 'version': '1.0.0',
                 'status': 'active'
             }
         }
-        mock_policy_service.metadata_table.get_item.return_value = existing_policy
-        mock_policy_service.validator.validate_policy.return_value = (True, None)
-        mock_policy_service.s3_store.upload = AsyncMock(return_value="s3-version-789")
 
-        # Remove version to test auto-increment
         policy_data_no_version = sample_policy_data.copy()
         del policy_data_no_version['version']
 
-        # Execute
-        result = await mock_policy_service.update_policy(
-            policy_id="agent-config-test-agent",
-            policy_data=policy_data_no_version,
-            operator_email="test@example.com"
-        )
+        vp, sp, mp, validator_cls, s3_cls, metrics_cls = _patch_write_deps(
+            s3_version="s3-version-789")
+        try:
+            result = await mock_policy_service.update_policy(
+                policy_id="agent-config-test-agent",
+                policy_data=policy_data_no_version,
+                operator_email="test@example.com"
+            )
+        finally:
+            vp.stop(); sp.stop(); mp.stop()
 
-        # Assert version was auto-incremented
-        assert result['version'] == "1.0.1"  # Auto-incremented from 1.0.0
+        # Auto-incremented patch version 1.0.0 -> 1.0.1.
+        assert result['version'] == "1.0.1"
 
 
 class TestPolicyServiceDelete:
-    """Tests for delete_policy method."""
+    """Tests for delete_policy method (soft delete → status=disabled)."""
 
     @pytest.mark.asyncio
     async def test_delete_policy_success(self, mock_policy_service):
         """Test successful soft delete."""
-        # Setup mock
-        existing_policy = {
+        mock_policy_service._mock_table.get_item.return_value = {
             'Item': {
                 'policy_id': 'agent-config-test-agent',
                 'created_by': 'user@example.com'
             }
         }
-        mock_policy_service.metadata_table.get_item.return_value = existing_policy
 
-        # Execute
         result = await mock_policy_service.delete_policy(
             policy_id="agent-config-test-agent",
             operator_email="test@example.com"
         )
 
-        # Assert
         assert result['success'] is True
         assert result['status'] == 'disabled'
         assert result['message'] == "Policy disabled successfully"
 
-        # Verify DynamoDB update called (soft delete)
-        mock_policy_service.metadata_table.update_item.assert_called_once()
-        update_args = mock_policy_service.metadata_table.update_item.call_args[1]
-        assert ':disabled' in update_args['ExpressionAttributeValues']
+        # Soft-delete writes status=disabled via update_item.
+        mock_policy_service._mock_table.update_item.assert_called_once()
+        update_args = mock_policy_service._mock_table.update_item.call_args[1]
         assert update_args['ExpressionAttributeValues'][':disabled'] == 'disabled'
-
-        # Verify audit log
-        mock_policy_service.audit_logger.log_mutation.assert_called_once()
+        mock_policy_service._mock_cache.clear.assert_called_once()
 
     @pytest.mark.asyncio
     async def test_delete_policy_not_found(self, mock_policy_service):
-        """Test delete when policy doesn't exist."""
-        # Setup mock - policy not found
-        mock_policy_service.metadata_table.get_item.return_value = {}
+        """Test delete when policy doesn't exist raises NotFoundException."""
+        mock_policy_service._mock_table.get_item.return_value = {}
 
-        # Execute and expect exception
         from app.services.policy_service import NotFoundException
         with pytest.raises(NotFoundException):
             await mock_policy_service.delete_policy(
@@ -303,17 +358,14 @@ class TestPolicyServiceDelete:
 
     @pytest.mark.asyncio
     async def test_delete_system_policy(self, mock_policy_service):
-        """Test delete of system policy (should fail)."""
-        # Setup mock - system policy
-        existing_policy = {
+        """Test delete of a system policy is forbidden."""
+        mock_policy_service._mock_table.get_item.return_value = {
             'Item': {
                 'policy_id': 'agent-config-test-agent',
                 'created_by': 'system'
             }
         }
-        mock_policy_service.metadata_table.get_item.return_value = existing_policy
 
-        # Execute and expect exception
         from app.services.policy_service import ForbiddenException
         with pytest.raises(ForbiddenException) as exc_info:
             await mock_policy_service.delete_policy(
@@ -322,116 +374,74 @@ class TestPolicyServiceDelete:
             )
 
         assert "system" in str(exc_info.value).lower()
+        # Guarded: no write when forbidden.
+        mock_policy_service._mock_table.update_item.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_delete_policy_idempotent(self, mock_policy_service):
-        """Test that deleting already disabled policy is idempotent."""
-        # Setup mock - already disabled
-        existing_policy = {
+        """Test that deleting an already-disabled policy is idempotent."""
+        mock_policy_service._mock_table.get_item.return_value = {
             'Item': {
                 'policy_id': 'agent-config-test-agent',
                 'created_by': 'user@example.com',
                 'status': 'disabled'
             }
         }
-        mock_policy_service.metadata_table.get_item.return_value = existing_policy
 
-        # Execute (should succeed even though already disabled)
         result = await mock_policy_service.delete_policy(
             policy_id="agent-config-test-agent",
             operator_email="test@example.com"
         )
 
-        # Assert success (idempotent)
         assert result['success'] is True
         assert result['status'] == 'disabled'
 
 
 class TestPolicyServiceGet:
-    """Tests for get_policy_by_id method."""
+    """Tests for get_policy (metadata) — the current read contract.
+
+    CONTRACT CHANGE: the old tests called `get_policy_by_id(policy_id,
+    include_content=...)` and asserted a `{'success': True, 'metadata':...,
+    'content':...}` envelope plus an `s3_store.download` call. That method no
+    longer exists. The current API is:
+      * get_policy(policy_id)         -> metadata dict, or None if not found
+      * get_policy_content(policy_id) -> full dict w/ content (S3 via
+                                         s3_policy_store.get_policy_object)
+    get_policy returns the raw metadata dict (enriched with match_count_24h),
+    NOT a success-envelope, and returns None (does not raise) when absent. We
+    updated these tests to the real get_policy contract. The S3 content path
+    (get_policy_content) is already covered by the controller's own suite
+    (src/security-controller/tests/unit/test_policy_service.py
+    ::TestPolicyServiceGetPolicyContent), so we do not duplicate it here.
+    """
 
     @pytest.mark.asyncio
-    async def test_get_policy_with_content(self, mock_policy_service):
-        """Test get policy with S3 content."""
-        # Setup mocks
+    async def test_get_policy_found(self, mock_policy_service):
+        """get_policy returns the metadata dict (enriched) when found."""
         metadata = {
             'policy_id': 'agent-config-test-agent',
             'agent_id': 'test-agent',
             'version': '1.0.0',
-            's3_key': 'policies/agents/test-agent/v1.0.0.yaml',
-            's3_version_id': 'version-123'
         }
-        mock_policy_service.metadata_table.get_item.return_value = {'Item': metadata}
+        mock_policy_service._mock_table.get_item.return_value = {'Item': dict(metadata)}
 
-        s3_content = """
-schema_version: v1
-policy_id: agent-config-test-agent
-agent_id: test-agent
-version: 1.0.0
-allowed_tools:
-  - tool_1
-policies:
-  - policy_id: pol-001
-    name: Test Rule
-    rule: parameter <= 1000
-    action: DENY
-    severity: high
-"""
-        mock_policy_service.s3_store.download = AsyncMock(return_value=s3_content)
+        result = await mock_policy_service.get_policy("agent-config-test-agent")
 
-        # Execute
-        result = await mock_policy_service.get_policy_by_id(
-            policy_id="agent-config-test-agent",
-            include_content=True
-        )
-
-        # Assert
-        assert result['success'] is True
+        assert result is not None
         assert result['policy_id'] == "agent-config-test-agent"
-        assert result['metadata'] == metadata
-        assert result['content'] is not None
-        assert result['content']['agent_id'] == 'test-agent'
-
-        # Verify S3 download was called
-        mock_policy_service.s3_store.download.assert_called_once()
-
-    @pytest.mark.asyncio
-    async def test_get_policy_without_content(self, mock_policy_service):
-        """Test get policy without S3 content."""
-        # Setup mock
-        metadata = {
-            'policy_id': 'agent-config-test-agent',
-            'agent_id': 'test-agent',
-            'version': '1.0.0'
-        }
-        mock_policy_service.metadata_table.get_item.return_value = {'Item': metadata}
-
-        # Execute
-        result = await mock_policy_service.get_policy_by_id(
-            policy_id="agent-config-test-agent",
-            include_content=False
-        )
-
-        # Assert
-        assert result['success'] is True
-        assert result['content'] is None
-
-        # Verify S3 download was NOT called
-        mock_policy_service.s3_store.download.assert_not_called()
+        assert result['agent_id'] == "test-agent"
+        # Enriched with a match count (MVP: 0).
+        assert result['match_count_24h'] == 0
+        mock_policy_service._mock_table.get_item.assert_called_once()
 
     @pytest.mark.asyncio
     async def test_get_policy_not_found(self, mock_policy_service):
-        """Test get policy that doesn't exist."""
-        # Setup mock - policy not found
-        mock_policy_service.metadata_table.get_item.return_value = {}
+        """get_policy returns None (does not raise) when the policy is absent."""
+        mock_policy_service._mock_table.get_item.return_value = {}
 
-        # Execute and expect exception
-        from app.services.policy_service import NotFoundException
-        with pytest.raises(NotFoundException):
-            await mock_policy_service.get_policy_by_id(
-                policy_id="agent-config-nonexistent",
-                include_content=True
-            )
+        result = await mock_policy_service.get_policy("agent-config-nonexistent")
+
+        assert result is None
 
 
 class TestPolicyServiceHelpers:
@@ -457,7 +467,7 @@ class TestPolicyServiceHelpers:
         }
 
     def test_increment_version(self, mock_policy_service):
-        """Test version auto-increment."""
+        """Test version auto-increment (patch bump)."""
         assert mock_policy_service._increment_version("1.0.0") == "1.0.1"
         assert mock_policy_service._increment_version("1.0.9") == "1.0.10"
         assert mock_policy_service._increment_version("2.5.99") == "2.5.100"
