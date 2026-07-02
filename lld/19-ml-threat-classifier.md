@@ -1,8 +1,10 @@
 # LLD 19: ML-Based Threat Classifier (Sentra-Side, In-Pipeline)
 
+> **⚠️ Superseded-for-Serverless by [lld/32-detection-depth.md](32-detection-depth.md) (WS-L).** The Serverless build-of-record for the tiered detection model (distilled → Haiku 4.5 → Sonnet 4.6 → Opus-offline) is now LLD 32, which registers the models as WS-C `ValidatorNode`s and adds the distilled tier-0 node (FR-3.12). **Retained as origin design** — the model strategy, confidence bands (§4.4), and Opus-offline rationale (§4.3) here are the source LLD 32 consolidates; do not delete or fork. **Note:** §6.1's priority convention (lower=higher) is **superseded by LLD 20 §11 / LLD 32 §9** (higher=stronger), matching the live `combiners/sources.py`.
+
 **Version**: 0.2 (Draft — incorporates Kiro review P0/P1)
 **Last Updated**: 2026-05-27
-**Status**: Draft
+**Status**: Draft — superseded-for-Serverless by lld/32
 
 **v0.2 changes** (from Kiro review):
 - §3.2.1 — added explicit latency SLA for flag-on configurations (P0)

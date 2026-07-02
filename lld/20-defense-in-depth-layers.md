@@ -1,8 +1,10 @@
 # LLD 20: Defense-in-Depth Security Layers
 
+> **⚠️ Superseded-for-Serverless by [lld/32-detection-depth.md](32-detection-depth.md) (WS-L).** The Serverless build-of-record for the seven D1–D7 layers is now LLD 32, which registers each layer as a WS-C `ValidatorNode` (`cost_tier` + `depends_on`), sequences the honest first wave (D2 content + D3 memory first; D4/D5/D1/D6/D7 later), and routes the content/memory phases into `run_dag(phase)` to replace WS-B's fail-secure stubs. **Retained as origin design** — the layer mechanisms (§4–10), the priority table (§11, higher=stronger — the canonical convention), and the DAG-execution rationale (§3.4) here are the source LLD 32 consolidates; do not delete or fork. The live `combiners/sources.py` D-node integration is specified in LLD 32 §9.
+
 **Version**: 0.1 (Draft)
 **Last Updated**: 2026-06-05
-**Status**: Draft — for review
+**Status**: Draft — superseded-for-Serverless by lld/32
 **Owner**: Founder
 
 **Prerequisites**:
