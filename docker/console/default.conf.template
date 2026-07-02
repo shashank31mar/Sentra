@@ -9,6 +9,28 @@ server {
     root /usr/share/nginx/html;
     index index.html;
 
+    # ---- Compression ----
+    # The SPA entry bundle is ~645 KB of JS + ~36 KB of CSS UNCOMPRESSED. Served
+    # raw over a constrained link this dominated first-load (observed ~28 s to
+    # pull index-*.js in a captured HAR). gzip cuts JS/CSS ~4x on the wire. We use
+    # on-the-fly gzip (not brotli) because the stock nginx:alpine image ships the
+    # gzip module but NOT the third-party brotli module. `gzip_static on` also
+    # prefers a sibling precompressed `.gz` when present (harmless when absent).
+    gzip on;
+    gzip_static on;
+    gzip_comp_level 6;
+    gzip_min_length 1024;
+    gzip_vary on;
+    gzip_proxied any;
+    gzip_types
+        application/javascript
+        text/javascript
+        text/css
+        application/json
+        image/svg+xml
+        font/ttf
+        font/otf;
+
     # ---- Security headers ----
     add_header X-Frame-Options "DENY" always;
     add_header X-Content-Type-Options "nosniff" always;
