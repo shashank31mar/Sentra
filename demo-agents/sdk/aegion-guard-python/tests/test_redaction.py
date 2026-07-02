@@ -496,6 +496,91 @@ def test_ssn_email_phone_ip_url_date_tokenized():
         assert raw not in out
 
 
+# ---- DATE / PHONE: conservative-by-design, NEGATIVE controls (coverage gap) - #
+# The DATE (``:750``) and PHONE (``:740``) matchers are DELIBERATELY conservative
+# (ISO / M/D/Y dates only; NA-phone ``3-3-4`` shapes only) — the module docstring
+# (``:738``, Appendix G) calls obfuscated / non-US forms a MEASURED miss, not a
+# silent claim of full coverage. Above pins the positive path; these pin the
+# conservative posture so a future LOOSENING of the DATE/PHONE regex that started
+# over-masking benign date-/phone-shaped values (version strings, ratios, large IDs,
+# glued digit runs) is caught, and the intentional non-US miss is documented as a
+# test, not folklore. MUST FAIL if the regex is widened to swallow these. -------- #
+@pytest.mark.parametrize(
+    "text",
+    [
+        "version v1/2/3 released",      # semantic version, slash-separated (sentinel case)
+        "aspect 16/9 display",          # ratio, not M/D/Y
+        "score 9/10 rating",            # ratio
+        "1/2 cup sugar",                # fraction
+        "id 123456789012 in ledger",    # 12-digit id — not an ISO date
+        "path a/b/c segment",           # alpha path, no digits
+        "build 2026-07 milestone",      # YYYY-MM only (not the full ISO YYYY-MM-DD)
+    ],
+)
+def test_date_shaped_benign_value_not_over_masked(text):
+    out = redact(text)
+    assert "DATE" not in {t for t, _ in _tokens(out)}, (
+        f"benign date-shaped value over-masked to DATE: {out!r}"
+    )
+    assert out == text, f"benign text altered: {out!r}"
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "version 1234567890 build",     # glued 10-digit run — no NA grouping
+        "ext 12345 please",             # 5-digit extension
+        "ratio 100 200 300 count",      # 3-3-3 grouping, not 3-3-4
+        "id-4155550132 record",         # glued 10 digits behind a label
+        "call 4 1 5 5 5 5 0 1 3 2 now", # spaced-out obfuscated digits (measured miss)
+    ],
+)
+def test_phone_shaped_benign_value_not_over_masked(text):
+    out = redact(text)
+    assert "PHONE" not in {t for t, _ in _tokens(out)}, (
+        f"benign phone-shaped value over-masked to PHONE: {out!r}"
+    )
+    assert out == text, f"benign text altered: {out!r}"
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "call +44 20 7946 0958 uk",     # UK landline (non-US, wrong grouping)
+        "mobile 07700 900123 uk",       # UK mobile
+        "de +49 30 12345678 line",      # German number
+    ],
+)
+def test_non_us_phone_form_is_a_measured_miss_not_masked(text):
+    # DOCUMENTS the module's own honesty: non-US / obfuscated phone forms are a
+    # MEASURED miss (redaction.py:738 Appendix G), NOT silent full coverage. This is a
+    # deliberate conservative-posture test, not an aspiration — if a future change
+    # extends PHONE to intl E.164 forms, this test is UPDATED deliberately (the miss
+    # became coverage), never edited silently to stay green.
+    out = redact(text)
+    assert "PHONE" not in {t for t, _ in _tokens(out)}, (
+        f"non-US phone unexpectedly masked (coverage changed — update this test "
+        f"deliberately if intentional): {out!r}"
+    )
+
+
+def test_na_phone_positive_control_still_masks_across_separators():
+    # PAIRED positive control for the conservative negatives above: the NA ``3-3-4``
+    # shapes the matcher IS built for must still mask across each supported separator
+    # (space / dot / dash / paren / +1) — the narrowing must not stop masking real
+    # phone numbers. MUST FAIL if the PHONE matcher is narrowed too far.
+    for text in (
+        "call 415-555-0132",
+        "call 415.555.0132",
+        "call 415 555 0132",
+        "call (415) 555-0132",
+        "call +1 415-555-0132",
+    ):
+        out = redact(text)
+        assert ("PHONE", None) in _tokens(out), f"NA phone not masked: {out!r}"
+        assert "555-0132" not in out and "555 0132" not in out and "555.0132" not in out
+
+
 # ---- IP: BOTH families (HIPAA SH #18 is generic — FIX-B, NFR-7 (a)) --------- #
 # REGRESSION (fail-open PHI leak): the ``IP`` token in LLD 29 §3.1 (line 152) is
 # generic — it is NOT IPv4-only. An IPv6 address that egressed RAW to the hosted PDP
@@ -523,12 +608,19 @@ def test_ipv6_is_tokenized_and_never_egresses_raw(ip):
     # IPv4-mapped form the whole ``::ffff:192.168.1.1`` collapses to one token — the
     # embedded dotted tail must not be stranded in cleartext (partial redaction).
     assert ip not in out, f"raw IPv6 {ip!r} leaked in {out!r}"
+    # Strip the wire tokens FIRST before the per-chunk raw-leak assertions: the
+    # ⟦AEGR:{nonce}:…⟧ nonce is 16 random hex chars, so a 2+-char hextet like
+    # ``200``/``db8`` is valid hex and collides with the random nonce as an incidental
+    # substring some fraction of runs — a ``chunk not in out`` against the un-stripped
+    # output false-fails on a nonce coincidence, not a real leak. Same nonce-stripping
+    # idiom as the PAN/SAD raw-value assertions (test_redaction.py:62 / :469).
+    stripped = _WIRE.sub("", out)
     for chunk in ip.split(":"):
         # No non-trivial hextet / embedded-IPv4 chunk of the address survives raw
         # (skip empty chunks from ``::`` and 1-char chunks that legitimately recur
-        # inside the random nonce hex).
+        # inside prose).
         if len(chunk) >= 2:
-            assert chunk not in out, f"IPv6 chunk {chunk!r} leaked in {out!r}"
+            assert chunk not in stripped, f"IPv6 chunk {chunk!r} leaked in {out!r}"
 
 
 @pytest.mark.parametrize(

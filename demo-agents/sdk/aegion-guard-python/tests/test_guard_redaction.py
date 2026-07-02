@@ -299,6 +299,43 @@ def test_content_text_field_is_redacted_before_egress(make_guard, fake_client, p
     assert _nonces_in(sent["content_text"]) == {sent["redaction_nonce"]}
 
 
+@pytest.mark.parametrize("phase", ["content", "output", "memory"])
+def test_content_text_equals_redacted_user_input_for_egressing_phases(
+    make_guard, fake_client, phase
+):
+    # CONTRACT (coverage gap): for the content/output/memory phases WS-B sources
+    # `content_text` from the SAME resolved session user_input, redacted with the SAME
+    # per-egress nonce as `user_input` (guard.py:488/:529). So on the wire the two
+    # fields are BYTE-IDENTICAL today. This pins that equivalence explicitly: WS-B's
+    # docstring notes a richer per-phase capture is WS-L's concern — if a future WS-L
+    # change wires `content_text` to a DISTINCT source, this test breaks and forces a
+    # deliberate decision (update the contract) instead of a silent behavior drift.
+    # It also guards that both fields carry the ONE egress nonce (no per-field mint).
+    guard = make_guard()
+    fake_client.set_default({"decision": "ALLOW"})
+
+    @_PHASE_DECORATOR[phase](guard)
+    def ingest():
+        return "ran"
+
+    content = "retrieved doc: card 4111111111111111, ssn 123-45-6789, mail eve@example.com"
+    with guard.session(session_id="s1", user_input=content):
+        ingest()
+
+    sent = fake_client.last
+    assert sent["phase"] == phase
+    # Byte-for-byte identical: same source (resolved_input), same per-egress nonce.
+    assert sent["content_text"] == sent["user_input"], (
+        "content_text must equal the redacted user_input for egressing phases "
+        f"(same source + same nonce); diverged: content_text={sent['content_text']!r} "
+        f"vs user_input={sent['user_input']!r}"
+    )
+    # Both are genuinely redacted (not merely equal-because-both-raw) and share the nonce.
+    assert _WIRE.search(sent["content_text"])
+    assert _nonces_in(sent["content_text"]) == {sent["redaction_nonce"]}
+    assert _nonces_in(sent["user_input"]) == {sent["redaction_nonce"]}
+
+
 def test_request_phase_has_no_content_text_field(make_guard, fake_client):
     # The default "request" phase (@guard.tool) has NO `content_text` on the wire —
     # its content is tool_params/user_input. The request payload stays byte-identical
