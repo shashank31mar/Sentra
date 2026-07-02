@@ -1015,6 +1015,62 @@ def test_redact_params_redacts_pii_in_dict_keys():
     assert "998877" not in flat
 
 
+def test_redact_params_colliding_pii_keys_preserve_entry_count():
+    # R5-M1 (release-relevant): typed tokens are LOSSY — several DISTINCT PII keys
+    # redact to the SAME wire token (three different emails all -> ⟦AEGR:{n}:EMAIL⟧
+    # under ONE shared nonce). A dict comprehension would collapse them (last-write-
+    # wins), dropping entries so the PDP receives FEWER params than the agent sent —
+    # a loss of arity that can flip a decision to a wrong-ALLOW. redact_params MUST
+    # preserve entry count: len(out) == len(in) ALWAYS. MUST FAIL if the dict branch
+    # stops disambiguating colliding redacted keys (reverting to a collapsing
+    # comprehension).
+    #
+    # A SHARED nonce is threaded (as guard._build_request does, guard.py:487) — that
+    # is the condition under which distinct keys collide to identical tokens. Without
+    # a shared nonce each leaf mints its own, so the tokens differ and the collapse
+    # would not reproduce; the shared nonce is what makes this a real negative control.
+    nonce = R.new_nonce()
+    params = {
+        "alice@corp.com": "a",
+        "bob@corp.com": "b",
+        "carol@corp.com": "c",
+    }
+    out = redact_params(params, nonce=nonce)
+    assert len(out) == len(params) == 3, (
+        f"colliding PII keys must not collapse; got {len(out)} of {len(params)}"
+    )
+    # No raw email key survives...
+    flat = str(out)
+    for raw in params:
+        assert raw not in flat
+    # ...and every distinct value is still present under its own (unique) key.
+    assert sorted(out.values()) == ["a", "b", "c"]
+    # Each redacted key carries the EMAIL typed token (structural signal preserved);
+    # duplicates are disambiguated OUTSIDE the token with a bare ordinal (never raw).
+    for k in out:
+        assert "EMAIL" in [t for t, _ in _tokens(k)]
+
+
+def test_redact_params_colliding_keys_across_types_all_survive():
+    # Mixed collision under one shared nonce: two PANs + two emails in the same dict.
+    # All four entries must survive with distinct keys (the two PANs disambiguate from
+    # each other, the two emails from each other), and no raw value egresses. Pins
+    # that disambiguation is per-token-string, not per-type.
+    nonce = R.new_nonce()
+    params = {
+        "4111111111111111": 1,
+        "4111111111111129": 2,          # different Luhn-valid PAN
+        "x@a.com": 3,
+        "y@b.com": 4,
+    }
+    out = redact_params(params, nonce=nonce)
+    assert len(out) == 4
+    flat = str(out)
+    for raw in params:
+        assert raw not in flat, f"raw key {raw!r} leaked"
+    assert sorted(out.values()) == [1, 2, 3, 4]
+
+
 def test_redact_params_bytes_key_is_refused_not_sent():
     # A bytes key is binary content the text redactor cannot scrub — refuse it,
     # mirroring the bytes-leaf refusal (FR-3.15 / E1.5). Fail secure, never egress.

@@ -526,7 +526,14 @@ class AegionGuard:
             # WS-B only PLACES it, sourced from the resolved input the decorator
             # already has. A richer per-phase capture arg is WS-L's concern — WS-B
             # guarantees the field EXISTS and is populated, not its richest source.
-            payload["content_text"] = _redaction.redact(resolved_input, nonce=nonce)
+            #
+            # `content_text` is `resolved_input` disambiguated by phase, and
+            # `resolved_input` was ALREADY redacted into `redacted_input` above with
+            # this call's nonce — reuse it rather than redacting the same value a
+            # second time (R5-L1). A second redact() would mint the same tokens but
+            # burns CPU and, worse, invites the two copies to drift if one call site
+            # is later changed; one redaction, one source of truth.
+            payload["content_text"] = redacted_input
         return payload
 
     def _redaction_denied(

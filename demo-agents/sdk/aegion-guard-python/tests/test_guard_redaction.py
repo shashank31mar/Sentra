@@ -356,6 +356,45 @@ def test_request_phase_has_no_content_text_field(make_guard, fake_client):
     assert "content_text" not in sent
 
 
+def test_content_phase_distinct_argument_is_redacted_before_egress(make_guard, fake_client):
+    # R5-L2: a @guard.content fn whose CONTENT arrives as a distinct ARGUMENT (not
+    # via session user_input) must still have that argument's PII redacted before
+    # egress. The argument is bound into `tool_params` (via _bind_params) and
+    # tool_params is redacted (guard.py:487), so no raw PII leaks even though
+    # `content_text` is sourced from resolved_input, NOT this argument.
+    #
+    # SEAM (documented, WS-L's concern — LLD 30 §4.2): WS-B sources `content_text`
+    # from the resolved session `user_input`, so a richer per-phase capture that
+    # carries the DISTINCT argument INTO content_text is deliberately out of scope
+    # here — WS-B guarantees the field EXISTS and is redacted, not that it is sourced
+    # from the decorated fn's argument. This test pins the security-relevant half of
+    # that seam: the argument's PII never egresses raw regardless. MUST FAIL if the
+    # content-phase argument stops flowing through the redactor.
+    guard = make_guard()
+    fake_client.set_default({"decision": "ALLOW"})
+
+    @guard.content()
+    def ingest(document):
+        return "ran"
+
+    with guard.session(session_id="s1", user_input="ingest the retrieved doc"):
+        ingest("card 4111111111111111 for eve@example.com")
+
+    sent = fake_client.last
+    assert sent["phase"] == "content"
+    # The distinct argument was bound into tool_params and redacted — no raw PII.
+    blob = str(sent["tool_params"])
+    assert "4111111111111111" not in blob
+    assert "eve@example.com" not in blob
+    assert _WIRE.search(sent["tool_params"]["document"])
+    # Documented seam: content_text is the redacted user_input (NOT the argument),
+    # so it carries the user_input tokens, not the argument's PII. Assert the raw
+    # argument PII is absent from the ENTIRE payload (belt-and-suspenders on egress).
+    whole = str(sent)
+    assert "4111111111111111" not in whole
+    assert "eve@example.com" not in whole
+
+
 def test_content_text_image_blob_is_tagged_not_sent_raw(make_guard, fake_client):
     # E6.1: an inlined image blob egressing as content_text is TAGGED to an IMAGE
     # marker + routed, never pixel-redacted and never egressed raw.
