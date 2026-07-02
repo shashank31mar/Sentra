@@ -21,13 +21,15 @@
 
 ## Milestone map
 
-| ID | Milestone | Tasks | Tests |
-|---|---|---|---|
-| **D1** | Data model + coverage resolution (`NotRunMarker`, marker writer, `sources.py` constants, `coverage_set`) | 4 | T-TRAIL-06, -11, -12, -14, -15 |
-| **D2** | Run-model wiring + four-bucket classification (`build_trail`, §7.1.1 stamp, §7.1.2 pin, §7.1.3 reason, KD-4 call site) | 4 | T-TRAIL-01, -02, -03, -04, -05, -07, -13, -14b, -16, -17, -19 |
-| **D3** | High-assurance mode (WS-C `evaluate_all` per-request seam, escalate-only, NO-OP-if-absent) | 2 | T-TRAIL-08, -09, -18 |
-| **D4** | Persistence off the hot path + `TrailPersistFailures`/`CombinedEventPersistFailures` metrics | 2 | T-TRAIL-10 |
-| **D5** | Trail-read API `GET /v1/sessions/{id}/trail` (envelope, display-name derivation, recompute-on-read, tenant scoping, pagination) | 3 | T-TRAIL-20, -21, -22, -23 + integration |
+| ID | Milestone | Tasks | Tests | Status |
+|---|---|---|---|---|
+| **D1** | Data model + coverage resolution (`NotRunMarker`, marker writer, `sources.py` constants, `coverage_set`) | 4 | T-TRAIL-06, -11, -12, -14, -15 | ✅ Done |
+| **D2** | Run-model wiring + four-bucket classification (`build_trail`, §7.1.1 stamp, §7.1.2 pin, §7.1.3 reason, KD-4 call site) | 4 | T-TRAIL-01, -02, -03, -04, -05, -07, -13, -14b, -16, -17, -19 | ✅ Done |
+| **D3** | High-assurance mode (WS-C `evaluate_all` per-request seam, escalate-only, NO-OP-if-absent) | 2 | T-TRAIL-08, -09, -18 | ✅ Done |
+| **D4** | Persistence off the hot path + `TrailPersistFailures`/`CombinedEventPersistFailures` metrics | 2 | T-TRAIL-10 | ✅ Done |
+| **D5** | Trail-read API `GET /v1/sessions/{id}/trail` (envelope, display-name derivation, recompute-on-read, tenant scoping, pagination) | 3 | T-TRAIL-20, -21, -22, -23 + integration | ✅ Done |
+
+**All 15 tasks (D1.1–D5.3) COMPLETE + PROMOTED to `main` @ `42bcaeb`** (2026-07-02). Each `### Task` header below is stamped **✅ Done**. APIG follow-up (method-level synth test + wiring the read-family/`signals`/`metrics`/`rollback-conversation`/`feedback-delete` routes) landed separately @ `6a4ec89`.
 
 23 numbered tests (T-TRAIL-01..23) + T-TRAIL-14b + 1 unnumbered integration test = the full §12 test plan. **Test files:** unit `src/security-controller/tests/unit/test_trail_builder.py`; integration `src/security-controller/tests/integration/test_decision_trail.py` (gated `RUN_INTEGRATION=1`).
 
@@ -70,7 +72,7 @@ The four sets are **disjoint by construction** (each source lands in exactly one
 
 The record type, the marker writer, the `sources.py` constants, and the coverage accessor — the static substrate the run-model wiring (D2) classifies against. Nothing here touches the hot path.
 
-### Task D1.1 — `NotRunMarker` frozen dataclass (§6.1, KD-1)
+### Task D1.1 — `NotRunMarker` frozen dataclass (§6.1, KD-1)  ✅ **Done**
 
 New module `src/security-controller/app/services/trail_builder.py`. Define the record type FIRST — it is deliberately **not** a `Signal`:
 
@@ -98,7 +100,7 @@ class NotRunMarker:
 **Unit tests** (`tests/unit/test_trail_builder.py`):
 - `test_not_run_marker_has_no_decision_attr` — assert `hasattr(NotRunMarker(source="sentra.sigma"), "decision") is False`; assert `NotRunMarker` is frozen (attribute assignment raises `FrozenInstanceError`).
 
-### Task D1.2 — Add the four constants to `combiners/sources.py` (§5.2 — additive, NO new file)
+### Task D1.2 — Add the four constants to `combiners/sources.py` (§5.2 — additive, NO new file)  ✅ **Done**
 
 Edit (additive) `src/security-controller/app/combiners/sources.py`, alongside the existing `Source` / `DEFAULT_PRIORITIES` / `default_priority()`. All four constants live in this **one existing file** — one source of truth shared by the trail builder, the scheduler-absent path, and the read API's display derivation.
 
@@ -143,7 +145,7 @@ STATE_DISPLAY_NAMES: dict[str, str] = {    # raw state → human label (§9A.2.2
 **Unit tests** (`tests/unit/test_trail_builder.py`):
 - `test_step_label_map_excludes_plumbing` (**T-TRAIL-06** — set half) — assert `session`/`pipeline`/`handle`/`abuse_policy_load`/`policy_fallback` are absent from `STEP_LABEL_TO_SOURCE`; feed `_step_timings` containing all of them + `policy` + `policy_fallback` and assert the derived invoked set contains **none** of the plumbing labels and maps `policy`+`policy_fallback` to a **single** `sentra.policy`.
 
-### Task D1.3 — `coverage_set(phase)` accessor (§5.1, KD-3) — the WS-C seam is NOT YET BUILT
+### Task D1.3 — `coverage_set(phase)` accessor (§5.1, KD-3) — the WS-C seam is NOT YET BUILT  ✅ **Done**
 
 In `trail_builder.py`, the coverage accessor tries WS-C's pure seam and falls back to the static list. **The WS-C seam genuinely does not exist yet** — `scheduler/__init__.py` exports only `CostTier`/`ValidatorNode`/`build_dag`/`run_dag`, and the landed `build_dag(service, phase, stamp_ctx)` is **service-coupled** (not a pure lookup).
 
@@ -167,7 +169,7 @@ def coverage_set(phase: str) -> list[str]:
 **Unit tests** (`tests/unit/test_trail_builder.py`):
 - `test_coverage_set_falls_back_when_scheduler_absent` (**T-TRAIL-12**) — with `app.services.scheduler.coverage_sources` unimportable (monkeypatch the import to raise `ImportError`), assert `coverage_set("request") == STATIC_FALLBACK_ORDER`; assert high-assurance degrades to a documented NO-OP (prefix-only trail — cross-ref D3).
 
-### Task D1.4 — `_build_marker_item` + `write_not_run_markers` on the EXISTING writer (§6.2, KD-7)
+### Task D1.4 — `_build_marker_item` + `write_not_run_markers` on the EXISTING writer (§6.2, KD-7)  ✅ **Done**
 
 Edit `src/security-controller/app/utils/signal_store_writer.py` — **NO new writer, NO new table.** Add a module-level `_build_marker_item(...)` **alongside** `_build_item` ([:90](../../src/security-controller/app/utils/signal_store_writer.py#L90)) and a `write_not_run_markers(markers)` method on `SignalStoreWriter`. Markers share the request partition so the console reads ran + not-run in **one Query**.
 
@@ -203,7 +205,7 @@ def _build_marker_item(marker, *, timestamp_ms, timestamp_iso, expires_at, reque
 
 `build_trail` (the classifier), the §7.1.1 producer stamp that repairs the dangerous fail-secure-DENY path, the §7.1.2 baseline pin, the §7.1.3 positional reason, and the KD-4 synchronous-by-value call site. This is where WS-D touches `validation_service.py` — **but never the pipeline body**.
 
-### Task D2.1 — `build_trail(...)` four-bucket classifier (§7.1/§7.2)
+### Task D2.1 — `build_trail(...)` four-bucket classifier (§7.1/§7.2)  ✅ **Done**
 
 In `trail_builder.py`, the pure classification function over data the pipeline already produced:
 
@@ -251,7 +253,7 @@ Also define `TrailResult` (a frozen dataclass: `markers: list[NotRunMarker]`, `s
 - `test_combine_never_called_with_marker` (**T-TRAIL-07**) — (a) `git diff` shows `combiners/deny_overrides.py` byte-unchanged; (b) a test double asserts `DenyOverrides.combine` is **never** invoked with a `NotRunMarker` in the list (invariant ii — passing one is a type error).
 - `test_not_run_reason_derived_by_position` (**T-TRAIL-17**) — (a) disabled awaited layer → ran-ABSTAIN never not_run; (b) layer after denier → `"gated by earlier DENY"`, cost-skipped tier-1 on a full-ALLOW → `"skipped for cost/tier"`; (c) **positional guard:** a genuinely cost-skipped node **BEFORE** the denier reads `"skipped for cost/tier"`, NOT `"gated"` (no `is_deny` disjunct).
 
-### Task D2.2 — §7.1.1 fix: `_fail_secure_deny` stamps `source=Source.SENTRA_POLICY` (the dangerous path)
+### Task D2.2 — §7.1.1 fix: `_fail_secure_deny` stamps `source=Source.SENTRA_POLICY` (the dangerous path)  ✅ **Done**
 
 Edit `src/security-controller/app/services/validation_service.py`: **`_fail_secure_deny` ([:71](../../src/security-controller/app/services/validation_service.py#L71)) stamps `source=Source.SENTRA_POLICY`** so the fail-secure `POLICY_NOT_MIGRATED` DENY survives `_capture` as a real `Signal` and lands in `signals[]`. This is a **one-line producer-side change WS-D owns** — it touches the run model, NOT `combine()`'s code.
 
@@ -262,7 +264,7 @@ Edit `src/security-controller/app/services/validation_service.py`: **`_fail_secu
 **Unit tests** (`tests/unit/test_trail_builder.py`):
 - `test_fail_secure_deny_is_ran_denier_never_abstain` (**T-TRAIL-13**) — `legacy_retired=True` + Cedar-abstain → policy DENIES. Assert: (a) `_fail_secure_deny` stamps `source=sentra.policy` so a `Signal` lands in `signals[]`; (b) the trail records `sentra.policy` **ran-voted (DENIER)** with **zero** `record_type="abstain"` and **zero** `record_type="not_run"` rows for it; (c) recomputed `winning_source == sentra.policy` and `should_deny == True` (the **frozen post-stamp baseline** §7.1.2 owns); (d) `violation_type == "POLICY_NOT_MIGRATED"` distinguishes it from a genuine Cedar DENY. **Regression guard:** an unstamped denying result → `record_type="error"`, never ABSTAIN.
 
-### Task D2.3 — §7.1.2 golden-baseline merge-ordering pin + T-TRAIL-14b except-path guard
+### Task D2.3 — §7.1.2 golden-baseline merge-ordering pin + T-TRAIL-14b except-path guard  ✅ **Done**
 
 The §7.1.1 stamp changes the frozen `winning_source` on one WS-C golden scenario (none → `sentra.policy`), so the merge ordering must be pinned.
 
@@ -272,7 +274,7 @@ The §7.1.1 stamp changes the frozen `winning_source` on one WS-C golden scenari
 **Unit tests** (`tests/unit/test_trail_builder.py`):
 - `test_capture_except_path_appends_no_signal` (**T-TRAIL-14b**) — feed `_capture` an unstamped (`source=None`) denying `ValidationResult`; assert **no signal is appended** to `signals[]`. A maintainer appending a synthetic signal turns this red.
 
-### Task D2.4 — KD-4 call site: `build_trail` synchronous, by-value, before `_fire_and_forget`
+### Task D2.4 — KD-4 call site: `build_trail` synchronous, by-value, before `_fire_and_forget`  ✅ **Done**
 
 Edit `validation_service.py`: call `build_trail(...)` **from `validate_tool_call`, synchronously, after `_run_validation_pipeline` returns** (pipeline call at [:325](../../src/security-controller/app/services/validation_service.py#L325)) and **BEFORE any `_fire_and_forget` handoff**, with `_step_timings` **snapshotted BY VALUE**. The pipeline body itself is UNTOUCHED (WS-C owns it).
 
@@ -302,7 +304,7 @@ By default WS-D records the prefix + not-run complement and forces nothing. A re
 
 > **OPEN ITEM — RESOLVED (founder decision, 2026-07-02, autopilot WS-0 override run).** The per-tenant high-assurance field did not exist on the `Tenant` dataclass ([tenant_service.py:72-116](../../src/security-controller/app/services/tenant_service.py#L72)) — the LLD-sanctioned escalate-when-none-exists path applies. **Field name = `high_assurance_trail: bool = False`**, added to the `Tenant` dataclass as a deny-by-default boolean matching the existing `platform_read_consent` / `feedback_opt_in` / `local_floor_enabled` per-tenant fields (FR-10.4 tenant store; NOT `config.py`, NOT a global env flag, NOT the stale scope-era `trail_full_deterministic_tier`). Read at build time via `get_tenant_store().get(tenant_id).high_assurance_trail`; per-session override key `request.context["high_assurance_trail"]` (agent-supplied, untrusted → escalate-only per D3.1).
 
-### Task D3.1 — Resolution: per-tenant / per-session, default OFF, escalate-only (§8.1)
+### Task D3.1 — Resolution: per-tenant / per-session, default OFF, escalate-only (§8.1)  ✅ **Done**
 
 ```
 effective_high_assurance = tenant_setting OR session_override      # escalate-only (§8.1)
@@ -314,7 +316,7 @@ effective_high_assurance = tenant_setting OR session_override      # escalate-on
 **Unit tests** (`tests/unit/test_trail_builder.py`):
 - `test_high_assurance_session_override_escalate_only` (**T-TRAIL-18**) — `tenant=ON` + `session_override=off` → effective **ON** (a request cannot turn off a tenant-mandated setting); `tenant=OFF` + `session_override=on` → **ON**.
 
-### Task D3.2 — Mechanism: couple to WS-C `evaluate_all` per-request `mode` seam (§8.2, KD-5) + NO-OP-if-absent
+### Task D3.2 — Mechanism: couple to WS-C `evaluate_all` per-request `mode` seam (§8.2, KD-5) + NO-OP-if-absent  ✅ **Done**
 
 When `effective_high_assurance` is ON, thread `mode=evaluate_all` at the `_run_validation_pipeline → run_dag(mode=...)` call site (the DAG structure stays built-once; only the run-mode argument is per-request). The seam is **present** — [validation_service.py:514](../../src/security-controller/app/services/validation_service.py#L514) already computes `mode` locally and passes it to `run_dag(mode=mode)`; D3.2 replaces the global-only source (`settings.dag_run_mode`) with `EVALUATE_ALL if effective_high_assurance else settings.dag_run_mode`. `evaluate_all` "runs the WHOLE frontier despite an early DENY" and is **verdict-neutral** — the extra post-decider signals land in the trail's ran-set captured **advisory** (`_advisory_for_trail`, [run.py:118](../../src/security-controller/app/services/scheduler/run.py#L118)), never added to the list `combine()` sees.
 
@@ -332,7 +334,7 @@ When `effective_high_assurance` is ON, thread `mode=evaluate_all` at the `_run_v
 
 Extend the existing fire-and-forget audit dual-write to also persist the markers through the **same writer**, stamp `phase` on ran rows, and add the two observability metrics. A dropped trail must be visible and alarmable, and a trail-write failure must **never** turn a clean verdict into a 500.
 
-### Task D4.1 — Extend `log_signals` to write markers + stamp `phase` on ran rows (§9.1, KD-4)
+### Task D4.1 — Extend `log_signals` to write markers + stamp `phase` on ran rows (§9.1, KD-4)  ✅ **Done**
 
 Edit `src/security-controller/app/utils/audit_logger.py`: extend `log_signals` so that, alongside the existing `SignalStoreWriter.write_signals(signals)`, it also calls the new `write_not_run_markers(markers)` on the **same writer** (D1.4). Also stamp `phase` as a shared attribute on the **ran** rows (§6.3 — the one summary field that must be durable per-row). `combine()` at [:198](../../src/security-controller/app/utils/audit_logger.py#L198) is UNCHANGED.
 
@@ -349,7 +351,7 @@ flowchart LR
 - **FOOTGUN — no new writer, no new table, no new hot-path call.** The markers ride the same off-path `_fire_and_forget`, the same `SignalStoreWriter`, the same BatchWriteItem chunks, the same 200ms budget + `_BG_TASKS_SOFT_CAP` shed as the ran signals. Under backpressure markers shed first (more writes) while the single `sentra.combined` CloudWatch write lands — the intended degradation order is verdict > ran rows > markers (§11.5).
 - **`winning_source`/`block_point` are NOT written** — they are recomputed on read (§6.3). Only `phase` is durable per-row (markers get it via `_build_marker_item`, ran rows via this `phase` stamp).
 
-### Task D4.2 — `TrailPersistFailures` + `CombinedEventPersistFailures` metrics (§9.2)
+### Task D4.2 — `TrailPersistFailures` + `CombinedEventPersistFailures` metrics (§9.2)  ✅ **Done**
 
 Edit (additive) `src/security-controller/app/utils/metrics_publisher.py`, mirroring the existing off-path swallowed `put_metric_data` ([:227](../../src/security-controller/app/utils/metrics_publisher.py#L227)):
 
@@ -380,7 +382,7 @@ async def publish_trail_persist_failure(self, tenant_id: str = "", count: int = 
 
 The READ endpoint WS-G (console) calls. It **extends the existing per-session read convention** — no new datastore, no new partition, no new auth surface. Reuses `get_session_signals`'s single-partition Query, classifies rows into the four buckets, recomputes `winning_source`, and derives display fields + counts on read.
 
-### Task D5.1 — The endpoint + handler (§9A.1, reuse the existing read path)
+### Task D5.1 — The endpoint + handler (§9A.1, reuse the existing read path)  ✅ **Done**
 
 Edit `src/security-controller/app/api/routes.py` (add the route, `prefix="/v1"` at [:28](../../src/security-controller/app/api/routes.py#L28), alongside `/decisions` [:349](../../src/security-controller/app/api/routes.py#L349) + `/signals` [:365](../../src/security-controller/app/api/routes.py#L365)) and `src/security-controller/app/services/decisions_service.py`:
 
@@ -392,7 +394,7 @@ Edit `src/security-controller/app/api/routes.py` (add the route, `prefix="/v1"` 
 - **FOOTGUN — primary form is session-scoped because the DDB PK is session-scoped** (`tenant_session_id`); a `request_id` alone is not a partition key. No new query, no new index.
 - **FOOTGUN — `state` is derived from `decision`-present (ran) vs `record_type` on the row** (§6.2 partitioning rule) — the writer's classifier (§7.2) and the reader's `state` are the *same* four buckets, no second taxonomy.
 
-### Task D5.2 — Response envelope, recompute-on-read, display-name derivation (§9A.2/§9A.2.2)
+### Task D5.2 — Response envelope, recompute-on-read, display-name derivation (§9A.2/§9A.2.2)  ✅ **Done**
 
 The handler builds the envelope (§9A.2 worked example):
 
@@ -411,7 +413,7 @@ The handler builds the envelope (§9A.2 worked example):
 - **FOOTGUN — an unknown `source` falls through to the raw string** as `display_name` (`.get(source, source)`) — a future WS-L D-layer renders as its raw name, never null, never a crash. The dashboard's existing `_SOURCE_BADGES` ([cross_cloud_demo.py](../../src/dashboard/components/cross_cloud_demo.py)) becomes a **presentation-only alias** of `SOURCE_DISPLAY_NAMES` (WS-G reconciliation, §13) — one source of truth for labels.
 - **Deferred field — `prompt`** is NOT returned yet. `user_input` is stored RAW on the request phase; request-phase redaction is **WS-E's** deliverable ([lld/29](../../lld/29-redaction.md), in flight). The field is added (carrying the post-redaction view) once WS-E defines the request-phase redaction contract (WS-D→WS-E seam, §13).
 
-### Task D5.3 — Tenant scoping + pagination (§9A.3/§9A.4)
+### Task D5.3 — Tenant scoping + pagination (§9A.3/§9A.4)  ✅ **Done**
 
 - **Tenant from the verified-JWT contextvar** via `resolve_tenant_from_jwt()` → `set_current_tenant` ([deps.py:111-178](../../src/security-controller/app/api/deps.py#L111)) — **NOT** the spoofable `X-Operator-Email` (that is control-plane mutations only, [deps.py:8-9](../../src/security-controller/app/api/deps.py#L8)). The read binds `(tenant_id, agent_id)` from the *verified* token, never the request body.
 - **NO `require_role()`** on this data-plane read — matching the existing `GET /v1/sessions/{id}/signals` (data-plane reads are tenant-scoped by the verified contextvar + tenant-composite PK, not RBAC). This path does **NOT** share the P0 policy-CRUD IDOR (MEMORY [[policy-crud-routes-no-authz]] — that hole is on the `X-Operator-Email` control-plane *mutation* routes).
