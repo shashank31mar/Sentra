@@ -49,6 +49,7 @@ def api_template() -> Template:
         "sessions",         # T13
         "{session_id}",     # T14 + T17
         "decisions",        # T14/T15
+        "trail",            # WS-D LLD 33 §9A GET /v1/sessions/{session_id}/trail (per-resource GW: unwired route = 403)
         "conversation",     # T16
         "{conversation_id}",
         "quarantine",       # T17

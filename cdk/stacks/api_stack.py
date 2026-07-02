@@ -761,6 +761,28 @@ class ApiStack(Stack):
                 "method.request.querystring.limit": False,
             },
         )
+        # WS-D / LLD 33 §9A: GET /v1/sessions/{session_id}/trail — the full
+        # decision trail WS-G (console) renders. Per-resource Gateway (no proxy),
+        # so the route MUST be wired here or it 403s undefined-route in prod/dev.
+        # Mirrors /decisions above: `request_id` is functionally required by the
+        # handler but declared optional (False) at the gateway the same way
+        # /decisions declares its request_id (the handler validates presence).
+        session_trail_resource = session_id_resource.add_resource("trail")
+        session_trail_resource.add_method(
+            "GET",
+            integration=create_http_integration(
+                self.nlb_base_url, "/v1/sessions/{session_id}/trail", "GET",
+                vpc_link=self.api_vpc_link,
+                pass_query_params={
+                    "request_id": "method.request.querystring.request_id",
+                },
+            ),
+            api_key_required=True,
+            request_parameters={
+                "method.request.path.session_id": True,
+                "method.request.querystring.request_id": False,
+            },
+        )
 
         # T15: GET /v1/decisions (cross-session GSI-2 feed; Threats + timeseries)
         decisions_resource = v1_resource.add_resource("decisions")

@@ -765,6 +765,103 @@ def test_trail_display_names_no_raw_leak():
     assert resp["winning_source_display"] == "Policy (Cedar)"
 
 
+def test_trail_recompute_fallback_fails_secure_on_combiner_raise():
+    """T-TRAIL-24 (integration-sentinel LOW, recompute fallback): if the read-time
+    recompute combiner raises on a NON-EMPTY ran set, get_session_trail must NOT
+    silently report ALLOW (which would understate a real block in the console) — it
+    fails SECURE, falling back to the DENY the persisted ran rows carry and deriving
+    winning_source from those DENYs via the same ranking. The real DenyOverrides
+    never raises on non-empty input, so we inject a raising stub to REACH the
+    except-ValueError branch (otherwise dead code). Goes RED if the fallback is
+    removed or reverted to a silent-ALLOW `pass`."""
+    rows = [
+        _ran_row(Source.SENTRA_TRUST, "ALLOW"),
+        _ran_row(Source.SENTRA_POLICY, "DENY", reason="cedar forbid"),
+        _ran_row(Source.SENTRA_SIGMA, "DENY", reason="injection"),
+        _marker_row(Source.SENTRA_ML_CLASSIFIER, "abstain", "ran; abstained (no vote)"),
+    ]
+    svc = _mk_service_with_rows(rows)
+
+    class _RaisingCombiner:
+        def combine(self, signals):  # noqa: ARG002 - stub always raises
+            raise ValueError("simulated combiner failure on non-empty set")
+
+    svc._combiner = _RaisingCombiner()
+    resp = svc.get_session_trail(session_id="s1", request_id="r1")
+
+    # Fail-secure: the persisted DENY survives — NOT understated as ALLOW.
+    assert resp["decision"] == "DENY"
+    # winning_source is a real persisted DENY source picked by the shared
+    # pick_top_denier ranking. These _ran_row rows carry no `priority` (→ 0) or
+    # `confidence` (→ 0.0), so the alphabetical source tie-break decides:
+    # 'sentra.policy' < 'sentra.sigma' → policy wins. Assert the set to stay robust
+    # to the ranking's internals, then pin block_point == winning_source.
+    assert resp["winning_source"] in (Source.SENTRA_POLICY, Source.SENTRA_SIGMA)
+    assert resp["block_point"] == resp["winning_source"]
+    # Reconciliation still holds through the fallback path.
+    total = (resp["ran_count"] + resp["abstain_count"] + resp["ran_error_count"]
+             + resp["not_run_count"])
+    assert total == resp["coverage_total"]
+
+
+def test_trail_recompute_fallback_all_allow_stays_allow():
+    """T-TRAIL-24b: the same fallback path with NO persisted DENY among the ran rows
+    → the fail-secure fallback correctly reports ALLOW (it must not fabricate a DENY
+    when nothing was denied). Pins the two-sided fallback so a maintainer can't
+    'fix' it into an always-DENY."""
+    rows = [
+        _ran_row(Source.SENTRA_TRUST, "ALLOW"),
+        _ran_row(Source.SENTRA_POLICY, "ALLOW"),
+    ]
+    svc = _mk_service_with_rows(rows)
+
+    class _RaisingCombiner:
+        def combine(self, signals):  # noqa: ARG002 - stub always raises
+            raise ValueError("simulated combiner failure on non-empty set")
+
+    svc._combiner = _RaisingCombiner()
+    resp = svc.get_session_trail(session_id="s1", request_id="r1")
+
+    assert resp["decision"] == "ALLOW"
+    assert resp["winning_source"] is None
+    assert resp["block_point"] is None
+
+
+def test_trail_shed_marker_source_is_not_run_and_reconciles():
+    """T-TRAIL-25 (integration-sentinel LOW, marker-shed branch): a covered source
+    with NEITHER a ran row NOR a persisted marker (marker write shed under
+    backpressure → TrailPersistFailures) is surfaced as state='not_run' with the
+    shed reason, so the trail still reconciles to coverage_total. Goes RED if the
+    else-branch (decisions_service.py ~:238-250) is removed — the source would then
+    vanish from coverage and ran+abstain+error+not_run would no longer equal
+    coverage_total."""
+    # Cover every source EXCEPT SENTRA_ABUSE, whose marker we simulate as shed
+    # (present in coverage order, but absent from both ran_rows and marker_rows).
+    shed_source = Source.SENTRA_ABUSE
+    rows = [
+        _ran_row(s, "ALLOW")
+        for s in STATIC_FALLBACK_ORDER
+        if s not in (shed_source, Source.SENTRA_ML_CLASSIFIER)
+    ]
+    rows.append(_marker_row(Source.SENTRA_ML_CLASSIFIER, "abstain", "ran; abstained (no vote)"))
+    svc = _mk_service_with_rows(rows)
+    resp = svc.get_session_trail(session_id="s1", request_id="r1")
+
+    # (a) the shed source appears with state='not_run' + the shed reason.
+    by_source = {c["source"]: c for c in resp["coverage"]}
+    assert shed_source in by_source, "shed-marker source dropped from coverage"
+    shed_entry = by_source[shed_source]
+    assert shed_entry["state"] == "not_run"
+    assert shed_entry["reason"] == "no row persisted (marker shed / not written)"
+    assert shed_entry["decision"] is None
+    assert resp["not_run_count"] >= 1
+
+    # (b) reconciliation invariant holds despite the shed row.
+    total = (resp["ran_count"] + resp["abstain_count"] + resp["ran_error_count"]
+             + resp["not_run_count"])
+    assert total == resp["coverage_total"] == len(STATIC_FALLBACK_ORDER)
+
+
 def test_trail_route_wired():
     """Route wiring: GET /v1/sessions/{sid}/trail?request_id=R delegates to
     DecisionsService.get_session_trail (data-plane read, no require_role)."""

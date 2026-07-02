@@ -193,7 +193,26 @@ class DecisionsService:
                 decision = combined.decision
                 winning_source = (combined.metadata or {}).get("winning_source")
             except ValueError:
-                pass
+                # combine() must not fail on a non-empty set (its only ValueError
+                # is empty-input) — but if a future combiner ever raised here, a
+                # silent ALLOW would UNDERSTATE a trail that persisted a DENY,
+                # rendering a real block as "allowed" in the console. Fail SECURE:
+                # fall back to the DENY the ran rows themselves carry, and derive
+                # winning_source from the persisted DENYs via the SAME ranking
+                # combine() uses (pick_top_denier) — never fabricate an ALLOW.
+                from app.combiners.deny_overrides import pick_top_denier
+
+                top_deny = pick_top_denier(ran_signals)
+                if top_deny is not None:
+                    decision = "DENY"
+                    winning_source = top_deny.source
+                else:
+                    decision = "ALLOW"
+                logger.warning(
+                    "get_session_trail: combiner raised on non-empty ran set "
+                    "(session=%s request=%s); fell back to persisted decision=%s",
+                    session_id, request_id, decision,
+                )
         block_point = winning_source if decision == "DENY" else None
 
         # Coverage order: STATIC_FALLBACK_ORDER today (§5.1), extended by any
