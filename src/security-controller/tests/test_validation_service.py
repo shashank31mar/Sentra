@@ -605,14 +605,15 @@ async def test_t_pipe_04_sigma_deny_short_circuits_before_ml(mock_session, sampl
 
 
 @pytest.mark.asyncio
-async def test_t_pipe_shadow_mode_ml_deny_does_not_short_circuit(mock_session, sample_request, monkeypatch):
-    """WS19 M3 — in shadow mode, ML DENY still emits a signal but does not
-    short-circuit the pipeline. The customer-facing verdict comes from sigma +
-    policy alone, so we can measure ML's incremental accuracy without
-    impacting traffic."""
-    from app.config import settings as _settings
-    monkeypatch.setattr(_settings, "ml_classifier_shadow_mode", True)
+async def test_t_pipe_ml_deny_now_enforces(mock_session, sample_request):
+    """T-ML-ENFORCE (WS-C / ADR-030, NO-FLAG): the ML shadow mode is REMOVED —
+    a live ML DENY now DECIDES the verdict.
 
+    This is the ONE deliberate verdict change vs the old shadow contract (which
+    let an ML DENY fall through to ALLOW). The DAG's tier-1 ML node stamps
+    enforce=True on every concrete verdict, so a tier-0-all-ALLOW request with an
+    ML DENY is now blocked with winning_source=sentra.ml_classifier. It FAILS if
+    the enforce wrapper regresses to advisory."""
     service = _pipeline_service(mock_session)
     service.ml_classifier.validate = AsyncMock(
         return_value=_deny(Source.SENTRA_ML_CLASSIFIER, "PROMPT_INJECTION")
@@ -620,13 +621,15 @@ async def test_t_pipe_shadow_mode_ml_deny_does_not_short_circuit(mock_session, s
 
     result, signals = await service._run_validation_pipeline(sample_request, mock_session)
 
-    # Shadow mode: pipeline reaches ALLOW even though ML emitted DENY
-    assert result.decision == "ALLOW"
-    # ML signal IS recorded for offline analysis
+    # ML now ENFORCES: the verdict is DENY (was ALLOW under the removed shadow mode).
+    assert result.should_deny is True
+    assert result.decision == "DENY"
+    assert result.source == Source.SENTRA_ML_CLASSIFIER
+    # ML signal is recorded and it is the deciding source.
     assert Source.SENTRA_ML_CLASSIFIER in _sources(signals)
     ml_signal = next(s for s in signals if s.source == Source.SENTRA_ML_CLASSIFIER)
     assert ml_signal.decision == "DENY"
-    # Downstream validators still ran (no short-circuit)
+    # Every tier-0 node ran and ALLOWed before the ML node was reached.
     assert Source.SENTRA_CONTEXT in _sources(signals)
     assert Source.SENTRA_ABUSE in _sources(signals)
 

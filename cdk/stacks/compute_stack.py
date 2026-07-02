@@ -1441,12 +1441,15 @@ def handler(event, context):
                     "MAX_CACHE_SIZE": "1000",
                     # ML Threat Classifier (Workstream 19 / LLD 19) — ACTIVE in dev.
                     # Flipped on 2026-05-30 per founder decision to skip the M3 shadow
-                    # phase and go straight to active. Trade accepted: ML's DENYs
-                    # influence customer verdicts without prior accuracy measurement
-                    # on real traffic. Rollback: flip back to "false" + cdk deploy.
-                    # SHADOW_MODE=true would record signals without affecting verdicts.
+                    # phase and go straight to active. WS-C / ADR-030 (NO-FLAG cutover)
+                    # then REMOVED shadow mode entirely: the ML tier-1 node ALWAYS
+                    # ENFORCES when it runs — a live ML DENY decides the verdict. The
+                    # ML_CLASSIFIER_SHADOW_MODE env var is deliberately dropped (the
+                    # config.py Field is gone; pydantic-settings ignores unknown vars,
+                    # but leaving a dead toggle in the task def is misleading). ML's
+                    # on/off gate stays ML_CLASSIFIER_ENABLED; rollback of the ML-enforce
+                    # verdict change is git-revert + cdk deploy of WS-C, not a flag flip.
                     "ML_CLASSIFIER_ENABLED": "true",
-                    "ML_CLASSIFIER_SHADOW_MODE": "false",
                     "ML_CLASSIFIER_INFERENCE_PROFILE_ARN": self.ml_classifier_inference_profile.get_att("InferenceProfileArn").to_string(),
                     "ML_CLASSIFIER_HOT_MODEL_ID": "anthropic.claude-haiku-4-5-20251001-v1:0",
                     # Sonnet 4.6 only supports inference-profile invocation (not on-demand
@@ -1478,6 +1481,14 @@ def handler(event, context):
                     # Default true (edge evaluates the signed bundle locally); false
                     # routes to the hosted path (network-required, NOT deny-all).
                     "LOCAL_FLOOR_ENABLED": str(config.get("local_floor_enabled", True)).lower(),
+                    # Cost-annotated DAG scheduler run mode (WS-C / FR-2.8 / ADR-030 /
+                    # LLD 31 §6.7). NO-FLAG cutover: the DAG is the ONLY pipeline —
+                    # there is NO scheduler-enable flag (rollback is git-revert + cdk
+                    # deploy of WS-C). dag_run_mode selects fail_fast (default —
+                    # production; stop at the first DENY) or evaluate_all (run every
+                    # layer for the trail; verdict-NEUTRAL). WS-K sets the value; an
+                    # unknown value is coerced to fail_fast at load (config.py RES-6).
+                    "DAG_RUN_MODE": str(config.get("dag_run_mode", "fail_fast")),
                 },
                 "health_check_command": ["CMD-SHELL", "curl -f http://localhost:8080/v1/health || exit 1"],
             },

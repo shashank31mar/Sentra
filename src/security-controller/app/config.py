@@ -3,7 +3,7 @@ Configuration Management for Security Controller
 
 Loads configuration from environment variables with sensible defaults.
 """
-from pydantic import Field
+from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings
 
 
@@ -225,22 +225,22 @@ class Settings(BaseSettings):
         default=10, validation_alias="SIGMA_VERSION_CHECK_INTERVAL_SECONDS")
 
     # ML Threat Classifier (Workstream 19 / LLD 19)
-    # Disabled by default until WS19 M2 eval harness signs off on precision/recall.
+    # On/off gate for whether the ML classifier tier-1 node runs at all. Default
+    # False; the config YAMLs set it true (WS-C / ADR-030). When False the tier-1
+    # node returns an abstain (no Bedrock cost, no signal). NO-FLAG cutover: the
+    # ML classifier ALWAYS ENFORCES when it runs — the old shadow toggle is
+    # REMOVED (a live ML DENY now decides the verdict; see LLD 31 §6.5 and the
+    # T-ML-ENFORCE test). Equivalence to the frozen golden baseline is proven with
+    # ML ENFORCING, not with any shadow flag.
     ml_classifier_enabled: bool = Field(default=False, validation_alias="ML_CLASSIFIER_ENABLED")
-    # M3 shadow mode: when true AND ml_classifier_enabled is also true, the
-    # validator runs and emits its Signal to the audit log + signal store, but
-    # its DENY does NOT influence the live customer verdict. Lets us measure
-    # ML's real-world accuracy on production-shaped traffic before flipping it
-    # into the combiner. Default off; flip on in shadow phase, then off for active.
-    ml_classifier_shadow_mode: bool = Field(default=False, validation_alias="ML_CLASSIFIER_SHADOW_MODE")
 
     # Cedar authorization engine (feature: cedar-policy).
     # cedar_enabled: master switch for the Cedar policy engine. cedar_shadow_mode:
     # when both are true, CedarPolicyEngine runs ALONGSIDE the legacy policy_engine
     # at STEP 2, records its verdict + any disagreement (Sentra/SecurityController
     # `CedarShadowDiscrepancy` metric), but the LIVE decision stays the legacy
-    # engine's — mirrors ml_classifier_shadow_mode. Cutover (CT10): shadow off,
-    # enabled on, Cedar takes the policy slot. Both default off.
+    # engine's. Cutover (CT10): shadow off, enabled on, Cedar takes the policy
+    # slot. Both default off.
     cedar_enabled: bool = Field(default=False, validation_alias="CEDAR_ENABLED")
     cedar_shadow_mode: bool = Field(default=False, validation_alias="CEDAR_SHADOW_MODE")
     # End-state retirement of the legacy policy engine (WS-I I2 / LLD 28 §4.2).
@@ -260,6 +260,24 @@ class Settings(BaseSettings):
     # fail-secure), it does NOT disable enforcement (ADR-034). Off-state = "validate
     # on the server", NEVER "skip validation" (the fail-open catastrophe, §5.6).
     local_floor_enabled: bool = Field(default=True, validation_alias="LOCAL_FLOOR_ENABLED")
+
+    # Cost-annotated DAG scheduler run mode (WS-C / FR-2.8 / ADR-030 / LLD 31 §6.7).
+    # NO-FLAG cutover: the DAG is the ONLY pipeline — there is NO scheduler-enable
+    # flag; rollback is git-revert + redeploy, not a config flip. `dag_run_mode`
+    # selects fail_fast (default — stop at the first DENY, lowest latency/cost;
+    # production default) or evaluate_all (run every layer for the decision trail;
+    # verdict-NEUTRAL — the final decision + winning_source are identical to
+    # fail_fast). WS-B consumes evaluate_all for the trail; WS-K wires the value.
+    # The @field_validator gives dag_run_mode its RES-6 guarantee: a bare str Field
+    # does NOT enforce set-membership, so an unknown value would pass through —
+    # coerce it to the safe default fail_fast at load.
+    dag_run_mode: str = Field(default="fail_fast", validation_alias="DAG_RUN_MODE")
+
+    @field_validator("dag_run_mode")
+    @classmethod
+    def _coerce_dag_run_mode(cls, v: str) -> str:
+        return v if v in {"fail_fast", "evaluate_all"} else "fail_fast"
+
     # Workload isolation lever (LLD 19 §2.4): the validator's invocations route
     # through this Application Inference Profile, separating its quota / cost /
     # CloudWatch metrics from any other Bedrock consumer on the same model family.
