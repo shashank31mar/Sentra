@@ -52,6 +52,20 @@ FAIL_FAST = "fail_fast"
 EVALUATE_ALL = "evaluate_all"
 
 
+def _is_barrier(node: ValidatorNode) -> bool:
+    """Is this node a pre-DAG happens-before barrier (WS-E2 / LLD 29 §4.1 F1)?
+
+    A barrier mutates the shared `request` in place and every other node must read
+    the mutated view, so it cannot be a gathered/short-circuited graph peer — it is
+    lifted out of the tier split and run FIRST, alone. The Tier-2 NER redactor
+    (`Source.REDACTION_NER`) is the only barrier today. Keyed on the canonical
+    source string (imported lazily to keep `run` free of a combiner import at
+    module load — the same deferred-import the rest of the seam uses)."""
+    from app.combiners import Source
+
+    return node.source == Source.REDACTION_NER
+
+
 def _is_hard_deny(result: ValidationResult) -> bool:
     """Is this tier-1 DENY allowed to decide the verdict? — LLD 31 §6.5.
 
@@ -402,8 +416,27 @@ async def run_dag(
     (run every node for the trail; the returned verdict is IDENTICAL to
     `fail_fast` on the same request — verdict-neutral, LLD 31 §6.7).
     """
-    tier0 = [n for n in nodes if n.cost_tier == CostTier.DETERMINISTIC]
-    tier1 = [n for n in nodes if n.cost_tier == CostTier.EXPENSIVE_MODEL]
+    # --- pre-DAG barrier pass (WS-E2 / LLD 29 §4.1 F1) -----------------------
+    # A `redaction.ner` node is a happens-before BARRIER, not a graph peer: it
+    # mutates `request.content_text` IN PLACE and every subsequent reader (tier-0
+    # detectors, gathered tier-1 models, AND the post-run audit/feedback
+    # model_dump()) must observe the redacted view. `depends_on=()` does NOT give
+    # that ordering — an entry node with no dependents provides no happens-before
+    # vs INDEPENDENT peers, and a barrier classified as tier-1 would run AFTER the
+    # whole tier-0 frontier already read the raw content AND be parallel-gathered
+    # concurrently with the ML classifier (a read/write data race on the shared
+    # request). So the barrier is lifted out of the tier split and run FIRST,
+    # ALONE, awaited to completion before any other node starts. It returns
+    # ALLOW/ABSTAIN (never a verdict; source priority 0) and its signal is captured
+    # for the trail — it can never be `winning_source`.
+    barrier_nodes = [n for n in nodes if _is_barrier(n)]
+    graph_nodes = [n for n in nodes if not _is_barrier(n)]
+    for barrier in barrier_nodes:
+        raw = await timed(barrier.source, barrier.run(request, session))
+        capture(raw)
+
+    tier0 = [n for n in graph_nodes if n.cost_tier == CostTier.DETERMINISTIC]
+    tier1 = [n for n in graph_nodes if n.cost_tier == CostTier.EXPENSIVE_MODEL]
 
     def _cap_stamp(result: ValidationResult, *, advisory: bool = False) -> ValidationResult:
         # capture reads the (un-stamped) result to build the signal — exactly as

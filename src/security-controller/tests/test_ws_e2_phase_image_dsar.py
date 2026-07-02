@@ -109,34 +109,70 @@ def test_redact_engine_named_gaps():
 
 
 # ==================================================================== DSAR route (E5.4)
+#
+# AuthZ contract (security-review HIGH/MEDIUM): the destructive DSAR delete is gated
+# by `require_role("admin")` and binds the tenant SERVER-SIDE from the verified
+# `OperatorContext` — NEVER from a caller-supplied header. These tests drive the
+# route function with the resolved `ctx` FastAPI would inject after the dependency
+# ran, and pin that (a) the delete is scoped to `ctx.tenant_id`, and (b) a caller
+# authenticated for tenant A cannot reach tenant B's records via any header.
+
+def _op_ctx(tenant_id: str, role: str = "admin"):
+    from app.api.deps import OperatorContext
+    return OperatorContext(sub="op-sub", tenant_id=tenant_id, role=role, email="op@x")
+
 
 @pytest.mark.asyncio
-async def test_dsar_no_tenant_is_403():
-    """A caller with no resolvable tenant (identity off → `default`, no X-Tenant-Id)
-    is a 403 — never a silent fleet-wide delete."""
-    from fastapi import HTTPException
-    from app.api.routes import delete_feedback_subject
-
-    with pytest.raises(HTTPException) as exc:
-        await delete_feedback_subject("loc-abc", x_tenant_id=None, operator_email="op@x")
-    assert exc.value.status_code == 403
-
-
-@pytest.mark.asyncio
-async def test_dsar_scopes_delete_to_caller_tenant():
-    """The DSAR route binds the delete to the caller's tenant — it never passes a
-    cross-tenant id to the store. Assert the store is called with the header
-    tenant."""
+async def test_dsar_scopes_delete_to_verified_tenant():
+    """The route binds the delete to the identity-verified tenant (`ctx.tenant_id`)
+    — never a header. Assert the store is called with the verified tenant."""
     from app.api.routes import delete_feedback_subject
 
     fake_store = Mock()
     fake_store.delete_subject = Mock(return_value=3)
     with patch("app.redaction.feedback_store.get_feedback_store", return_value=fake_store):
-        result = await delete_feedback_subject(
-            "loc-abc", x_tenant_id="t_caller", operator_email="op@x"
-        )
+        result = await delete_feedback_subject("loc-abc", ctx=_op_ctx("t_caller"))
     assert result["deleted"] == 3
     assert result["tenant_id"] == "t_caller"
-    # The store was scoped to the caller's tenant — never a different one.
+    # The store was scoped to the VERIFIED caller's tenant — never a different one.
     _args, kwargs = fake_store.delete_subject.call_args
     assert kwargs["tenant_id"] == "t_caller"
+
+
+@pytest.mark.asyncio
+async def test_dsar_cannot_cross_tenant_via_identity():
+    """IDOR guard: a caller whose verified identity is tenant A deletes ONLY tenant
+    A's records. The tenant is taken from `ctx.tenant_id` (membership-asserted), so
+    there is no header an attacker can set to reach tenant B — the store is only ever
+    invoked with the caller's own tenant. Contrast the old route, which trusted a
+    raw `X-Tenant-Id` and would have deleted tenant B here."""
+    from app.api.routes import delete_feedback_subject
+
+    fake_store = Mock()
+    fake_store.delete_subject = Mock(return_value=0)
+    with patch("app.redaction.feedback_store.get_feedback_store", return_value=fake_store):
+        result = await delete_feedback_subject("loc-victim", ctx=_op_ctx("tenantA"))
+    # Bound to tenantA — tenantB is unreachable through this route.
+    _args, kwargs = fake_store.delete_subject.call_args
+    assert kwargs["tenant_id"] == "tenantA"
+    assert result["tenant_id"] == "tenantA"
+
+
+def test_dsar_route_requires_admin_role_dependency():
+    """The route is gated by `require_role("admin")` — the RBAC dependency is wired
+    on the endpoint (not just documented). A bare-authenticated / viewer caller is
+    rejected by the dependency before the handler runs (403 via require_role;
+    401 if unauthenticated at `resolve_operator_tenant`). Assert the dependency is
+    present on the route signature so the gate can't be silently dropped."""
+    import inspect
+    from app.api.routes import delete_feedback_subject
+
+    sig = inspect.signature(delete_feedback_subject)
+    ctx_param = sig.parameters["ctx"]
+    dep = ctx_param.default
+    # FastAPI Depends marker — the callable is require_role("admin")'s inner _dep,
+    # whose closure carries min_role="admin".
+    dependency = getattr(dep, "dependency", None)
+    assert dependency is not None, "DSAR delete must carry a Depends() RBAC gate"
+    closure_vals = {c.cell_contents for c in (dependency.__closure__ or ())}
+    assert "admin" in closure_vals, "DSAR delete must require the 'admin' role"

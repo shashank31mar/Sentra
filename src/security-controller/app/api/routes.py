@@ -14,8 +14,9 @@ Routes are kept clean and focused on HTTP handling only.
 import logging
 from typing import Dict, Optional
 
-from fastapi import APIRouter, HTTPException, Header, Request
+from fastapi import APIRouter, Depends, HTTPException, Header, Request
 
+from app.api.deps import OperatorContext, require_role
 from app.api.models import (
     ValidationRequest,
     PolicyCreateRequest,
@@ -791,20 +792,25 @@ async def delete_connection(connection_id: str) -> None:
 @router.delete("/feedback/subjects/{subject_locator}")
 async def delete_feedback_subject(
     subject_locator: str,
-    x_tenant_id: str = Header(None, alias="X-Tenant-Id"),
-    operator_email: str = Header(None, alias="X-Operator-Email"),
+    ctx: OperatorContext = Depends(require_role("admin")),
 ) -> Dict:
     """DSAR / GDPR subject deletion (WS-E2 / LLD 29 §6.4).
 
     Deletes every redacted feedback record for a subject in the CALLER's tenant via
-    the `subject_locator` GSI. Tenant-scoped: the delete is bound to the resolved
-    tenant, so tenant A can never delete tenant B's records — a cross-tenant attempt
-    finds nothing under the caller's partition. A caller with no resolvable tenant
-    is a 403 (deny-by-default), never a silent fleet-wide delete.
+    the `subject_locator` GSI. Tenant-scoped: the delete is bound STRICTLY to the
+    identity-verified tenant, so tenant A can never delete tenant B's records.
 
-    Tenant resolution: prefer the verified request tenant (`current_tenant()`, set
-    by the identity path); fall back to an explicit `X-Tenant-Id` for the operator
-    console.
+    AuthZ (mirrors every mutating route in tenancy_routes.py — `revoke_credential`
+    et al.): the destructive delete is gated by `require_role("admin")`, which layers
+    on `resolve_operator_tenant` — the tenant comes from the ES256-verified ALB OIDC
+    identity (`ctx.tenant_id`, a membership-asserted value), NEVER from a caller-
+    supplied header. The prior `X-Tenant-Id` selector was a cross-tenant IDOR (any
+    API-key holder could delete another tenant's records by setting the header) and a
+    missing RBAC gate (any authenticated caller could invoke a GDPR-consequential
+    delete). A platform operator targeting another tenant uses the audited
+    `X-Aegion-Tenant` switch that `resolve_operator_tenant` validates against
+    membership — never a raw tenant id. An unauthenticated / unauthorized caller is a
+    401/403 from the dependency, never a silent fleet-wide delete.
 
     The honest GDPR claim (§6.4): "deletable by expiry (TTL) + by subject where a
     subject key exists". A record with no `subject_locator` (no stable subject key
@@ -816,13 +822,9 @@ async def delete_feedback_subject(
     config wiring, deferred to the combined deploy step; the controller route +
     logic is asserted here."""
     from app.redaction.feedback_store import get_feedback_store
-    from app.utils import tenancy
 
-    resolved = tenancy.current_tenant()
-    # `default` means identity did not bind a real tenant; use the explicit header.
-    caller_tenant = x_tenant_id or (resolved if resolved != tenancy.DEFAULT_TENANT else None)
-    if not caller_tenant:
-        raise HTTPException(status_code=403, detail="no resolvable tenant for DSAR delete")
+    # Tenant is server-side, from the verified identity — never a header selector.
+    caller_tenant = ctx.tenant_id
 
     try:
         deleted = get_feedback_store().delete_subject(subject_locator, tenant_id=caller_tenant)
@@ -832,7 +834,7 @@ async def delete_feedback_subject(
 
     logger.info(
         "feedback DSAR delete: tenant=%s locator=<redacted> deleted=%d operator=%s",
-        caller_tenant, deleted, operator_email or "unknown",
+        caller_tenant, deleted, ctx.email or ctx.sub or "unknown",
     )
     return {"deleted": deleted, "tenant_id": caller_tenant}
 

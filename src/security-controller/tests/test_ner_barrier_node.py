@@ -210,6 +210,101 @@ async def test_run_dag_redacts_content_before_returning():
 
 
 @pytest.mark.asyncio
+async def test_barrier_runs_before_tier0_and_tier1_readers():
+    """REGRESSION (code-review CRITICAL): the barrier is a happens-before barrier,
+    not a tier-1 gathered peer. Through the REAL run_dag with a tier-0 detector node
+    and a tier-1 ML-stub node ALONGSIDE the barrier, BOTH readers must observe the
+    already-redacted `content_text` — the raw name must never reach either.
+
+    Before the fix the barrier was cost_tier=EXPENSIVE_MODEL, so it (a) ran AFTER the
+    whole tier-0 frontier had read the raw content and (b) was parallel-gathered with
+    the ML node (a data race). This test FAILS on that code and passes once run_dag
+    lifts the barrier out of the tier split and runs it first & alone."""
+    from app.services.scheduler.node import CostTier, ValidatorNode
+    from app.services.scheduler.run import FAIL_FAST, run_dag
+
+    svc = _svc()
+    nodes = build_dag(svc, "content", {"platform": None, "cloud_region": None})
+    barrier = _find_ner_node(nodes)
+
+    seen = {"tier0": None, "tier1": None}
+
+    async def _tier0_detector(req, sess):
+        seen["tier0"] = req.content_text
+        return ValidationResult(
+            decision="ALLOW", reason="t0", should_deny=False, source=Source.SENTRA_SIGMA
+        )
+
+    async def _tier1_ml(req, sess):
+        seen["tier1"] = req.content_text
+        return ValidationResult.abstain("ml stub")
+
+    graph = [
+        barrier,
+        ValidatorNode(source=Source.SENTRA_SIGMA, cost_tier=CostTier.DETERMINISTIC,
+                      run=_tier0_detector, depends_on=(), order_key=4),
+        ValidatorNode(source=Source.SENTRA_ML_CLASSIFIER, cost_tier=CostTier.EXPENSIVE_MODEL,
+                      run=_tier1_ml, depends_on=(), order_key=7),
+    ]
+    req = _content_req()
+    session = {"tenant_id": "t_x", "trust_score": 90.0}
+
+    def _cap(r):
+        return r
+
+    def _noop_stamp(r):
+        return r
+
+    async def _timed(_label, coro):
+        return await coro
+
+    def _all_allow():
+        return ValidationResult(decision="ALLOW", reason="ok", should_deny=False)
+
+    await run_dag(graph, req, session, _cap, _noop_stamp, _timed,
+                  mode=FAIL_FAST, all_allow=_all_allow, signals=[])
+
+    # BOTH the tier-0 detector and the tier-1 model observed the REDACTED view.
+    assert seen["tier0"] is not None and _RAW_NAME not in seen["tier0"]
+    assert "⟦AEGR:deadbeef:" in seen["tier0"]
+    assert seen["tier1"] is not None and _RAW_NAME not in seen["tier1"]
+    assert "⟦AEGR:deadbeef:" in seen["tier1"]
+
+
+@pytest.mark.asyncio
+async def test_barrier_stamps_redacted_flag_for_audit_and_feedback():
+    """REGRESSION (code-review CRITICAL): the barrier must set `request.redacted=True`
+    so `model_dump()` carries redacted=True — the audit persist-gate keeps the
+    (legitimately-redacted) content instead of dropping it, and the opt-in feedback
+    write is not refused on the happy path. FAILS on the pre-fix code (only
+    content_text was assigned; redacted stayed False)."""
+    nodes = build_dag(_svc(), "content", {"platform": None, "cloud_region": None})
+    node = _find_ner_node(nodes)
+    req = _content_req()
+    assert req.redacted is False  # precondition — the caller sent it un-flagged
+    await node.run(req, {"tenant_id": "t_x"})
+    assert req.redacted is True
+    assert req.model_dump()["redacted"] is True
+
+
+@pytest.mark.asyncio
+async def test_barrier_stamps_redacted_flag_on_egress_hold():
+    """On a Tier-2 outage the raw is dropped for the held marker — that IS a
+    completed redaction pass, so `redacted` must be True so the audit row keeps the
+    held marker instead of the persist-gate dropping it for want of the flag."""
+    nodes = build_dag(_svc(), "content", {"platform": None, "cloud_region": None})
+    node = _find_ner_node(nodes)
+    req = _content_req()
+    with patch(
+        "app.redaction.phi_ner.PhiNerClient.redact_free_text",
+        side_effect=NerUnavailable("down"),
+    ):
+        await node.run(req, {"tenant_id": "t_x"})
+    assert req.content_text == "⟦AEGR:egress_held⟧"
+    assert req.redacted is True
+
+
+@pytest.mark.asyncio
 async def test_barrier_outage_never_forwards_raw_negative_control():
     """NON-VACUOUS negative control: prove the test would CATCH a 'skip-redaction
     but forward the raw anyway' regression. If the outage path left content_text
