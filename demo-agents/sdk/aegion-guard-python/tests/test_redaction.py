@@ -1322,3 +1322,171 @@ def test_slash_dense_fix_still_passes_real_paths(path):
     out = redact(path)
     assert "SECRET" not in out, f"real path over-masked to SECRET: {out!r}"
     assert path in out, f"real path altered: {out!r}"
+
+
+# ==========================================================================
+# ROUND-4 — NORMALIZE-THEN-DETECT rewrite of the structured-PII matchers.
+# The PAN/SSN/SAD matchers no longer enumerate a separator CLASS in-regex; they
+# capture a bounded window, STRIP all separators, validate on the pure digit
+# string (PAN: Luhn + IIN prefix; SSN: area/group/serial format-validity), then
+# map the winning span back over the original. This closes the ENTIRE separator-
+# leak class by construction (R2 separated-PAN, R3 multi-group, R4 3-space/tab/
+# slash/mixed PAN + tab/slash SSN). Each test below exercises a separator variant
+# the in-place-separator regex provably leaked (see the module docstrings) — it
+# MUST FAIL if the matcher reverts to an enumerated separator class.
+# ==========================================================================
+
+
+# ---- R4 (CRITICAL): a PAN whose group gap EXCEEDS the old {0,2} bound (3+ spaces),
+# or uses a separator/mix the old class did not accept, egressed RAW because the old
+# _PAN_CANDIDATE broke the digit run at the wide/foreign separator (proven: the old
+# `\d(?:[ \t\r\n\-./,_]{0,2}\d)*` splits "4111   1111" into "4111","1111"). Normalize-
+# then-detect strips ALL separators before Luhn/IIN, so no gap/shape can hide a card.
+# MUST FAIL if the PAN matcher re-acquires an enumerated separator class / a {0,k} gap
+# cap that a real paste can exceed. --------------------------------------------- #
+@pytest.mark.parametrize(
+    "text,pan",
+    [
+        ("card 4111   1111   1111   1111 here", "4111111111111111"),   # 3 spaces (> old {0,2})
+        ("bill 5555   5555   5555   4444 x", "5555555555554444"),      # 3 spaces, MC
+        ("tsv 4111\t1111\t1111\t1111 imported", "4111111111111111"),   # TAB
+        ("form 4111-1111.1111 1111 saved", "4111111111111111"),        # MIXED separators
+        ("amex 3782\t822463\t10005 ok", "378282246310005"),            # TAB, Amex-15
+        ("4111\r\n1111\r\n1111\r\n1111", "4111111111111111"),          # CRLF
+    ],
+)
+def test_r4_arbitrary_separator_pan_is_carded_never_raw(text, pan):
+    out = redact(text)
+    toks = _tokens(out)
+    cards = [(t, meta) for t, meta in toks if t == "CARD"]
+    assert len(cards) == 1, f"expected one CARD for {text!r}, got {toks}: {out!r}"
+    assert cards[0][1] == f"{pan[:6]}:{pan[-4:]}", (
+        f"wrong CARD meta {cards[0][1]!r} for {text!r}"
+    )
+    assert pan not in out, f"raw PAN leaked for {text!r}: {out!r}"
+    # No PAN digit sequence survives once tokens + ALL non-digits are stripped.
+    despaced = re.sub(r"\D", "", _WIRE.sub("", out))
+    assert pan not in despaced, (
+        f"separated PAN survived in cleartext once despaced for {text!r}: {out!r}"
+    )
+
+
+# ---- R4 IIN gate (HIGH): the normalize-then-detect PAN gate is Luhn AND a valid issuer
+# IIN prefix — a Luhn-valid but non-IIN 12-19-digit number (an order id / meter reading
+# that coincidentally passes mod-10) must NOT be masked as a card. Without the IIN gate,
+# stripping separators + a bare Luhn check would OVER-mask such numbers. MUST FAIL if the
+# IIN prefix gate (_iin_ok) is removed from _is_pan. ---------------------------- #
+@pytest.mark.parametrize(
+    "text,number",
+    [
+        ("invoice 1000000000000008 paid", "1000000000000008"),   # Luhn-valid, IIN "10" invalid
+        ("meter 9999999999999995 reading", "9999999999999995"),  # Luhn-valid, IIN "99" invalid
+        ("tracking 100000000000009 shipped", "100000000000009"),  # Luhn-valid 15, non-IIN
+    ],
+)
+def test_r4_luhn_valid_non_iin_number_is_not_a_card(text, number):
+    from aegion_guard import redaction as _R
+
+    assert _R._luhn_ok(number), "setup: number must be Luhn-valid to exercise the IIN gate"
+    assert not _R._iin_ok(number), "setup: number must be non-IIN to be a real negative"
+    out = redact(text)
+    assert "CARD" not in out, f"Luhn-valid non-IIN number over-masked as CARD: {out!r}"
+    assert number in out, f"non-card number wrongly altered: {out!r}"
+
+
+# ---- R4 over-join NEGATIVE CONTROL: normalize-then-detect strips separators, so two
+# DISTANT unrelated numbers must not be joined across a wide gap into a bogus card. The
+# candidate window is gap-bounded (a separator run beyond _PAN_SEP_MAX_GAP chars ends the
+# window) so the two numbers are separate candidates and neither is a valid PAN. MUST FAIL
+# if the window gap bound is removed (the two numbers would merge and could Luhn+IIN-pass).
+def test_r4_distant_numbers_not_joined_into_a_card():
+    out = redact("order 12345678    ref 87654321 done")   # 4-space gap between the runs
+    assert "CARD" not in out, f"distant numbers merged into a card: {out!r}"
+    assert "12345678" in out and "87654321" in out, f"a run was altered: {out!r}"
+
+
+# ---- R4 SSN (CRITICAL): a TAB- or slash-separated SSN egressed RAW — the old SSN regex
+# enumerated only dash/space/dot as the consistent separator. Normalize-then-detect strips
+# ALL separators before the area/group/serial validity check, so any separator shape is
+# caught. MUST FAIL if _redact_ssn reverts to an enumerated separator class. ---------- #
+@pytest.mark.parametrize(
+    "text,ssn_digits",
+    [
+        ("ssn 123\t45\t6789 done", "123456789"),        # TAB (leaked by old regex)
+        ("ssn: 123/45/6789", "123456789"),               # slash (leaked)
+        ("social security no 123.45.6789", "123456789"),  # dot, "social security" label
+        ("ssn 123 45 6789", "123456789"),                # space (regression check)
+        ("SSN=123-45-6789", "123456789"),                # dash + '=' connector
+    ],
+)
+def test_r4_arbitrary_separator_ssn_masked(text, ssn_digits):
+    out = redact(text)
+    assert ("SSN", None) in _tokens(out), f"SSN not masked for {text!r}: {out!r}"
+    # No SSN digit sequence survives once tokens + all non-digits are stripped.
+    despaced = re.sub(r"\D", "", _WIRE.sub("", out))
+    assert ssn_digits not in despaced, f"raw SSN survived for {text!r}: {out!r}"
+
+
+# ---- R4 SSN validity (HIGH): US SSN has NO checksum; validity is area/group/serial
+# issuance rules (area 001-899 except 666; group 01-99; serial 0001-9999). A labelled
+# 9-digit run that VIOLATES these rules is not an issuable SSN and must NOT be masked
+# (bounds false positives among labelled numbers). MUST FAIL if _is_ssn drops a rule. #
+@pytest.mark.parametrize(
+    "text",
+    [
+        "ssn 666-45-6789",   # area 666 never issued
+        "ssn 900-45-6789",   # area >= 900 (ITIN range, never an SSN)
+        "ssn 000-45-6789",   # area 000 never issued
+        "ssn 123-00-6789",   # group 00 never issued
+        "ssn 123-45-0000",   # serial 0000 never issued
+    ],
+)
+def test_r4_invalid_ssn_number_is_not_masked(text):
+    out = redact(text)
+    assert "SSN" not in out, f"invalid (never-issued) SSN wrongly masked: {out!r}"
+
+
+def test_r4_valid_labelled_ssn_still_masked():
+    # Paired positive control: a VALID labelled SSN must still mask (the validity gate
+    # narrows, it must not stop masking real SSNs).
+    out = redact("ssn 123-45-6789")
+    assert ("SSN", None) in _tokens(out)
+    assert "123-45-6789" not in out
+
+
+def test_r4_ssn_is_label_anchored_bare_number_not_masked():
+    # The normalize-then-detect SSN matcher is LABEL-anchored (like SAD): a bare,
+    # UNLABELLED 9-digit run is NOT masked as an SSN, so an ordinary 9-digit number
+    # (order id / zip+4) is not over-masked. This is a DELIBERATE narrowing (29a §2.1:
+    # SSN = validity + label anchor, no checksum); a bare SSN in free text is a measured
+    # miss, matching the conservative posture of the PHONE/IPv6 matchers. MUST FAIL if
+    # the SSN matcher drops the label anchor (it would then over-mask 9-digit numbers).
+    out = redact("here is 123456789 in prose")
+    assert "SSN" not in out, f"bare unlabelled 9-digit run over-masked as SSN: {out!r}"
+    assert "123456789" in out
+
+
+# ---- R4 SAD+separated-PAN (CRITICAL): the SAD footgun guard now normalizes-then-detects
+# with the SAME _best_pan_window as the PAN matcher, so a SAD value before a card in ANY
+# separator shape (incl. R4 3-space / tab) is handled identically — decline when the SAD
+# value IS the card's leading group, redact-both when it precedes a separate card. MUST
+# FAIL if the SAD guard's separator handling diverges from the PAN matcher. ---------- #
+@pytest.mark.parametrize(
+    "text,pan",
+    [
+        ("pin is 4111   1111   1111   1111", "4111111111111111"),  # 3-space card after PIN
+        ("cvv 4111\t1111\t1111\t1111", "4111111111111111"),        # TAB card after CVV
+    ],
+)
+def test_r4_sad_label_before_wide_separator_pan_no_partial(text, pan):
+    out = redact(text)
+    toks = _tokens(out)
+    # SAD declines (the digits ARE the card) — the WHOLE card is one CARD token.
+    assert ("SAD", None) not in toks, f"SAD wrongly ate a card group in {out!r}"
+    cards = [(t, meta) for t, meta in toks if t == "CARD"]
+    assert len(cards) == 1 and cards[0][1] == f"{pan[:6]}:{pan[-4:]}", (
+        f"card not fully tokenized for {text!r}: {out!r}"
+    )
+    assert pan not in out, f"raw PAN leaked for {text!r}: {out!r}"
+    despaced = re.sub(r"\D", "", _WIRE.sub("", out))
+    assert pan not in despaced, f"separated PAN survived for {text!r}: {out!r}"
