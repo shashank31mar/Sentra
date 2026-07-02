@@ -71,10 +71,24 @@ _POLICY_NOT_MIGRATED_PENALTY = -15
 def _fail_secure_deny(violation_type: str, penalty: int, reason: str) -> ValidationResult:
     """Build a fail-secure DENY ValidationResult in the engine `_deny` shape
     (engine.py:238). Used when Cedar abstains under `legacy_retired` — there is no
-    legacy engine left to fall back to, so the safe verdict is DENY, not allow."""
+    legacy engine left to fall back to, so the safe verdict is DENY, not allow.
+
+    WS-D / LLD 33 §7.1.1 — the ATTRIBUTION fix (the dangerous path). This result
+    is stamped `source=Source.SENTRA_POLICY` so the fail-secure DENY survives
+    `_capture` as a real `Signal` and lands in `signals[]`. Without the stamp
+    `to_signal()` raises (source is None) and the `except ValueError` at :98 drops
+    it → the naïve `invoked − ran` mis-classifies `sentra.policy` as ran-ABSTAIN on
+    a request the policy layer actually BLOCKED (a reason-lie in the FR-6.8
+    artifact, invariant i). This changes `combine()`'s INPUT on this one path
+    (`winning_source` none → sentra.policy) — NOT `combine()`'s code, and NOT
+    `decision`/`should_deny` (already a DENY). `Source` is imported lazily to keep
+    module-load import order unchanged (the same deferred-import the rest of the
+    service uses)."""
+    from app.combiners import Source
     return ValidationResult(
         decision="DENY", reason=reason, violation_type=violation_type,
-        violated_policy=None, penalty=penalty, should_deny=True)
+        violated_policy=None, penalty=penalty, should_deny=True,
+        source=Source.SENTRA_POLICY)
 
 
 def _append_signal(signals: List, result: ValidationResult) -> None:
@@ -293,6 +307,62 @@ class ValidationService:
         except Exception:  # noqa: BLE001 — telemetry must never block a verdict
             logger.debug("cedar-abstain metric emit skipped", exc_info=True)
 
+    def _resolve_high_assurance(self, request: ValidationRequest) -> bool:
+        """Resolve the effective high-assurance-trail mode (WS-D / LLD 33 §8.1, D3.1).
+
+        `effective = tenant_setting OR session_override` — escalate-only. The
+        tenant setting is the per-tenant `high_assurance_trail` bool on the Tenant
+        record (FR-10.4 tenant store — NOT config.py, NOT a global env flag); the
+        override is `request.context["high_assurance_trail"]` (agent-supplied,
+        UNTRUSTED → can only escalate, never downgrade — a caller must not thin its
+        own audit). Verdict-neutral (invariant vi), so this can never affect a
+        decision. Best-effort: any resolution hiccup degrades to default OFF."""
+        from app.services.trail_builder import resolve_high_assurance
+
+        session_override = bool((request.context or {}).get("high_assurance_trail"))
+        tenant_setting = False
+        try:
+            from app.services.tenant_service import get_tenant_store
+            tenant = get_tenant_store().get(tenancy.current_tenant())
+            tenant_setting = bool(getattr(tenant, "high_assurance_trail", False)) if tenant else False
+        except Exception:  # noqa: BLE001 — a tenant-read hiccup must never affect the verdict
+            logger.debug("high-assurance tenant read skipped (default OFF)", exc_info=True)
+        return resolve_high_assurance(tenant_setting, session_override)
+
+    def _build_decision_trail(self, request, validation_result, signals):
+        """Build the not-run/abstain/error markers for this request (WS-D / LLD 33
+        §7.1, KD-4). Runs SYNCHRONOUSLY on the request coroutine with a BY-VALUE
+        `_step_timings` snapshot; returns the marker list the off-path handlers
+        persist. NEVER raises into the verdict path — a trail-build hiccup yields an
+        empty marker list, never a 500 (the trail is observability, not correctness).
+        """
+        try:
+            from app.services.trail_builder import build_trail, coverage_set
+            from app.combiners import DenyOverrides
+
+            step_timings_snapshot = dict(_step_timings.get() or {})  # BY VALUE — KD-4
+            phase = getattr(request, "phase", "request") or "request"
+            is_deny = bool(validation_result.should_deny)
+            # Name the ran DENIER read-only (never alters the verdict — §7.2 note):
+            # combine() runs off-path in log_signals + again at read time; here it
+            # only NAMES winning_source so the not-run reason attribution is correct.
+            winning_source = None
+            if is_deny and signals:
+                combined = DenyOverrides().combine(signals)
+                winning_source = (combined.metadata or {}).get("winning_source")
+            trail = build_trail(
+                signals=signals,
+                step_timings=step_timings_snapshot,
+                coverage=coverage_set(phase),
+                winning_source=winning_source,
+                phase=phase,
+                is_deny=is_deny,
+            )
+            return trail.markers
+        except Exception:  # noqa: BLE001 — the trail is off-path; never surface to the caller
+            logger.debug("decision-trail build skipped (non-blocking)", exc_info=True)
+            return []
+
     async def validate_tool_call(self, request: ValidationRequest) -> Dict:
         """
         Main validation pipeline orchestrator.
@@ -314,6 +384,15 @@ class ValidationService:
                 agent_id=request.agent_id
             ))
 
+            # WS-D / LLD 33 §8.1 (D3.1) — resolve high-assurance mode per-request
+            # (per-tenant OR per-session, escalate-only) BEFORE the pipeline runs so
+            # an opted-in tenant threads mode=evaluate_all into run_dag and the trail
+            # records the whole frontier verdict-neutrally. Verdict-neutral by
+            # construction (invariant vi) — it only enriches the ran-set, never the
+            # decision. Best-effort: a resolution hiccup degrades to default OFF, it
+            # can never change a verdict.
+            effective_high_assurance = self._resolve_high_assurance(request)
+
             # Run the 6-step deterministic pipeline (trust → policy →
             # cross-agent → prompt-signature → context → abuse) + ML-last via
             # the WS-C DAG scheduler. signals[] collects every
@@ -322,10 +401,21 @@ class ValidationService:
             # or full-pipeline ALLOW); signals[] is the full breakdown for
             # the audit logger's dual-write and the dashboard's "By" column.
             validation_result, signals = await _timed(
-                "pipeline", self._run_validation_pipeline(request, session))
+                "pipeline", self._run_validation_pipeline(
+                    request, session, high_assurance=effective_high_assurance))
+
+            # WS-D / LLD 33 §7.1 + KD-4 — build the decision trail SYNCHRONOUSLY on
+            # the request coroutine, from a BY-VALUE `_step_timings` snapshot, BEFORE
+            # any `_fire_and_forget` handoff. `_fire_and_forget` is a bare create_task
+            # with NO `copy_context()` (:104/:109), so reading `_step_timings` inside
+            # the background task on a full-ALLOW request could resolve invoked=∅ and
+            # mis-classify EVERY layer as not-run (the invariant-i conflation). Snapshot
+            # + classify here; only the WRITE (D4) rides the existing off-path handlers.
+            markers = self._build_decision_trail(request, validation_result, signals)
 
             # Handle DENY / ALLOW (handle = trust update + audit + metrics today;
-            # see WS24 M4 for moving audit+metrics off this path).
+            # see WS24 M4 for moving audit+metrics off this path). `markers` ride the
+            # existing `log_signals` dual-write (D4) — NOT a second fire-and-forget.
             if validation_result.should_deny:
                 response = await _timed("handle", self._handle_deny(
                     request,
@@ -333,6 +423,7 @@ class ValidationService:
                     validation_result,
                     start_time,
                     signals=signals,
+                    markers=markers,
                 ))
             else:
                 # ALLOW — pass validation_result so cross-cloud fields
@@ -343,6 +434,7 @@ class ValidationService:
                     start_time,
                     validation_result=validation_result,
                     signals=signals,
+                    markers=markers,
                 ))
 
             # M1 (LLD 24 / WS24): single structured line with the per-step
@@ -436,10 +528,19 @@ class ValidationService:
     async def _run_validation_pipeline(
         self,
         request: ValidationRequest,
-        session: Dict
+        session: Dict,
+        high_assurance: bool = False,
     ):
         """Run the validation pipeline via the cost-annotated DAG scheduler
         (WS-C / FR-2.8 / ADR-030 / LLD 31 §6).
+
+        `high_assurance` (WS-D / LLD 33 §8.2, D3.2): when True, source the per-request
+        run mode from `evaluate_all` instead of the global `settings.dag_run_mode`,
+        so the whole frontier (tier-0 AND tier-1) runs VERDICT-NEUTRALLY and the trail
+        records the deep tier's advisory signals (LLD 31 §6.7). Default False keeps
+        the request byte-identical to today. The DAG structure stays built-once; only
+        the run-mode ARGUMENT is per-request — no new run_dag arg, no second runner
+        (KD-5).
 
         NO-FLAG cutover: the DAG is the ONLY pipeline — there is no
         scheduler-enable flag and no retained fixed-sequential body; rollback is
@@ -511,7 +612,14 @@ class ValidationService:
         # the package (not imported by name) so tests can patch the seam.
         phase = getattr(request, "phase", "request") or "request"
         nodes = scheduler_pkg.build_dag(self, phase, stamp_ctx)
-        mode = settings.dag_run_mode if settings.dag_run_mode in (FAIL_FAST, EVALUATE_ALL) else FAIL_FAST
+        # WS-D / LLD 33 §8.2 (D3.2): high-assurance sources the mode from
+        # EVALUATE_ALL (run the whole frontier verdict-neutrally for the trail);
+        # otherwise the global setting governs. Reuses WS-C's existing constants +
+        # the existing run_dag(mode=...) seam — no divergent second runner (KD-5).
+        if high_assurance:
+            mode = EVALUATE_ALL
+        else:
+            mode = settings.dag_run_mode if settings.dag_run_mode in (FAIL_FAST, EVALUATE_ALL) else FAIL_FAST
 
         return await scheduler_pkg.run_dag(
             nodes,
@@ -583,6 +691,7 @@ class ValidationService:
         validation_result: ValidationResult,
         start_time: float,
         signals: Optional[List] = None,
+        markers: Optional[List] = None,
     ) -> Dict:
         """
         Handle DENY decision - update trust score and return response.
@@ -667,20 +776,29 @@ class ValidationService:
         
         # Audit dual-write — Workstream 17 (DDB + CloudWatch). Off the response
         # path (WS24 M4.2); the dual-write still happens, just asynchronously.
+        # WS-D / LLD 33 §9.1 — the not-run/abstain/error `markers` ride the SAME
+        # off-path `log_signals` write (D4), NOT a second fire-and-forget.
         if signals:
             _fire_and_forget(self.audit_logger.log_signals(
                 request=request.model_dump(),
                 session=session,
                 signals=signals,
                 latency_ms=latency_ms,
+                markers=markers,
             ), "audit")
         else:
+            # No ran signal rows on this DENY (rare/degenerate — the §7.1.1 stamp
+            # normally guarantees the policy DENY produces a signal). The not-run
+            # complement must STILL persist so BOTH ALLOW and DENY carry a full
+            # trail (invariant v); forward `markers` through log_decision → the
+            # SAME off-path log_signals writer (NOT a second fire-and-forget, D4).
             _fire_and_forget(self.audit_logger.log_decision(
                 decision="DENY",
                 request=request.model_dump(),
                 session=session,
                 validation_result=validation_result.model_dump(),
                 latency_ms=latency_ms,
+                markers=markers,
             ), "audit")
 
         # WS-E2 (LLD 29 §6.5) — off-path opt-in redacted-feedback write, fired
@@ -703,6 +821,7 @@ class ValidationService:
         start_time: float,
         validation_result: Optional[ValidationResult] = None,
         signals: Optional[List] = None,
+        markers: Optional[List] = None,
     ) -> Dict:
         """
         Handle ALLOW decision - update trust score and return response.
@@ -733,20 +852,29 @@ class ValidationService:
         
         # Audit dual-write — Workstream 17 (DDB + CloudWatch). Off the response
         # path (WS24 M4.2); the dual-write still happens, just asynchronously.
+        # WS-D / LLD 33 §9.1 — the not-run/abstain markers ride the SAME off-path
+        # `log_signals` write (D4). BOTH ALLOW and DENY persist a full trail
+        # (invariant v).
         if signals:
             _fire_and_forget(self.audit_logger.log_signals(
                 request=request.model_dump(),
                 session=session,
                 signals=signals,
                 latency_ms=latency_ms,
+                markers=markers,
             ), "audit")
         else:
+            # No ran signal rows on this ALLOW — persist the not-run complement
+            # anyway so BOTH ALLOW and DENY carry a full trail (invariant v).
+            # Markers ride the SAME off-path log_signals writer via log_decision
+            # (NOT a second fire-and-forget, D4).
             _fire_and_forget(self.audit_logger.log_decision(
                 decision="ALLOW",
                 request=request.model_dump(),
                 session=session,
                 validation_result=None,
                 latency_ms=latency_ms,
+                markers=markers,
             ), "audit")
 
         # WS-E2 (LLD 29 §6.5) — off-path opt-in redacted-feedback write. Inert on

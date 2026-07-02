@@ -507,6 +507,52 @@ class MetricsPublisher:
             logger.warning("Failed to publish FeedbackRedactionGateFail (non-blocking): %s", e)
 
     # ============================================================
+    # WS-D / LLD 33 §9.2: decision-trail persistence-failure metrics. Both
+    # fire-and-forget, OFF the response path — a publish failure NEVER blocks or
+    # changes a verdict, and a marker loss is bounded to a fast-read/observability
+    # gap (FR-6.8 / NFR-10), never a correctness/availability regression.
+    # ============================================================
+
+    async def publish_trail_persist_failure(self, tenant_id: str = "", count: int = 1):
+        """`TrailPersistFailures` (§9.2). A silently-dropped decision-trail thins the
+        fast-read view (FR-6.8 / NFR-10) — this makes it alarmable per-tenant. Two
+        alarms key off it: a fleet rate > 1%/5-min AND a per-tenant absolute-count
+        (so a chronic sub-1% thinning of one tenant is not silent). Never raises."""
+        try:
+            self.cloudwatch.put_metric_data(
+                Namespace=self.namespace,
+                MetricData=[{
+                    'MetricName': 'TrailPersistFailures',
+                    'Value': count,
+                    'Unit': 'Count',
+                    'Dimensions': [{'Name': 'tenant_id', 'Value': tenant_id or '_unknown'}],
+                }],
+            )
+            logger.warning("Published TrailPersistFailures: tenant=%s count=%d", tenant_id, count)
+        except Exception as e:  # noqa: BLE001 — metrics never block validate
+            logger.warning("Failed to publish TrailPersistFailures (non-blocking): %s", e)
+
+    async def publish_combined_event_persist_failure(self, tenant_id: str = "", count: int = 1):
+        """`CombinedEventPersistFailures` (§9.2.1). The `sentra.combined` CloudWatch
+        event is the durable copy of the recompute-on-read `winning_source`/
+        `block_point`. Losing it AND the markers is the ONLY case where the
+        reconstructable complement is actually lost — so it is separately observable,
+        not folded into TrailPersistFailures. Fire-and-forget; never raises."""
+        try:
+            self.cloudwatch.put_metric_data(
+                Namespace=self.namespace,
+                MetricData=[{
+                    'MetricName': 'CombinedEventPersistFailures',
+                    'Value': count,
+                    'Unit': 'Count',
+                    'Dimensions': [{'Name': 'tenant_id', 'Value': tenant_id or '_unknown'}],
+                }],
+            )
+            logger.warning("Published CombinedEventPersistFailures: tenant=%s count=%d", tenant_id, count)
+        except Exception as e:  # noqa: BLE001 — metrics never block validate
+            logger.warning("Failed to publish CombinedEventPersistFailures (non-blocking): %s", e)
+
+    # ============================================================
     # Workstream 11: Policy CRUD Metrics
     # ============================================================
 

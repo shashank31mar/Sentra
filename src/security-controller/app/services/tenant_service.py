@@ -91,6 +91,15 @@ class Tenant:
     # posture). Gates ONLY the persisted store; transient PHI redaction is
     # always-on under the BAA (§4.2, no consent gate).
     feedback_opt_in: bool = False
+    # Per-tenant high-assurance decision-trail mode (WS-D / LLD 33 §8.1, D3 OPEN
+    # ITEM — founder-resolved 2026-07-02). Default False — DENY-BY-DEFAULT, matching
+    # the platform_read_consent / feedback_opt_in / local_floor conservative-off
+    # posture. When ON, the request runs the whole frontier verdict-neutrally
+    # (mode=evaluate_all) so the trail records the deep tier — a VERDICT-NEUTRAL
+    # recording knob (invariant vi), NEVER a decision change. Per-session escalate-
+    # only override is `request.context["high_assurance_trail"]` (agent-supplied,
+    # untrusted → escalate-only). NOT config.py, NOT a global env flag.
+    high_assurance_trail: bool = False
     deletion_cursor: Dict[str, str] = field(default_factory=dict)
     created_at: int = 0
     created_by: str = ""
@@ -110,6 +119,8 @@ class Tenant:
                                  else bool(item.get("local_floor_enabled"))),
             # Absent attribute → False (deny-by-default opt-in, §6.5).
             feedback_opt_in=bool(item.get("feedback_opt_in", False)),
+            # Absent attribute → False (deny-by-default high-assurance, §8.1).
+            high_assurance_trail=bool(item.get("high_assurance_trail", False)),
             deletion_cursor=dict(item.get("deletion_cursor") or {}),
             created_at=int(item.get("created_at", 0)),
             created_by=item.get("created_by", ""),

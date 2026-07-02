@@ -111,6 +111,170 @@ class DecisionsService:
             "next_token": None,  # single-partition Query; not paged in MVP (LLD 21 §11.1)
         }
 
+    def get_session_trail(
+        self,
+        session_id: str,
+        request_id: str,
+    ) -> dict[str, Any]:
+        """Return the full decision trail for one request — WS-D / LLD 33 §9A.
+
+        The READ endpoint WS-G (console) calls. EXTENDS the existing per-session
+        read convention: it reuses `get_session_signals`'s single-partition Query
+        (`{pk} = :sid AND begins_with(sk, :rid)`) — no new datastore, no new
+        partition, no new index — and adds two things:
+
+          (a) it INCLUDES the marker rows (rows carrying `record_type`, which
+              `get_session_signals` returns but does not classify);
+          (b) it classifies every row into ran / ran_abstain / ran_error / not_run
+              (the SAME four buckets the writer's classifier §7.2 produces — no
+              second taxonomy) and DERIVES the summary/counts + display names +
+              recomputed `winning_source`/`block_point` on read (§9A.2, §6.3).
+
+        Tenant isolation is STRUCTURAL: `get_session_signals` keys the Query on the
+        tenant-composite PK (`tenant_session_id` when v2), so a Query against the
+        wrong tenant's partition returns ZERO rows — it cannot be forgotten like a
+        filter (§9A.3). Pagination: a single request's trail is small (~7 rows, up
+        to ~14 with WS-L) → the full trail returns in one un-paged response,
+        `next_token: null` (matching `get_session_signals`).
+        """
+        from app.combiners.sources import (
+            SOURCE_DISPLAY_NAMES,
+            STATE_DISPLAY_NAMES,
+            STATIC_FALLBACK_ORDER,
+        )
+
+        raw = self.get_session_signals(session_id=session_id, request_id=request_id)
+        rows = raw.get("signals", [])
+
+        # Partition rows: a marker carries `record_type`; a ran row carries a
+        # `decision` (§6.2 partitioning rule). A row is a MARKER iff record_type is
+        # present — otherwise it is a ran signal. This is the reader's `state`
+        # derivation, the SAME four buckets the writer classified into.
+        ran_rows: dict[str, dict] = {}
+        marker_rows: dict[str, dict] = {}
+        for it in rows:
+            src = it.get("source")
+            if not src:
+                continue
+            rt = it.get("record_type")
+            if rt in ("not_run", "abstain", "error"):
+                marker_rows[src] = it
+            elif it.get("decision") is not None:
+                ran_rows[src] = it
+
+        # Top-level `phase` — DETERMINISTIC, not last-write-wins over iteration
+        # order. Single-phase today (all rows carry `phase=request`); this rule
+        # pins that and stays stable if a request's partition ever holds rows of
+        # differing phase (a future multi-phase request, or a marker stamped
+        # 'request' next to a content-phase ran row): prefer the phase carried by
+        # the RAN rows (the actual decision path) over markers, and iterate a
+        # stable key order (sorted by source) rather than DDB return order so the
+        # reported phase never flips run-to-run. Falls back to marker phase, then
+        # "request".
+        phase = "request"
+        for bucket in (ran_rows, marker_rows):
+            found = next(
+                (bucket[s].get("phase") for s in sorted(bucket) if bucket[s].get("phase")),
+                None,
+            )
+            if found:
+                phase = found
+                break
+
+        # Recompute winning_source / block_point on read from the ran DENY rows
+        # (§6.3) — the durable copy lives on the `sentra.combined` CloudWatch event,
+        # never DDB. null on an ALLOW; block_point == winning_source on a DENY.
+        ran_signals = [_item_to_signal(it) for it in ran_rows.values()]
+        decision = "ALLOW"
+        winning_source = None
+        if ran_signals:
+            try:
+                combined = self._combiner.combine(ran_signals)
+                decision = combined.decision
+                winning_source = (combined.metadata or {}).get("winning_source")
+            except ValueError:
+                pass
+        block_point = winning_source if decision == "DENY" else None
+
+        # Coverage order: STATIC_FALLBACK_ORDER today (§5.1), extended by any
+        # source seen on a row but not in the static list (a future WS-L D-layer),
+        # appended in stable first-seen order so it still renders (never dropped).
+        cov_order = list(STATIC_FALLBACK_ORDER)
+        for src in list(ran_rows) + list(marker_rows):
+            if src not in cov_order:
+                cov_order.append(src)
+
+        _MARKER_STATE = {"not_run": "not_run", "abstain": "ran_abstain", "error": "ran_error"}
+        coverage: list[dict[str, Any]] = []
+        ran_count = abstain_count = error_count = not_run_count = 0
+        for src in cov_order:
+            if src in ran_rows:
+                it = ran_rows[src]
+                state = "ran"
+                ran_count += 1
+                entry = {
+                    "source": src,
+                    "state": state,
+                    "decision": it.get("decision"),
+                    "reason": it.get("reason"),
+                    "latency_ms": it.get("latency_ms"),
+                }
+            elif src in marker_rows:
+                it = marker_rows[src]
+                state = _MARKER_STATE.get(it.get("record_type"), "not_run")
+                if state == "ran_abstain":
+                    abstain_count += 1
+                elif state == "ran_error":
+                    error_count += 1
+                else:
+                    not_run_count += 1
+                entry = {
+                    "source": src,
+                    "state": state,
+                    "decision": None,
+                    "reason": it.get("reason"),
+                    "latency_ms": None,
+                }
+            else:
+                # In coverage but neither a ran row nor a persisted marker was found
+                # (e.g. a marker write was shed under backpressure). Surface it as
+                # not_run so the trail still reconciles to coverage_total.
+                state = "not_run"
+                not_run_count += 1
+                entry = {
+                    "source": src,
+                    "state": state,
+                    "decision": None,
+                    "reason": "no row persisted (marker shed / not written)",
+                    "latency_ms": None,
+                }
+            # ADD display fields on READ (never stored — a stored label drifts the
+            # moment the map changes). `source`/`state` stay RAW machine values; an
+            # unknown source falls through to its raw string, never null/crash.
+            entry["display_name"] = SOURCE_DISPLAY_NAMES.get(src, src)
+            entry["state_label"] = STATE_DISPLAY_NAMES.get(state, state)
+            coverage.append(entry)
+
+        return {
+            "session_id": session_id,
+            "request_id": request_id,
+            "phase": phase,
+            "winning_source": winning_source,
+            "winning_source_display": (
+                SOURCE_DISPLAY_NAMES.get(winning_source, winning_source)
+                if winning_source else None
+            ),
+            "block_point": block_point,
+            "decision": decision,
+            "coverage": coverage,
+            "coverage_total": len(coverage),
+            "ran_count": ran_count,
+            "abstain_count": abstain_count,
+            "ran_error_count": error_count,
+            "not_run_count": not_run_count,
+            "next_token": None,  # single-partition Query; a single trail fits one page
+        }
+
     def get_session_decisions(
         self,
         session_id: str,
@@ -131,8 +295,15 @@ class DecisionsService:
         items = raw["signals"]
 
         # Group by request_id, preserving each item's order within its group.
+        # EXCLUDE WS-D NotRunMarker rows: they share the request partition but
+        # carry no `decision`, so _item_to_signal would coerce them to a phantom
+        # ALLOW vote that corrupts both the per-request signals[] breakdown and
+        # the combine() input (lld/33 invariant ii; get_session_trail is the read
+        # path that surfaces markers as their own four-bucket states).
         groups: dict[str, list[dict]] = {}
         for it in items:
+            if _is_marker_row(it):
+                continue
             rid = it.get("request_id") or "<unknown>"
             groups.setdefault(rid, []).append(it)
 
@@ -309,8 +480,17 @@ class DecisionsService:
         # Group signals by request_id and combine — same as get_session_decisions
         # but across sessions. The dashboard's all-events view can render
         # per-request rows uniformly with the per-session view.
+        # EXCLUDE WS-D NotRunMarker rows before grouping (same rule as
+        # get_session_decisions): a marker carries no `decision`, so it would
+        # otherwise become a phantom ALLOW signal in signals[] AND could be chosen
+        # as the row `rep` (group[-1]) — a marker deliberately omits agent_id /
+        # tool_name / platform / trust_score, so the console row would render those
+        # as None. Filtering here keeps `group` all-ran, so group[-1] is always a
+        # real signal row (lld/33 invariant ii).
         groups: dict[tuple[str, str], list[dict]] = {}
         for it in items:
+            if _is_marker_row(it):
+                continue
             key = (it.get("session_id") or "<unknown>", it.get("request_id") or "<unknown>")
             groups.setdefault(key, []).append(it)
 
@@ -574,6 +754,25 @@ class DecisionsService:
 # ---------------------------------------------------------------------------
 # Module helpers
 # ---------------------------------------------------------------------------
+
+
+# Marker record_type discriminators (WS-D / lld/33 §6.1). A NotRunMarker row
+# carries one of these in `record_type` and, deliberately, NO `decision` field —
+# so it is NOT a ran vote and must never be reconstructed into a Signal. This is
+# the single source of truth for the §6.2 partitioning rule shared by every read
+# path that groups the request partition (get_session_trail inlines the same set).
+_MARKER_RECORD_TYPES = ("not_run", "abstain", "error")
+
+
+def _is_marker_row(item: dict[str, Any]) -> bool:
+    """True iff `item` is a WS-D NotRunMarker row (record_type in {not_run,
+    abstain, error}), not a ran signal. The grouping read paths
+    (get_session_decisions / scan_decisions) MUST exclude these before combining:
+    a marker has no `decision`, so _item_to_signal would coerce it to a phantom
+    ALLOW vote (line below) — a fabricated vote from a layer that never ran, which
+    both corrupts the per-request signals[] breakdown and would feed
+    DenyOverrides.combine() (lld/33 invariant ii)."""
+    return item.get("record_type") in _MARKER_RECORD_TYPES
 
 
 def _item_to_signal(item: dict[str, Any]) -> Signal:
