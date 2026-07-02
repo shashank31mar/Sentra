@@ -92,6 +92,29 @@ class ValidationRequest(BaseModel):
                     "Absent on the request phase. Bounded (max_length) so an "
                     "oversized body is rejected as a 422 at the edge, not coerced.",
     )
+    # WS-E (LLD 29 §3.3/§3.5, §5.3) — redaction-provenance fields the Tier-1 edge
+    # redactor stamps on egress (stage 1). Additive + defaulted so a pre-redaction
+    # caller (and the request phase) stays byte-identical on the wire:
+    #   * redaction_nonce — the per-call hex the edge bound its genuine typed
+    #     markers `⟦AEGR:{nonce}:TYPE⟧` to (§3.3). The Tier-2 barrier reuses it so
+    #     its own markers carry the same nonce; the persist-gate strips markers by
+    #     it. None on a legacy/un-redacted caller.
+    #   * redacted — the provenance flag (§5.3 point 3): True once a redaction pass
+    #     ran over the content-bearing fields. The audit writer's redaction-state
+    #     guard DROPS any content-bearing field write when this is not True
+    #     (fail-secure — `RawContentBlockedFromLog`). Default False (conservative:
+    #     an un-flagged legacy caller's content is treated as un-redacted).
+    redaction_nonce: Optional[str] = Field(
+        None,
+        description="Per-call nonce the Tier-1 edge bound its typed redaction "
+                    "markers to (LLD 29 §3.3). Additive; None for un-redacted callers.",
+    )
+    redacted: bool = Field(
+        False,
+        description="Redaction-provenance flag (LLD 29 §5.3). True once the edge/"
+                    "Tier-2 redactor masked the content-bearing fields. The audit "
+                    "writer drops a content write not marked True (fail-secure).",
+    )
     context: Optional[Dict[str, Any]] = Field(default_factory=dict, description="Additional context (user_id, ip_address, authorization_level, etc.)")
     # Cross-cloud fields (Workstream 15) — interceptor-supplied hints.
     # When absent, the controller resolves platform/cloud_region from the agent's policy.

@@ -121,6 +121,73 @@ def _fire_and_forget(coro, label: str) -> None:
     task.add_done_callback(_on_done)
 
 
+async def write_redacted_feedback(
+    request: ValidationRequest,
+    *,
+    decision: str,
+    reason: str,
+    winning_source: str,
+    detector_outcomes: Dict,
+) -> None:
+    """Off-path opt-in redacted-feedback write (WS-E2 / LLD 29 §6.5, E5.3).
+
+    Fired fire-and-forget AFTER the verdict, ONLY for a content-bearing phase whose
+    `content_text` has already passed the Tier-2 barrier (so it is the post-NER
+    redacted view, `redacted=True`). Gated by the tenant's DPA-scoped opt-in flag
+    (default OFF — a non-opted-in tenant writes NO record) and the stronger
+    independent eval-gate (a residual → skip + `FeedbackRedactionGateFail`, never
+    stored). NEVER blocks a verdict; swallows every error (a feedback-store hiccup
+    must never surface). NOT the billing ledger (WS-H), NOT the audit store (LLD 17).
+
+    Inert on the request phase and for un-opted-in tenants — the safe default. It
+    composes automatically when the content-phase handlers wire this call site.
+    """
+    phase = getattr(request, "phase", "request") or "request"
+    from app.api.models import _CONTENT_FIELD
+
+    if phase not in _CONTENT_FIELD:
+        return  # request phase carries no persistable free-text content
+    try:
+        from app.redaction.feedback_store import (
+            FeedbackGateFail,
+            FeedbackRecord,
+            get_feedback_store,
+            tenant_feedback_opt_in,
+        )
+
+        tenant_id = tenancy.current_tenant()
+        opted_in = tenant_feedback_opt_in(tenant_id)
+        if not opted_in:
+            return  # §6.5: no record for a non-opted-in tenant (default OFF)
+
+        content_text = getattr(request, "content_text", None)
+        record = FeedbackRecord(
+            tenant_id=tenant_id,
+            phase=phase,
+            redacted_payload={"content_text": content_text},
+            decision=decision,
+            reason=reason,
+            winning_source=winning_source,
+            detector_outcomes=detector_outcomes or {},
+            ttl_days=settings.feedback_store_ttl_days,
+        )
+        # The barrier stamped `request.redacted`? For a content phase the barrier ran
+        # and set content_text to the redacted view; the request-level `redacted`
+        # flag is the provenance signal the store's redacted-only check reads.
+        get_feedback_store().write_if_opted_in(
+            record,
+            opted_in=opted_in,
+            redacted=bool(getattr(request, "redacted", False)),
+            subject_key=(request.context or {}).get("subject_id") if request.context else None,
+        )
+    except FeedbackGateFail:
+        # Eval-gate residual: the write is correctly SKIPPED (alarm already emitted
+        # inside the store). Not an error to propagate.
+        logger.warning("feedback eval-gate blocked a residual record; skipped (correct)")
+    except Exception:  # noqa: BLE001 — feedback is off-path; never surface to caller
+        logger.debug("redacted-feedback write skipped (non-blocking)", exc_info=True)
+
+
 class ValidationService:
     """
     Orchestrates the 6-step deterministic validation pipeline (trust → policy →
@@ -589,8 +656,19 @@ class ValidationService:
                 latency_ms=latency_ms,
             ), "audit")
 
+        # WS-E2 (LLD 29 §6.5) — off-path opt-in redacted-feedback write, fired
+        # ALONGSIDE the audit write. Inert on the request phase / un-opted-in
+        # tenants; composes when the content-phase handlers reach here.
+        _fire_and_forget(write_redacted_feedback(
+            request,
+            decision="DENY",
+            reason=validation_result.reason,
+            winning_source=(validation_result.source or "sentra.combined"),
+            detector_outcomes={"violation_type": violation_type},
+        ), "feedback")
+
         return response
-    
+
     async def _handle_allow(
         self,
         request: ValidationRequest,
@@ -643,6 +721,17 @@ class ValidationService:
                 validation_result=None,
                 latency_ms=latency_ms,
             ), "audit")
+
+        # WS-E2 (LLD 29 §6.5) — off-path opt-in redacted-feedback write. Inert on
+        # the request phase / un-opted-in tenants; composes when the content-phase
+        # handlers reach here.
+        _fire_and_forget(write_redacted_feedback(
+            request,
+            decision="ALLOW",
+            reason="All validation checks passed",
+            winning_source=((validation_result.source if validation_result else None) or "sentra.combined"),
+            detector_outcomes={},
+        ), "feedback")
 
         # WS-21 T01: emit DECISION metrics at validation time (see _handle_deny
         # for the WS-9 M4 reversal rationale — decision vs execution metrics).

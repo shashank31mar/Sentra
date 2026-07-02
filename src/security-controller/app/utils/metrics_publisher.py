@@ -425,6 +425,88 @@ class MetricsPublisher:
             logger.warning("Failed to publish quota-exceeded metric (non-blocking): %s", e)
 
     # ============================================================
+    # WS-E2 (LLD 29 §9.5): redaction latency + failure + invariant metrics.
+    # All fire-and-forget, OFF the response path — a publish failure NEVER blocks
+    # or changes a verdict. These are NOT the billing ledger (WS-H) and NOT the
+    # audit signal store (LLD 17).
+    # ============================================================
+
+    async def publish_redaction_ner_latency(self, latency_ms: float):
+        """Tier-2 free-text PHI NER latency (`RedactionTier2NerLatencyMs`, §9.5).
+
+        One data point per barrier pass on the PHI content path. CloudWatch's own
+        statistics give p50/p99; the dimension-free series keeps it a fleet signal.
+        """
+        try:
+            self.cloudwatch.put_metric_data(
+                Namespace=self.namespace,
+                MetricData=[{
+                    'MetricName': 'RedactionTier2NerLatencyMs',
+                    'Value': latency_ms,
+                    'Unit': 'Milliseconds',
+                }],
+            )
+            logger.debug("Published RedactionTier2NerLatencyMs: %.2fms", latency_ms)
+        except Exception as e:  # noqa: BLE001 — metrics never block validate
+            logger.warning("Failed to publish RedactionTier2NerLatencyMs (non-blocking): %s", e)
+
+    async def publish_redaction_egress_held(self):
+        """Tier-2 NER outage on a free-text-PHI field (E3, §9.5). Emits BOTH
+        `EgressHeldCount` (the unredactable content was HELD, raw dropped) and
+        `NerUnavailableCount` (the outage itself) so an outage AND the containment
+        action are both alarmable."""
+        try:
+            self.cloudwatch.put_metric_data(
+                Namespace=self.namespace,
+                MetricData=[
+                    {'MetricName': 'EgressHeldCount', 'Value': 1, 'Unit': 'Count'},
+                    {'MetricName': 'NerUnavailableCount', 'Value': 1, 'Unit': 'Count'},
+                ],
+            )
+            logger.warning("Published EgressHeldCount + NerUnavailableCount (Tier-2 outage)")
+        except Exception as e:  # noqa: BLE001 — metrics never block validate
+            logger.warning("Failed to publish egress-held metric (non-blocking): %s", e)
+
+    async def publish_raw_content_blocked_metric(
+        self, reason: str = "", blocked_fields=None, detected_classes=None
+    ):
+        """The `RawContentBlockedFromLog` invariant alarm (§5.3, I-1). Emitted when
+        the persist-gate DROPS a content-bearing field from a would-be-persisted
+        record (un-flagged, or a residual identifier the stronger detector found).
+        Carries ONLY field names + detected CLASSES as dimensions — NEVER the raw
+        value (§5.3: a gate error must not itself leak the content it protects)."""
+        try:
+            self.cloudwatch.put_metric_data(
+                Namespace=self.namespace,
+                MetricData=[{
+                    'MetricName': 'RawContentBlockedFromLog',
+                    'Value': 1,
+                    'Unit': 'Count',
+                    'Dimensions': [{'Name': 'Reason', 'Value': reason or 'unknown'}],
+                }],
+            )
+            logger.error(
+                "Published RawContentBlockedFromLog: reason=%s fields=%s classes=%s",
+                reason, blocked_fields or [], detected_classes or [],
+            )
+        except Exception as e:  # noqa: BLE001 — the alarm must never break audit
+            logger.warning("Failed to publish RawContentBlockedFromLog (non-blocking): %s", e)
+
+    async def publish_feedback_redaction_gate_fail_metric(self, detected_classes=None):
+        """The `FeedbackRedactionGateFail` alarm (§6.3). Emitted when the feedback-
+        store eval-gate SKIPS a write because the stronger independent detector
+        found a residual identifier in the would-be-stored record. Carries only the
+        detected CLASSES — never the raw value."""
+        try:
+            self.cloudwatch.put_metric_data(
+                Namespace=self.namespace,
+                MetricData=[{'MetricName': 'FeedbackRedactionGateFail', 'Value': 1, 'Unit': 'Count'}],
+            )
+            logger.error("Published FeedbackRedactionGateFail: classes=%s", detected_classes or [])
+        except Exception as e:  # noqa: BLE001 — the alarm must never break the write path
+            logger.warning("Failed to publish FeedbackRedactionGateFail (non-blocking): %s", e)
+
+    # ============================================================
     # Workstream 11: Policy CRUD Metrics
     # ============================================================
 

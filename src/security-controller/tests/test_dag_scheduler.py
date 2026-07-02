@@ -225,18 +225,37 @@ def _request_node_sources():
 def test_t_phase_degrade_unknown_phase_falls_back_to_request_floor(mock_session):
     """An unknown/absent phase degrades to the FULL request node set (the
     deterministic floor still runs), never an empty graph — the deny-by-default
-    posture (LLD 31 §5.4)."""
+    posture (LLD 31 §5.4).
+
+    WS-E2 update (LLD 29 §4.1): the KNOWN content-bearing phases (content/output/
+    memory) now ALSO carry the Tier-2 NER redaction barrier entry node ON TOP of
+    the request floor — a deliberate additive change (the F1 barrier). A genuinely
+    UNKNOWN phase (`totally-unknown`) still degrades to EXACTLY the request floor
+    (no barrier). Both cases still run the full deterministic floor — the deny-by-
+    default posture is unchanged; only the content phases gained the extra barrier."""
     from app.services.scheduler import build_dag
+    from app.combiners import Source
 
     service = _pipeline_service(mock_session)
     stamp_ctx = {"platform": None, "cloud_region": None}
 
     request_nodes = build_dag(service, "request", stamp_ctx)
-    for phase in ("content", "output", "memory", "totally-unknown"):
+
+    # Content-bearing phases: the request floor PLUS the WS-E2 NER barrier.
+    for phase in ("content", "output", "memory"):
         degraded = build_dag(service, phase, dict(stamp_ctx))
-        assert degraded, f"phase {phase!r} degraded to an EMPTY graph — that is 'no checks', a fail-OPEN"
-        assert {n.source for n in degraded} == _request_node_sources()
-        assert {n.source for n in degraded} == {n.source for n in request_nodes}
+        assert degraded, f"phase {phase!r} degraded to an EMPTY graph — a fail-OPEN"
+        sources = {n.source for n in degraded}
+        assert Source.REDACTION_NER in sources, f"phase {phase!r} missing the NER barrier"
+        # The full request floor still runs (never fewer checks than request).
+        assert _request_node_sources() <= sources
+        assert sources == _request_node_sources() | {Source.REDACTION_NER}
+
+    # An UNKNOWN phase degrades to EXACTLY the request floor — no barrier added.
+    degraded = build_dag(service, "totally-unknown", dict(stamp_ctx))
+    assert degraded, "unknown phase degraded to an EMPTY graph — a fail-OPEN"
+    assert {n.source for n in degraded} == _request_node_sources()
+    assert {n.source for n in degraded} == {n.source for n in request_nodes}
 
 
 def test_t_phase_degrade_request_phase_builds_full_floor(mock_session):
@@ -281,9 +300,12 @@ def test_pick_top_denier_none_when_no_deny():
 # T-COMBINER-CLEAN — priorities + rank tuple UNCHANGED (byte-for-byte).
 # --------------------------------------------------------------------------- #
 def test_t_combiner_clean_priorities_unchanged():
-    from app.combiners import DEFAULT_PRIORITIES
+    from app.combiners import DEFAULT_PRIORITIES, default_priority
 
-    assert DEFAULT_PRIORITIES == {
+    # The VOTING priorities (every source that can decide a verdict) are byte-for-
+    # byte unchanged — the deny-overrides ranking is untouched.
+    voting = {k: v for k, v in DEFAULT_PRIORITIES.items() if k != Source.REDACTION_NER}
+    assert voting == {
         Source.SENTRA_TRUST: 90,
         Source.SENTRA_POLICY: 80,
         Source.SENTRA_SIGMA: 70,
@@ -294,6 +316,11 @@ def test_t_combiner_clean_priorities_unchanged():
         Source.BEDROCK_GUARDRAIL: 40,
         Source.AZURE_CONTENT_FILTER: 40,
     }
+    # WS-E2 (LLD 29 §4.1 FOOTGUN 2): the NER barrier source is REGISTERED so the
+    # WS-D trail can join on it, but at priority 0 — it NEVER votes on a verdict
+    # (the node returns ALLOW/ABSTAIN, never a DENY), so the ranking above is
+    # unaffected. A priority > 0 here would be the regression to catch.
+    assert default_priority(Source.REDACTION_NER) == 0
 
 
 def test_t_combiner_clean_rank_tuple_order_unchanged():

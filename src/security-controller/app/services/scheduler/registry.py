@@ -31,13 +31,27 @@ edges) WITHOUT editing the scheduler core — the `ValidatorNode`/`depends_on`/
 from __future__ import annotations
 
 import logging
+import time
 from typing import Dict, List
 
-from app.api.models import ValidationRequest, ValidationResult
+from app.api.models import ValidationRequest, ValidationResult, _CONTENT_FIELD
 from app.combiners import Source
 from app.services.scheduler.node import CostTier, ValidatorNode
 
 logger = logging.getLogger(__name__)
+
+# Phases that carry a free-text `content_text` field the Tier-2 NER barrier
+# redacts (LLD 29 §4.1). The `request` phase carries NO content field and gets NO
+# barrier node — so WS-C's request-phase verdict-equivalence golden baseline is
+# untouched (LLD 29 §4.1 FOOTGUN 3). Sourced from WS-B's canonical map, not a
+# second spelling.
+_CONTENT_PHASES = frozenset(_CONTENT_FIELD)  # {content, output, memory}
+
+# The held-content sentinel the barrier writes into `content_text` when the Tier-2
+# redactor is unavailable (E3 egress-fail-closed, LLD 29 §16). The unredactable raw
+# is DROPPED (never forwarded/persisted); the safe fields still process and the
+# action is NOT blanket-DENYed. NEVER the raw value.
+_EGRESS_HELD_MARKER = "⟦AEGR:egress_held⟧"
 
 # Legacy step order (the pre-DAG validation_service STEP 1..6) — the
 # deterministic tie-break for topologically-independent tier-0 nodes (LLD 31
@@ -144,6 +158,65 @@ def build_dag(service, phase: str, stamp_ctx: Dict) -> List[ValidatorNode]:
         result = await service.ml_classifier.validate(req)
         return _apply_ml_enforce_wrapper(result)
 
+    async def _run_ner_barrier(req: ValidationRequest, sess: Dict) -> ValidationResult:
+        # WS-E2 / LLD 29 §4.1 (F1) — the Tier-2 free-text PHI redaction BARRIER.
+        #
+        # This is a DAG ENTRY node (depends_on=()) added ONLY on content/output/
+        # memory phases carrying a `content_text`. It redacts `request.content_text`
+        # IN PLACE, so — because `run_dag` passes the SAME mutable `request` to every
+        # node and `_handle_deny`/`_handle_allow` pass `request.model_dump()` to the
+        # audit/feedback write — the phase's deep-detector nodes, the audit write,
+        # and the feedback write all inherit the post-NER redacted view in ONE pass
+        # (the happens-before barrier gating all three consumers, §5.3).
+        #
+        # It returns ALLOW/ABSTAIN: the node's job is REDACTION, not a verdict — it
+        # never DENYs on PHI presence. On a Tier-2 OUTAGE (NerUnavailable) it fails
+        # closed ON EGRESS (E3): the unredactable content is HELD (replaced by the
+        # egress-held marker, NEVER forwarded/persisted raw), the safe fields still
+        # process, and the action is NOT blanket-DENYed. Metrics are fire-and-forget.
+        from app.redaction.phi_ner import NerUnavailable, get_phi_ner_client
+
+        text = getattr(req, "content_text", None)
+        if text is None:
+            # Nothing to redact (guarded by build_dag's append condition too).
+            return ValidationResult.abstain("redaction.ner: no content_text")
+
+        nonce = getattr(req, "redaction_nonce", None)
+        tenant_id = _tenant_for_ner(sess)
+        started = time.perf_counter()
+        try:
+            view = get_phi_ner_client().redact_free_text(
+                text, nonce=nonce, tenant_id=tenant_id
+            )
+            # BARRIER: mutate the top-level scalar in place BEFORE any dependent node
+            # runs. The `depends_on` edge serializes this — no concurrent reader
+            # exists at this point, so the in-place write is race-free (LLD 29 §4.1
+            # FOOTGUN 4). Do NOT mutate nested session/tool_params structures.
+            req.content_text = view.text
+            _emit_ner_latency(service, started)
+            return ValidationResult(
+                decision="ALLOW",
+                reason="redaction.ner: content_text redacted",
+                should_deny=False,
+                source=Source.REDACTION_NER,
+                metadata={"redaction_classes": view.found_classes},
+            )
+        except NerUnavailable as exc:
+            # E3 egress-fail-closed: HOLD the unredactable content (drop the raw),
+            # process the safe fields, do NOT blanket-DENY. The raw NEVER reaches a
+            # downstream reader/store — the marker replaces it. "Skip-store but
+            # forward raw" is the one forbidden path (§7.2) and cannot happen here.
+            req.content_text = _EGRESS_HELD_MARKER
+            _emit_egress_held(service)
+            logger.warning(
+                "redaction.ner unavailable for phase=%s agent=%s; content HELD "
+                "(egress-fail-closed, raw dropped): %s",
+                getattr(req, "phase", "?"), req.agent_id, exc,
+            )
+            return ValidationResult.abstain(
+                "redaction.ner: NER unavailable; content_text held (egress-fail-closed)"
+            )
+
     nodes: List[ValidatorNode] = [
         ValidatorNode(
             source=Source.SENTRA_TRUST,
@@ -195,7 +268,69 @@ def build_dag(service, phase: str, stamp_ctx: Dict) -> List[ValidatorNode]:
             order_key=_ORDER[Source.SENTRA_ML_CLASSIFIER],
         ),
     ]
+
+    # WS-E2 / LLD 29 §4.1 (F1): add the Tier-2 NER barrier ONLY for a content-
+    # bearing phase (content/output/memory). It is an ENTRY node (`depends_on=()`)
+    # with `order_key=0` so `_toposort` runs it FIRST among the deterministic
+    # frontier — the redaction of `content_text` therefore happens-before every
+    # downstream node reads the request AND before `run_dag` returns (so
+    # `model_dump()` → audit/feedback inherits the redacted view). `build_dag` does
+    # not receive the request, so the node itself cheaply ABSTAINs when there is no
+    # `content_text` (nothing to redact) — the append is keyed on the PHASE only.
+    # The `request`-phase DAG is left untouched → WS-C's request-phase verdict-
+    # equivalence golden baseline is unaffected (FOOTGUN 3). NER is
+    # `content_text`-only; `tool_params`/`user_input` keep their Tier-1 tokens
+    # (FOOTGUN 1 — never blanket-redact, it would blind detection).
+    if phase in _CONTENT_PHASES:
+        nodes.append(
+            ValidatorNode(
+                source=Source.REDACTION_NER,
+                cost_tier=CostTier.EXPENSIVE_MODEL,
+                run=_run_ner_barrier,
+                depends_on=(),          # entry node — runs before every dependent
+                order_key=0,            # topo-first among the frontier (barrier)
+            )
+        )
+
     return nodes
+
+
+def _tenant_for_ner(session: Dict) -> str:
+    """Resolve the tenant id for the NER pass without importing the tenancy module
+    at graph-build time (keeps the barrier node a leaf). Prefer the request's
+    resolved tenant contextvar; fall back to the session's agent-derived id."""
+    try:
+        from app.utils import tenancy
+        return tenancy.current_tenant()
+    except Exception:  # noqa: BLE001 — a tenant-resolution hiccup must not break redaction
+        return str(session.get("tenant_id") or "default")
+
+
+def _emit_ner_latency(service, started: float) -> None:
+    """Fire-and-forget `RedactionTier2NerLatencyMs` (off the response path, §9.5).
+    A metrics gap must never block or change a verdict."""
+    _fire_metric(service, "publish_redaction_ner_latency",
+                 latency_ms=round((time.perf_counter() - started) * 1000, 2))
+
+
+def _emit_egress_held(service) -> None:
+    """Fire-and-forget `EgressHeldCount` + `NerUnavailableCount` (E3, §9.5)."""
+    _fire_metric(service, "publish_redaction_egress_held")
+
+
+def _fire_metric(service, method_name: str, **kwargs) -> None:
+    """Best-effort fire-and-forget of a metrics_publisher coroutine from inside a
+    DAG node. Uses validation_service._fire_and_forget so the task is retained
+    (not GC'd) and any failure is swallowed — telemetry never blocks the verdict."""
+    publisher = getattr(service, "metrics_publisher", None)
+    emit = getattr(publisher, method_name, None)
+    if emit is None:
+        return
+    try:
+        from app.services.validation_service import _fire_and_forget
+        _fire_and_forget(emit(**kwargs), "metrics")
+    except Exception:  # noqa: BLE001 — telemetry must never block a verdict
+        logger.debug("redaction metric emit skipped (%s)", method_name, exc_info=True)
 
 
 def _apply_ml_enforce_wrapper(result: ValidationResult) -> ValidationResult:

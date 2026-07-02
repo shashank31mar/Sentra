@@ -788,6 +788,55 @@ async def delete_connection(connection_id: str) -> None:
         raise _connection_http(exc)
 
 
+@router.delete("/feedback/subjects/{subject_locator}")
+async def delete_feedback_subject(
+    subject_locator: str,
+    x_tenant_id: str = Header(None, alias="X-Tenant-Id"),
+    operator_email: str = Header(None, alias="X-Operator-Email"),
+) -> Dict:
+    """DSAR / GDPR subject deletion (WS-E2 / LLD 29 §6.4).
+
+    Deletes every redacted feedback record for a subject in the CALLER's tenant via
+    the `subject_locator` GSI. Tenant-scoped: the delete is bound to the resolved
+    tenant, so tenant A can never delete tenant B's records — a cross-tenant attempt
+    finds nothing under the caller's partition. A caller with no resolvable tenant
+    is a 403 (deny-by-default), never a silent fleet-wide delete.
+
+    Tenant resolution: prefer the verified request tenant (`current_tenant()`, set
+    by the identity path); fall back to an explicit `X-Tenant-Id` for the operator
+    console.
+
+    The honest GDPR claim (§6.4): "deletable by expiry (TTL) + by subject where a
+    subject key exists". A record with no `subject_locator` (no stable subject key
+    at write time) is TTL-only-deletable and is not reachable here — this endpoint
+    deletes only the subject-locatable records for the given locator.
+
+    Wiring note: this route must ALSO be added to `cdk/.../api_stack.py` per the
+    per-resource API-GW convention (an undefined gateway route 403s). That is
+    config wiring, deferred to the combined deploy step; the controller route +
+    logic is asserted here."""
+    from app.redaction.feedback_store import get_feedback_store
+    from app.utils import tenancy
+
+    resolved = tenancy.current_tenant()
+    # `default` means identity did not bind a real tenant; use the explicit header.
+    caller_tenant = x_tenant_id or (resolved if resolved != tenancy.DEFAULT_TENANT else None)
+    if not caller_tenant:
+        raise HTTPException(status_code=403, detail="no resolvable tenant for DSAR delete")
+
+    try:
+        deleted = get_feedback_store().delete_subject(subject_locator, tenant_id=caller_tenant)
+    except Exception as exc:  # noqa: BLE001 — surface a clean error, never a raw internal
+        logger.exception("feedback DSAR delete failed for locator")
+        raise HTTPException(status_code=500, detail="feedback deletion failed") from exc
+
+    logger.info(
+        "feedback DSAR delete: tenant=%s locator=<redacted> deleted=%d operator=%s",
+        caller_tenant, deleted, operator_email or "unknown",
+    )
+    return {"deleted": deleted, "tenant_id": caller_tenant}
+
+
 @router.post("/agents/{agent_id}/policies")
 async def attach_agent_policy(
     agent_id: str,

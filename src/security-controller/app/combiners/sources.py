@@ -28,6 +28,15 @@ class Source:
     SENTRA_CROSS_AGENT: Final[str] = "sentra.cross_agent"
     SENTRA_COMBINED: Final[str] = "sentra.combined"
 
+    # Tier-2 free-text PHI redaction barrier node (WS-E2 / LLD 29 §4.1, F1).
+    # DELIBERATELY a NON-`sentra` name (LLD 31 line-185 standing rule: zero new
+    # `sentra`-prefixed identifiers). The node redacts `content_text` in place and
+    # returns ALLOW/ABSTAIN — it is NOT a verdict producer and never competes in
+    # the deny-overrides combiner — but it MUST be a real registered source so the
+    # WS-D decision trail can join on it (an unregistered source → default_priority
+    # 0 → silently loses tie-breaks; register it explicitly below).
+    REDACTION_NER: Final[str] = "redaction.ner"
+
     # Edge (cloud-native) — emitted by connectors, not the controller
     BEDROCK_GUARDRAIL: Final[str] = "bedrock_guardrail"
     AZURE_CONTENT_FILTER: Final[str] = "azure_content_filter"
@@ -56,6 +65,11 @@ DEFAULT_PRIORITIES: dict[str, int] = {
     Source.SENTRA_CROSS_AGENT: 50,
     Source.BEDROCK_GUARDRAIL: 40,
     Source.AZURE_CONTENT_FILTER: 40,
+    # The redaction barrier never votes on the verdict (ALLOW/ABSTAIN only), so its
+    # priority is not used to rank a DENY. Registered at 0 explicitly so the source
+    # is a KNOWN taxonomy entry for the WS-D trail join (LLD 29 §4.1 FOOTGUN 2) —
+    # not an unknown that falls through default_priority's 0.
+    Source.REDACTION_NER: 0,
 }
 
 

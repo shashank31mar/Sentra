@@ -1,0 +1,209 @@
+"""WS-E2 — opt-in redacted feedback store (E8.4 / LLD 29 §15.3, §6).
+
+Hermetic (moto DynamoDB) tests for the write / eval-gate / opt-in / TTL / DSAR /
+tenant-isolation contract. The CDK table construct is stage 3; here we provision
+the §6.2-schema table via moto and exercise the write/DSAR logic against it.
+"""
+from __future__ import annotations
+
+import time
+
+import boto3
+import pytest
+from moto import mock_aws
+
+from app.config import settings
+from app.redaction.feedback_store import (
+    FeedbackGateFail,
+    FeedbackRecord,
+    FeedbackStore,
+    SUBJECT_LOCATOR_GSI,
+    derive_subject_locator,
+)
+
+
+TABLE = "sentra-redacted-feedback"
+
+
+@pytest.fixture
+def feedback_env(monkeypatch):
+    for k in ("AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN"):
+        monkeypatch.setenv(k, "testing")
+    monkeypatch.setenv("AWS_DEFAULT_REGION", settings.aws_region)
+    monkeypatch.setattr(settings, "dynamodb_feedback_store_table", TABLE)
+    # A non-empty salt so subject-locator derivation is exercised.
+    monkeypatch.setattr(settings, "feedback_subject_locator_salt", "unit-test-salt")
+    with mock_aws():
+        ddb = boto3.resource("dynamodb", region_name=settings.aws_region)
+        ddb.create_table(
+            TableName=TABLE,
+            KeySchema=[
+                {"AttributeName": "tenant_id", "KeyType": "HASH"},
+                {"AttributeName": "record_id", "KeyType": "RANGE"},
+            ],
+            AttributeDefinitions=[
+                {"AttributeName": "tenant_id", "AttributeType": "S"},
+                {"AttributeName": "record_id", "AttributeType": "S"},
+                {"AttributeName": "subject_locator", "AttributeType": "S"},
+            ],
+            GlobalSecondaryIndexes=[
+                {
+                    "IndexName": SUBJECT_LOCATOR_GSI,
+                    "KeySchema": [{"AttributeName": "subject_locator", "KeyType": "HASH"}],
+                    "Projection": {"ProjectionType": "ALL"},
+                }
+            ],
+            BillingMode="PAY_PER_REQUEST",
+        )
+        yield ddb
+
+
+def _record(tenant="t_a", *, payload=None, reason="policy denied", winning="sentra.policy"):
+    return FeedbackRecord(
+        tenant_id=tenant,
+        phase="content",
+        redacted_payload=payload if payload is not None else {"content_text": "note ⟦AEGR:x:NAME⟧"},
+        decision="DENY",
+        reason=reason,
+        winning_source=winning,
+        detector_outcomes={"sigma": "DENY"},
+        ttl_days=90,
+    )
+
+
+# --------------------------------------------------------------------- opt-in (§6.5)
+
+def test_non_opted_in_tenant_writes_no_record(feedback_env):
+    """Default OFF: a non-opted-in tenant produces NO record. Must FAIL if the
+    opt-in gate is bypassed or defaults ON (§6.5 FOOTGUN)."""
+    store = FeedbackStore()
+    rid = store.write_if_opted_in(_record(), opted_in=False, redacted=True)
+    assert rid is None
+    assert store.query_by_tenant("t_a") == []
+
+
+def test_opted_in_tenant_writes_redacted_record(feedback_env):
+    """An opted-in tenant with a clean redacted payload gets a record with the
+    §6.2 attributes (opt_in True, redaction_eval_pass True, bounded ttl)."""
+    store = FeedbackStore()
+    rid = store.write_if_opted_in(_record(), opted_in=True, redacted=True)
+    assert rid is not None
+    items = store.query_by_tenant("t_a")
+    assert len(items) == 1
+    it = items[0]
+    assert it["opt_in"] is True
+    assert it["redaction_eval_pass"] is True
+    assert int(it["ttl"]) > int(time.time())  # bounded, future TTL set
+
+
+# ------------------------------------------------------------------ redacted-only (I-1)
+
+def test_unredacted_payload_rejected(feedback_env):
+    """A raw (un-redacted) payload cannot be written — redacted-only invariant."""
+    store = FeedbackStore()
+    with pytest.raises(FeedbackGateFail):
+        store.write_if_opted_in(_record(), opted_in=True, redacted=False)
+    assert store.query_by_tenant("t_a") == []
+
+
+# ------------------------------------------------------------------- eval-gate (§6.3)
+
+def test_residual_identifier_blocks_write(feedback_env):
+    """A record marked redacted but carrying a residual identifier (a Tier-2 miss)
+    is caught by the STRONGER INDEPENDENT eval-gate and NOT written +
+    FeedbackRedactionGateFail. Must FAIL if the gate re-runs the primary (circular,
+    F3) or trusts the flag."""
+    store = FeedbackStore()
+    with pytest.raises(FeedbackGateFail):
+        store.write_if_opted_in(
+            _record(payload={"content_text": "ssn 123-45-6789"}),
+            opted_in=True, redacted=True,
+        )
+    assert store.query_by_tenant("t_a") == []
+
+
+def test_residual_in_reason_blocks_write(feedback_env):
+    """§6.2 FOOTGUN: a residual in the `reason` (not the payload) also blocks the
+    write — the eval-gate scans the WHOLE record, not just the payload."""
+    store = FeedbackStore()
+    with pytest.raises(FeedbackGateFail):
+        store.write_if_opted_in(
+            _record(reason="blocked: contained 123-45-6789"),
+            opted_in=True, redacted=True,
+        )
+    assert store.query_by_tenant("t_a") == []
+
+
+# ------------------------------------------------------------------ DSAR delete (§6.4)
+
+def test_dsar_delete_removes_subject(feedback_env):
+    """DELETE-by-subject removes every record for that subject via the GSI."""
+    store = FeedbackStore()
+    store.write_if_opted_in(_record(), opted_in=True, redacted=True, subject_key="acct-42")
+    store.write_if_opted_in(_record(), opted_in=True, redacted=True, subject_key="acct-42")
+    # A different subject in the same tenant must survive.
+    store.write_if_opted_in(_record(), opted_in=True, redacted=True, subject_key="acct-99")
+
+    locator = derive_subject_locator("acct-42", tenant_id="t_a",
+                                     salt=store._tenant_salt("t_a"))
+    deleted = store.delete_subject(locator, tenant_id="t_a")
+    assert deleted == 2
+    remaining = store.query_by_tenant("t_a")
+    assert len(remaining) == 1  # acct-99 survives
+
+
+def test_dsar_cross_tenant_deletes_nothing(feedback_env):
+    """Tenant-scoped: tenant B's DSAR for a locator that exists under tenant A
+    deletes NOTHING from A (the delete is bound to the caller's tenant). The route
+    returns the 403 for a caller with no tenant; here we prove the store never
+    crosses the boundary."""
+    store = FeedbackStore()
+    store.write_if_opted_in(_record("t_a"), opted_in=True, redacted=True, subject_key="acct-42")
+    locator = derive_subject_locator("acct-42", tenant_id="t_a",
+                                     salt=store._tenant_salt("t_a"))
+    # Tenant B asks to delete the SAME locator → nothing under B's partition.
+    deleted = store.delete_subject(locator, tenant_id="t_b")
+    assert deleted == 0
+    # Tenant A's record is untouched.
+    assert len(store.query_by_tenant("t_a")) == 1
+
+
+def test_no_subject_key_is_ttl_only(feedback_env):
+    """A record with no stable subject key gets NO subject_locator (TTL-only-
+    deletable, §6.4) — we do not claim subject-targeted deletion for it."""
+    store = FeedbackStore()
+    store.write_if_opted_in(_record(), opted_in=True, redacted=True, subject_key=None)
+    it = store.query_by_tenant("t_a")[0]
+    assert "subject_locator" not in it
+
+
+# -------------------------------------------------------------- tenant isolation (NFR-6)
+
+def test_tenant_isolation_query(feedback_env):
+    """A tenant-A query can never return tenant-B records (PK-scoped, §6.2)."""
+    store = FeedbackStore()
+    store.write_if_opted_in(_record("t_a"), opted_in=True, redacted=True)
+    store.write_if_opted_in(_record("t_b"), opted_in=True, redacted=True)
+    a_rows = store.query_by_tenant("t_a")
+    assert all(r["tenant_id"] == "t_a" for r in a_rows)
+    assert len(a_rows) == 1
+
+
+# ---------------------------------------------------------------- locator derivation
+
+def test_subject_locator_is_salted_and_per_tenant(feedback_env):
+    """The locator is a salted keyed hash — the SAME subject key yields DIFFERENT
+    locators under different tenants (not cross-tenant-linkable, §6.4)."""
+    store = FeedbackStore()
+    la = derive_subject_locator("acct-42", tenant_id="t_a", salt=store._tenant_salt("t_a"))
+    lb = derive_subject_locator("acct-42", tenant_id="t_b", salt=store._tenant_salt("t_b"))
+    assert la and lb and la != lb
+    # Not the raw key.
+    assert "acct-42" not in la
+
+
+def test_no_salt_yields_ttl_only_locator():
+    """No configured salt → no locator emitted (we never emit an unsalted/linkable
+    one); the record is TTL-only-deletable."""
+    assert derive_subject_locator("acct-42", tenant_id="t_a", salt="") is None
+    assert derive_subject_locator(None, tenant_id="t_a", salt="s") is None

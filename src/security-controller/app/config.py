@@ -205,7 +205,25 @@ class Settings(BaseSettings):
     signal_store_ttl_days: int = Field(default=90, validation_alias="SIGNAL_STORE_TTL_DAYS")
     signal_store_write_timeout_ms: int = Field(default=200, validation_alias="SIGNAL_STORE_WRITE_TIMEOUT_MS")
     signal_store_batch_max_retries: int = Field(default=3, validation_alias="SIGNAL_STORE_BATCH_MAX_RETRIES")
-    
+
+    # WS-E2 (LLD 29 §6) — the opt-in redacted feedback store. A SEPARATE tenant-
+    # scoped table (NET-NEW; NOT the signal store, NOT the meter store). The CDK
+    # construct is stage 3; this stage writes/DSARs against it via moto in tests.
+    # PK tenant_id / SK record_id, GSI subject-locator-index, DynamoDB TTL on `ttl`.
+    dynamodb_feedback_store_table: str = Field(
+        default="sentra-redacted-feedback", validation_alias="FEEDBACK_STORE_TABLE"
+    )
+    # Bounded TTL (§6.2 — default 90 days, DPA-scoped placeholder; counsel sets the
+    # final value). Every feedback record MUST expire; never indefinite retention.
+    feedback_store_ttl_days: int = Field(default=90, validation_alias="FEEDBACK_STORE_TTL_DAYS")
+    # Per-tenant HMAC salt base for DSAR `subject_locator` derivation (§6.4). Empty
+    # (default) → records are TTL-only-deletable (no subject-targeted locator emitted
+    # — we do NOT emit an unsalted/linkable locator). In prod this is a KMS-backed
+    # secret injected via env; NEVER a hardcoded value.
+    feedback_subject_locator_salt: str = Field(
+        default="", validation_alias="FEEDBACK_SUBJECT_LOCATOR_SALT"
+    )
+
     # Validation Configuration
     validation_timeout_seconds: int = 5
     max_validation_latency_ms: int = 100

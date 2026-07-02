@@ -84,6 +84,13 @@ class Tenant:
     # tenant onto the hosted /v1/validate path (incident escape hatch for one bad
     # bundle, without a fleet-wide fallback). NEVER means "skip validation".
     local_floor_enabled: Optional[bool] = None
+    # DPA-scoped opt-in for the redacted feedback store (WS-E2 / LLD 29 §6.5).
+    # Default False — DENY-BY-DEFAULT: a non-opted-in tenant produces NO feedback
+    # record (an accidental default-ON is a clause-(b) + consent breach, §6.5
+    # FOOTGUN; mirrors the platform_read_consent / local_floor conservative-off
+    # posture). Gates ONLY the persisted store; transient PHI redaction is
+    # always-on under the BAA (§4.2, no consent gate).
+    feedback_opt_in: bool = False
     deletion_cursor: Dict[str, str] = field(default_factory=dict)
     created_at: int = 0
     created_by: str = ""
@@ -101,6 +108,8 @@ class Tenant:
             # Absent attribute → None → inherit the fleet flag (WS-I I5.3).
             local_floor_enabled=(None if item.get("local_floor_enabled") is None
                                  else bool(item.get("local_floor_enabled"))),
+            # Absent attribute → False (deny-by-default opt-in, §6.5).
+            feedback_opt_in=bool(item.get("feedback_opt_in", False)),
             deletion_cursor=dict(item.get("deletion_cursor") or {}),
             created_at=int(item.get("created_at", 0)),
             created_by=item.get("created_by", ""),
