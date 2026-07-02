@@ -10,7 +10,9 @@ Covers the code-respond fixes on the SERVED side of the Tier-2 redactor
     / mis-secret caller is 401 BEFORE redaction; the correct secret is 200; unset ⇒
     the network layer is the sole control (header not required).
   * §9.6 DoS bound — an over-count / over-length body is rejected 413 before any
-    regex pass runs.
+    regex pass runs; a NON-size validation error (missing tenant_id, wrong type)
+    stays a plain 422; and the 413-vs-422 split keys on the STABLE error CODE
+    (`_OVERSIZE_ERROR_CODE`), not a substring of the human-readable message.
   * §5.4 / E3 egress-fail-closed — a redactor OUTAGE (`NerUnavailable`) on the
     served endpoint returns the honest HTTP 503 with a correlation id and NEVER a
     fake-200, the raw body, the raw exception message, or a stack trace.
@@ -128,6 +130,80 @@ def test_oversized_body_rejected_413(monkeypatch):
     too_long = {"fields": {"a": "z" * 100}, "tenant_id": "t"}
     r = client.post("/v1/redact", json=too_long)
     assert r.status_code == 413, r.text
+
+
+def test_plain_validation_error_is_422_not_413(monkeypatch):
+    """§9.6 split (untested-gap close): a NON-size validation error → 422, NOT 413.
+
+    The 413-vs-422 handler must reserve 413 for the oversize (DoS) bound and return
+    a plain 422 for every OTHER schema violation. This pins the plain-422 branch
+    end-to-end so a regression that routed *all* validation errors to 413 (e.g. a
+    broken/over-broad oversize check) goes RED here instead of silently green.
+
+      * missing required ``tenant_id``          → 422
+      * wrong type for ``fields`` (str, not map) → 422
+    Both are BELOW the size bounds, so nothing legitimately triggers the 413 branch.
+    """
+    monkeypatch.delenv("PHI_NER_CALLER_SECRET", raising=False)
+    client = TestClient(create_served_app())
+
+    missing_tenant = client.post("/v1/redact", json={"fields": {"a": "hi"}})
+    assert missing_tenant.status_code == 422, missing_tenant.text
+    assert missing_tenant.json()["error"] == "invalid_request"
+
+    wrong_fields_type = client.post(
+        "/v1/redact", json={"fields": "not-a-map", "tenant_id": "t"}
+    )
+    assert wrong_fields_type.status_code == 422, wrong_fields_type.text
+    assert wrong_fields_type.json()["error"] == "invalid_request"
+
+
+def test_413_classified_by_stable_error_code_not_message():
+    """§9.6: the oversize→413 split keys on the STABLE error CODE, not the message.
+
+    Fragility guard for the fixed handler. The size validator raises a
+    ``PydanticCustomError`` whose ``type`` is ``_OVERSIZE_ERROR_CODE``; the handler
+    classifies 413 on that code. This drives the handler directly with a
+    ``RequestValidationError`` carrying the stable code but a DELIBERATELY DIFFERENT
+    human message — proving the classification survives a message rewording and is
+    NOT the old ``"too many fields" in str(exc)`` substring match (which would fall
+    through to 422 on this message and fail the assertion). A plain ``"missing"``
+    code through the SAME handler must map to 422.
+    """
+    import asyncio
+
+    from fastapi.exceptions import RequestValidationError
+
+    assert phi_ner._OVERSIZE_ERROR_CODE == "phi_ner_oversize"
+
+    app = create_served_app()
+    handler = app.exception_handlers[RequestValidationError]
+
+    oversize = RequestValidationError(
+        [
+            {
+                "type": phi_ner._OVERSIZE_ERROR_CODE,
+                "loc": ("body", "fields"),
+                "msg": "payload exceeds the configured request envelope",  # reworded
+                "input": {},
+            }
+        ]
+    )
+    resp = asyncio.new_event_loop().run_until_complete(handler(None, oversize))
+    assert resp.status_code == 413
+
+    plain = RequestValidationError(
+        [
+            {
+                "type": "missing",
+                "loc": ("body", "tenant_id"),
+                "msg": "Field required",
+                "input": {},
+            }
+        ]
+    )
+    resp2 = asyncio.new_event_loop().run_until_complete(handler(None, plain))
+    assert resp2.status_code == 422
 
 
 def test_redactor_outage_fails_closed_503(monkeypatch):

@@ -297,8 +297,18 @@ import os
 import uuid as _uuid
 
 from pydantic import BaseModel, Field as _PydField, field_validator
+from pydantic_core import PydanticCustomError
 
 _served_logger = _logging.getLogger("phi_ner.served")
+
+# Stable machine error CODE for an over-bound body (§9.6 DoS surface). The size
+# validator raises a `PydanticCustomError` carrying THIS `type`, and the endpoint's
+# validation handler keys the 413-vs-422 split on
+# `err["type"] == _OVERSIZE_ERROR_CODE` — a stable pydantic-core contract that
+# survives message rewording — NOT on substring-matching the human-readable message
+# (which pydantic or we could reword, silently reclassifying a 413 as a 422). The
+# code is the join key; the prose message stays free to change.
+_OVERSIZE_ERROR_CODE = "phi_ner_oversize"
 
 # Input bounds (§9.6 DoS surface): the served fleet is a warm 2 vCPU / 4 GB pool
 # running per-field regex passes (some backtracking-prone), so an unbounded body
@@ -348,15 +358,23 @@ class RedactRequest(BaseModel):
     def _bound_fields(
         cls, v: Dict[str, Optional[str]]
     ) -> Dict[str, Optional[str]]:
+        # An over-bound body carries the STABLE `_OVERSIZE_ERROR_CODE` type (a
+        # `PydanticCustomError`) so the endpoint classifies it 413 by ERROR CODE,
+        # not by substring-matching the prose message. The message is still
+        # human-readable but is NOT the classification key (it may be reworded
+        # without silently flipping the 413/422 split).
         if len(v) > _MAX_FIELDS:
-            raise ValueError(
-                f"too many fields: {len(v)} > max {_MAX_FIELDS}"
+            raise PydanticCustomError(
+                _OVERSIZE_ERROR_CODE,
+                "too many fields: {count} > max {maximum}",
+                {"count": len(v), "maximum": _MAX_FIELDS},
             )
         for field_id, text in v.items():
             if text is not None and len(text) > _MAX_FIELD_CHARS:
-                raise ValueError(
-                    f"field {field_id!r} too large: "
-                    f"{len(text)} chars > max {_MAX_FIELD_CHARS}"
+                raise PydanticCustomError(
+                    _OVERSIZE_ERROR_CODE,
+                    "field too large: {count} chars > max {maximum}",
+                    {"count": len(text), "maximum": _MAX_FIELD_CHARS},
                 )
         return v
 
@@ -472,9 +490,16 @@ def create_served_app():
     async def _validation_413(_request: Request, exc: RequestValidationError):
         # A body that violates the size/field-count bounds (§9.6) is an oversized
         # request → the honest 413, never a redaction on an unbounded body. Other
-        # validation errors keep the standard 422. Never echo the raw body.
-        msg = str(exc)
-        if "too many fields" in msg or "too large" in msg:
+        # validation errors (missing tenant_id, wrong type for `fields`, …) keep the
+        # standard 422. Classification keys on the STABLE per-error `type` code
+        # (`_OVERSIZE_ERROR_CODE`, set by the size validator's PydanticCustomError) —
+        # NOT on substring-matching the human-readable message, so a future
+        # pydantic/message rewording cannot silently reclassify a 422 as a 413 (or
+        # vice-versa). Never echo the raw body.
+        oversize = any(
+            err.get("type") == _OVERSIZE_ERROR_CODE for err in exc.errors()
+        )
+        if oversize:
             return JSONResponse(
                 status_code=413, content={"error": "request_too_large"}
             )
