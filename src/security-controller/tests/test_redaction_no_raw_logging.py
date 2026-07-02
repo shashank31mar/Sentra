@@ -66,27 +66,27 @@ def test_unflagged_content_dropped_and_alarmed():
     assert safe["user_input"] == _GATE_DROPPED_MARKER
 
 
-def test_legacy_no_nonce_content_preserved_for_downstream_truncation():
-    """TRANSITION (WS-E2 edge-rollout ordering): a PRE-EDGE (legacy) request with NO
-    `redaction_nonce` — a live agent not yet on the Tier-1 SDK — must NOT be dropped
-    by the guard. It falls through to the historical audit contract (downstream
-    `_shared_attrs`/`_build_log_event` truncate user_input to 200), so the audit
-    trail is preserved during rollout. Dropping it would silently gut the trail for
-    every not-yet-rolled agent. This is NOT fail-open: no raw-FULL field is persisted
-    (downstream truncation is the pre-guard behavior that always shipped)."""
+def test_unflagged_request_dropped_regardless_of_nonce():
+    """POST-ROLLOUT strict fail-secure (transition branch REMOVED 2026-07-02 after the
+    connector edge-rollout completed — all 3 live acme agents send redacted=True). An
+    unflagged request is now a real anomaly and its content is DROPPED, whether or not
+    it carries a `redaction_nonce`. The nonce no longer gates enforcement (there is no
+    un-rolled/legacy agent left to protect). Content-bearing raw must never persist."""
     lg = _logger()
+    metrics = Mock()
+    lg._metrics_publisher = metrics
+    metrics.publish_raw_content_blocked_metric = Mock()
     request = {
         "session_id": "s1", "request_id": "r1", "agent_id": "acme-payments-agent",
-        "user_input": "what's my balance?", "tool_params": {"account_id": "12345"},
-        # NO redaction_nonce, NO redacted flag → legacy/pre-edge agent
+        "user_input": f"my ssn is {_RAW_SSN}", "tool_params": {"account_id": "12345"},
+        # NO redaction_nonce, NO redacted flag → dropped fail-secure (not truncated)
     }
     safe = lg._guard_persist(request, combined_reason=None)
 
-    # The guard did NOT drop the content — it is passed through unchanged for the
-    # downstream truncating writers (the pre-WS-E2 audit behavior).
-    assert safe["user_input"] == "what's my balance?"
-    assert safe["tool_params"] == {"account_id": "12345"}
-    assert _GATE_DROPPED_MARKER not in json.dumps(safe)
+    # STRICT: content dropped, raw absent, marker present.
+    assert _RAW_SSN not in json.dumps(safe)
+    assert safe["user_input"] == _GATE_DROPPED_MARKER
+    assert safe["tool_params"] == _GATE_DROPPED_MARKER
 
 
 def test_flagged_but_residual_content_dropped():
