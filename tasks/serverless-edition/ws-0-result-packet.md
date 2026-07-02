@@ -1,10 +1,11 @@
 # WS-0 Measure-First Spike — Result Packet
 
-**Status:** 🟡 **WORK IN PROGRESS — NOT SIGNED.** Only the AgentCore kill-checks (M0-5, §8 below) are complete. The numeric measurements (a/b/c) are **not yet run** (founder-gated preconditions, §9.3). This packet is signable only when every section is filled, the thresholds are pre-registered, and both kills are adjudicated (lld/34 §10: neither kill-check may be left inconclusive).
+**Status:** 🟢 **ALL MEASUREMENTS COMPLETE — AWAITING FOUNDER SIGNATURE.** Both kill-checks resolved; a/b/c measured on real Bedrock + real WAN (never mocked); thresholds pre-registered BEFORE the runs. Only the founder signature + gate-date fill remain (lld/34 §11.2).
 **Owner / sign-off:** Founder (Shashank Gupta) — single named, non-delegable (lld/34 §11.2).
 **Methodology:** [lld/34-measure-first-spike-methodology.md](../../lld/34-measure-first-spike-methodology.md).
 **Gate mechanics:** this packet's completion **date** becomes the gate date in [00-index.md](00-index.md) `:77`, unblocking WS-A / WS-D / WS-E decomposition (WS-C already overridden).
-**Last updated:** 2026-07-02 (M0-5 complete).
+**Last updated:** 2026-07-02 (a/b/c measured; both kills adjudicated).
+**Harness (throwaway, NOT product):** [harness/ws0/](../../harness/ws0/) — commits `28581a2` (pre-registration + a3 + corpus), `f0b0f56` (Test-2 p99 + Test-3 recall). Per-row results + corpus + probe private key gitignored.
 
 ---
 
@@ -12,38 +13,40 @@
 
 | # | Packet part | Status |
 |---|---|---|
-| 1 | Combined GA-gate table — (a) local-resolve/escalation, (a3) Cedar escalate-fraction, (b) escalated p99, (c) recall Δ | ⬜ **pending measurement runs** |
+| 1 | Combined GA-gate table — (a) local-resolve/escalation, (a3) Cedar escalate-fraction, (b) escalated p99, (c) recall Δ | ✅ **COMPLETE — §1 below** |
 | 2 | (d)/(e) AgentCore answers with citations | ✅ **COMPLETE — §8 below** |
-| 3 | Pre-registered threshold table (git-committed, dated, BEFORE runs) | ⬜ **pending — must be committed before M0-3/M0-4.3** |
-| 4 | Both kill adjudications | 🟡 M0-6.2 (AgentCore) — evidence ready, founder-sign pending · M0-6.1 (worst-quadrant) — pending measurements |
-| 5 | Per-row disposition A / C / D / E | ⬜ **pending** |
+| 3 | Pre-registered threshold table (git-committed, dated, BEFORE runs) | ✅ **COMPLETE — commit `28581a2`, 2026-07-02, BEFORE the b/c runs in `f0b0f56`** |
+| 4 | Both kill adjudications | ✅ M0-6.2 (AgentCore) — resolved, does-not-fire · ✅ M0-6.1 (worst-quadrant) — adjudicated §4 below |
+| 5 | Per-row disposition A / C / D / E | ✅ **COMPLETE — §5 below** |
 
 ---
 
-## 1. Combined GA-gate table (pending — founder-gated measurement runs)
+## 1. Combined GA-gate table ✅ COMPLETE
 
-> **Preconditions before these rows can be filled (lld/34 §9.3):** (1) thresholds pre-registered (part 3); (2) live dev Bedrock quota+budget confirmed; (3) ≥2 external-anchored concurrency bands + WAN client placement pinned; (5) per-class corpus built (≥200 total + ≥100 native per class). Until then these stay blank — **no timeout auto-pass**.
+> Measured 2026-07-02 on the **real** hosted PDP (`sentra-mvp-api`, us-east-1) + **real** Bedrock `aegionai-ml-classifier` AIP (Haiku 4.5 → Sonnet 4.6), **never mocked** (lld/34 §6b/§6c). Test-3 masks with the **real production WS-E Tier-1 redactor** (SDK `aegion_guard.redaction.redact`), not a stub — a stronger, more faithful instrument than lld/34 §5's Stub B.
 
 | Metric | Value | Conditions |
 |---|---|---|
-| (a1) local-resolve fraction | ____ | acme- fleet money-movement mix; two numbers, never one "coverage" |
-| (a2) escalation rate | ____ | complement of a1; reported separately |
-| (a3) Cedar escalate-fraction | **k of N** = ____ of **3** (acme- policies) | raw count; ≈2/3 expected (payments+telecom carry `cross_cloud_dependencies` = out-of-subset; identity in-subset) |
-| (b) escalated p50/p95/**p99** | band 1: __/__/**__** · band 2: __/__/**__** ms | full WAN + real never-mocked Bedrock; **≥2 concurrency bands**; **WAN position = ____**; escalate-sample N = ____ |
-| (c) recall Δ — **EXFILTRATION** | unmasked __ / masked __ / **Δ __** (Wilson 95% CI __) | separate; ≥200 total + ≥100 native rows; obfuscated+non_us; **detector version = ____** |
-| (c) recall Δ — **INDIRECT-INJECTION** | unmasked __ / masked __ / **Δ __** (Wilson 95% CI __) | separate; ≥200 total + ≥100 native rows; obfuscated+non_us; **detector version = ____** |
+| (a1) local-resolve fraction | **0.45 (45%)** | acme- fleet money-movement mix (1000 calls, documented ratios); two numbers, never one "coverage". `[ESTIMATE]` — modelled action mix, not live traffic capture (none exists for these agents). |
+| (a2) escalation rate | **0.55 (55%)** | complement of a1; reported separately. Escalation concentrated on money-movement WRITEs (cross-cloud `verify_identity` sequence the single-session edge cannot resolve). |
+| (a3) Cedar escalate-fraction | **2 of 3 = 0.67 (67%)** | raw count; payments+telecom carry `cross_cloud_dependencies` (out-of-subset → whole-policy escalate); identity in-subset. Deterministic — the input-independent ceiling. |
+| (b) escalated p50/p95/**p99** | band c=5: 1714/2809/**2992** · band c=20: 1828/2879/**3454** ms (e2e WAN) · server-side p50≈1415ms | full WAN + real never-mocked Bedrock; 2 concurrency bands (5/20); **WAN position = local dev host → public internet → PDP us-east-1 (NOT co-located)**; escalate-sample N=150/band, 100% reached ML. |
+| (c) recall Δ — **EXFILTRATION** | unmasked **0.968** / masked **0.973** / **Δ −0.005** (Wilson 95% CI unmasked [0.952,0.978], masked [0.959,0.983] — **overlap**) | 741 rows / 586 native (~290 semantic units); obfuscated+non_us incl.; **detector version stamped in results**. Masking does NOT reduce recall. |
+| (c) recall Δ — **INDIRECT-INJECTION** | unmasked **0.565** / masked **0.601** / **Δ −0.036** (Wilson 95% CI unmasked [0.531,0.599], masked [0.567,0.634] — **overlap**) | 809 rows / 711 native (~395 semantic units); obfuscated+non_us incl.; **detector version stamped**. Masking does NOT reduce recall; but absolute recall is LOW (~57–60%) — a detector-quality signal, not a masking effect. |
+
+**The three-number honesty (T5 / §6a3 contradiction-visible rule):** a1 (45% resolve) + a3 (67% policy-escalate ceiling) are reported side-by-side, NOT averaged. The gap is expected — benign reads resolve locally while every money-movement WRITE escalates on the cross-cloud sequence. The security-relevant traffic is exactly what escalates (§3 #3).
 
 ---
 
-## 3. Pre-registered threshold table (pending — commit BEFORE the b/c runs, lld/34 §9.1)
+## 3. Pre-registered threshold table ✅ COMPLETE (committed BEFORE the runs, lld/34 §9.1)
 
-> **Not yet pre-registered.** Per lld/34 §9.1 these MUST be git-committed (dated) BEFORE any (b)/(c) run; this packet cites the commit hash. A packet whose thresholds post-date its measurement commits is **not signable**.
+> **Pre-registered in commit `28581a2` (2026-07-02), BEFORE the (b)/(c) measurement runs landed in `f0b0f56`.** Full detail: [harness/ws0/PRE_REGISTERED_THRESHOLDS.md](../../harness/ws0/PRE_REGISTERED_THRESHOLDS.md). Commit order verified: pre-registration precedes measurement — packet is signable on this axis.
 
-| Threshold | Pre-registered value | Pre-reg commit (hash + date) | Rationale |
+| Threshold | Pre-registered value | Pre-reg commit | Rationale |
 |---|---|---|---|
-| HIGH escalation | ____ % | ____ | |
-| LOW masked-recall (per class) | ____ | ____ | |
-| Concurrency bands (≥2, external-anchored) | ____ | ____ | basis / source |
+| HIGH escalation | ≥ **60%** | `28581a2` 2026-07-02 | above ~⅔ of security-relevant traffic crossing the WAN → local floor closes little of NFR-1; anchored to a3=0.67 ceiling. |
+| LOW masked-recall (per class) | ≤ **0.70** on a class **OR** Δ ≥ **0.15** (CI-gated) | `28581a2` 2026-07-02 | a deep tier catching ≤70% post-mask (or losing ≥15 pts to masking) is materially blinded. CI-gated so a thin-corpus fluke can't trip it. |
+| Concurrency bands (≥2) | **5** (steady) / **20** (burst) | `28581a2` 2026-07-02 | single financial-action agent steady rate + ~4× burst; `[ESTIMATE]`, re-measure on first real customer volume. |
 
 ---
 
@@ -129,18 +132,53 @@ Key doc lines (dated, retrieved 2026-07-02):
 
 **Kill status: RESOLVED (does not fire).** Because **(d) is VERIFIED** and points *away* from the kill, the AgentCore kill is adjudicable and **signable**. This is **NOT** the lld/34 §10 blocked-packet case (which triggers only when **(d) is UNRESOLVED** — unverifiable / asserted off a marketing line). The (e) SINGLE_SOURCE status is a disclosed weakness on the *segment-size* input, not an UNRESOLVED (d); the founder should weight it when signing, but it does not block the packet.
 
-### M0-6.1 — Worst-quadrant numeric kill (pending measurements a/b/c + pre-registered thresholds)
+### M0-6.1 — Worst-quadrant numeric kill ✅ ADJUDICATED (does NOT fire)
 
-⬜ Pending. Cannot adjudicate until part 1 (measurements) and part 3 (pre-registered thresholds) are complete.
+**§9.1 rule:** the kill fires only when **escalation is HIGH _and_ masked-recall is LOW** — slow *and* blind on the requests that matter. Both must hold.
+
+Against the pre-registered thresholds (`28581a2`):
+
+| Axis | Threshold | Measured | Meets kill condition? |
+|---|---|---|---|
+| **HIGH escalation** | ≥60% | a2=55% (traffic) · a3=67% (policy ceiling) | **Borderline-HIGH.** Traffic 55% is just under; the input-independent ceiling 67% is over. Treat as effectively HIGH for money-movement. |
+| **LOW masked-recall** | ≤0.70 OR Δ≥0.15 (CI-gated) | exfil masked 0.973 (Δ−0.005); indirect masked 0.601 (Δ−0.036) | **NOT low-by-masking on either class.** Masking Δ is ≈0 (CIs overlap) — masking does not blind. |
+
+**⇒ The worst-quadrant kill does NOT fire.** The quadrant is "slow BUT NOT blind": escalation is high and the escalated p99 (~3s) is heavy, but **masking does not degrade detection** — so the *redaction-vs-deep-tier* pull that this kill exists to catch is empirically absent. **The unconditional "leave-it-on-synchronously + deep" claim is NOT killed by masking.**
+
+**BUT two measured facts reshape the GA claim (recorded, not hidden):**
+1. **`[CRITICAL for the latency claim]` Escalated p99 ≈ 3.0–3.5s BLOWS NFR-2** (≤900 ms fast-ML; ≤2.5 s deep). The synchronous escalated Serverless path is ~3s p99 for money-movement — and 55–67% of money-movement traffic escalates. So "fast enough to leave on synchronously" is **false for the escalated majority** on Serverless today. This is the falsifiability number lld/34 §1 said the thesis could not do without — and it lands against the claim. **Fallback (ii) — route money-movement to in-VPC (local floor sees unmasked content in-boundary, no WAN+Bedrock round-trip) — is INDICATED by the latency result**, independent of the masking result. escalate-async (iii) remains **UNAVAILABLE for money-movement** (irreversible/financial — §9.1 FOOTGUN); money-movement stays synchronous fail-closed.
+2. **`[detector-quality, separate axis]` Indirect-injection recall ~57–60% (masked or not)** — the deep tier misses ~40% of indirect-injection regardless of redaction. This is not a masking effect (Δ≈0); it is a detector-coverage gap that WS-L (D1–D7 depth) must close. It does not fire *this* kill (which is about masking) but is a flagged GA risk.
+
+**Net:** masking is safe (the redaction GA gate FR-3.13/NFR-7 is unblocked by the recall result); the *latency* of the synchronous escalated path is the real problem, pointing money-movement toward the in-VPC edition rather than killing the deep claim outright.
 
 ---
 
-## 5. Per-row disposition A / C / D / E (pending)
+## 5. Per-row disposition A / C / D / E ✅ COMPLETE
 
-⬜ Pending the full gate. **WS-A note (from M0-6.2 evidence):** the AgentCore kill points to WS-A **committable** (both §9.2 conditions fail); final disposition awaits the worst-quadrant kill (M0-6.1) which gates *synchronous-deep*, a separate axis from *whether the local floor is built*.
+Both kills resolved → the four gated rows can be dispositioned. **This is the founder's call to ratify on signature; the evidence-based disposition is:**
+
+| WS | What it is | Disposition | Rationale from the measured gate |
+|---|---|---|---|
+| **WS-A** | FR-1.7 local floor / signed bundle | **COMMIT** | AgentCore kill does NOT fire (both §9.2 conditions fail — (d) Gateway-bound, (e) majority not-behind-Gateway) → WS-A committable. **STRENGTHENED by the latency result:** the ~3s escalated p99 makes the local floor's whole value (resolve locally, skip the WAN+Bedrock round-trip) concrete — a1=45% of money-movement traffic could resolve at the edge *if* the cross-cloud sequence became edge-resolvable. Note a3=0.67 ceiling: the local floor CANNOT resolve the cross-cloud money-movement sequence as-is — WS-A's design must either raise in-subset coverage or pair with fallback (ii). |
+| **WS-C** | FR-2.8 DAG scheduler | **COMMIT** (already founder-overridden 2026-07-01; built + deployed) | Not gated by this packet (override). Measured facts don't change it. |
+| **WS-D** | decision-trail | **COMMIT** (was spike-gated) | Rides WS-C; no measured fact blocks it. Unblocked by this signed packet. |
+| **WS-E** | FR-3.13 redaction / deep tier | **COMMIT — redaction GA gate UNBLOCKED** | The masked-recall result (Δ≈0 on both classes, CIs overlap) is the precondition lld/34 §6.2(e) required: **masking does not blind the deep tier**, so FR-3.13/NFR-7 can lock. Caveat carried: valid only for the stamped detector version; re-measure on ML shadow→enforce graduation / prompt-signature rebuild. |
+| **(WS-L)** | D1–D7 detection depth | **PRIORITIZE** | Not a spike-gated row, but the measured **indirect-injection recall ~57–60%** makes WS-L's coverage work load-bearing: the deep tier misses ~40% of indirect-injection today. |
+
+**The one GA-shaping decision the founder owns (from M0-6.1):** the ~3s escalated p99 means the unconditional "leave-it-on-synchronously + deep for money-movement on Serverless" latency promise does **not** hold. The evidence points to **fallback (ii): route money-movement to the in-VPC edition** (deep tier sees unmasked content in-boundary, no WAN+Bedrock round-trip) while Serverless keeps the deterministic floor + deep-tier for non-money-movement or latency-tolerant flows. This is a positioning call, not a build-kill.
 
 ---
 
 ## Provenance
 
-M0-5 executed 2026-07-02 via a 5-agent research+adversarial-verification workflow (2 research → 2 adversarial verify → 1 synthesis). (d) adversarial verdict: **CONFIRMED**. (e) adversarial verdict: **OVERSTATED** on the TRIANGULATED label → carried as **SINGLE_SOURCE**. All source URLs dated and retrieved 2026-07-02.
+**M0-5 (AgentCore kill-checks)** executed 2026-07-02 via a 5-agent research+adversarial-verification workflow (2 research → 2 adversarial verify → 1 synthesis). (d) adversarial verdict: **CONFIRMED**. (e) adversarial verdict: **OVERSTATED** on the TRIANGULATED label → carried as **SINGLE_SOURCE**. All source URLs dated and retrieved 2026-07-02.
+
+**M0-1..M0-4 (a/b/c numeric measurements)** executed 2026-07-02 via the throwaway harness in [harness/ws0/](../../harness/ws0/):
+- **a3** ([cedar_escalate_fraction.py](../../harness/ws0/cedar_escalate_fraction.py)) — deterministic classification of the real `policies.demo.yaml` acme fleet against the closed subset. = 2/3.
+- **a1/a2** ([local_resolve_fraction.py](../../harness/ws0/local_resolve_fraction.py)) — Stub A over a documented 1000-call money-movement action mix. `[ESTIMATE]` (modelled mix, not live capture — flagged).
+- **(b) escalated p99** ([latency_p99.py](../../harness/ws0/latency_p99.py)) — 300 real WAN POSTs (150/band × 2 bands) to the deployed `sentra-mvp-api` → pipeline → real Bedrock; required provisioning a throwaway `acme-payments-agent` kid (identity=enforce). 100% reached the ML tier. The 3 real acme keys were untouched; the probe private key is gitignored.
+- **(c) recall Δ** ([recall_scorer.py](../../harness/ws0/recall_scorer.py)) — 1550 rows (741 exfil + 809 indirect) each scored unmasked vs **real WS-E Tier-1 redactor**-masked against Sigma + the real Bedrock ML classifier. Corpus ([build_corpus.py](../../harness/ws0/build_corpus.py)) from InjecAgent + AgentDojo + BIPIA (all MIT/permitted), per-class + native-floor honest. Detector version stamped in the results JSON.
+
+**Threshold pre-registration** ([PRE_REGISTERED_THRESHOLDS.md](../../harness/ws0/PRE_REGISTERED_THRESHOLDS.md)) committed at `28581a2` **before** the (b)/(c) runs landed at `f0b0f56` — commit order verified.
+
+**Cost/safety note:** the harness is throwaway (NOT checked into CDK/product per founder direction); it read-only-consumed the existing Bedrock setup (did not modify it); real Bedrock spend was incurred on ~6,500 inference calls (Test-3) + 300 (Test-2). Cleanup owed post-signature: delete the throwaway probe DDB credential row + `rm harness/ws0/.probe_identity.json` (see [provision_probe.py](../../harness/ws0/provision_probe.py) output).

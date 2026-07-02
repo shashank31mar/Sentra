@@ -1,0 +1,11 @@
+{
+  "a1_local_resolve_fraction": 0.45,
+  "a2_escalation_rate": 0.55,
+  "n_calls": 1000,
+  "reasons": {
+    "literal tool allow-set (in-subset) \u2192 local resolve (ALLOW)": 400,
+    "cross-cloud sequence precondition (out-of-subset) \u2192 escalate": 550,
+    "prompt-signature pattern (in-subset) \u2192 local resolve (DENY)": 50
+  },
+  "note": "escalation concentrated on money-movement writes (cross-cloud sequence, out-of-subset); benign reads resolve locally"
+}
