@@ -66,3 +66,30 @@ def _neg_source(source: str) -> tuple:
     # max() picks the largest tuple; we want alphabetically *first* to win
     # the tie, so negate by inverting each codepoint.
     return tuple(-ord(c) for c in source)
+
+
+def pick_top_denier(signals: Sequence[Signal]) -> "Signal | None":
+    """Return the single highest-ranked DENY Signal, or None if there are no
+    DENYs — WS-C / LLD 31 §6.4 (ADDITIVE; the ranking is NOT changed).
+
+    This REUSES `DenyOverrides.combine()`'s exact ranking so the DAG scheduler's
+    tier-1 multi-DENY pick and the downstream `combine()` share ONE ranking
+    source of truth. The scheduler must return the denier's own
+    `ValidationResult` (its operator-facing `reason`), so it needs the winning
+    *source*, not the synthetic "combined" Signal `combine()` returns.
+
+    The key is byte-for-byte the tuple `combine()` uses
+    `(priority, confidence or 0.0, _neg_source(source))` — including the
+    `confidence or 0.0` coalescing and the same `_neg_source` codepoint
+    inversion — so a `None` confidence coalesces to 0.0 and the
+    alphabetically-smaller source wins a tie, identically to `combine()`. A
+    fresh alphabetical `sorted()` (or dropping the coalesce) would silently
+    diverge from `combine()` on the source/confidence tie-break — the exact bug
+    this shared helper exists to prevent. It does NOT re-implement or alter the
+    algorithm; it factors out the winner-selection so there is no second copy to
+    drift.
+    """
+    denies = [s for s in signals if s.decision == "DENY"]
+    if not denies:
+        return None
+    return max(denies, key=lambda s: (s.priority, s.confidence or 0.0, _neg_source(s.source)))

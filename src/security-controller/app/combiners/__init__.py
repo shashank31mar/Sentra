@@ -17,13 +17,14 @@ Source-string taxonomy is the contract — see LLD 17 §4.
 
 from app.combiners.signal import Signal
 from app.combiners.protocol import CombiningAlgorithm
-from app.combiners.deny_overrides import DenyOverrides
+from app.combiners.deny_overrides import DenyOverrides, pick_top_denier
 from app.combiners.sources import Source, DEFAULT_PRIORITIES, default_priority
 
 __all__ = [
     "Signal",
     "CombiningAlgorithm",
     "DenyOverrides",
+    "pick_top_denier",
     "Source",
     "DEFAULT_PRIORITIES",
     "default_priority",

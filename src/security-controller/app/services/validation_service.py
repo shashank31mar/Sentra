@@ -75,6 +75,30 @@ def _fail_secure_deny(violation_type: str, penalty: int, reason: str) -> Validat
         violated_policy=None, penalty=penalty, should_deny=True)
 
 
+def _append_signal(signals: List, result: ValidationResult) -> None:
+    """Append a validator's Signal to the run's collection — Workstream 17 /
+    LLD 17 §3.2. Shared by the DAG scheduler's `_capture` closure (LLD 31 §6.6)
+    so signal-capture semantics are byte-for-byte identical wherever a node runs.
+
+    Abstain results (LLD 17 §4, LLD 19 §5.2) emit NO signal — the combiner treats
+    absence as "this producer wasn't on the path" (used by the ML classifier on
+    Bedrock outage / disabled / very-low confidence so the combiner falls back to
+    the deterministic frontier alone). A validator that forgot to @stamp its
+    source lands in the ValueError branch: log loudly (the gap must be fixed) but
+    never break the pipeline over a telemetry defect.
+    """
+    if result.is_abstain:
+        return
+    try:
+        signal = result.to_signal()
+        if signal is not None:
+            signals.append(signal)
+    except ValueError as exc:
+        logger.warning(
+            "validator emitted unstamped result; signal dropped: %s", exc,
+        )
+
+
 def _fire_and_forget(coro, label: str) -> None:
     if len(_bg_tasks) > _BG_TASKS_SOFT_CAP:
         logger.warning(
@@ -250,91 +274,30 @@ class ValidationService:
                 start_time
             )
     
-    async def _run_validation_pipeline(
-        self,
-        request: ValidationRequest,
-        session: Dict
-    ):
+    async def _run_policy_step(self, request: ValidationRequest) -> ValidationResult:
+        """STEP 2 policy-engine selection — the Cedar cutover/shadow/legacy
+        branch, extracted so the DAG scheduler's `sentra.policy` node runs it
+        verbatim (WS-C / LLD 31 §5.3). The scheduler stays policy-engine-agnostic:
+        Cedar-vs-legacy selection is encapsulated HERE, never flattened into the
+        scheduler.
+
+        Authoritative policy engine selection:
+          * cedar_enabled & NOT shadow  → CedarPolicyEngine IS the decision (CT10 cutover).
+          * cedar_enabled & shadow      → legacy decides; Cedar runs alongside, logs
+                                          disagreements, no influence (CT07).
+          * cedar disabled (default)    → legacy decides; Cedar never runs.
+        Cedar fails secure on its own evaluator error (returns POLICY_ERROR DENY).
+        A Cedar POLICY_ERROR stays a 200-DENY verdict (a considered decision, not
+        an inability-to-evaluate); a genuine crash bubbles to the outer handler.
+
+        Returns the policy ValidationResult (NOT captured — the node's `_capture`
+        closure captures it and applies the short-circuit).
         """
-        Execute 5-step validation pipeline.
-        Short-circuits on first DENY.
-
-        Returns:
-            (ValidationResult, list[Signal]) — the verdict plus every
-            validator's contribution captured for the audit dual-write.
-            Workstream 17 / LLD 17 §3.2.
-        """
-        # Collect every Signal produced by validators that ran. On a
-        # short-circuit DENY this list is the prefix up to and including
-        # the denier; on full-pipeline ALLOW it contains all six.
-        signals = []
-
-        def _capture(result: ValidationResult):
-            """Append the validator's signal to the run's collection.
-
-            Abstain results (LLD 17 §4, LLD 19 §5.2) emit NO signal — the
-            combiner treats absence as "this producer wasn't on the path."
-            Used by the ML classifier on Bedrock outage / disabled / very-low
-            confidence so the combiner falls back to sigma + policy alone.
-            """
-            if result.is_abstain:
-                return result
-            try:
-                signal = result.to_signal()
-                if signal is not None:
-                    signals.append(signal)
-            except ValueError as exc:
-                # Defensive: a validator that didn't apply @stamps would land
-                # here. Log loudly so the gap is fixed, but don't break the
-                # pipeline — fall back to a synthetic Signal so audit dual-
-                # write still has something to write.
-                logger.warning(
-                    "validator emitted unstamped result; using synthetic signal: %s",
-                    exc,
-                )
-            return result
-
-        # ============================================================
-        # STEP 1: Trust Score Check (Task 4 ✅)
-        # ============================================================
-        # A trust-check DENY returns before policy_engine runs. Previously the
-        # response carried platform=None/cloud_region=None unless the interceptor
-        # stamped them (WS15 M2 known gap, Issue #6). agent-policy-management
-        # K9/C2: cloud identity is now a per-agent attribute, so we resolve it
-        # from the agent registry on the DENY path (one cheap get_item, only on
-        # DENY — the ALLOW path gets it from the loaded policy at STEP 2).
-        trust_result = _capture(await _timed("trust", self.trust_checker.check(session, request)))
-        if trust_result.should_deny:
-            if trust_result.platform is None or trust_result.cloud_region is None:
-                # Best-effort: cloud identity is audit metadata — never let a
-                # resolution hiccup turn a clean security DENY into a 500.
-                try:
-                    a_platform, a_region = self.policy_engine.get_agent_cloud_identity(
-                        request.agent_id
-                    )
-                except Exception:
-                    a_platform, a_region = None, None
-                    logger.debug("trust-DENY cloud stamp skipped", exc_info=True)
-                if trust_result.platform is None:
-                    trust_result.platform = a_platform or request.platform
-                if trust_result.cloud_region is None:
-                    trust_result.cloud_region = a_region or request.cloud_region
-            return trust_result, signals
-
-        # ============================================================
-        # STEP 2: Policy Engine (Task 5 ✅ / Cedar feature CT07+CT10)
-        # ============================================================
-        # Authoritative policy engine selection:
-        #   * cedar_enabled & NOT shadow  → CedarPolicyEngine IS the decision (CT10 cutover).
-        #   * cedar_enabled & shadow      → legacy decides; Cedar runs alongside, logs
-        #                                   disagreements, no influence (CT07).
-        #   * cedar disabled (default)    → legacy decides; Cedar never runs.
-        # Cedar fails secure on its own evaluator error (returns POLICY_ERROR DENY).
         cedar = getattr(self, "cedar_engine", None)
         cutover = cedar is not None and settings.cedar_enabled and not settings.cedar_shadow_mode
 
         if cutover:
-            policy_result = _capture(await _timed("policy", cedar.validate(request)))
+            policy_result = await _timed("policy", cedar.validate(request))
             if policy_result.is_abstain:
                 if settings.legacy_retired:
                     # End state (FR-2.4 / LLD 28 §4.3): legacy is retired. An abstain
@@ -345,10 +308,10 @@ class ValidationService:
                         "Cedar abstained under legacy_retired for %s; fail-secure DENY",
                         request.agent_id)
                     self._emit_cedar_abstain_metric(denied=True, agent_id=request.agent_id)
-                    policy_result = _capture(_fail_secure_deny(
+                    policy_result = _fail_secure_deny(
                         violation_type=POLICY_NOT_MIGRATED,
                         penalty=_POLICY_NOT_MIGRATED_PENALTY,
-                        reason="Policy not Cedar-migrated; legacy engine retired (fail-secure)"))
+                        reason="Policy not Cedar-migrated; legacy engine retired (fail-secure)")
                 else:
                     # Rollout era (legacy_retired=false): keep the existing permissive
                     # fallback so there is never an un-enforced window during the
@@ -358,9 +321,9 @@ class ValidationService:
                         "Cedar abstained (not migrated) for %s; falling back to legacy engine",
                         request.agent_id)
                     self._emit_cedar_abstain_metric(denied=False, agent_id=request.agent_id)
-                    policy_result = _capture(await _timed("policy_fallback", self.policy_engine.validate(request)))
+                    policy_result = await _timed("policy_fallback", self.policy_engine.validate(request))
         else:
-            policy_result = _capture(await _timed("policy", self.policy_engine.validate(request)))
+            policy_result = await _timed("policy", self.policy_engine.validate(request))
             # Cedar shadow comparison (CT07): run Cedar alongside, record any
             # disagreement, but the live decision stays the legacy engine's. Must
             # run BEFORE the should_deny short-circuit so both verdicts are
@@ -368,84 +331,99 @@ class ValidationService:
             if cedar is not None and settings.cedar_shadow_mode:
                 await self._cedar_shadow_compare(request, policy_result)
 
-        if policy_result.should_deny:
-            return policy_result, signals
-        # Capture the agent-sourced cross-cloud fields (the policy engine stamped
-        # platform/cloud_region from the AGENT record, not the policy doc —
-        # agent-policy-management §2.3/C2) so they propagate onto every
-        # downstream result (DENY or ALLOW).
-        platform_from_policy = policy_result.platform
-        cloud_region_from_policy = policy_result.cloud_region
+        return policy_result
 
-        def _stamp(result: ValidationResult) -> ValidationResult:
-            """Attach the agent-sourced cross-cloud fields to a result that
-            didn't natively carry them (sigma, context, abuse, cross-agent)."""
-            if result.platform is None:
-                result.platform = platform_from_policy
-            if result.cloud_region is None:
-                result.cloud_region = cloud_region_from_policy
+    async def _run_validation_pipeline(
+        self,
+        request: ValidationRequest,
+        session: Dict
+    ):
+        """Run the validation pipeline via the cost-annotated DAG scheduler
+        (WS-C / FR-2.8 / ADR-030 / LLD 31 §6).
+
+        NO-FLAG cutover: the DAG is the ONLY pipeline — there is no
+        scheduler-enable flag and no retained fixed-sequential body; rollback is
+        git-revert + redeploy, not a config flip. The scheduler runs the tier-0
+        cheap-deterministic frontier (short-circuit on the first DENY), then the
+        tier-1 models parallel-gathered for tier-0 survivors, and returns the
+        SAME `(ValidationResult, list[Signal])` contract the caller at
+        validate_tool_call expects. Equivalence to the frozen golden baseline
+        (T-EQUIV, ML ENFORCING) is on the final `(decision, should_deny,
+        winning_source)` tuple — LLD 31 §3.
+
+        Reuses this service's `_capture`/`_stamp`/`_timed` semantics so the return
+        contract, per-node timing, abstain handling, and cross-cloud stamping are
+        byte-for-byte what the pre-DAG pipeline emitted (LLD 31 §6.6).
+
+        Returns:
+            (ValidationResult, list[Signal]) — the verdict plus every validator's
+            contribution captured for the audit dual-write (Workstream 17 / LLD 17
+            §3.2).
+        """
+        from app.services import scheduler as scheduler_pkg
+        from app.services.scheduler.run import FAIL_FAST, EVALUATE_ALL
+
+        # signals[] collects every node's Signal (abstain → no signal). On a
+        # tier-0 short-circuit DENY it is the prefix up to the denier; on the
+        # all-ALLOW tail it holds every node that ran.
+        signals: List = []
+
+        def _capture(result: ValidationResult) -> ValidationResult:
+            _append_signal(signals, result)
             return result
 
-        # ============================================================
-        # STEP 2.5: Cross-Agent Validator (Workstream 12 ✅)
-        # ============================================================
-        cross_agent_result = _capture(await _timed("cross_agent", self.cross_agent_validator.validate(request)))
-        if cross_agent_result.should_deny:
-            return _stamp(cross_agent_result), signals
+        # stamp_ctx is populated by the sentra.policy node's run with the
+        # agent-sourced cross-cloud fields (reproduces the sequential
+        # platform_from_policy / cloud_region_from_policy capture — agent-policy-
+        # management §2.3/C2). Read by _stamp to attach them to downstream results.
+        stamp_ctx: Dict = {"platform": None, "cloud_region": None}
 
-        # ============================================================
-        # STEP 3: Sigma Rule Engine (Task 6 ✅)
-        # ============================================================
-        sigma_result = _capture(await _timed("sigma", self.sigma_engine.match_rules(request.user_input)))
-        if sigma_result.should_deny:
-            return _stamp(sigma_result), signals
+        def _stamp(result: ValidationResult) -> ValidationResult:
+            """Attach the agent-sourced cross-cloud fields to a result that didn't
+            natively carry them (sigma, context, abuse, cross-agent, ML, D1-D7) —
+            reused, not reimplemented (LLD 31 §6.6)."""
+            if result.platform is None:
+                result.platform = stamp_ctx.get("platform")
+            if result.cloud_region is None:
+                result.cloud_region = stamp_ctx.get("cloud_region")
+            return result
 
-        # ============================================================
-        # STEP 4: Context Validator (Task 7 ✅)
-        # ============================================================
-        context_result = _capture(await _timed("context", self.context_validator.validate_sequence(session, request)))
-        if context_result.should_deny:
-            return _stamp(context_result), signals
+        async def _timed_node(label: str, coro):
+            # Per-node timing preserved so validation.timing still emits the
+            # per-validator ms breakdown (LLD 24 M1 / LLD 31 §6.6).
+            return await _timed(label, coro)
 
-        # ============================================================
-        # STEP 5: Abuse Detector (Task 8 ✅)
-        # ============================================================
-        # Get policy for rate limit check
-        policy = await _timed("abuse_policy_load", self.policy_engine.get_agent_policy(request.agent_id))
-        abuse_result = _capture(await _timed("abuse", self.abuse_detector.check_rate_limit(session, policy)))
-        if abuse_result.should_deny:
-            return _stamp(abuse_result), signals
+        def _all_allow() -> ValidationResult:
+            # Reproduces the synthetic ALLOW at the sequential tail, carrying the
+            # policy-sourced cross-cloud fields (was validation_service ALLOW's
+            # platform_from_policy / cloud_region_from_policy).
+            return ValidationResult(
+                decision="ALLOW",
+                reason="All validation checks passed",
+                should_deny=False,
+                platform=stamp_ctx.get("platform"),
+                cloud_region=stamp_ctx.get("cloud_region"),
+            )
 
-        # ============================================================
-        # STEP 6: ML Threat Classifier (Workstream 19 / LLD 19) — RUNS LAST
-        # ============================================================
-        # Moved to the end of the pipeline (WS24 M4.1): every cheaper deterministic
-        # check (trust, policy, cross-agent, sigma, context/sequence, abuse) runs and
-        # short-circuits FIRST, so the ~600ms Haiku (+ Sonnet escalation) ML cost is
-        # only paid for traffic that already cleared every cheaper gate. Flag off →
-        # ABSTAIN with zero Bedrock cost. This is the frontier-first ordering the
-        # LLD 20 §3.4 DAG formalizes; here achieved by placement. Final verdicts are
-        # unchanged vs. the old STEP-3.5 placement — only ML *invocations* drop on
-        # the cheap-deny path (so its signal legitimately disappears there; the
-        # verdict guard asserts on the final ALLOW/DENY, not the signal set).
-        ml_result = _capture(await _timed("ml", self.ml_classifier.validate(request)))
-        # Shadow mode (WS19 M3): the Signal is captured into signals[] either way,
-        # but in shadow mode its DENY MUST NOT short-circuit — the customer-facing
-        # verdict falls back to the deterministic checks so we can measure ML's
-        # incremental value. Live = should_deny respected.
-        if ml_result.should_deny and not settings.ml_classifier_shadow_mode:
-            return _stamp(ml_result), signals
+        # Per-phase node selection (LLD 31 §5.4). WS-A adds the FR-3.4 `phase`
+        # field to ValidationRequest (default "request"); if it has not landed,
+        # degrade to request-only (getattr default). build_dag is looked up on
+        # the package (not imported by name) so tests can patch the seam.
+        phase = getattr(request, "phase", "request") or "request"
+        nodes = scheduler_pkg.build_dag(self, phase, stamp_ctx)
+        mode = settings.dag_run_mode if settings.dag_run_mode in (FAIL_FAST, EVALUATE_ALL) else FAIL_FAST
 
-        # All checks passed. Workstream 15: propagate platform + cloud_region
-        # captured from the policy result so downstream response/audit-log code
-        # can surface them uniformly with the DENY path.
-        return ValidationResult(
-            decision="ALLOW",
-            reason="All validation checks passed",
-            should_deny=False,
-            platform=platform_from_policy,
-            cloud_region=cloud_region_from_policy,
-        ), signals
+        return await scheduler_pkg.run_dag(
+            nodes,
+            request,
+            session,
+            _capture,
+            _stamp,
+            _timed_node,
+            mode=mode,
+            all_allow=_all_allow,
+            signals=signals,
+        )
 
     async def _cedar_shadow_compare(
         self, request: ValidationRequest, live_result: ValidationResult
