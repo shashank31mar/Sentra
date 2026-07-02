@@ -1,0 +1,91 @@
+{
+  "test3_recall": {
+    "exfiltration": {
+      "class": "exfiltration",
+      "n_rows": 741,
+      "unmasked_recall": 0.9676,
+      "masked_recall": 0.973,
+      "delta": -0.0054,
+      "unmasked_ci95": [
+        0.9523,
+        0.9781
+      ],
+      "masked_ci95": [
+        0.9587,
+        0.9825
+      ],
+      "rows_redaction_changed": 724,
+      "detections_lost_to_masking_on_changed_rows": 8
+    },
+    "indirect_injection": {
+      "class": "indirect_injection",
+      "n_rows": 809,
+      "unmasked_recall": 0.5649,
+      "masked_recall": 0.6007,
+      "delta": -0.0358,
+      "unmasked_ci95": [
+        0.5305,
+        0.5987
+      ],
+      "masked_ci95": [
+        0.5666,
+        0.6339
+      ],
+      "rows_redaction_changed": 444,
+      "detections_lost_to_masking_on_changed_rows": 7
+    }
+  },
+  "test3_detector_version": {
+    "ml_hot_target": "arn:aws:bedrock:us-east-1:531109575379:application-inference-profile/kv5jsfpwxnw5",
+    "ml_escalation": "us.anthropic.claude-sonnet-4-6",
+    "ml_enabled": "true",
+    "run_started": "2026-07-02T10:50:45Z"
+  },
+  "test2_latency": {
+    "wan_position": "local dev host \u2192 public internet \u2192 dev/prod PDP us-east-1 (NOT co-located, \u00a73.3)",
+    "bedrock": "real aegionai-ml-classifier AIP (Haiku 4.5 \u2192 Sonnet 4.6), never mocked",
+    "agent": "acme-payments-agent",
+    "bands": [
+      {
+        "concurrency": 5,
+        "requests_sent": 150,
+        "reached_ml_count": 150,
+        "non_escalated_count": 0,
+        "e2e_wan_ms": {
+          "p50": 1713.5,
+          "p95": 2809.4,
+          "p99": 2991.7,
+          "max": 3195.8
+        },
+        "server_ms": {
+          "p50": 1414.9,
+          "p95": 2522.1,
+          "p99": 2529.1
+        },
+        "decisions": {
+          "ALLOW": 150
+        }
+      },
+      {
+        "concurrency": 20,
+        "requests_sent": 150,
+        "reached_ml_count": 150,
+        "non_escalated_count": 0,
+        "e2e_wan_ms": {
+          "p50": 1827.5,
+          "p95": 2878.5,
+          "p99": 3454.3,
+          "max": 3525.5
+        },
+        "server_ms": {
+          "p50": 1430.2,
+          "p95": 2549.5,
+          "p99": 2849.7
+        },
+        "decisions": {
+          "ALLOW": 150
+        }
+      }
+    ]
+  }
+}
