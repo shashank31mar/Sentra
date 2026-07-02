@@ -105,6 +105,13 @@ class ReferenceNerRedactor:
         "diabetes", "hypertension", "asthma", "cancer", "hiv",
         "depression", "schizophrenia", "pregnancy",
     )
+    # Single alternation for the clinical lexicon, compiled ONCE at class load
+    # (like _NAME / _ADDRESS) rather than re-compiling 8 patterns + double-scanning
+    # (search-then-sub) per field on the redaction path — one compile, one pass.
+    _CONDITION = re.compile(
+        r"\b(?:" + "|".join(re.escape(c) for c in _CONDITIONS) + r")\b",
+        re.IGNORECASE,
+    )
 
     def redact(self, text: str, *, nonce: Optional[str], tenant_id: str) -> RedactedView:
         if text is None:
@@ -119,10 +126,7 @@ class ReferenceNerRedactor:
 
         out = self._ADDRESS.sub(lambda _m: _tok("ADDRESS"), out)
         out = self._NAME.sub(lambda _m: _tok("NAME"), out)
-        for cond in self._CONDITIONS:
-            pat = re.compile(rf"\b{re.escape(cond)}\b", re.IGNORECASE)
-            if pat.search(out):
-                out = pat.sub(lambda _m: _tok("CONDITION"), out)
+        out = self._CONDITION.sub(lambda _m: _tok("CONDITION"), out)
         # De-dup for the trail; the raw values are NEVER retained (I-1).
         return RedactedView(text=out, redacted=True, found_classes=sorted(set(found)))
 
@@ -258,10 +262,15 @@ def get_gate_detector() -> GateDetector:
 #           plus the PHI classes found (NOT raw). The RAW is discarded.
 #   * NEVER echoes raw; TLS in-VPC (terminated by the service mesh / ALB, §11).
 #
-# F4 in-container isolation (§9.6 / §8), enforced HERE, not just asserted:
-#   * per-request raw buffer lifecycle — each field's raw text lives only for its
-#     redaction pass, then the buffer is ZEROED and dropped (no cross-request /
-#     cross-tenant accumulation);
+# F4 in-container isolation (§9.6 / §8) — what this code ACTUALLY enforces (no
+# over-claim; the transient-lifecycle bullet below is deliberately honest about a
+# CPython limit rather than pretending to scrub memory it cannot):
+#   * transient per-request handling — each field's raw text is a function-local
+#     that goes out of scope when `redact_free_text_fields` returns; nothing raw is
+#     retained in a module/process-level object across requests or tenants (no
+#     accumulating buffer, no per-tenant cache). NOTE: this is reference-scoping,
+#     NOT memory scrubbing — see the DEFERRED RESIDUAL below on why in-process
+#     zeroing of a Python `str` is not achievable and is NOT claimed here;
 #   * NER-framework INPUT logging OFF in prod (the container env sets it; this app
 #     refuses to log any raw input, and configures the process log level so a
 #     framework debug line cannot echo the input);
@@ -271,20 +280,44 @@ def get_gate_detector() -> GateDetector:
 #   * the served task role has NO raw-egress IAM (enforced by the CDK construct):
 #     the only write is the redacted view back to the controller in the response.
 #
-# NAMED DEFERRED RESIDUAL (§4.5 / §9.6): the warm pool is shared at PROCESS level
-# today (per-request buffers, not a provable boundary). A provable cross-tenant
-# boundary for raw PHI is the DEFERRED Nitro/CVM enclave — a named residual, NOT
-# claimed present by this code.
+# NAMED DEFERRED RESIDUAL (§4.5 / §9.6): (1) the warm pool is shared at PROCESS
+# level today (transient per-request handling, not a provable boundary); AND (2) a
+# CPython `str` is IMMUTABLE and interned/copied by the interpreter — the raw
+# free-text cannot be reliably zeroed in place while the process lives (you can
+# only drop the reference and let the GC reclaim it whenever it runs). Any
+# "buffer-zeroing" here would scrub a throwaway copy, not the working `str`, so it
+# is intentionally NOT done — that would be security theater. The provable
+# cross-tenant / no-raw-in-memory boundary is the DEFERRED Nitro/CVM enclave — a
+# named residual, NOT claimed present by this code.
 # ============================================================================
 
-import ctypes
+import hmac
 import logging as _logging
 import os
 import uuid as _uuid
 
-from pydantic import BaseModel, Field as _PydField
+from pydantic import BaseModel, Field as _PydField, field_validator
 
 _served_logger = _logging.getLogger("phi_ner.served")
+
+# Input bounds (§9.6 DoS surface): the served fleet is a warm 2 vCPU / 4 GB pool
+# running per-field regex passes (some backtracking-prone), so an unbounded body
+# is a cheap CPU/memory amplification lever. Cap the field COUNT and per-field
+# LENGTH; over-bound → HTTP 413 BEFORE any redaction runs. Env-overridable so a
+# deploy can tune without a code change, but with fail-secure defaults.
+_MAX_FIELDS = int(os.environ.get("PHI_NER_MAX_FIELDS", "64"))
+_MAX_FIELD_CHARS = int(os.environ.get("PHI_NER_MAX_FIELD_CHARS", "20000"))
+
+# Optional app-layer caller authentication (§11 defense-in-depth on the raw-PHI
+# service). The primary control is network isolation (CloudMap-internal + private
+# subnets + controller-SG-only ingress, wired in the network stack). This is the
+# BELT to that suspenders: if PHI_NER_CALLER_SECRET is set in the container env,
+# the endpoint requires a matching `X-Aegion-Caller-Secret` header (constant-time
+# compared) — a spoofed/unauthenticated caller is rejected 401 before redaction.
+# Unset (hermetic/local default) ⇒ header not required (the network layer is then
+# the sole control, as documented). The controller task role injects the secret.
+_CALLER_SECRET_ENV = "PHI_NER_CALLER_SECRET"
+_CALLER_SECRET_HEADER = "x-aegion-caller-secret"
 
 
 # The served request/response models are MODULE-LEVEL (not defined inside the app
@@ -294,7 +327,13 @@ _served_logger = _logging.getLogger("phi_ner.served")
 # FastAPI is imported lazily in the factory (so the controller-side import of this
 # module for the client + gate never pulls the web framework in).
 class RedactRequest(BaseModel):
-    """The served request: FREE-TEXT fields ONLY (never the whole request)."""
+    """The served request: FREE-TEXT fields ONLY (never the whole request).
+
+    Size-bounded (§9.6): at most :data:`_MAX_FIELDS` fields, each at most
+    :data:`_MAX_FIELD_CHARS` characters. An over-bound request is rejected at the
+    validation boundary (mapped to HTTP 413 by the endpoint) before any regex pass
+    runs — an unbounded body on the warm model fleet is a CPU/memory DoS lever.
+    """
 
     fields: Dict[str, Optional[str]] = _PydField(
         ..., description="field_id -> free-text value (surviving Tier-1)"
@@ -303,6 +342,23 @@ class RedactRequest(BaseModel):
     nonce: Optional[str] = _PydField(
         default=None, description="per-request token-grammar nonce (§3.5)"
     )
+
+    @field_validator("fields")
+    @classmethod
+    def _bound_fields(
+        cls, v: Dict[str, Optional[str]]
+    ) -> Dict[str, Optional[str]]:
+        if len(v) > _MAX_FIELDS:
+            raise ValueError(
+                f"too many fields: {len(v)} > max {_MAX_FIELDS}"
+            )
+        for field_id, text in v.items():
+            if text is not None and len(text) > _MAX_FIELD_CHARS:
+                raise ValueError(
+                    f"field {field_id!r} too large: "
+                    f"{len(text)} chars > max {_MAX_FIELD_CHARS}"
+                )
+        return v
 
 
 class RedactResponse(BaseModel):
@@ -324,24 +380,6 @@ def _input_logging_disabled() -> bool:
     return os.environ.get("PHI_NER_INPUT_LOGGING", "off").strip().lower() != "on"
 
 
-def _zero_buffer(buf: "bytearray | None") -> None:
-    """Best-effort in-place zeroing of a per-request raw buffer (§9.6).
-
-    Overwrites the bytes in place (ctypes.memset) so the raw free-text does not
-    linger in the buffer's backing store to be reused across requests/tenants or
-    captured by a later crash dump. A plain reassignment would only drop the
-    reference (leaving the bytes for the GC); this scrubs them.
-    """
-    if not buf:
-        return
-    try:
-        ctypes.memset((ctypes.c_char * len(buf)).from_buffer(buf), 0, len(buf))
-    except (TypeError, ValueError):  # pragma: no cover - non-mutable buffer
-        # Fall back to a byte-wise wipe if the buffer can't be memset.
-        for i in range(len(buf)):
-            buf[i] = 0
-
-
 def redact_free_text_fields(
     fields: Dict[str, Optional[str]],
     *,
@@ -351,11 +389,18 @@ def redact_free_text_fields(
 ) -> Dict[str, object]:
     """The served core (E2.3): redact ONLY the free-text fields, discard raw.
 
-    Runs each field through the Tier-2 redactor under a per-request raw-buffer
-    lifecycle (F4 §9.6): the raw text is held in a per-field `bytearray`, redacted,
-    and the buffer ZEROED before the next field — no cross-request/cross-tenant
-    accumulation. Returns the redacted view + `redacted=True` + the found PHI
-    classes; the RAW is never retained or echoed.
+    Runs each field through the Tier-2 redactor and returns ONLY the redacted view
+    + `redacted=True` + the found PHI classes — the raw is neither retained in any
+    module/process-level object nor echoed. The raw `text` values are function
+    locals with a lifetime bounded by this call; they are dropped (dereferenced) on
+    return, no accumulating buffer or per-tenant cache holds them.
+
+    Transient-handling honesty (F4 §9.6, see the module note): we deliberately do
+    NOT attempt to "zero" the raw in memory. A CPython `str` is immutable —
+    materializing a `bytearray(text.encode())` and scrubbing it would wipe a
+    throwaway COPY, not the working `str` the redactor reads, so the scrub would be
+    theater that mis-advertises the invariant. Reference-scoping is what we provide
+    in-process; the provable no-raw-in-memory boundary is the DEFERRED enclave.
 
     Raises :class:`NerUnavailable` (mapped by the endpoint to egress-fail-closed)
     if the redactor cannot process a field — never returns/echoes the raw on error.
@@ -364,18 +409,9 @@ def redact_free_text_fields(
     redacted_fields: Dict[str, Optional[str]] = {}
     found_all: List[str] = []
     for field_id, text in fields.items():
-        raw_buf: Optional[bytearray] = None
-        try:
-            # Per-request raw buffer: materialize the raw ONCE, keep its lifetime
-            # to this field's pass only, then zero it (§9.6).
-            if text is not None:
-                raw_buf = bytearray(text.encode("utf-8"))
-            view = client.redact_free_text(text, nonce=nonce, tenant_id=tenant_id)
-            redacted_fields[field_id] = view.text
-            found_all.extend(view.found_classes)
-        finally:
-            _zero_buffer(raw_buf)
-            raw_buf = None
+        view = client.redact_free_text(text, nonce=nonce, tenant_id=tenant_id)
+        redacted_fields[field_id] = view.text
+        found_all.extend(view.found_classes)
     return {
         "fields": redacted_fields,
         "redacted": True,
@@ -395,8 +431,17 @@ def create_served_app():
       * ``GET  /health`` — liveness (matches the CDK health-check command).
       * ``POST /v1/redact`` — the internal contract: free-text fields in →
         redacted view + ``redacted=True`` out. Raw discarded, never echoed.
+
+    Access control (§11): the primary control is network isolation (CloudMap-
+    internal, private subnets, controller-SG-only ingress — wired in the network
+    stack). As app-layer defense-in-depth, when ``PHI_NER_CALLER_SECRET`` is set in
+    the container env this factory installs a caller-secret check that rejects any
+    request without a matching ``X-Aegion-Caller-Secret`` header (401) before
+    redaction. Unset ⇒ header not required (network layer is the sole control).
     """
-    from fastapi import FastAPI
+    from fastapi import FastAPI, Header, HTTPException, Request
+    from fastapi.exceptions import RequestValidationError
+    from fastapi.responses import JSONResponse
 
     # F4 (§9.6): pin NER-framework/process input logging OFF at app build so a
     # framework debug line cannot echo the raw input. Belt-and-suspenders with the
@@ -407,13 +452,44 @@ def create_served_app():
 
     app = FastAPI(title="phi-ner", docs_url=None, redoc_url=None, openapi_url=None)
 
+    _caller_secret = os.environ.get(_CALLER_SECRET_ENV)
+
+    def _require_caller(
+        provided: Optional[str],
+    ) -> None:
+        """Fail-secure app-layer caller check (§11). No-op if no secret configured.
+
+        Constant-time compare (``hmac.compare_digest``) so a mismatch does not leak
+        timing. A missing/empty header when a secret IS configured is a 401 — never
+        a redaction on an unauthenticated caller.
+        """
+        if not _caller_secret:
+            return
+        if not provided or not hmac.compare_digest(provided, _caller_secret):
+            raise HTTPException(status_code=401, detail={"error": "unauthenticated"})
+
+    @app.exception_handler(RequestValidationError)
+    async def _validation_413(_request: Request, exc: RequestValidationError):
+        # A body that violates the size/field-count bounds (§9.6) is an oversized
+        # request → the honest 413, never a redaction on an unbounded body. Other
+        # validation errors keep the standard 422. Never echo the raw body.
+        msg = str(exc)
+        if "too many fields" in msg or "too large" in msg:
+            return JSONResponse(
+                status_code=413, content={"error": "request_too_large"}
+            )
+        return JSONResponse(status_code=422, content={"error": "invalid_request"})
+
     @app.get("/health")
     def health() -> Dict[str, str]:
         return {"status": "ok", "service": "phi-ner"}
 
     @app.post("/v1/redact", response_model=RedactResponse)
-    def redact(req: RedactRequest):
-        from fastapi import HTTPException
+    def redact(
+        req: RedactRequest,
+        x_aegion_caller_secret: Optional[str] = Header(default=None),
+    ):
+        _require_caller(x_aegion_caller_secret)
 
         try:
             result = redact_free_text_fields(

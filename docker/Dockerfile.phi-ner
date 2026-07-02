@@ -61,8 +61,13 @@ ENV PHI_NER_MODEL_DIR=/models/phi-ner-onnx-int8
 
 # Served application code. The phi-ner app IS the redaction module + its deps under
 # app/ (the served app is built by app.redaction.phi_ner:create_served_app).
+# NOTE: no `COPY config/` — there is no root-level `config/` in the build context
+# (only cdk/config, src/dashboard/config), so that COPY failed the build; and the
+# served app reads nothing from /config (its only env is set below / by the task
+# def). Copy ONLY the served app package so no root-level secrets/venvs are baked
+# into this raw-PHI image (the repo gitignores .dockerignore; the build context is
+# kept minimal by copying just app/).
 COPY src/security-controller/app/ ./app/
-COPY config/ /config/
 
 EXPOSE 8080
 
@@ -76,6 +81,16 @@ ENV PHI_NER_INPUT_LOGGING=off \
     TOKENIZERS_PARALLELISM=false \
     ORT_LOG_SEVERITY_LEVEL=3 \
     PHI_NER_MODEL_EAGER_LOAD=1
+
+# Least-privilege: the process that handles raw free-text PHI must NOT run as root
+# (a compromise via a transformers/onnxruntime/presidio vuln or the endpoint should
+# not land root in the task). Create a dedicated non-root user, give it the app and
+# model dirs, and drop to it before CMD. The model dir is pre-created + owned so an
+# at-boot S3 pull (§4.1) can still write the artifact as the non-root user.
+RUN useradd --system --create-home --uid 10001 phiner \
+    && mkdir -p "$PHI_NER_MODEL_DIR" \
+    && chown -R phiner:phiner /app "$PHI_NER_MODEL_DIR"
+USER phiner
 
 # Health check — liveness on the served /health route.
 HEALTHCHECK --interval=30s --timeout=5s --start-period=300s --retries=3 \
