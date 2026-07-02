@@ -1,6 +1,7 @@
 """Sync decorator + decision behavior (run / block / default-DENY / fail-secure)."""
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 import pytest
@@ -247,20 +248,16 @@ def test_guard_content_sets_phase_and_content_text(
     assert fake_client.last["operation_type"] == expected_op
 
 
-def test_egress_content_text_is_unredacted_today_ws_e_boundary(make_guard, fake_client):
-    """WS-B→WS-E redaction-boundary tripwire (LLD 30 §Residual, lld/29 §3.5).
+def test_egress_content_text_is_redacted_ws_e(make_guard, fake_client):
+    """WS-B→WS-E redaction boundary — NOW CLOSED (LLD 30 §Residual, lld/29 §3.5).
 
-    WS-B only PLACES content_text = resolved_input on the egressing phases; the
-    per-phase redactor is WS-E's owned scope (lld/29 §3.5) and is NOT on this
-    branch. So TODAY a sensitive-looking value in the ingested content egresses
-    on the wire VERBATIM (unredacted). This test pins that documented current
-    contract explicitly so the raw-content-on-the-wire behavior is not silent.
-
-    It is the intended propagate-change tripwire for the WS-E merge: when WS-E's
-    redactor lands in _build_request, content_text will no longer equal the raw
-    input and this assertion must be updated DELIBERATELY (assert the redaction
-    marker instead) — not silently. Until then, this documents that WS-B does not
-    redact and must not be read as endorsing raw egress as the end state."""
+    This was the WS-B tripwire ``test_egress_content_text_is_unredacted_today_
+    ws_e_boundary``, which PINNED the pre-WS-E contract that content_text egressed
+    the raw resolved_input verbatim. WS-E1 landed the Tier-1 redactor in
+    ``_build_request`` (FR-3.13), so that contract has DELIBERATELY changed: the
+    egressing content_text now carries typed wire tokens, never the raw SSN/PAN.
+    Updated per the original tripwire's own instruction (assert the marker, not the
+    raw value) — a deliberate contract change, not a silent go-green edit."""
     guard = make_guard()
     fake_client.set_default({"decision": "ALLOW"})
 
@@ -273,8 +270,12 @@ def test_egress_content_text_is_unredacted_today_ws_e_boundary(make_guard, fake_
     with guard.session(session_id="s1", user_input=secret_looking):
         ingest("payload")
 
-    # WS-B places the raw resolved_input verbatim; no redaction on this branch.
-    assert fake_client.last["content_text"] == secret_looking
+    # WS-E: content_text is redacted. The raw SSN + PAN are GONE; typed wire tokens
+    # (bound to the single per-egress nonce) egress instead.
+    sent = fake_client.last
+    assert "123-45-6789" not in sent["content_text"]
+    assert "4111111111111111" not in sent["content_text"]
+    assert re.search(r"⟦AEGR:[0-9a-f]{16}:[A-Z_]+(?::[^⟧]+)?⟧", sent["content_text"])
 
 
 def test_new_decorators_reuse_tool_machine(make_guard, fake_client):

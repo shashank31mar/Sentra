@@ -28,10 +28,17 @@ from datetime import datetime, timezone
 from typing import Any, Awaitable, Callable, Dict, Iterator, Optional, TypeVar
 
 from . import context as _ctx
+from . import redaction as _redaction
 from ._time import isoformat_ms_z
 from .client import TransportError, ValidateClient
 from .config import GuardConfig
-from .exceptions import BadRequest, SentraUnavailable, ToolDenied, UnknownAgentError
+from .exceptions import (
+    BadRequest,
+    RedactionError,
+    SentraUnavailable,
+    ToolDenied,
+    UnknownAgentError,
+)
 
 logger = logging.getLogger("aegion_guard")
 
@@ -335,16 +342,19 @@ class AegionGuard:
         ``phase`` defaults to ``"request"`` (LLD 30 §4) — keeping existing call
         sites unchanged; only the per-phase decorators pass a non-request phase.
         """
-        payload = self._build_request(
-            tool_name=tool_name,
-            tool_params=tool_params,
-            operation_type=operation_type,
-            session_id=session_id,
-            user_input=user_input,
-            request_id=request_id,
-            context=context,
-            phase=phase,
-        )
+        try:
+            payload = self._build_request(
+                tool_name=tool_name,
+                tool_params=tool_params,
+                operation_type=operation_type,
+                session_id=session_id,
+                user_input=user_input,
+                request_id=request_id,
+                context=context,
+                phase=phase,
+            )
+        except RedactionError as exc:
+            return self._redaction_denied(request_id, exc)
         return self._send(payload)
 
     async def avalidate(
@@ -360,16 +370,19 @@ class AegionGuard:
         phase: str = "request",
     ) -> Decision:
         """Async twin of :meth:`validate` — runs the blocking client off-loop."""
-        payload = self._build_request(
-            tool_name=tool_name,
-            tool_params=tool_params,
-            operation_type=operation_type,
-            session_id=session_id,
-            user_input=user_input,
-            request_id=request_id,
-            context=context,
-            phase=phase,
-        )
+        try:
+            payload = self._build_request(
+                tool_name=tool_name,
+                tool_params=tool_params,
+                operation_type=operation_type,
+                session_id=session_id,
+                user_input=user_input,
+                request_id=request_id,
+                context=context,
+                phase=phase,
+            )
+        except RedactionError as exc:
+            return self._redaction_denied(request_id, exc)
         # Preserve the ambient contextvars into the worker thread.
         ctx = contextvars.copy_context()
         return await asyncio.to_thread(ctx.run, self._send, payload)
@@ -458,36 +471,92 @@ class AegionGuard:
         # for convenience; anything else unserializable is a usage error.
         safe_params = _ensure_json_serializable(tool_params)
 
+        # WS-E1 (FR-3.13; LLD 29 §3): Tier-1 edge redaction. Every field that
+        # egresses to the hosted PDP carries structured PII/PCI risk — mask it here,
+        # BEFORE the payload leaves the customer boundary on the Serverless edition
+        # (NFR-7 clause (a): no raw structured identifier egresses on any edition).
+        # ONE per-egress nonce (secrets.token_hex(8)) is minted and threaded through
+        # EVERY redacted field so all genuine markers in this payload share the
+        # single `redaction_nonce` the PDP checks — an attacker cannot forge a marker
+        # bearing this call's nonce (M-4). A redactor failure raises RedactionError,
+        # which `validate`/`avalidate` turn into a fail-secure DENY — the raw payload
+        # is NEVER sent, on any fail_secure setting (failing open here is a clause-(a)
+        # breach). `redaction_nonce` is minted here so tool_params/user_input/context
+        # and (for egressing phases) content_text all bind to it.
+        nonce = _redaction.new_nonce()
+        safe_params = _redaction.redact_params(safe_params, nonce=nonce)
+        redacted_input = _redaction.redact(resolved_input, nonce=nonce)
+        redacted_context = (
+            _redaction.redact_params(resolved_context, nonce=nonce)
+            if resolved_context
+            else resolved_context
+        )
+
         payload: Dict[str, Any] = {
             "request_id": resolved_request_id,
             "session_id": resolved_session,
             "agent_id": self.agent_id,
             "tool_name": tool_name,
             "tool_params": safe_params,
-            "user_input": resolved_input,
+            "user_input": redacted_input,
             "timestamp": isoformat_ms_z(datetime.now(timezone.utc)),
             "operation_type": op,
+            # Provenance (LLD 29 §3.3/§3.5): declare the payload was edge-redacted and
+            # publish the single per-egress nonce so the PDP recognizes genuine markers.
+            "redacted": True,
+            "redaction_nonce": nonce,
         }
         if self.platform:
             payload["platform"] = self.platform
         if self.cloud_region:
             payload["cloud_region"] = self.cloud_region
-        if resolved_context:
-            payload["context"] = resolved_context
+        if redacted_context:
+            payload["context"] = redacted_context
         # WS-B (LLD 30 §4.2): emit `phase` (and `content_text` for the egressing
         # phases) ONLY when not "request". The `request` path stays byte-identical
-        # on the wire — the server defaults the absent `phase` to "request". Do NOT
-        # always emit "phase": "request" (it would perturb every existing caller's
-        # payload — the no-op guarantee, §1.4).
+        # on the wire (aside from the redaction provenance stamped on every payload)
+        # — the server defaults the absent `phase` to "request". Do NOT always emit
+        # "phase": "request" (it would perturb every existing caller's payload — the
+        # no-op guarantee, §1.4).
         if phase != "request":
             payload["phase"] = phase
-            # content/output/memory carry their content in content_text (§2.3,
-            # _CONTENT_FIELD). WS-E (lld/29 §3.5) redacts this field before _send;
+            # content/output/memory carry their content in the single `content_text`
+            # field (WS-B's _CONTENT_FIELD map, disambiguated by `phase`). WS-E
+            # (lld/29 §3.5) redacts it with the SAME per-egress nonce before _send;
             # WS-B only PLACES it, sourced from the resolved input the decorator
             # already has. A richer per-phase capture arg is WS-L's concern — WS-B
             # guarantees the field EXISTS and is populated, not its richest source.
-            payload["content_text"] = resolved_input
+            #
+            # `content_text` is `resolved_input` disambiguated by phase, and
+            # `resolved_input` was ALREADY redacted into `redacted_input` above with
+            # this call's nonce — reuse it rather than redacting the same value a
+            # second time (R5-L1). A second redact() would mint the same tokens but
+            # burns CPU and, worse, invites the two copies to drift if one call site
+            # is later changed; one redaction, one source of truth.
+            payload["content_text"] = redacted_input
         return payload
+
+    def _redaction_denied(
+        self, request_id: Optional[str], exc: RedactionError
+    ) -> Decision:
+        """Fail-secure DENY when Tier-1 edge redaction could not complete (WS-E1).
+
+        A redactor failure must NEVER egress the raw/partially-redacted payload —
+        this returns a DENY on ANY ``fail_secure`` setting (``fail_secure=False`` is
+        an opt-out of failing closed on TRANSPORT loss, NOT a license to leak raw
+        PII/PCI; NFR-7 clause (a)). ``_send`` is never reached, so nothing is sent.
+        The DENY reason is the fixed ``redaction_failed`` code; the exception message
+        (carrying only the error *type*, never the raw value) is kept in ``raw`` for
+        debugging. The ``on_decision`` hook fires as it would for any decision.
+        """
+        decision = Decision(
+            decision="DENY",
+            request_id=request_id or f"req-{uuid.uuid4().hex[:16]}",
+            reason="redaction_failed",
+            raw={"error": str(exc)},
+        )
+        self._fire_hook(decision)
+        return decision
 
     def _send(self, payload: Dict[str, Any]) -> Decision:
         request_id = payload["request_id"]
