@@ -26,7 +26,15 @@ from cdk_constructs.phi_ner_service_construct import PhiNerServiceConstruct
 
 
 class _PhiNerTestStack(Stack):
-    def __init__(self, scope: Construct, cid: str, *, min_capacity: int = 1, **kwargs) -> None:
+    def __init__(
+        self,
+        scope: Construct,
+        cid: str,
+        *,
+        min_capacity: int = 1,
+        desired_count: int = 1,
+        **kwargs,
+    ) -> None:
         super().__init__(scope, cid, **kwargs)
         vpc = ec2.Vpc(self, "Vpc", max_azs=2)
         cluster = ecs.Cluster(self, "Cluster", vpc=vpc)
@@ -41,6 +49,7 @@ class _PhiNerTestStack(Stack):
             self, "ExecRole", assumed_by=iam.ServicePrincipal("ecs-tasks.amazonaws.com"),
         )
         log_group = logs.LogGroup(self, "Lg")
+        self.task_role = task_role
         self.phi_ner = PhiNerServiceConstruct(
             self, "PhiNer",
             cluster=cluster,
@@ -51,13 +60,14 @@ class _PhiNerTestStack(Stack):
             image=ecs.ContainerImage.from_registry("sentra/phi-ner:latest"),
             log_group=log_group,
             min_capacity=min_capacity,
+            desired_count=desired_count,
         )
 
 
-def _template(min_capacity: int = 1) -> Template:
+def _template(min_capacity: int = 1, desired_count: int = 1) -> Template:
     app = App()
     stack = _PhiNerTestStack(
-        app, "TestPhiNerStack", min_capacity=min_capacity,
+        app, "TestPhiNerStack", min_capacity=min_capacity, desired_count=desired_count,
         env=Environment(account="123456789012", region="us-east-1"),
     )
     return Template.from_stack(stack)
@@ -156,3 +166,112 @@ def test_min_capacity_zero_rejected_at_synth():
     synth — a cold model-serving service must never be deployable by accident."""
     with pytest.raises(ValueError, match="warm pool"):
         _template(min_capacity=0)
+
+
+def test_desired_count_zero_rejected_at_synth():
+    """E2.2 FOOTGUN, fail-fast: desired_count=0 (a cold warm-pool floor) raises at
+    synth too — sibling to the min_capacity guard. A regression dropping ONLY the
+    desired_count check would let a cold desired_count=0 service synth clean and put
+    a model-load cold-start on the <=900 ms path."""
+    with pytest.raises(ValueError, match="warm pool"):
+        _template(desired_count=0)
+
+
+# --- F4 / §9.6: the task role carries NO raw-egress IAM ---------------------
+#
+# The whole reason phi-ner is an isolated service is that raw PHI lives here
+# transiently and MUST NOT be writable anywhere off the account. The construct's
+# contract is that it attaches NO data-write/egress policy of its own; the only IAM
+# on the task role is the ECS-Exec / logging baseline CDK adds for
+# `enable_execute_command=True`. These tests make that invariant a machine check,
+# not just docstring prose — a caller (or a future construct edit) that grants the
+# task role a raw-egress action (S3/DynamoDB write, a managed de-id API, Firehose,
+# an SNS/SQS/Kinesis publish, etc.) fails synth-assertion here.
+
+# Actions that would let the raw-PHI service exfiltrate/persist raw off the account
+# or push it to a third-party (subprocessor) de-id API — none may appear on the
+# phi-ner task role (§9.6 / task E2.4).
+_FORBIDDEN_TASK_ROLE_ACTION_PREFIXES = (
+    "s3:put", "s3:*",
+    "dynamodb:put", "dynamodb:update", "dynamodb:batchwrite", "dynamodb:*",
+    "comprehend",            # comprehend / comprehendmedical managed de-id API
+    "firehose:", "kinesis:",
+    "sns:publish", "sqs:sendmessage",
+    "bedrock:", "sagemaker:invoke",
+    "lambda:invoke",
+    "secretsmanager:", "kms:decrypt",
+)
+
+
+def _task_role_logical_id(template: Template) -> str:
+    """Resolve the phi-ner task role's logical id (CDK hashes the `TaskRole`
+    construct id — don't hardcode the hash suffix). The exec role is excluded so we
+    assert against the TASK role specifically."""
+    role_ids = [
+        rid
+        for rid in template.find_resources("AWS::IAM::Role")
+        if rid.startswith("TaskRole")
+    ]
+    assert len(role_ids) == 1, f"expected exactly one task role, got {role_ids}"
+    return role_ids[0]
+
+
+def _task_role_statements(template: Template) -> list:
+    """Collect every IAM policy statement attached to the phi-ner task role."""
+    role_logical_id = _task_role_logical_id(template)
+    statements = []
+    for props in template.find_resources("AWS::IAM::Policy").values():
+        roles = props["Properties"].get("Roles", [])
+        attached_to_task_role = any(
+            isinstance(r, dict) and r.get("Ref") == role_logical_id for r in roles
+        )
+        if not attached_to_task_role:
+            continue
+        statements.extend(props["Properties"]["PolicyDocument"]["Statement"])
+    return statements
+
+
+def test_task_role_has_no_raw_egress_iam():
+    """F4 / §9.6: the phi-ner task role grants NO raw-egress / data-write action.
+
+    The only IAM the construct tolerates on the task role is the ECS-Exec/logging
+    baseline (`ssmmessages:*`, `logs:*`) that `enable_execute_command=True` adds —
+    NEVER an S3/DynamoDB write, a managed de-id API, or any publish/exfil action.
+    A regression that attaches a data-write policy to the raw-PHI service's role
+    (silently defeating the 'no raw egress' invariant the whole isolated service
+    exists to hold) fails here."""
+    statements = _task_role_statements(_template())
+    for stmt in statements:
+        if stmt.get("Effect") != "Allow":
+            continue
+        actions = stmt.get("Action", [])
+        if isinstance(actions, str):
+            actions = [actions]
+        for action in actions:
+            low = action.lower()
+            assert not any(
+                low.startswith(p) for p in _FORBIDDEN_TASK_ROLE_ACTION_PREFIXES
+            ), (
+                f"phi-ner task role grants raw-egress action {action!r} — the "
+                "isolated raw-PHI service must have NO data-write/egress IAM (§9.6)"
+            )
+
+
+def test_task_role_only_ecs_exec_and_logging_baseline():
+    """F4 / §9.6 (positive tie-down): every action on the task role is in the
+    allowed ECS-Exec / logging baseline. This pins the invariant from the OTHER
+    side — not just 'no known-bad action' but 'only the expected baseline' — so an
+    unforeseen egress action (outside the denylist above) is still caught."""
+    allowed_prefixes = ("ssmmessages:", "logs:")
+    statements = _task_role_statements(_template())
+    for stmt in statements:
+        if stmt.get("Effect") != "Allow":
+            continue
+        actions = stmt.get("Action", [])
+        if isinstance(actions, str):
+            actions = [actions]
+        for action in actions:
+            assert action.lower().startswith(allowed_prefixes), (
+                f"unexpected action {action!r} on the phi-ner task role — only the "
+                "ECS-Exec/logging baseline is allowed (no data-write/egress, §9.6)"
+            )
