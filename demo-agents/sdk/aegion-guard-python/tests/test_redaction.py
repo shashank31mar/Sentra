@@ -121,6 +121,65 @@ def test_pan_adjacent_stray_digit_still_tokenized_never_raw(text, pan):
     assert re.fullmatch(r"\d{6}:\d{4}", meta), f"unexpected meta shape: {meta!r}"
 
 
+# ---- PCI CRITICAL (letter-adjacent fail-open): a Luhn+IIN-valid PAN glued to a WORD
+# char must NOT egress RAW. The candidate boundary was alnum (``(?<![0-9A-Za-z])`` /
+# ``(?![0-9A-Za-z])``), which REFUSED to match a card touching a letter — so
+# ``card4111111111111111`` / ``x4111…`` / ``id4111…`` / ``4111…x`` (OCR receipts,
+# JSON-mashed key=valueSUFFIX fields) egressed the full 16-digit PAN in cleartext to the
+# hosted PDP (NFR-7 (a): no raw structured PAN on any edition). The boundary is now
+# DIGIT-only (``(?<![0-9])`` / ``(?![0-9])``): a letter-glued card is captured, the
+# adjacent letter (not a digit) is never counted toward the card, and _best_pan_window
+# tokenizes ONLY the card digits — the letter stays in cleartext. MUST FAIL if the
+# candidate boundary reverts to excluding an adjacent letter (``[0-9A-Za-z]``). --------- #
+@pytest.mark.parametrize(
+    "text,pan,keep",
+    [
+        ("card4111111111111111", "4111111111111111", "card"),   # word prefix, contiguous
+        ("x4111111111111111", "4111111111111111", "x"),         # single letter prefix
+        ("id4111111111111111", "4111111111111111", "id"),       # short label prefix
+        ("4111111111111111x", "4111111111111111", "x"),         # single letter suffix
+        ("pan=4111111111111111end", "4111111111111111", "end"),  # key=valueSUFFIX shape
+        ("ocr:378282246310005abc", "378282246310005", "abc"),   # Amex-15 glued, OCR suffix
+        ("card4111 1111 1111 1111", "4111111111111111", "card"),  # word prefix + spaced card
+    ],
+)
+def test_pan_letter_adjacent_still_tokenized_never_raw(text, pan, keep):
+    out = redact(text)
+    toks = _tokens(out)
+    assert len(toks) == 1 and toks[0][0] == "CARD", (
+        f"letter-adjacent card not tokenized (leaked?) for {text!r}: {out!r}"
+    )
+    # RELEASE-BLOCKING: neither the exact raw PAN nor its despaced form survives.
+    stripped = _WIRE.sub("", out)
+    assert pan not in stripped, f"raw PAN {pan!r} leaked in {out!r}"
+    despaced = re.sub(r"[ \t\r\n\-./,_]", "", stripped)
+    assert pan not in despaced, f"separated PAN {pan!r} survived despaced in {out!r}"
+    # The card is masked to its REAL first6/last4 (the glued word char does not shift it).
+    assert toks[0][1] == f"{pan[:6]}:{pan[-4:]}", f"wrong meta {toks[0][1]!r} for {text!r}"
+    # The adjacent NON-card word char is preserved in cleartext (only card digits masked).
+    assert keep in stripped, f"non-card text {keep!r} lost from {out!r}"
+
+
+# ---- E1.1 (negative control for the fix above): a letter-glued digit run that is NOT a
+# valid card (Luhn-fail / IIN-fail / sub-length) must STILL be left as a card — the
+# digit-only boundary must not turn benign glued identifiers into false-positive CARDs.
+# The validity gate (_is_pan: length + Luhn + IIN) is what bounds false positives, NOT
+# the boundary. MUST FAIL if the fix over-masks a letter-glued non-card as CARD. -------- #
+@pytest.mark.parametrize(
+    "text",
+    [
+        "ref4111111111111112xyz",       # Visa-like but Luhn-fail
+        "order1234567890123456done",    # 16 digits, Luhn-fail, glued
+        "invoice1000000000000008paid",  # Luhn-valid but IIN-fail (starts 10)
+        "sku9999999999999995end",       # Luhn-valid, IIN-fail (starts 9)
+        "part123456789012ok",           # 12 digits, IIN-fail (starts 1)
+    ],
+)
+def test_letter_glued_non_card_digits_not_false_positive_card(text):
+    out = redact(text)
+    assert "CARD" not in out, f"benign letter-glued digit run mis-masked as CARD: {out!r}"
+
+
 def test_pan_embedded_in_longer_digit_span_no_card_digits_survive():
     # A valid PAN embedded in a longer digit-ish span (leading + trailing stray
     # digit sharing separators) must degrade to redacting the card, never leaving

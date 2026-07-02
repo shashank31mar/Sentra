@@ -307,10 +307,21 @@ def _is_pan(digits: str) -> bool:
 # a maximal run of ASCII digits and separator chars (with a digit at each end). Non-card
 # leading/trailing digit-GROUPS an over-capture swallows ("pay 5 <card>", "amount 100
 # <card>", "ref 12 34 <card> 56") are re-bounded to the real card by the digit-index
-# window scan (which trims WHOLE non-card groups). The digit-anchored boundary
-# ``(?<![0-9A-Za-z])`` / ``(?![0-9A-Za-z])`` keeps the window from biting into an
-# adjacent word/underscore-joined identifier while still admitting ``_``-separated cards
-# (``_`` is stripped as a separator inside, not a boundary). A run whose separator span
+# window scan (which trims WHOLE non-card groups). The DIGIT-only boundary
+# ``(?<![0-9])`` / ``(?![0-9])`` stops the window from merging two DIGIT-glued numbers
+# while still admitting ``_``-separated cards (``_`` is stripped as a separator inside,
+# not a boundary). It DELIBERATELY does NOT exclude an adjacent LETTER: the earlier alnum
+# boundary ``(?<![0-9A-Za-z])`` / ``(?![0-9A-Za-z])`` REFUSED to match a card touching a
+# word char, so a Luhn+IIN-valid PAN glued to a letter — ``card4111111111111111``,
+# ``x4111…``, ``id4111…``, ``4111…x`` (OCR receipts, JSON-mashed fields, key=valueSUFFIX)
+# — egressed the raw 16-digit PAN in cleartext (a PCI fail-open, NFR-7 (a); breaking the
+# normalize-then-detect "closes the ENTIRE class by construction" claim). Admitting a
+# letter at the boundary re-opens no false positive: an adjacent letter is not an ASCII
+# digit, so :func:`_normalize_digits` never counts it toward the card and
+# :func:`_best_pan_window` re-bounds to the exact digit span — only the card digits are
+# tokenized and the adjacent word char is left in cleartext. A benign letter-glued digit
+# run is still gated by :func:`_is_pan` (card length AND Luhn AND IIN), so an ordinary
+# glued identifier that is not a valid card is left untouched. A run whose separator span
 # between two digits exceeds :data:`_PAN_SEP_MAX_GAP` chars is NOT a single formatted
 # card (two distant numbers) and is broken there, so the loose window cannot merge two
 # unrelated numbers into a bogus Luhn+IIN card.
@@ -321,12 +332,15 @@ _PAN_SEP_MAX_GAP = 3      # max consecutive non-alnum separator chars between tw
 # separator shape can be forgotten (the whole point of normalize-then-detect). The
 # ``{1,GAP}`` gap bound stops the window from spanning a large prose gap between two
 # unrelated numbers; a wider gap simply ends the window (the loose boundary never
-# mis-merges two distant numbers into a card). The boundary is alnum (not ``\d``) so a
-# card is never glued to an adjacent word, yet an ``_``-separated card still matches
-# (``_`` is non-alnum → a valid interior separator, and NOT a boundary char).
+# mis-merges two distant numbers into a card). The boundary is DIGIT-only (``\d``, not
+# alnum): a card glued to a LETTER (``card4111…``, ``4111…x``) must still match — the
+# alnum boundary refused it and leaked the raw PAN (PCI fail-open, NFR-7 (a)). The letter
+# is not a digit so it never joins the card window; ``_best_pan_window`` re-bounds to the
+# exact digit span. An ``_``-separated card still matches (``_`` is non-digit → a valid
+# interior separator, and NOT a boundary char).
 _PAN_CANDIDATE = re.compile(
-    rf"(?<![0-9A-Za-z])[0-9](?:[^0-9A-Za-z]{{1,{_PAN_SEP_MAX_GAP}}}?[0-9]|[0-9])*"
-    r"(?![0-9A-Za-z])"
+    rf"(?<![0-9])[0-9](?:[^0-9A-Za-z]{{1,{_PAN_SEP_MAX_GAP}}}?[0-9]|[0-9])*"
+    r"(?![0-9])"
 )
 # A real PAN is at most 19 digits. The normalize-then-detect scan is O(digits * 19) —
 # for each start position we extend at most until the window exceeds 19 digits — so it
