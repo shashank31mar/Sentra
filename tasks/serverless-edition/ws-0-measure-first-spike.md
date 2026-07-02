@@ -3,7 +3,7 @@
 > **Doc role:** This is the **workstream SCOPE** — boundary, dependencies, real `file:line` anchors, footguns, and acceptance criteria. It is an **INPUT to this workstream's implementation-grade LLD**, *not* the granular task breakdown. The granular, buildable tasks are generated **from the approved LLD** (canonical order: HLD → LLD → tasks). See [00-index.md](00-index.md) for the doc-role map.
 
 **Parent HLD:** [hld/serverless-edition.md](../../hld/serverless-edition.md) — §8 **MEASURE-FIRST GATE** (the hand-off "MEASURE-FIRST GATE" block, lines ~683-688) + §6.4 (the combined GA-gate table, lines ~546-548) + §6.2(a)(ii) (the measured escalate-fraction, Appendix C invariant (ii)).
-**Status:** Not started
+**Status:** 🟢 **MEASURED — packet content-complete (`9e31dca`), awaiting founder signature + gate-date fill.** All a/b/c measured 2026-07-02 on real Bedrock + real WAN (never mocked); both kills adjudicated; thresholds pre-registered before the runs (`28581a2`). See §6 checklist (10/11) + [ws-0-result-packet.md](ws-0-result-packet.md).
 **Owner:** **founder — Shashank Gupta** (accountable owner-of-record AND the single named sign-off; a one-person spike has no second to escalate to, so this owner is non-delegable for the sign-off).
 **Implements / gates:** the conditional-freeze rows **(a) FR-1.7**, **(c) FR-2.8**, **(e) FR-3.13 / NFR-7**; owns **residual #5** (masked-recall delta) and **residual #6** (local-resolve fraction + escalated-p99); resolves the **Appendix B** AgentCore kill-checks. ADRs touched (validated, not authored here): **ADR-029, ADR-030, ADR-032**.
 
@@ -164,18 +164,20 @@ flowchart TD
 
 ## 6. Acceptance criteria (the one checklist for WS-0)
 
-- [ ] An **instrumented throwaway harness** runs the **real refund/payment agent** ([demo-agents/aws-payments-agent](../../demo-agents/aws-payments-agent)) through the **existing** hosted pipeline + a **stub** local-floor classifier (no production build, no signed bundle).
-- [ ] **(a)** Local-resolve fraction **and** escalation rate are measured and reported as **two separate numbers** on money-movement traffic.
-- [ ] **§6.2(a)(ii)** The measured **fraction of real Cedar policies that force escalate** (out-of-subset constructs) is reported, distinct from the traffic-based escalation rate.
-- [ ] **(b)** Escalated-path **p99** is measured over the **full WAN leg + a real (not mocked) Bedrock `ml_classifier` inference**, under representative concurrency.
-- [ ] **(c)** Masked-vs-unmasked **recall delta** is measured for **exfiltration** and **indirect-injection** **separately** (not averaged), on a corpus that includes **obfuscated + non-US variants**, using a token-namespacing-safe stub redactor.
-- [ ] **(d)** AgentCore interception scope on customer-owned/off-AWS infra (direct-tool-call vs Gateway) is **verified from AWS docs / a named SA** with a dated citation — labeled `[FACT]`, not assumed.
-- [ ] **(e)** The not-behind-Gateway segment size is stated as a defensible `[FACT]`/`[ESTIMATE]` with its assumption shown.
-- [ ] The **worst-quadrant numeric kill** (M0-6.1) is adjudicated with **explicit HIGH/LOW thresholds recorded in the packet**, and the chosen fallback (if triggered) is named — with **escalate-async recorded as unavailable for money-movement**.
-- [ ] The **AgentCore kill** (M0-6.2) is adjudicated: WS-A is recorded as **committed** or **not-committed** with the (d)+(e) rationale.
-- [ ] A **dated, founder-signed result packet** exists containing the §6.4 combined table + Cedar escalate-fraction + (d)/(e) answers + both kill adjudications + per-row disposition for WS-A/C/D/E.
-- [ ] The packet's **completion date is recorded in `tasks/serverless-edition/00-index.md`** as the **entry precondition** that unblocks (or kills/pivots) decomposition of WS-A/C/D/E. No A/C/D/E decomposition begins before this record exists.
-- [ ] Each of the **two kill checks is RESOLVED** (numeric quadrant + AgentCore scope) — neither left "inconclusive" in the signed packet.
+**Status: 10 / 11 done — MEASUREMENTS + BOTH KILLS COMPLETE (packet `9e31dca`); the last two boxes are the founder signature + gate-date fill (deliberately left to the founder, lld/34 §11.2).** Harness: [harness/ws0/](../../harness/ws0/). Deviation-from-plan (all improvements, recorded honestly): (i) the local-floor classifier IS a stub (Stub A, [cedar_escalate_fraction.py](../../harness/ws0/cedar_escalate_fraction.py) + [local_resolve_fraction.py](../../harness/ws0/local_resolve_fraction.py)) but the **redactor is the REAL production WS-E Tier-1** (`aegion_guard.redaction.redact`), not a stub — a stronger instrument (founder call 2026-07-02); (ii) (b) required a throwaway `acme-payments-agent` kid because prod runs identity=enforce — the 3 real acme keys were untouched and the throwaway creds were cleaned up post-run; (iii) a1/a2 are `[ESTIMATE]` from a documented action mix (no live traffic capture exists for these agents).
+
+- [x] An **instrumented throwaway harness** runs the **real refund/payment agent** through the **existing** hosted pipeline + a **stub** local-floor classifier (no production build, no signed bundle). — [harness/ws0/](../../harness/ws0/), throwaway (gitignored corpus/results/key), NOT in CDK.
+- [x] **(a)** Local-resolve fraction **and** escalation rate reported as **two separate numbers** on money-movement traffic. — a1=**45%** / a2=**55%** (`[ESTIMATE]`, [local_resolve_fraction.py](../../harness/ws0/local_resolve_fraction.py)).
+- [x] **§6.2(a)(ii)** The **fraction of real Cedar policies that force escalate** is reported, distinct from the traffic escalation rate. — a3=**2 of 3 = 0.67** (deterministic, [cedar_escalate_fraction.py](../../harness/ws0/cedar_escalate_fraction.py)).
+- [x] **(b)** Escalated-path **p99** over the **full WAN leg + real (not mocked) Bedrock** inference, representative concurrency. — e2e p99 **≈2992ms@c5 / 3454ms@c20** (300 real WAN→Bedrock calls, 2 bands, [latency_p99.py](../../harness/ws0/latency_p99.py)); **BLOWS NFR-2** (≤900ms/≤2.5s).
+- [x] **(c)** Masked-vs-unmasked **recall delta** for **exfiltration** and **indirect-injection** **separately**, obfuscated+non-US variants, namespacing-safe redactor. — exfil Δ**−0.5%** / indirect Δ**−3.6%** (both CIs overlap → masking does NOT blind; [recall_scorer.py](../../harness/ws0/recall_scorer.py), real WS-E redactor).
+- [x] **(d)** AgentCore interception scope **verified from AWS docs** with dated citations — `[FACT]`, not assumed. — Gateway-bound only; adversarial verdict CONFIRMED (packet §8).
+- [x] **(e)** The not-behind-Gateway segment size stated as a defensible `[FACT]`/`[ESTIMATE]` with its assumption shown. — band 55/75/90%, carried SINGLE_SOURCE (packet §8).
+- [x] The **worst-quadrant numeric kill** (M0-6.1) is adjudicated with **explicit pre-registered HIGH/LOW thresholds** (`28581a2`, BEFORE the runs); fallback named; **escalate-async recorded unavailable for money-movement**. — **does NOT fire** ("slow but NOT blind"); fallback (ii) route-to-in-VPC indicated by the p99 (packet §4).
+- [x] The **AgentCore kill** (M0-6.2) is adjudicated: WS-A recorded **committed** with the (d)+(e) rationale. — **committed** (both §9.2 conditions fail); DEFER-not-DELETE overlay (packet §4).
+- [ ] A **dated, founder-signed result packet** exists (§6.4 table + Cedar escalate-fraction + (d)/(e) + both kills + A/C/D/E disposition). — **CONTENT COMPLETE** ([ws-0-result-packet.md](ws-0-result-packet.md)); **awaiting only the founder date+signature** (the one remaining human gate, lld/34 §11.2).
+- [ ] The packet's **completion date is recorded in `00-index.md`** as the A/C/D/E entry precondition. — **BLOCKED on the signature above**; the gate-date line (`00-index.md:78`) stays blank until the founder signs. (A/D/E remain LLD-only until then; C/D/E gates already founder-OVERRIDDEN independently.)
+- [x] Each of the **two kill checks is RESOLVED** (numeric quadrant + AgentCore scope) — neither left "inconclusive". — both resolved (packet §4).
 
 ---
 
