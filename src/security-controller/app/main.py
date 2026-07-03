@@ -50,6 +50,14 @@ async def lifespan(app: FastAPI):
     app.state.validation_service = ValidationService()
     logger.info("ValidationService singleton initialized")
 
+    # WS-L M1.4 (SEC-5) — fail fast at boot if any registered node source lacks a
+    # priority / display label (or a request-phase source is missing from the
+    # fallback order). An unregistered source silently ranks priority 0 and loses
+    # tie-breaks → audit mis-attribution. Better a loud boot failure than silent drift.
+    from app.services.scheduler import assert_registration_complete
+    assert_registration_complete(app.state.validation_service)
+    logger.info("Detection-depth node registration verified (WS-L SEC-5)")
+
     yield
     
     # Shutdown

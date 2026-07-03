@@ -152,6 +152,12 @@ def _pipeline_service(mock_session):
     service.abuse_detector = Mock()
     service.abuse_detector.check_rate_limit = AsyncMock(return_value=_allow(Source.SENTRA_ABUSE))
 
+    # WS-L M6: the distilled front-runner is a LIVE tier-1 chain-head. The real
+    # interim classifier returns an escalate verdict (concrete ALLOW, confidence 0.0,
+    # metadata escalate) → Haiku (the mocked ml) still runs (verdict-equivalent).
+    from app.validators.distilled_classifier import DistilledClassifier
+    service.distilled_classifier = DistilledClassifier()
+
     return service
 
 
@@ -208,9 +214,10 @@ def test_t_topo_cycle_raises():
 
 
 # --------------------------------------------------------------------------- #
-# T-PHASE — build_dag per-phase node selection degrades to the request floor.
+# T-PHASE — build_dag per-phase node selection (WS-L per-phase node-set builder).
 # --------------------------------------------------------------------------- #
-def _request_node_sources():
+def _request_floor_sources():
+    """The seven original request-phase floor nodes (pre-WS-L)."""
     return {
         Source.SENTRA_TRUST,
         Source.SENTRA_POLICY,
@@ -222,17 +229,20 @@ def _request_node_sources():
     }
 
 
-def test_t_phase_degrade_unknown_phase_falls_back_to_request_floor(mock_session):
-    """An unknown/absent phase degrades to the FULL request node set (the
-    deterministic floor still runs), never an empty graph — the deny-by-default
-    posture (LLD 31 §5.4).
+def _request_node_sources():
+    """The FULL WS-L request node set = the 7-node floor + the two additive WS-L
+    request-phase nodes (distilled front-runner M6 + D1 trajectory M4)."""
+    return _request_floor_sources() | {Source.SENTRA_DISTILLED, Source.SENTRA_TRAJECTORY}
 
-    WS-E2 update (LLD 29 §4.1): the KNOWN content-bearing phases (content/output/
-    memory) now ALSO carry the Tier-2 NER redaction barrier entry node ON TOP of
-    the request floor — a deliberate additive change (the F1 barrier). A genuinely
-    UNKNOWN phase (`totally-unknown`) still degrades to EXACTLY the request floor
-    (no barrier). Both cases still run the full deterministic floor — the deny-by-
-    default posture is unchanged; only the content phases gained the extra barrier."""
+
+def test_t_phase_degrade_unknown_phase_falls_back_to_request_floor(mock_session):
+    """WS-L per-phase node-set builder (LLD 32 §6.1/§6.2), REPLACING WS-C's no-op
+    degradation:
+      * `content` → the D2 set (NER barrier + trust + abuse + sentra.indirect_injection),
+        NOT the action floor (invariant 4).
+      * `memory`  → the D3 set (NER barrier + trust + abuse + sentra.memory).
+      * `output` / a genuinely UNKNOWN phase → degrades to the FULL request node set
+        (deny-by-default; never an empty graph / fail-open)."""
     from app.services.scheduler import build_dag
     from app.combiners import Source
 
@@ -241,26 +251,44 @@ def test_t_phase_degrade_unknown_phase_falls_back_to_request_floor(mock_session)
 
     request_nodes = build_dag(service, "request", stamp_ctx)
 
-    # Content-bearing phases: the request floor PLUS the WS-E2 NER barrier.
-    for phase in ("content", "output", "memory"):
-        degraded = build_dag(service, phase, dict(stamp_ctx))
-        assert degraded, f"phase {phase!r} degraded to an EMPTY graph — a fail-OPEN"
-        sources = {n.source for n in degraded}
-        assert Source.REDACTION_NER in sources, f"phase {phase!r} missing the NER barrier"
-        # The full request floor still runs (never fewer checks than request).
-        assert _request_node_sources() <= sources
-        assert sources == _request_node_sources() | {Source.REDACTION_NER}
+    # content → the D2 node set (NO action floor, invariant 4).
+    content = {n.source for n in build_dag(service, "content", dict(stamp_ctx))}
+    assert content == {
+        Source.REDACTION_NER, Source.SENTRA_TRUST, Source.SENTRA_ABUSE,
+        Source.SENTRA_INDIRECT,
+    }
+    # The action-authorization nodes are deliberately ABSENT (tenet B).
+    assert Source.SENTRA_POLICY not in content
+    assert Source.SENTRA_CROSS_AGENT not in content
+    assert Source.SENTRA_CONTEXT not in content
 
-    # An UNKNOWN phase degrades to EXACTLY the request floor — no barrier added.
-    degraded = build_dag(service, "totally-unknown", dict(stamp_ctx))
-    assert degraded, "unknown phase degraded to an EMPTY graph — a fail-OPEN"
-    assert {n.source for n in degraded} == _request_node_sources()
-    assert {n.source for n in degraded} == {n.source for n in request_nodes}
+    # memory → the D3 node set (NO action floor).
+    memory = {n.source for n in build_dag(service, "memory", dict(stamp_ctx))}
+    assert memory == {
+        Source.REDACTION_NER, Source.SENTRA_TRUST, Source.SENTRA_ABUSE,
+        Source.SENTRA_MEMORY,
+    }
+    assert Source.SENTRA_POLICY not in memory
+
+    # `output` is content-bearing: it degrades to the request node set PLUS the NER
+    # barrier (belt-and-suspenders — routes.py keeps output on the WS-B stub, so
+    # build_dag is not reached for output on the live path, but if it is, content_text
+    # is still redacted first).
+    output = {n.source for n in build_dag(service, "output", dict(stamp_ctx))}
+    assert output == _request_node_sources() | {Source.REDACTION_NER}
+
+    # A genuinely UNKNOWN phase degrades to EXACTLY the request node set (no barrier —
+    # no content_text semantics), never an empty graph.
+    unknown = build_dag(service, "totally-unknown", dict(stamp_ctx))
+    assert unknown, "unknown phase degraded to an EMPTY graph — a fail-OPEN"
+    assert {n.source for n in unknown} == _request_node_sources()
+    assert {n.source for n in unknown} == {n.source for n in request_nodes}
 
 
 def test_t_phase_degrade_request_phase_builds_full_floor(mock_session):
-    """Sanity: the request phase builds the seven-node floor with the correct
-    tier split (six tier-0 + the ml tier-1)."""
+    """WS-L: the request phase builds the 7-node floor PLUS the two additive WS-L
+    request nodes (distilled + trajectory). Tier split: 6 tier-0, and the tier-1 set
+    now = {ml, distilled, trajectory}."""
     from app.services.scheduler import build_dag
 
     service = _pipeline_service(mock_session)
@@ -269,8 +297,13 @@ def test_t_phase_degrade_request_phase_builds_full_floor(mock_session):
     tier0 = {n.source for n in nodes if n.cost_tier == CostTier.DETERMINISTIC}
     tier1 = {n.source for n in nodes if n.cost_tier == CostTier.EXPENSIVE_MODEL}
     assert Source.SENTRA_ML_CLASSIFIER in tier1
+    assert Source.SENTRA_DISTILLED in tier1      # WS-L M6 front-runner
+    assert Source.SENTRA_TRAJECTORY in tier1     # WS-L M4 D1 signal
     assert Source.SENTRA_ML_CLASSIFIER not in tier0
-    assert len(tier0) == 6
+    assert len(tier0) == 6                       # the deterministic floor is unchanged
+    # WS-L M6.1: the ml node chains BEHIND distilled (front-runner) by default.
+    ml_node = next(n for n in nodes if n.source == Source.SENTRA_ML_CLASSIFIER)
+    assert ml_node.depends_on == (Source.SENTRA_DISTILLED,)
 
 
 # --------------------------------------------------------------------------- #
@@ -302,10 +335,13 @@ def test_pick_top_denier_none_when_no_deny():
 def test_t_combiner_clean_priorities_unchanged():
     from app.combiners import DEFAULT_PRIORITIES, default_priority
 
-    # The VOTING priorities (every source that can decide a verdict) are byte-for-
-    # byte unchanged — the deny-overrides ranking is untouched.
-    voting = {k: v for k, v in DEFAULT_PRIORITIES.items() if k != Source.REDACTION_NER}
-    assert voting == {
+    # The PRE-WS-L voting priorities (every source that could decide a verdict before
+    # WS-L) are byte-for-byte UNCHANGED — the deny-overrides ranking for the existing
+    # sources is untouched (T-COMBINER-CLEAN, invariant 7). WS-L is ADDITIVE: it adds
+    # ten new detection-depth sources, but MUST NOT move any existing value or the
+    # tie-break order. So assert the pre-WS-L subset is exactly preserved, and the new
+    # entries slot BETWEEN existing values without disturbing them.
+    pre_wsl = {
         Source.SENTRA_TRUST: 90,
         Source.SENTRA_POLICY: 80,
         Source.SENTRA_SIGMA: 70,
@@ -316,6 +352,28 @@ def test_t_combiner_clean_priorities_unchanged():
         Source.BEDROCK_GUARDRAIL: 40,
         Source.AZURE_CONTENT_FILTER: 40,
     }
+    for src, prio in pre_wsl.items():
+        assert DEFAULT_PRIORITIES[src] == prio, f"existing priority moved: {src}"
+    # WS-L additive entries (LLD 32 §9.2) — new sources only; NO existing value moved.
+    wsl_new = {
+        Source.SENTRA_NETWORK: 85,
+        Source.SENTRA_TAINT: 78,
+        Source.SENTRA_EGRESS: 77,
+        Source.SENTRA_PROVENANCE: 75,
+        Source.SENTRA_TRAJECTORY: 68,
+        Source.SENTRA_DISTILLED: 66,
+        Source.SENTRA_OUTPUT_DLP: 63,
+        Source.SENTRA_INDIRECT: 62,
+        Source.SENTRA_MEMORY: 58,
+        Source.SENTRA_ANOMALY: 55,
+    }
+    for src, prio in wsl_new.items():
+        assert DEFAULT_PRIORITIES[src] == prio
+    # The ordering constraints WS-L relies on: sigma 70 > distilled 66 > ml 65, and
+    # sigma 70 > trajectory 68 > ml 65 (LLD 32 §9.2).
+    assert DEFAULT_PRIORITIES[Source.SENTRA_SIGMA] > DEFAULT_PRIORITIES[Source.SENTRA_DISTILLED]
+    assert DEFAULT_PRIORITIES[Source.SENTRA_DISTILLED] > DEFAULT_PRIORITIES[Source.SENTRA_ML_CLASSIFIER]
+    assert DEFAULT_PRIORITIES[Source.SENTRA_SIGMA] > DEFAULT_PRIORITIES[Source.SENTRA_TRAJECTORY]
     # WS-E2 (LLD 29 §4.1 FOOTGUN 2): the NER barrier source is REGISTERED so the
     # WS-D trail can join on it, but at priority 0 — it NEVER votes on a verdict
     # (the node returns ALLOW/ABSTAIN, never a DENY), so the ranking above is
@@ -699,20 +757,26 @@ async def test_t_phase_seam_request_phase_forwarded_to_build_dag(
 
 
 @pytest.mark.asyncio
-async def test_t_phase_seam_content_phase_degrades_to_request_floor_end_to_end(
+async def test_t_phase_seam_content_phase_runs_d2_node_set_end_to_end(
     mock_session, sample_request, monkeypatch
 ):
-    """A content-phase request flows through the full pipeline and (WS-C owning
-    only the request phase today) degrades to the request floor: tier-0 nodes run
-    and a verdict is produced (deny-by-default, never 'no checks')."""
+    """WS-L M2: a content-phase request flows through the D2 content node set (NER
+    barrier + trust + abuse + sentra.indirect_injection), NOT the request action
+    floor. The action-authorization nodes do NOT run (invariant 4); a verdict is
+    produced (deny-by-default, never 'no checks')."""
     service = _pipeline_service(mock_session)
-    content_request = sample_request.model_copy(update={"phase": "content"})
+    content_request = sample_request.model_copy(
+        update={"phase": "content", "content_text": "a perfectly benign document."}
+    )
 
     result, signals = await service._run_validation_pipeline(content_request, mock_session)
 
     assert result.decision in ("ALLOW", "DENY")
-    service.trust_checker.check.assert_called()
-    service.policy_engine.validate.assert_called()
+    service.trust_checker.check.assert_called()          # trust IS in the content set
+    # The action-authorization nodes are NOT in the content set (invariant 4).
+    service.policy_engine.validate.assert_not_called()
+    service.cross_agent_validator.validate.assert_not_called()
+    service.context_validator.validate_sequence.assert_not_called()
     assert Source.SENTRA_TRUST in [s.source for s in signals]
 
 
@@ -721,17 +785,21 @@ async def test_t_phase_seam_content_phase_tier0_deny_still_short_circuits(
     mock_session, sample_request, monkeypatch
 ):
     """The phase seam does not weaken enforcement: a content-phase request whose
-    tier-0 policy node DENYs still short-circuits before the ML model."""
+    tier-0 TRUST node DENYs still short-circuits before the D2 model node. (Trust is
+    the tier-0 floor in the content set; the action-floor policy node is absent —
+    invariant 4 — so trust is the short-circuit lever here.)"""
     service = _pipeline_service(mock_session)
-    service.policy_engine.validate = AsyncMock(
-        return_value=_deny(Source.SENTRA_POLICY, "TOOL_NOT_ALLOWED")
+    service.trust_checker.check = AsyncMock(
+        return_value=_deny(Source.SENTRA_TRUST, "QUARANTINED")
     )
-    content_request = sample_request.model_copy(update={"phase": "content"})
+    content_request = sample_request.model_copy(
+        update={"phase": "content", "content_text": "some content"}
+    )
 
     result, _ = await service._run_validation_pipeline(content_request, mock_session)
 
     assert result.should_deny
-    assert result.source == Source.SENTRA_POLICY
+    assert result.source == Source.SENTRA_TRUST
     service.ml_classifier.validate.assert_not_called()
 
 

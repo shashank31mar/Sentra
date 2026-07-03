@@ -344,6 +344,37 @@ class Settings(BaseSettings):
         validation_alias="ML_CONFIDENCE_ABSTAIN_THRESHOLD",
     )
 
+    # --- distilled model (WS-L M6): LIVE front-runner, short-circuit ON, no shadow ---
+    # LLD 32 §4.1 (R5-B, founder 2026-07-03). There is NO short-circuit-enable flag;
+    # the short-circuit is INTRINSIC — when the node is enabled, a confident verdict
+    # short-circuits Haiku. `distilled_enabled` is an OPERABILITY KILL-SWITCH (disable
+    # the node if it misbehaves), NOT a shadow gate.
+    distilled_enabled: bool = Field(default=True, validation_alias="DISTILLED_ENABLED")
+    # The node is REGISTERED + LIVE by default (front-runner). Its OWN confidence
+    # threshold — NOT `ml_confidence_trust_threshold` (the small model's confidence
+    # scale differs; FIX-A3). Set HIGH so only genuinely-easy verdicts short-circuit
+    # (SEC-7 mitigation 2 — the crafted confident-clean bypass is a founder-accepted
+    # live risk, mitigated by this HIGH bar + the floor/D2/D3 running first + the §14
+    # disagreement-rate drift monitor, NOT by a shadow window).
+    distilled_confidence_trust_threshold: float = Field(
+        default=0.9,
+        validation_alias="DISTILLED_CONFIDENCE_TRUST_THRESHOLD",
+    )
+    # The <100ms wall. On breach the node returns a CONCRETE escalate verdict (→ Haiku),
+    # NEVER an abstain (an abstain aborts the chain and skips Haiku — M6.1 footgun).
+    distilled_timeout_ms: int = Field(default=100, validation_alias="DISTILLED_TIMEOUT_MS")
+
+    # --- D2/D3 live-enforce FP/precision gate (WS-L M2.4/M3.3, R5-C) ---
+    # D2 (indirect injection) and D3 (memory integrity) are LIVE-ENFORCE, gated on a
+    # measured FP/precision budget: their DENYs are turned ON (`enforce=True` →
+    # `_is_hard_deny` lets the DENY decide) once the offline eval-harness (M5) clears
+    # the FP budget. Until then a D2/D3 DENY is captured ADVISORY (does not decide) —
+    # this is a rollout threshold, NOT a shadow phase (a forgotten enable under-blocks,
+    # a missed detection caught by §14, never a surprise FP outage). Default OFF
+    # (advisory) — the harness gate flips them on.
+    d2_enforce_enabled: bool = Field(default=False, validation_alias="D2_ENFORCE_ENABLED")
+    d3_enforce_enabled: bool = Field(default=False, validation_alias="D3_ENFORCE_ENABLED")
+
     # Cache Configuration (Workstream 5, Task 1)
     cache_enabled: bool = Field(default=True, validation_alias="CACHE_ENABLED")
     agent_metadata_cache_ttl_seconds: int = Field(default=60, validation_alias="AGENT_METADATA_CACHE_TTL_SECONDS")

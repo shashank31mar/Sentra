@@ -43,9 +43,15 @@ def _sig(source, decision="ALLOW", **kw):
 
 
 def _all_timings():
-    """A _step_timings snapshot where every request-phase validator ran."""
+    """A _step_timings snapshot where every request-phase validator ran.
+
+    WS-L: the two LIVE request-phase D-nodes key `_step_timings` by their DOTTED
+    source string (`timed(node.source, …)`), unlike the SHORT labels the original 7
+    use (`"ml"` → sentra.ml_classifier). So the snapshot for "everything ran" now
+    also carries `sentra.distilled` + `sentra.trajectory` dotted keys."""
     return {"trust": 1.0, "policy": 1.0, "cross_agent": 1.0, "sigma": 1.0,
-            "context": 1.0, "abuse": 1.0, "ml": 1.0}
+            "context": 1.0, "abuse": 1.0, "ml": 1.0,
+            Source.SENTRA_DISTILLED: 1.0, Source.SENTRA_TRAJECTORY: 1.0}
 
 
 # ===========================================================================
@@ -180,18 +186,24 @@ def _markers_by_type(trail: TrailResult):
 
 
 def test_allow_full_trail_zero_not_run():
-    """T-TRAIL-01: all coverage ran (Signal) or ran-ABSTAIN (disabled ML) → ZERO
-    not-run markers; no extra layer forced (invariant iv/v)."""
+    """T-TRAIL-01: all coverage ran (Signal) or ran-ABSTAIN (disabled ML / D1) → ZERO
+    not-run markers; no extra layer forced (invariant iv/v).
+
+    WS-L: STATIC_FALLBACK_ORDER grew by two LIVE request-phase layers — sentra.distilled
+    (emits a concrete escalate signal on every survivor) and sentra.trajectory (D1, which
+    ABSTAINs when D1_ENABLED is off, like the disabled ML). So "every layer ran" now = a
+    signal for every source except ML + D1 (both ran-ABSTAIN)."""
     cov = list(STATIC_FALLBACK_ORDER)
-    # Every layer ran; ML abstained (disabled-but-awaited) → no ML signal.
-    signals = [_sig(s, "ALLOW") for s in cov if s != Source.SENTRA_ML_CLASSIFIER]
+    abstained = {Source.SENTRA_ML_CLASSIFIER, Source.SENTRA_TRAJECTORY}
+    # Every layer ran; ML + D1 abstained (disabled-but-awaited) → no signal for them.
+    signals = [_sig(s, "ALLOW") for s in cov if s not in abstained]
     trail = build_trail(
         signals=signals, step_timings=_all_timings(), coverage=cov,
         winning_source=None, phase="request", is_deny=False,
     )
     by = _markers_by_type(trail)
     assert by["not_run"] == []                       # invariant iv/v
-    assert by["abstain"] == [Source.SENTRA_ML_CLASSIFIER]  # ML ran, abstained
+    assert set(by["abstain"]) == abstained           # ML + D1 ran, abstained
     assert by["error"] == []
 
 

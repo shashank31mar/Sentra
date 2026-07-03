@@ -23,19 +23,23 @@ on/off Field STILL gates whether the classifier runs at all (default False; the
 config YAMLs set it true) — a disabled classifier returns an abstain and emits no
 signal.
 
-WS-D adds D1–D7 as additional tier-1 nodes here (with their own `depends_on`
-edges) WITHOUT editing the scheduler core — the `ValidatorNode`/`depends_on`/
-`cost_tier` vocabulary is the shared contract.
+WS-L adds D1–D3 (P0) as additional tier-1 nodes here (with their own `depends_on`
+edges) plus the distilled front-runner (M6); D4–D8 are scaffolded (Source
+constant + priority + label), not built. This is done WITHOUT editing the
+scheduler core — the `ValidatorNode`/`depends_on`/`cost_tier` vocabulary is the
+shared contract.
 """
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
 from typing import Dict, List
 
 from app.api.models import ValidationRequest, ValidationResult, _CONTENT_FIELD
 from app.combiners import Source
+from app.config import settings
 from app.services.scheduler.node import CostTier, ValidatorNode
 
 logger = logging.getLogger(__name__)
@@ -66,6 +70,14 @@ _ORDER = {
     Source.SENTRA_CONTEXT: 5,       # STEP 4
     Source.SENTRA_ABUSE: 6,         # STEP 5
     Source.SENTRA_ML_CLASSIFIER: 7,  # STEP 6 (tier-1)
+    # WS-L request-phase D-nodes. Each carries its OWN _ORDER key (invariant #8a:
+    # `_ORDER` is one of the three co-equal sets the trail drift-guard checks, so a
+    # request-phase node with no key leaves `set(_ORDER)` short of the fallback
+    # order → guard RED). NOT a reuse of ML's key. The model-chain run order is
+    # decided by `depends_on` (distilled → ml), not order_key, so ML's key stays 7
+    # (T-EQUIV byte-identity of the existing 7 nodes' order_key is preserved).
+    Source.SENTRA_DISTILLED: 8,      # distilled chain-HEAD (M6), runs before ml via depends_on
+    Source.SENTRA_TRAJECTORY: 9,     # D1 trajectory signal (M4)
 }
 
 
@@ -77,16 +89,14 @@ def build_dag(service, phase: str, stamp_ctx: Dict) -> List[ValidatorNode]:
     `platform`/`cloud_region` into so the reused `_stamp` closure can read them
     (matching the sequential capture at validation_service.py:377-378).
 
-    Per-phase node selection (LLD 31 §5.4): only `phase == "request"` has nodes
-    today; content/output/memory nodes are WS-D's deliverable. An unknown/absent
-    phase degrades to the request node set (deny-by-default posture — the
-    request-side floor still runs, never "no checks").
+    Per-phase node selection (WS-L / LLD 32 §6.1/§6.2, replacing WS-C's no-op
+    degradation): `request` returns the existing floor + the two additive WS-L
+    request nodes (distilled front-runner M6 + D1 trajectory M4); `content` and
+    `memory` return their own deep-detector node sets (D2 / D3, NO action floor —
+    invariant 4); `output` and any unknown/absent phase degrade to the request
+    floor (deny-by-default posture — the request-side floor still runs, never "no
+    checks"). See the per-phase node-set builder near the tail of this function.
     """
-    if phase != "request":
-        # WS-C ships only the request phase; other phases have no WS-C nodes yet
-        # (WS-D adds them). Degrade to the request floor rather than run nothing.
-        pass
-
     async def _run_trust(req: ValidationRequest, sess: Dict) -> ValidationResult:
         result = await service.trust_checker.check(sess, req)
         # Trust runs FIRST — before the policy node populates stamp_ctx — so a
@@ -150,13 +160,81 @@ def build_dag(service, phase: str, stamp_ctx: Dict) -> List[ValidatorNode]:
         )
         return await service.abuse_detector.check_rate_limit(sess, policy)
 
+    async def _run_distilled(req: ValidationRequest, sess: Dict) -> ValidationResult:
+        # WS-L M6.1 — the LIVE cheap tier-1 chain-HEAD (LLD 32 §4.1/§4.3). ONE
+        # awaitable, NO asyncio.gather (the sole gather is _run_tier1_with_edges,
+        # run.py). Hard <100ms wall; on timeout OR error return a CONCRETE escalate
+        # verdict (→ Haiku runs), NEVER abstain (an abstain aborts the chain,
+        # skipping Haiku) and NEVER a silent ALLOW (fail-secure fallback,
+        # founder-locked §4.1 — an errored distilled call is treated as "run Haiku",
+        # never as clean).
+        try:
+            result = await asyncio.wait_for(
+                service.distilled_classifier.classify(req),
+                timeout=settings.distilled_timeout_ms / 1000,
+            )
+            return result
+        except Exception as exc:  # noqa: BLE001 — timeout/4XX/5XX → escalate to Haiku (fail-secure)
+            logger.warning("distilled classify failed; escalating to Haiku: %s", exc)
+            return ValidationResult(
+                decision="ALLOW",
+                reason="distilled: error/timeout → escalate to Haiku (fail-secure)",
+                should_deny=False,
+                confidence=0.0,
+                source=Source.SENTRA_DISTILLED,
+                metadata={"escalate": True, "distilled_error": True},
+            )
+
     async def _run_ml(req: ValidationRequest, sess: Dict) -> ValidationResult:
-        # Tier-1 ML node. NO-FLAG: ML ALWAYS ENFORCES. The wrapper stamps
-        # metadata["enforce"]=True on every concrete verdict so a live ML DENY
-        # can decide (_is_hard_deny). There is no shadow-mode relocation any
-        # more — the ML shadow toggle is removed.
+        # Tier-1 ML node (Haiku), the chain-TAIL behind the distilled chain-head.
+        #
+        # WS-L M6.2 — the LIVE short-circuit (LLD 32 §4.1/SEC-7). The short-circuit
+        # is INTRINSIC: there is NO enable flag; it fires whenever the upstream
+        # distilled verdict (threaded via ctx into `sess[SENTRA_DISTILLED]`) is
+        # CONFIDENT (not the escalate path, confidence ≥ the distilled OWN
+        # threshold — NOT ml_confidence_trust_threshold; FIX-A3). A confident
+        # distilled verdict skips Haiku entirely — this node abstains so it emits no
+        # signal, and the distilled node's own captured verdict (ALLOW or DENY) is
+        # what the combiner sees. Read `sess[SENTRA_DISTILLED]`, never re-invoke the
+        # classifier (double-run + breaks the single-awaitable contract).
+        distilled = sess.get(Source.SENTRA_DISTILLED)
+        if (distilled is not None
+                and not (distilled.metadata or {}).get("escalate")
+                and distilled.confidence is not None
+                and distilled.confidence >= settings.distilled_confidence_trust_threshold):
+            return ValidationResult.abstain("distilled_shortcircuit")
+
+        # else — low-confidence / escalate / error / interim distilled → run Haiku.
+        # NO-FLAG: ML ALWAYS ENFORCES. The wrapper stamps metadata["enforce"]=True on
+        # every concrete verdict so a live ML DENY can decide (_is_hard_deny).
         result = await service.ml_classifier.validate(req)
         return _apply_ml_enforce_wrapper(result)
+
+    async def _run_trajectory(req: ValidationRequest, sess: Dict) -> ValidationResult:
+        # WS-L M4 — D1 conversation-trajectory (request phase). An additive tier-1
+        # node (LLM-judge v1). A SIGNAL, never a standalone gate: it starts SHADOW
+        # (advisory) — the enforce wrapper is NOT applied, so `_is_hard_deny` is
+        # false and a D1 DENY does not decide the verdict (LLD 32 §5.1 solvability
+        # ceiling; graduate shadow→enforce on evidence, M4.3). Reads server-side
+        # transcript only (SEC-3).
+        from app.validators.trajectory import TrajectoryValidator
+        return await TrajectoryValidator(service).validate(req, sess)
+
+    async def _run_indirect(req: ValidationRequest, sess: Dict) -> ValidationResult:
+        # WS-L M2 — D2 indirect/second-order injection (content phase). Reads the
+        # REDACTED content_text (the NER barrier ran first). Live-enforce, FP-gated
+        # (R5-C): advisory until the M5 harness clears the FP budget, then enforce
+        # via the tier-1 enforce mechanism (metadata["enforce"]=True → _is_hard_deny).
+        from app.validators.indirect_injection import IndirectInjectionValidator
+        result = await IndirectInjectionValidator(service).validate(req)
+        return _apply_enforce_if(result, settings.d2_enforce_enabled)
+
+    async def _run_memory(req: ValidationRequest, sess: Dict) -> ValidationResult:
+        # WS-L M3 — D3 memory-integrity (memory phase). Reads the REDACTED memory
+        # candidate. Live-enforce, FP-gated (same mechanism as D2, R5-C).
+        from app.validators.memory_write import MemoryWriteValidator
+        result = await MemoryWriteValidator(service).validate(req)
+        return _apply_enforce_if(result, settings.d3_enforce_enabled)
 
     async def _run_ner_barrier(req: ValidationRequest, sess: Dict) -> ValidationResult:
         # WS-E2 / LLD 29 §4.1 (F1) — the Tier-2 free-text PHI redaction BARRIER.
@@ -280,84 +358,178 @@ def build_dag(service, phase: str, stamp_ctx: Dict) -> List[ValidatorNode]:
                 "redaction.ner: NER unavailable; content_text held (egress-fail-closed)"
             )
 
-    nodes: List[ValidatorNode] = [
-        ValidatorNode(
-            source=Source.SENTRA_TRUST,
-            cost_tier=CostTier.DETERMINISTIC,
-            run=_run_trust,
-            depends_on=(),
-            order_key=_ORDER[Source.SENTRA_TRUST],
-        ),
-        ValidatorNode(
-            source=Source.SENTRA_POLICY,
-            cost_tier=CostTier.DETERMINISTIC,
-            run=_run_policy,
-            depends_on=(Source.SENTRA_TRUST,),
-            order_key=_ORDER[Source.SENTRA_POLICY],
-        ),
-        ValidatorNode(
-            source=Source.SENTRA_CROSS_AGENT,
-            cost_tier=CostTier.DETERMINISTIC,
-            run=_run_cross_agent,
-            depends_on=(Source.SENTRA_POLICY,),
-            order_key=_ORDER[Source.SENTRA_CROSS_AGENT],
-        ),
-        ValidatorNode(
-            source=Source.SENTRA_SIGMA,
-            cost_tier=CostTier.DETERMINISTIC,
-            run=_run_sigma,
-            depends_on=(Source.SENTRA_POLICY,),
-            order_key=_ORDER[Source.SENTRA_SIGMA],
-        ),
-        ValidatorNode(
-            source=Source.SENTRA_CONTEXT,
-            cost_tier=CostTier.DETERMINISTIC,
-            run=_run_context,
-            depends_on=(Source.SENTRA_POLICY,),
-            order_key=_ORDER[Source.SENTRA_CONTEXT],
-        ),
-        ValidatorNode(
-            source=Source.SENTRA_ABUSE,
-            cost_tier=CostTier.DETERMINISTIC,
-            run=_run_abuse,
-            depends_on=(Source.SENTRA_POLICY,),
-            order_key=_ORDER[Source.SENTRA_ABUSE],
-        ),
-        ValidatorNode(
-            source=Source.SENTRA_ML_CLASSIFIER,
+    def _ner_barrier_node() -> ValidatorNode:
+        # WS-E2 / LLD 29 §4.1 (F1) — the Tier-2 NER redaction BARRIER. `run_dag`
+        # recognizes `Source.REDACTION_NER` (`_is_barrier`) and runs it FIRST + ALONE
+        # so it redacts `content_text` happens-before every content/memory detector
+        # node reads the request. `cost_tier` is documentary (run_dag lifts it out of
+        # the tier split). `content_text`-only (FOOTGUN 1 — never blanket-redact).
+        return ValidatorNode(
+            source=Source.REDACTION_NER,
             cost_tier=CostTier.EXPENSIVE_MODEL,
-            run=_run_ml,
-            depends_on=(Source.SENTRA_POLICY,),
-            order_key=_ORDER[Source.SENTRA_ML_CLASSIFIER],
-        ),
-    ]
-
-    # WS-E2 / LLD 29 §4.1 (F1): add the Tier-2 NER barrier ONLY for a content-
-    # bearing phase (content/output/memory). `run_dag` recognizes the
-    # `Source.REDACTION_NER` node as a pre-DAG BARRIER (`_is_barrier`) and runs it
-    # FIRST, alone (awaited before the tier-0/tier-1 split), so the redaction of
-    # `content_text` happens-before EVERY detector node reads the request AND before
-    # any concurrent tier-1 reader — the real happens-before barrier the §5.3
-    # invariant needs, not merely a `depends_on` edge (which, against independent
-    # tier-1 peers, orders nothing — the defect the tier-split scheduler exposed).
-    # `build_dag` does not receive the request, so the node itself cheaply ABSTAINs
-    # when there is no `content_text` (nothing to redact) — the append is keyed on
-    # the PHASE only. The `request`-phase DAG is left untouched → WS-C's request-
-    # phase verdict-equivalence golden baseline is unaffected (FOOTGUN 3). NER is
-    # `content_text`-only; `tool_params`/`user_input` keep their Tier-1 tokens
-    # (FOOTGUN 1 — never blanket-redact, it would blind detection). `cost_tier` is
-    # documentary for this node — `run_dag` lifts it out of the tier split entirely.
-    if phase in _CONTENT_PHASES:
-        nodes.append(
-            ValidatorNode(
-                source=Source.REDACTION_NER,
-                cost_tier=CostTier.EXPENSIVE_MODEL,
-                run=_run_ner_barrier,
-                depends_on=(),          # barrier — run_dag runs it first & alone
-                order_key=0,            # documentary (run_dag lifts it out of tiers)
-            )
+            run=_run_ner_barrier,
+            depends_on=(),          # barrier — run_dag runs it first & alone
+            order_key=0,            # documentary (run_dag lifts it out of tiers)
         )
 
+    def _request_floor() -> List[ValidatorNode]:
+        # The seven EXISTING request-phase nodes, BYTE-FOR-BYTE (FIX-E / T-EQUIV).
+        # Their source/cost_tier/run/order_key do not move. The one exception is the
+        # ml node's `depends_on`: when the distilled front-runner is enabled (default)
+        # ml chains BEHIND distilled (`depends_on=(SENTRA_DISTILLED,)`) so
+        # `_build_chains` groups distilled → ml (M6.1); when the kill-switch is OFF ml
+        # keeps `(SENTRA_POLICY,)` — the byte-identical rollback graph.
+        ml_depends_on = (
+            (Source.SENTRA_DISTILLED,) if settings.distilled_enabled
+            else (Source.SENTRA_POLICY,)
+        )
+        return [
+            ValidatorNode(
+                source=Source.SENTRA_TRUST,
+                cost_tier=CostTier.DETERMINISTIC,
+                run=_run_trust,
+                depends_on=(),
+                order_key=_ORDER[Source.SENTRA_TRUST],
+            ),
+            ValidatorNode(
+                source=Source.SENTRA_POLICY,
+                cost_tier=CostTier.DETERMINISTIC,
+                run=_run_policy,
+                depends_on=(Source.SENTRA_TRUST,),
+                order_key=_ORDER[Source.SENTRA_POLICY],
+            ),
+            ValidatorNode(
+                source=Source.SENTRA_CROSS_AGENT,
+                cost_tier=CostTier.DETERMINISTIC,
+                run=_run_cross_agent,
+                depends_on=(Source.SENTRA_POLICY,),
+                order_key=_ORDER[Source.SENTRA_CROSS_AGENT],
+            ),
+            ValidatorNode(
+                source=Source.SENTRA_SIGMA,
+                cost_tier=CostTier.DETERMINISTIC,
+                run=_run_sigma,
+                depends_on=(Source.SENTRA_POLICY,),
+                order_key=_ORDER[Source.SENTRA_SIGMA],
+            ),
+            ValidatorNode(
+                source=Source.SENTRA_CONTEXT,
+                cost_tier=CostTier.DETERMINISTIC,
+                run=_run_context,
+                depends_on=(Source.SENTRA_POLICY,),
+                order_key=_ORDER[Source.SENTRA_CONTEXT],
+            ),
+            ValidatorNode(
+                source=Source.SENTRA_ABUSE,
+                cost_tier=CostTier.DETERMINISTIC,
+                run=_run_abuse,
+                depends_on=(Source.SENTRA_POLICY,),
+                order_key=_ORDER[Source.SENTRA_ABUSE],
+            ),
+            ValidatorNode(
+                source=Source.SENTRA_ML_CLASSIFIER,
+                cost_tier=CostTier.EXPENSIVE_MODEL,
+                run=_run_ml,
+                depends_on=ml_depends_on,
+                order_key=_ORDER[Source.SENTRA_ML_CLASSIFIER],
+            ),
+        ]
+
+    def _request_nodes() -> List[ValidatorNode]:
+        # The request node set = the frozen 7-node floor PLUS the two ADDITIVE WS-L
+        # request-phase nodes: the distilled chain-HEAD (M6, LIVE by default) and the
+        # D1 trajectory signal (M4, additive). Both are tier-1. T-EQUIV holds via
+        # VERDICT-equivalence, not byte-identity (the interim distilled always
+        # escalates so Haiku still decides; D1 is a non-deciding signal).
+        nodes = _request_floor()
+        if settings.distilled_enabled:                   # DEFAULT True — live front-runner
+            nodes.append(ValidatorNode(
+                source=Source.SENTRA_DISTILLED,          # M1.1 constant, priority 66 (M1.2)
+                cost_tier=CostTier.EXPENSIVE_MODEL,      # tier-1 model node; NOT a new CostTier
+                run=_run_distilled,
+                depends_on=(Source.SENTRA_POLICY,),      # runs after the tier-0 floor resolves
+                order_key=_ORDER[Source.SENTRA_DISTILLED],  # its OWN _ORDER key — NOT a reuse of ML's
+            ))
+        nodes.append(ValidatorNode(
+            source=Source.SENTRA_TRAJECTORY,             # D1 (M4), priority 68
+            cost_tier=CostTier.EXPENSIVE_MODEL,
+            run=_run_trajectory,
+            depends_on=(Source.SENTRA_POLICY,),          # documentary; independent tier-1 node
+            order_key=_ORDER[Source.SENTRA_TRAJECTORY],
+        ))
+        return nodes
+
+    # --- per-phase node-set builder (WS-L M1.5, LLD 32 §6.1/§6.2) ---------------
+    # `request` → the existing floor + the two additive WS-L request nodes (above).
+    # `content` → D2 set (NO action floor — invariant 4): NER barrier + trust +
+    #             abuse + sentra.indirect_injection.
+    # `memory`  → D3 set (NO action floor): NER barrier + trust + abuse + sentra.memory.
+    # `output` / any other known-but-unbuilt / unknown phase → degrade to the request
+    #             floor (deny-by-default posture; `output`'s LIVE handler is NOT built —
+    #             routes.py keeps it on the WS-B `phase_handler_not_implemented:output`
+    #             stub, so build_dag is not reached for output in practice).
+    if phase == "content":
+        return [
+            _ner_barrier_node(),
+            ValidatorNode(
+                source=Source.SENTRA_TRUST,
+                cost_tier=CostTier.DETERMINISTIC,
+                run=_run_trust,
+                depends_on=(),
+                order_key=_ORDER[Source.SENTRA_TRUST],
+            ),
+            ValidatorNode(
+                source=Source.SENTRA_ABUSE,
+                cost_tier=CostTier.DETERMINISTIC,
+                run=_run_abuse,
+                depends_on=(),
+                order_key=_ORDER[Source.SENTRA_ABUSE],
+            ),
+            ValidatorNode(
+                source=Source.SENTRA_INDIRECT,           # D2 (M2.3)
+                cost_tier=CostTier.EXPENSIVE_MODEL,
+                run=_run_indirect,
+                depends_on=(Source.SENTRA_POLICY,),      # documentary; dropped cleanly on content
+                order_key=0,
+            ),
+        ]
+
+    if phase == "memory":
+        return [
+            _ner_barrier_node(),
+            ValidatorNode(
+                source=Source.SENTRA_TRUST,
+                cost_tier=CostTier.DETERMINISTIC,
+                run=_run_trust,
+                depends_on=(),
+                order_key=_ORDER[Source.SENTRA_TRUST],
+            ),
+            ValidatorNode(
+                source=Source.SENTRA_ABUSE,
+                cost_tier=CostTier.DETERMINISTIC,
+                run=_run_abuse,
+                depends_on=(),
+                order_key=_ORDER[Source.SENTRA_ABUSE],
+            ),
+            ValidatorNode(
+                source=Source.SENTRA_MEMORY,             # D3 (M3.1)
+                cost_tier=CostTier.EXPENSIVE_MODEL,
+                run=_run_memory,
+                depends_on=(Source.SENTRA_POLICY,),      # documentary; dropped cleanly on memory
+                order_key=0,
+            ),
+        ]
+
+    # request (and any degrade-to-request phase). `output`/unknown fall here. A
+    # content-bearing degrade phase (`output`) keeps the Tier-2 NER redaction barrier
+    # ON TOP of the request floor so content_text is still redacted before any
+    # detector reads it — defense-in-depth for the case `build_dag` is reached for
+    # `output` (its LIVE handler is not built; routes.py keeps it on the WS-B stub,
+    # so this is belt-and-suspenders, not the live path). `request` itself never gets
+    # the barrier (FOOTGUN 3 / T-EQUIV).
+    nodes = _request_nodes()
+    if phase in _CONTENT_PHASES:            # {content, output, memory} — content/memory
+        nodes.append(_ner_barrier_node())   # returned above; this only adds it for output
     return nodes
 
 
@@ -423,3 +595,69 @@ def _apply_ml_enforce_wrapper(result: ValidationResult) -> ValidationResult:
     meta["enforce"] = True
     wrapped.metadata = meta
     return wrapped
+
+
+def _apply_enforce_if(result: ValidationResult, enforce: bool) -> ValidationResult:
+    """FP-budget-gated enforce stamp for D2/D3 (WS-L M2.4/M3.3, R5-C).
+
+    D2/D3 are live-enforce, gated on the measured FP/precision budget. When
+    `enforce` is True (the M5 harness cleared the budget) a concrete DENY is stamped
+    `metadata["enforce"]=True` so `_is_hard_deny` lets it decide the verdict. When
+    False the result passes through UN-stamped → captured ADVISORY (does not decide)
+    — NOT relocated to a shadow node (R5-C: a forgotten enable under-blocks, never a
+    surprise FP outage). Abstains pass through untouched. Copied before mutation.
+    """
+    if result.is_abstain or not enforce:
+        return result
+    wrapped = result.model_copy(deep=True)
+    meta = dict(wrapped.metadata or {})
+    meta["enforce"] = True
+    wrapped.metadata = meta
+    return wrapped
+
+
+# Every phase build_dag can produce a LIVE handler for. `output` stays on the
+# WS-B stub (routes.py), so it is not a live-handler phase here.
+_LIVE_HANDLER_PHASES = ("request", "content", "memory")
+
+
+def assert_registration_complete(service) -> None:
+    """Boot-time registration-completeness invariant (WS-L M1.4 / SEC-5, LLD 32 §9.3).
+
+    Every registered `ValidatorNode.source` (across every phase build_dag produces a
+    live node set for) MUST be present in `DEFAULT_PRIORITIES` AND
+    `SOURCE_DISPLAY_NAMES`, and — for REQUEST-phase sources only — in
+    `STATIC_FALLBACK_ORDER`. A missing entry fails fast at boot rather than letting an
+    unregistered source silently rank priority 0 and lose tie-breaks (audit
+    mis-attribution). Fail-secure: raise, do not warn-and-continue.
+
+    The fallback-order half is REQUEST-PHASE ONLY (FIX-K, invariant 8): content/memory
+    sources (`sentra.indirect_injection`, `sentra.memory`) are phase-specific and MUST
+    stay OUT of the request-phase `STATIC_FALLBACK_ORDER` (LLD 32 §9.4).
+    """
+    from app.combiners.sources import (
+        DEFAULT_PRIORITIES,
+        SOURCE_DISPLAY_NAMES,
+        STATIC_FALLBACK_ORDER,
+    )
+
+    stamp_ctx: Dict = {"platform": None, "cloud_region": None}
+    fallback = set(STATIC_FALLBACK_ORDER)
+    for phase in _LIVE_HANDLER_PHASES:
+        for node in build_dag(service, phase, dict(stamp_ctx)):
+            src = node.source
+            if src not in DEFAULT_PRIORITIES:
+                raise RuntimeError(
+                    f"registration-incomplete: node source {src!r} (phase {phase!r}) "
+                    f"is missing from DEFAULT_PRIORITIES (SEC-5)"
+                )
+            if src not in SOURCE_DISPLAY_NAMES:
+                raise RuntimeError(
+                    f"registration-incomplete: node source {src!r} (phase {phase!r}) "
+                    f"is missing from SOURCE_DISPLAY_NAMES (SEC-5)"
+                )
+            if phase == "request" and src not in fallback:
+                raise RuntimeError(
+                    f"registration-incomplete: REQUEST-phase source {src!r} is missing "
+                    f"from STATIC_FALLBACK_ORDER (FIX-K / T-TRAIL-14(a))"
+                )
