@@ -182,6 +182,53 @@ def test_floor_absent_warns_once_per_guard(make_guard, fake_client, caplog):
     ) == 1
 
 
+async def test_floor_absent_warns_once_per_guard_async(make_guard, fake_client, caplog):
+    """STATE 2 on the ASYNC path (integration-sentinel FIX-B, MEDIUM gap): the
+    'floor absent' warn-once + no-PII-leak contract must hold through `avalidate`,
+    not just `guard.validate()`. `_local_floor_verdict` is shared between the two
+    paths, but a regression that (e.g.) reset `_floor_absent_warned` or interpolated
+    the payload on the async side would slip past the sync-only test — so pin it
+    here directly.
+
+    The warning fires ONCE per guard across N async calls, and the emitted record
+    carries NO payload/PII substring (the message is static, on the redacted-payload
+    hot path). A second guard warns again (once-per-guard, not once-per-process)."""
+    fake_client.set_default({"decision": "ALLOW"})
+    with caplog.at_level(logging.WARNING, logger="aegion_guard"):
+        guard = make_guard(local_floor_enabled=True)
+        # three async calls carrying a would-be-secret in the input; still one warning.
+        for _ in range(3):
+            await guard.avalidate(
+                tool_name="t", tool_params={"pan": "4111111111111111"},
+                session_id="s1", user_input="SSN 078-05-1120 secret-token-xyz",
+            )
+
+    floor_warnings = [
+        r for r in caplog.records
+        if r.levelno == logging.WARNING and "local floor" in r.getMessage()
+    ]
+    assert len(floor_warnings) == 1, (
+        "async path must warn exactly once per guard, not per call"
+    )
+    msg = floor_warnings[0].getMessage()
+    # STATIC message: no payload / PII leaked into the log line on the async path.
+    assert "4111111111111111" not in msg
+    assert "078-05-1120" not in msg
+    assert "secret-token-xyz" not in msg
+    assert "Edge enforcement is NOT active" in msg
+
+    # A SECOND guard warns again on the async path (once-per-guard, not per-process).
+    caplog.clear()
+    with caplog.at_level(logging.WARNING, logger="aegion_guard"):
+        guard2 = make_guard(local_floor_enabled=True)
+        await guard2.avalidate(
+            tool_name="t", tool_params={}, session_id="s2", user_input="hi",
+        )
+    assert sum(
+        1 for r in caplog.records if "local floor" in r.getMessage()
+    ) == 1
+
+
 def test_seam_returns_decision_or_none(make_guard, fake_client):
     """Type contract: _local_floor_verdict returns a Decision or None — NEVER a
     bare LocalFloorVerdict. An escaped str-Enum reads truthy → fail-OPEN, so this

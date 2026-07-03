@@ -290,6 +290,43 @@ def test_output_decorator_fails_fast(make_guard):
     assert callable(do_action) and callable(ingest) and callable(remember)
 
 
+def test_output_gate_raise_is_at_application_not_factory_call(make_guard):
+    """A4.1 nuance (integration-sentinel FIX-B, LOW gap): the gate raises inside the
+    RETURNED decorator closure, so the FeatureNotAvailable fires when the decorator
+    is APPLIED to a function, NOT when `guard.output()` is called to build it.
+
+    This pins the exact deferred-raise semantics so a reader knows the contract:
+      * `guard.output()` returns a callable and does NOT raise (idiomatic
+        `@guard.output()` applies it on the next line, so users still see the raise);
+      * applying that callable to a function DOES raise — and the raise is NOT
+        swallowed / does NOT silently produce a working (fail-open) decorator.
+
+    Non-vacuous: if the gate ever moved to raise inside `_phase_decorator('output')`
+    (per-call) or returned a real decorator, `guard.output()` would still not raise
+    (fine) but the application would return a callable instead of raising — the
+    second assertion would fail."""
+    from aegion_guard import FeatureNotAvailable
+
+    guard = make_guard()
+
+    # Building the decorator (calling the factory) does NOT raise — the raise is
+    # deferred to application. This documents the nuance; idiomatic use applies it
+    # immediately so the developer still fails fast.
+    dec = guard.output()
+    assert callable(dec)
+
+    # Applying the built decorator to a function raises — the gate is NOT swallowed
+    # and does NOT fall through to a silent (fail-open) decorated function.
+    def emit_result(payload):
+        return payload
+
+    with pytest.raises(FeatureNotAvailable) as exc:
+        dec(emit_result)
+    assert "output" in str(exc.value)
+    # The raise short-circuits: `dec(...)` never returned a callable to fall through to.
+    assert "not yet enforced" in str(exc.value)
+
+
 def test_egress_content_text_is_redacted_ws_e(make_guard, fake_client):
     """WS-B→WS-E redaction boundary — NOW CLOSED (LLD 30 §Residual, lld/29 §3.5).
 
