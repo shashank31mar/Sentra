@@ -1,5 +1,7 @@
 # LLD 23 — Aegion Guard SDK (the customer integration touchpoint)
 
+> **⚠️ SUPERSEDED for release surface (2026-07-03).** The SDK release surface as of `0.2.0` (phase decorators, Tier-1 edge redactor, trail passthrough, the no-op local-floor seam, re-vendor + checksum gate) is specified in **[LLD 36](36-sdk-release-and-local-floor-seam.md)**; §-level details here may be stale — **lld/36 wins** on any conflict. This doc remains the frozen SDK *design* rationale. (Matches the LLD 19/20 supersede-banner convention.)
+
 > Distribution **`aegion-guard`** (import `aegion_guard`, class `AegionGuard`). The file is named
 > `23-sentra-guard-sdk.md` for historical reasons; "Sentra" is the internal control-plane codename,
 > "AegionAI" is the customer-facing brand the shipped SDK carries (§9).
