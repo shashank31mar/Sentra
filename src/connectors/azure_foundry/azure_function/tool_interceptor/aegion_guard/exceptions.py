@@ -64,6 +64,21 @@ class IdentityError(AegionGuardError):
     """
 
 
+class FeatureNotAvailable(AegionGuardError):
+    """Raised when a decorator/feature ships in the SDK but is not yet enforced.
+
+    WS-A / lld/36 §4.1(a-out): ``@guard.output`` ships in 0.2.0 (so the surface
+    is stable) but the ``output`` phase has no live server handler (WS-L D5 is
+    unbuilt). Rather than let a developer wire ``@guard.output`` to a production
+    path and silently fail secure (a per-call DENY) at runtime, the decorator
+    raises this at DECORATION time — the developer-actionable moment (import /
+    wire time), pointing them to ``@guard.tool``. content/memory decorate
+    normally: their handlers are LIVE (routes.py:98-118), so only ``output`` is
+    gated. When WS-L lands the D5 handler, this gate is removed and
+    ``@guard.output`` decorates like the others with no other SDK change.
+    """
+
+
 class RedactionError(AegionGuardError):
     """Raised internally when Tier-1 edge redaction cannot complete safely.
 

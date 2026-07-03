@@ -95,6 +95,7 @@ class AegionGuard:
         timeout_s: Optional[float] = None,
         fail_secure: Optional[bool] = None,
         connect_retries: Optional[int] = None,
+        local_floor_enabled: Optional[bool] = None,
         tenant_id: Optional[str] = None,
         kid: Optional[str] = None,
         private_key: Optional[str] = None,
@@ -112,6 +113,11 @@ class AegionGuard:
         self.platform = platform
         self.cloud_region = cloud_region
         self._on_decision = on_decision
+        # Local-floor seam (WS-A; lld/36 §4.2.3): one-time "floor absent" warning
+        # flag. It lives on the instance (not the frozen GuardConfig) because it is
+        # mutable per-guard runtime state; it MUST be initialized here or the first
+        # read in `_local_floor_verdict` would AttributeError.
+        self._floor_absent_warned = False
         # Resolve + validate config now (fail fast), not at first tool call.
         self._config: GuardConfig = GuardConfig.resolve(
             api_base=api_base,
@@ -119,6 +125,7 @@ class AegionGuard:
             timeout_s=timeout_s,
             fail_secure=fail_secure,
             connect_retries=connect_retries,
+            local_floor_enabled=local_floor_enabled,
             tenant_id=tenant_id,
             kid=kid,
             private_key=private_key,
@@ -254,11 +261,25 @@ class AegionGuard:
         """Decorate a function whose value is data the agent EMITS (the ``output``
         phase — egress/DLP surface, D5; LLD 30 §4).
 
-        NOTE (§4.4): no live ``output`` handler yet → fail-secure ``ToolDenied``
-        today (server DENYs ``phase_handler_not_implemented``); WS-L's D5 handler
-        flips it to a real verdict with no SDK change.
+        WS-A / lld/36 §4.1(a-out): the ``output`` phase has NO live server handler
+        (WS-L D5 is unbuilt), so this decorator raises ``FeatureNotAvailable`` at
+        DECORATION time — a developer wiring ``@guard.output`` to a production path
+        finds out at import/wire time, not via a silent per-call fail-secure DENY
+        deep in prod. content/memory decorate normally (their handlers are LIVE,
+        routes.py:98-118) — ONLY ``output`` is gated. When WS-L lands D5, delete
+        this gate and ``@guard.output`` decorates via ``_phase_decorator`` like the
+        others, no other SDK change.
         """
-        return self._phase_decorator("output", name, operation_type)
+        from .exceptions import FeatureNotAvailable
+
+        def _decoration_gate(fn: F) -> F:
+            raise FeatureNotAvailable(
+                "@guard.output: the output phase is not yet enforced (WS-L D5 "
+                "unbuilt); do not wire it to a production path — use @guard.tool "
+                "for action validation"
+            )
+
+        return _decoration_gate
 
     def memory(
         self,
@@ -355,7 +376,16 @@ class AegionGuard:
             )
         except RedactionError as exc:
             return self._redaction_denied(request_id, exc)
-        return self._send(payload)
+        # Local-floor seam (WS-A; lld/36 §4.2.3). A pre-check ABOVE `_send`: if a
+        # local floor handles the call it returns a Decision; otherwise it returns
+        # None and we route to the hosted PDP (today's behavior). In 0.2.0 the hook
+        # ALWAYS returns None (no interpreter shipped) — this is a true no-op with
+        # `local_floor_enabled=off`. lld/37 fills the seam; NEVER let a bare
+        # LocalFloorVerdict escape here (a str-Enum reads truthy → fail-OPEN).
+        verdict = self._local_floor_verdict(payload)
+        if verdict is None:
+            return self._send(payload)
+        return verdict
 
     async def avalidate(
         self,
@@ -383,11 +413,53 @@ class AegionGuard:
             )
         except RedactionError as exc:
             return self._redaction_denied(request_id, exc)
+        # Local-floor seam (WS-A; lld/36 §4.2.3) — a pre-check ABOVE the unchanged
+        # `to_thread` line. In 0.2.0 this ALWAYS returns None (no interpreter), so
+        # the async path is byte-identical to before. Do NOT introduce a `_dispatch`
+        # closure or move the seam inside the worker — that restructure (with its own
+        # contextvars/exception-ordering equivalence proof) is lld/37's, not this
+        # zero-change release's. NEVER let a bare LocalFloorVerdict escape (a
+        # str-Enum reads truthy → fail-OPEN).
+        verdict = self._local_floor_verdict(payload)
+        if verdict is not None:
+            return verdict
         # Preserve the ambient contextvars into the worker thread.
         ctx = contextvars.copy_context()
         return await asyncio.to_thread(ctx.run, self._send, payload)
 
     # -- internals -----------------------------------------------------------
+    def _local_floor_verdict(self, payload: Dict[str, Any]) -> Optional[Decision]:
+        """The local-floor seam hook (WS-A ship-now; lld/36 §4.2.3).
+
+        Returns a ``Decision`` when a local floor handled the call, or ``None`` to
+        route to the hosted PDP. In SDK 0.2.0 it ALWAYS returns ``None`` — there is
+        no interpreter (that is lld/37) — so both states are fail-secure:
+
+          * STATE 1 — ``local_floor_enabled=off`` (default): return ``None`` →
+            hosted PDP. Byte-identical to today's behavior.
+          * STATE 2 — ``local_floor_enabled=on`` but no interpreter installed: warn
+            ONCE per guard that edge enforcement is not active, then return ``None``
+            → hosted PDP (fail-secure). It NEVER local-allows, skips validation, or
+            deny-alls.
+
+        Return type is ``Optional[Decision]`` — it must NEVER return a bare
+        ``LocalFloorVerdict`` (a ``str``-Enum reads truthy, so an escaped enum would
+        be treated as a verdict and fail OPEN). ``payload`` is accepted so lld/37's
+        interpreter has the request to evaluate; 0.2.0 does not read it.
+        """
+        if not self._config.local_floor_enabled:
+            return None  # STATE 1 (default) → hosted PDP
+        if not self._floor_absent_warned:
+            # STATE 2: flag on, no interpreter. The message is STATIC — no payload /
+            # PII is interpolated (this runs on the redacted-payload hot path).
+            logger.warning(
+                "local_floor_enabled=True but no local floor installed "
+                "(lld/37 not built); routing every call to hosted PDP "
+                "(fail-secure). Edge enforcement is NOT active."
+            )
+            self._floor_absent_warned = True
+        return None  # STATE 2 → hosted PDP (fail-secure)
+
     def _validate_or_raise(
         self,
         *,

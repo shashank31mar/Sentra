@@ -1,10 +1,60 @@
 """Config resolution + init-time fail-fast (G2) and api-key privacy (G9)."""
 from __future__ import annotations
 
+import ast
+import sys
+from pathlib import Path
+
 import pytest
 
+import aegion_guard
 from aegion_guard import AegionGuard, ConfigError
 from aegion_guard.config import GuardConfig
+
+_PYPROJECT = Path(__file__).resolve().parents[1] / "pyproject.toml"
+
+
+def _pyproject_version() -> str:
+    """Parse the [project] version from pyproject without a toml runtime dep.
+
+    tomllib is 3.11+; the SDK targets 3.9+. Prefer tomllib, else parse the single
+    `version = "..."` line under [project] (stdlib-only, matching the redactor
+    invariant the release must not break).
+    """
+    text = _PYPROJECT.read_text(encoding="utf-8")
+    if sys.version_info >= (3, 11):
+        import tomllib
+
+        return tomllib.loads(text)["project"]["version"]
+    in_project = False
+    for line in text.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("[") and stripped.endswith("]"):
+            in_project = stripped == "[project]"
+            continue
+        if in_project and stripped.startswith("version") and "=" in stripped:
+            return ast.literal_eval(stripped.split("=", 1)[1].strip())
+    raise AssertionError("no `version` key found under [project]")
+
+
+# ================================================================ WS-A (lld/36)
+# A1.1: the two version sites must not drift; __contract__ stays the bare "v1".
+
+
+def test_version_and_contract_pin():
+    """Release-gate (A1.1): __version__ is 0.2.0 at BOTH sites (package +
+    pyproject) and __contract__ stays the bare wire string "v1" (not "/v1").
+
+    Non-vacuous: the assert on equal-strings fails if either site is bumped
+    without the other (the silent-drift footgun) or if the wire contract is
+    perturbed. Must fail if a reviewer forgets one of the two sites."""
+    assert aegion_guard.__version__ == "0.2.0"
+    assert _pyproject_version() == "0.2.0"
+    assert aegion_guard.__version__ == _pyproject_version(), (
+        "the two version sites drifted — bump both __init__.py and pyproject.toml"
+    )
+    # The /v1/validate wire contract is unchanged: a bare "v1", not "/v1".
+    assert aegion_guard.__contract__ == "v1"
 
 
 def test_missing_both_raises_listing_both(monkeypatch):

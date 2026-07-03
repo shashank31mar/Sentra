@@ -36,6 +36,39 @@ def test_env_fail_secure_false(monkeypatch):
     assert cfg.fail_secure is False
 
 
+# ================================================================ WS-A A3.1
+# The local-floor flag: default False, and an unparseable value fails CLOSED at
+# construction (via _env_bool → ConfigError), never silently coerced to False.
+
+
+def test_local_floor_flag_default_false(monkeypatch):
+    """Unset env → local_floor_enabled is False (the no-op default). A True default
+    would route at a floor that doesn't exist (fail-open on a nonexistent floor)."""
+    monkeypatch.delenv("SENTRA_LOCAL_FLOOR_ENABLED", raising=False)
+    cfg = GuardConfig.resolve(**_base())
+    assert cfg.local_floor_enabled is False
+
+
+def test_env_local_floor_true(monkeypatch):
+    monkeypatch.setenv("SENTRA_LOCAL_FLOOR_ENABLED", "true")
+    cfg = GuardConfig.resolve(**_base())
+    assert cfg.local_floor_enabled is True
+
+
+def test_invalid_flag_value_fails_closed(monkeypatch):
+    """SENTRA_LOCAL_FLOOR_ENABLED=maybe raises ConfigError at resolve() — no guard
+    is built. Non-vacuous: if _env_bool were bypassed with a silent-False coerce,
+    resolve() would succeed and this would fail. Fail-closed at construction."""
+    monkeypatch.setenv("SENTRA_LOCAL_FLOOR_ENABLED", "maybe")
+    with pytest.raises(ConfigError):
+        GuardConfig.resolve(**_base())
+    # And through the full AegionGuard construction path (no guard object survives).
+    from aegion_guard import AegionGuard
+
+    with pytest.raises(ConfigError):
+        AegionGuard("agent", **_base())
+
+
 def test_env_connect_retries(monkeypatch):
     monkeypatch.setenv("SENTRA_CONNECT_RETRIES", "3")
     cfg = GuardConfig.resolve(**_base())

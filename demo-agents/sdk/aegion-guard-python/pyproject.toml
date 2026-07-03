@@ -4,7 +4,9 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "aegion-guard"
-version = "0.1.0"
+# Keep in lock-step with aegion_guard.__version__ (src/aegion_guard/__init__.py).
+# A release-gate test asserts the two sites match; do not bump one alone.
+version = "0.2.0"
 description = "Aegion Guard — drop-in security validation for AI agent tool calls (routes every tool call through the AegionAI security controller before execution)."
 readme = "README.md"
 requires-python = ">=3.9"

@@ -63,17 +63,22 @@ async def test_avalidate_explicit(make_guard, fake_client):
     assert decision.allowed is True
 
 
+# WS-A A4.1: `output` DELIBERATELY dropped — @guard.output now raises
+# FeatureNotAvailable at decoration (lld/36 §4.1(a-out)), so it can't decorate an
+# async fn here. content/memory still thread phase on the async path. The output
+# fail-fast is pinned in test_guard_sync.py::test_output_decorator_fails_fast (a
+# decoration-time gate, independent of sync/async — the raise is in guard.output
+# BEFORE any wrapper is chosen).
 @pytest.mark.parametrize(
     "decorator_name, expected_phase, expected_op",
-    [("content", "content", "READ"), ("output", "output", "READ"),
-     ("memory", "memory", "WRITE")],
+    [("content", "content", "READ"), ("memory", "memory", "WRITE")],
 )
 async def test_async_content_decorators_thread_phase(
     make_guard, fake_client, decorator_name, expected_phase, expected_op
 ):
     """WS-B (LLD 30 §4): each content-bearing decorator (@guard.content /
-    @guard.output / @guard.memory) on an async fn threads phase + content_text
-    (and the per-phase operation_type default: content/output=READ, memory=WRITE)
+    @guard.memory) on an async fn threads phase + content_text
+    (and the per-phase operation_type default: content=READ, memory=WRITE)
     through the same async path as @guard.tool (reuses _avalidate_or_raise). This
     is the async twin of test_guard_content_sets_phase_and_content_text — it must
     cover all three surfaces, else a regression in async phase-threading for
