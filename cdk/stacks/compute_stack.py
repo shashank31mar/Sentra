@@ -1465,6 +1465,14 @@ def handler(event, context):
                     # the eval harness / DENY-rate + winning_source after deploy.
                     "ML_CONFIDENCE_TRUST_THRESHOLD": "0.7",
                     "ML_CONFIDENCE_ABSTAIN_THRESHOLD": "0.5",
+                    # WS-L D1 conversation-trajectory (LLD 32 §5.1 / M4.3). D1 ships
+                    # SHADOW by design (config.py default False) — a probabilistic
+                    # multi-turn signal, "never a standalone gate" (published solvability
+                    # ceiling). FOUNDER OVERRIDE 2026-07-03: enforce D1 (a D1 DENY decides)
+                    # despite the ceiling — accepted-risk call. Reversible: set to "false"
+                    # + cdk deploy to return D1 to advisory. D2/D3 stay advisory (their
+                    # enforce flags are absent → config.py default False → FP-budget-gated).
+                    "D1_ENFORCE_ENABLED": "true",
                     # Cedar authorization engine (feature: cedar-policy). Config-
                     # driven so flipping shadow→cutover needs only a dev.yaml edit +
                     # cdk deploy (mirrors tenancy_v2). cedar_enabled gates the
