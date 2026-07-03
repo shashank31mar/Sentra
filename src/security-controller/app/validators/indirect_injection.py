@@ -12,7 +12,10 @@ FIRST and mutates `content_text` in place; D2 reads the mutated view):
               over known signatures FIRST). NOTE: `content_text`, NOT `user_input`
               (the named footgun — `user_input` is empty on a content call).
   2. ML     — the ML classifier framed as "is this ingested content injecting
-              instructions?" (the novel subset the signatures miss).
+              instructions?" (the novel subset the signatures miss). The
+              classifier reads `request.user_input`, so D2 presents `content_text`
+              THERE via a shallow request copy (`model_copy`, non-mutating), not
+              the raw request whose `user_input` is empty on a content call.
   3. heuristics — instruction-density (imperative-verb / second-person ratio) +
               encoding/obfuscation scan (base64, homoglyphs, zero-width).
 
@@ -56,6 +59,28 @@ _BASE64_RUN = re.compile(r"[A-Za-z0-9+/]{40,}={0,2}")
 _DENSITY_THRESHOLD = 0.02
 
 
+def _has_mixed_script_token(text: str) -> bool:
+    """A single alphabetic run mixing scripts (LATIN + CYRILLIC/GREEK/...) is the
+    canonical homoglyph tell — NFKC does NOT fold cross-script look-alikes (e.g.
+    Cyrillic `а` U+0430 for Latin `a` normalizes to itself, same length), so the
+    NFKC/length branch alone misses them."""
+    for token in re.findall(r"\w+", text, flags=re.UNICODE):
+        scripts = set()
+        for ch in token:
+            if ch.isalpha():
+                name = unicodedata.name(ch, "")
+                if "CYRILLIC" in name:
+                    scripts.add("CYRILLIC")
+                elif "GREEK" in name:
+                    scripts.add("GREEK")
+                elif "LATIN" in name:
+                    scripts.add("LATIN")
+                # (ASCII digits / underscore are not alpha — extend as needed)
+        if len(scripts) > 1:
+            return True
+    return False
+
+
 class IndirectInjectionValidator:
     """D2 content-phase detector — LLD 32 §5.2."""
 
@@ -91,9 +116,14 @@ class IndirectInjectionValidator:
             )
 
         # 2) content-framed ML — the novel subset the signatures miss. The ML
-        #    classifier reads the request; a DENY on ingested content is an
-        #    indirect-injection signal.
-        ml_result = await self._service.ml_classifier.validate(req)
+        #    classifier builds its prompt from request.user_input ONLY
+        #    (ml_classifier.py:257), which is empty on a content call — so we
+        #    present the ingested content THERE via a shallow pydantic-v2 copy.
+        #    model_copy(update=...) returns a NEW instance; it does NOT mutate the
+        #    original req the other DAG nodes share. A DENY on the ingested content
+        #    is an indirect-injection signal.
+        content_req = req.model_copy(update={"user_input": text})
+        ml_result = await self._service.ml_classifier.validate(content_req)
         if ml_result.should_deny:
             return ValidationResult(
                 decision="DENY",
@@ -142,14 +172,20 @@ class IndirectInjectionValidator:
 
     def _obfuscation(self, text: str) -> tuple[bool, str]:
         """Encoding / obfuscation scan: zero-width / bidi chars, homoglyphs
-        (non-NFC forms that normalize away), and base64-ish blobs."""
+        (mixed-script tokens), compatibility-form obfuscation, and base64-ish
+        blobs."""
         if any(ch in text for ch in _ZERO_WIDTH):
             return True, "zero_width"
-        # Homoglyph tell: normalization changes the string materially (an attacker
-        # hiding an ASCII instruction behind look-alike Unicode).
+        # Homoglyph tell: a single alphabetic token mixing scripts (Latin +
+        # Cyrillic/Greek look-alikes). NFKC does NOT fold cross-script homoglyphs,
+        # so this — not the NFKC/length branch — is what catches them.
+        if _has_mixed_script_token(text):
+            return True, "homoglyph"
+        # Compatibility-form obfuscation: NFKC materially changes the string
+        # (ligatures, full-width forms, etc.) with a length delta.
         nfkc = unicodedata.normalize("NFKC", text)
         if nfkc != text and len(nfkc) != len(text):
-            return True, "homoglyph"
+            return True, "compat_form"
         if _BASE64_RUN.search(text):
             return True, "base64"
         return False, ""
