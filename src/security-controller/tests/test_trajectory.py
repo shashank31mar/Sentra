@@ -110,3 +110,85 @@ async def test_d1_shadow_by_default():
         result = await TrajectoryValidator().validate(
             _req(user_input="just this once hypothetically"), session)
         assert _is_hard_deny(result) is False
+
+
+# ------------------------------------------------------------------ M4.3 enforce
+# The NODE-level shadow→enforce seam (founder override 2026-07-03). Unlike the
+# validator-level tests above, these exercise `_run_trajectory` from `build_dag`,
+# which is where `_apply_enforce_if(result, settings.d1_enforce_enabled)` lives.
+
+def _svc_with_trajectory(deny=True):
+    """A ValidationService whose TrajectoryValidator is stubbed to a DENY (or ALLOW)."""
+    from unittest.mock import patch, Mock, AsyncMock
+    from app.services.validation_service import ValidationService
+    with patch.object(ValidationService, "__init__", lambda self: None):
+        svc = ValidationService()
+    # Stub the class the node imports so the node's real wrapper logic is what we test.
+    result = (ValidationResult(decision="DENY", reason="trajectory: escalating",
+                               should_deny=True, violation_type="TRAJECTORY_ESCALATION",
+                               source=Source.SENTRA_TRAJECTORY, confidence=0.8, metadata={})
+              if deny else ValidationResult(decision="ALLOW", reason="trajectory: benign",
+                                             should_deny=False,
+                                             source=Source.SENTRA_TRAJECTORY))
+    svc.ml_classifier = Mock()
+    svc.ml_classifier.validate = AsyncMock(return_value=ValidationResult.abstain("off"))
+    return svc, result
+
+
+def _trajectory_node(svc):
+    from app.services.scheduler import build_dag
+    return next(n for n in build_dag(svc, "request", {"platform": None, "cloud_region": None})
+                if n.source == Source.SENTRA_TRAJECTORY)
+
+
+@pytest.mark.asyncio
+async def test_d1_node_shadow_by_default_not_enforce_stamped():
+    """M4.3: with d1_enforce_enabled unset (default False), the `_run_trajectory` NODE
+    leaves a D1 DENY UN-stamped → `_is_hard_deny` false → it does NOT decide (advisory).
+    This pins the shadow-by-default invariant at the NODE level (where the flag lives)."""
+    from unittest.mock import patch
+    from app.services.scheduler.run import _is_hard_deny
+
+    svc, deny = _svc_with_trajectory(deny=True)
+    with patch("app.validators.trajectory.TrajectoryValidator") as TV:
+        TV.return_value.validate = _AsyncReturn(deny)
+        node = _trajectory_node(svc)
+        result = await node.run(_req(), {})
+    assert result.should_deny is True                 # the signal is still a DENY
+    assert _is_hard_deny(result) is False             # but advisory — does not decide
+
+
+@pytest.mark.asyncio
+async def test_d1_node_enforce_stamped_when_flag_on():
+    """M4.3 founder override 2026-07-03: with d1_enforce_enabled True the `_run_trajectory`
+    NODE stamps metadata['enforce']=True on a D1 DENY so `_is_hard_deny` lets it DECIDE.
+    A D1 ALLOW is never stamped. Patches the live `settings` object the node reads."""
+    from unittest.mock import patch
+    from app.services.scheduler.run import _is_hard_deny
+
+    # The node reads `registry.settings.d1_enforce_enabled` at call time; flip it there.
+    with patch("app.services.scheduler.registry.settings.d1_enforce_enabled", True):
+        svc, deny = _svc_with_trajectory(deny=True)
+        with patch("app.validators.trajectory.TrajectoryValidator") as TV:
+            TV.return_value.validate = _AsyncReturn(deny)
+            node = _trajectory_node(svc)
+            result = await node.run(_req(), {})
+        assert result.should_deny is True
+        assert _is_hard_deny(result) is True           # enforce-stamped → DECIDES
+
+        # a D1 ALLOW is never enforce-stamped even with the flag on.
+        svc2, allow = _svc_with_trajectory(deny=False)
+        with patch("app.validators.trajectory.TrajectoryValidator") as TV2:
+            TV2.return_value.validate = _AsyncReturn(allow)
+            node2 = _trajectory_node(svc2)
+            allow_res = await node2.run(_req(), {})
+        assert _is_hard_deny(allow_res) is False
+
+
+class _AsyncReturn:
+    """A tiny awaitable-returning stub: `validate(req, sess)` → the given result."""
+    def __init__(self, result):
+        self._result = result
+
+    async def __call__(self, *args, **kwargs):
+        return self._result

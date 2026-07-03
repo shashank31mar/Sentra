@@ -375,6 +375,17 @@ class Settings(BaseSettings):
     d2_enforce_enabled: bool = Field(default=False, validation_alias="D2_ENFORCE_ENABLED")
     d3_enforce_enabled: bool = Field(default=False, validation_alias="D3_ENFORCE_ENABLED")
 
+    # --- D1 trajectory shadow→enforce (WS-L M4.3, R5-C) ---
+    # D1 (conversation-trajectory LLM-judge v1) is a PROBABILISTIC signal into the
+    # deny-overrides combiner. By design (lld/32 §5.1) it ships SHADOW/advisory: there
+    # is a published hard solvability ceiling on multi-turn detection (arXiv 2507.02956)
+    # — no method reliably detects it at low FP — so D1 is "a SIGNAL, never a standalone
+    # gate". This flag lets a D1 DENY DECIDE the verdict (same `_apply_enforce_if` seam
+    # as D2/D3). FOUNDER OVERRIDE 2026-07-03: enabling this enforces D1 despite the
+    # ceiling — an accepted-risk call. Default OFF preserves the shadow-by-default
+    # invariant (test_d1_shadow_by_default) when the env var is unset.
+    d1_enforce_enabled: bool = Field(default=False, validation_alias="D1_ENFORCE_ENABLED")
+
     # Cache Configuration (Workstream 5, Task 1)
     cache_enabled: bool = Field(default=True, validation_alias="CACHE_ENABLED")
     agent_metadata_cache_ttl_seconds: int = Field(default=60, validation_alias="AGENT_METADATA_CACHE_TTL_SECONDS")

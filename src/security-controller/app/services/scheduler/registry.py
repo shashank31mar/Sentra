@@ -227,13 +227,16 @@ def build_dag(service, phase: str, stamp_ctx: Dict) -> List[ValidatorNode]:
 
     async def _run_trajectory(req: ValidationRequest, sess: Dict) -> ValidationResult:
         # WS-L M4 — D1 conversation-trajectory (request phase). An additive tier-1
-        # node (LLM-judge v1). A SIGNAL, never a standalone gate: it starts SHADOW
-        # (advisory) — the enforce wrapper is NOT applied, so `_is_hard_deny` is
-        # false and a D1 DENY does not decide the verdict (LLD 32 §5.1 solvability
-        # ceiling; graduate shadow→enforce on evidence, M4.3). Reads server-side
-        # transcript only (SEC-3).
+        # node (LLM-judge v1). A SIGNAL, never a standalone gate: it ships SHADOW
+        # (advisory) by default — `_apply_enforce_if(result, False)` leaves the DENY
+        # UN-stamped so `_is_hard_deny` is false and a D1 DENY does not decide the
+        # verdict (LLD 32 §5.1 solvability ceiling; graduate shadow→enforce on
+        # evidence, M4.3). Reads server-side transcript only (SEC-3). Under the
+        # `d1_enforce_enabled` founder-override flag (2026-07-03) a D1 DENY is stamped
+        # `enforce=True` and DECIDES — accepted-risk enforcement past the ceiling.
         from app.validators.trajectory import TrajectoryValidator
-        return await TrajectoryValidator(service).validate(req, sess)
+        result = await TrajectoryValidator(service).validate(req, sess)
+        return _apply_enforce_if(result, settings.d1_enforce_enabled)
 
     async def _run_indirect(req: ValidationRequest, sess: Dict) -> ValidationResult:
         # WS-L M2 — D2 indirect/second-order injection (content phase). Reads the
