@@ -31,6 +31,21 @@
 
 ## 1. Context
 
+> **Read this first — three questions this LLD gets asked (2026-07-03 review):**
+>
+> **Q: "Interpreter" vs "interceptor" — which is this, and don't the `@guard.*` decorators already intercept?**
+> Two *different* things; the word "interpreter" is not "interceptor":
+> - **Interceptor (the PEP)** = the `@guard.tool` / `.content` / `.memory` decorators that wrap an agent's action and call the guard **before** it runs. These **exist today and ship in this release** — the SDK absolutely still intercepts every guarded call.
+> - **Interpreter (the local floor)** = a *future* in-process evaluator ([LLD 37](37-sdk-local-floor-caching.md)) that would read a signed policy **bundle** and decide ALLOW/DENY **locally**, skipping the network call. **That** is what "no interpreter in lld/36" means — not "no interception." Interception is unchanged; only the *local decision engine* is deferred. (Glossary reused throughout: **interceptor = decorator/PEP, present**; **interpreter = bundle-evaluator, lld/37**.)
+>
+> **Q: If the seam is a no-op, why build it now? What is `local_floor_enabled` even for?**
+> `local_floor_enabled` is the on/off switch for that future local floor. Today it defaults **off**, so the "seam" is one boolean branch that always routes to the hosted server — a genuine no-op. We build it *now*, ahead of the interpreter, for **three concrete unblocks that cannot proceed against an unversioned `main`** (this is the whole reason WS-A was split):
+> 1. **The `acme-*` connectors re-vendor against a real `0.2.0` tag** (§4.4) — they carry byte-copies, not `pip install`, so they need a versioned, checksum-pinned release to copy from. This is also how the already-merged WS-B phase surface + WS-E redactor finally **ship** (they're merged but undeployed).
+> 2. **WS-J and [LLD 37](37-sdk-local-floor-caching.md) code against a frozen public surface** — the `LocalFloorVerdict` enum + the flag semantics — so the interpreter and its differential-conformance runner don't force a *second* public-API bump later (HLD Tie-breaker A: *shape the contract once, additively*). That is also why §4.2.1 freezes the enum now even though its producer is deferred (answers "why build the enum stub").
+> 3. **WS-H metering** can name the seam/flag as its future heartbeat point.
+>
+> The honest framing (tenet 8): lld/36 delivers **no latency win and no new enforcement** — that is [LLD 37](37-sdk-local-floor-caching.md). It ships a *release* of already-built work + a *frozen plug*. It is internal enablement, not an external FR-1.7 feature.
+
 The `aegion-guard` Python SDK ([demo-agents/sdk/aegion-guard-python/](../demo-agents/sdk/aegion-guard-python/)) has accumulated three streams of **merged-but-unreleased** work: the WS-B additive phase decorators (`@guard.content` / `@guard.output` / `@guard.memory` alongside `@guard.tool`, plus `TransportError.status_code` for the 422/outage split), the WS-E Tier-1 edge redactor (`redaction.py`, hooked on the `content_text` seam and running before egress), and the WS-D trail fields the SDK passes through. **This LLD releases that surface** (version-bump `0.1.0` → `0.2.0`, `pyproject.toml` sync, re-vendor into the byte-copy connectors) **and adds a typed no-op `local_floor_enabled` seam** — a config flag (default `False`), a frozen verdict enum, and a single hook point in `guard.py` between `_build_request` (where the redactor already ran) and `_send`. It **elaborates the approved HLD Option A** from [hld/serverless-edition.md](../hld/serverless-edition.md) §6.2(a) (FR-1.7 in-process local enforcement) — but only its *seam*: this doc creates the plug-point; [LLD 37](37-sdk-local-floor-caching.md) builds the interpreter, signed-bundle client, caching, crypto and durable meter journal that fill it. **This is not a re-plan of the merged work and not the latency win** (that is LLD 37); it is a release + a plug. It exists because WS-A was split at Gate-3 (2026-07-03) so the SDK ships now and unblocks its dependents.
 
 **This release is internal enablement, not an external FR-1.7 delivery — say so plainly.** It ships **no** latency win and no new enforcement; the flag is off and does nothing. What it *unblocks* by freezing the surface now: (1) the **byte-copy connectors** re-vendor against one released `0.2.0` instead of chasing an unversioned main; (2) **WS-J** (the differential-conformance runner) and **[LLD 37](37-sdk-local-floor-caching.md)**'s interpreter code against the frozen `LocalFloorVerdict` enum + `_local_floor_verdict` hook without a later public-API break; (3) **WS-H** metering can name the seam as its future heartbeat point. The FR-1.7 **latency win** (the in-process local floor that closes the ~0.6–1.2 s / ~3 s-p99 round-trip) is **[LLD 37](37-sdk-local-floor-caching.md)** and is **not** delivered here — the release/changelog must not be characterized externally as an FR-1.7 delivery (Cross-references already scopes this: *"Implements FR-1.7 — the SEAM ONLY"*).
@@ -102,16 +117,12 @@ Re-verified against the real code at author time (2026-07-03). This is the bridg
 
 ```mermaid
 flowchart TD
-  DEC["@guard.tool / .content / .output / .memory<br/>(WS-B — carries phase)"] --> BR["_build_request()<br/>(guard.py:425)"]
-  BR --> RED["Tier-1 redactor runs HERE<br/>redact / redact_params, one per-egress nonce<br/>(guard.py:486-493 · ADR-032 ordering)"]
-  RED --> PAY["redacted payload dict built<br/>(guard.py:495-537)"]
-  PAY --> SEAM{"NEW SEAM (lld/36)<br/>_local_floor_verdict(payload)<br/>local_floor_enabled?"}
-  SEAM -->|"False (default — ONLY live path):<br/>hook = no-op → returns None"| SEND["_send()<br/>hosted POST /v1/validate<br/>(guard.py:561)"]
-  SEAM -->|"True + NO interpreter (lld/37 not built):<br/>FAIL-SECURE → route to hosted"| SEND
-  SEAM -.->|"True + interpreter present:<br/>LOCAL_ALLOW/LOCAL_DENY resolved locally;<br/>ESCALATE/DENY_BY_DEFAULT fall through"| L37["lld/37's job<br/>(NOT in this LLD)"]
-  L37 -.->|"ESCALATE → hosted"| SEND
-  SEND --> PARSE["_parse_decision()<br/>default-DENY on non-ALLOW/DENY<br/>(guard.py:590)"]
-  PARSE --> D["Decision<br/>(raw carries winning_source etc.)"]
+  DEC["@guard.tool/.content/.memory<br/>(interceptor/PEP — carries phase)"] --> RED["_build_request → Tier-1 redactor<br/>(guard.py:425,486 · ADR-032)"]
+  RED --> SEAM{"NEW SEAM (lld/36)<br/>_local_floor_verdict()<br/>local_floor_enabled?"}
+  SEAM -->|"off (default) OR on-without-interpreter:<br/>no-op / fail-secure → None"| SEND["_send() → hosted<br/>POST /v1/validate (guard.py:561)"]
+  SEAM -.->|"on + interpreter (lld/37 only):<br/>LOCAL_ALLOW/DENY local; ESCALATE → hosted"| L37["lld/37's job<br/>(NOT this LLD)"]
+  L37 -.-> SEND
+  SEND --> D["_parse_decision → Decision<br/>default-DENY on non-ALLOW/DENY (guard.py:590)"]
 ```
 
 > The dotted path (interpreter present, local resolution) is drawn only to show **where** LLD 37 plugs in. lld/36 ships the solid path: seam → `_send`. In lld/36 the `True + interpreter present` branch is **unreachable** because no interpreter is installed — it degrades to the `True + no interpreter` fail-secure-to-hosted branch (§4.2.3).
@@ -278,14 +289,16 @@ def _local_floor_verdict(self, payload: Dict[str, Any]) -> Optional[Decision]:
 
 **In plain terms:** three families of connector carry a *copy* of the SDK code, not a pip install, because their runtimes can't reliably `pip install` at deploy. When the SDK version bumps we must re-copy those files and re-check the `sha256` so the deployed edge runs the exact released code.
 
+> **Re-vendor ALL THREE live `acme-*` agents — the explicit fleet (2026-07-03 review).** The real deployed fleet is exactly three agents (agent-ids `acme-payments-agent`, `acme-telecom`, `acme-identity`; physical dirs `demo-agents/aws-payments-agent/`, `demo-agents/azure-telecom-agent/`, `demo-agents/azure-identity-agent/`), spanning **both clouds — AWS (payments Lambda) and Azure (telecom + identity Functions)** — plus the shared Azure-Function `tool_interceptor` connector subset. **Acceptance for this release is that every one of the three `acme-*` agents runs the re-vendored `0.2.0` code and passes the per-family checksum gate** — none may be left on the old copy (a mixed fleet ships two different SDK versions to the edge). The table below is per-family; the acceptance checklist (§9 `test_revendor_checksum_equality`) asserts all three.
+
 Why copies exist: the Azure Function runtime (Oryx remote build) does not reliably install pip deps, and a Lambda zip vendors its code directly — so the SDK is stdlib-only precisely so it vendors *unchanged* ([LLD 23 §2](23-sentra-guard-sdk.md), best-practices §11 rule 4). The vendored subset must stay **import-free / stdlib-only** — no `identity`/crypto dragged to the edge (S4).
 
 ```mermaid
 flowchart LR
   SRC["Released SDK source (0.2.0)<br/>demo-agents/sdk/.../aegion_guard/*.py"]
   SRC -->|"byte-copy: redaction.py + exceptions.py<br/>(+ import-free __init__ shim)<br/>NO seam / config flag / local_floor.py — INTENTIONAL"| AZ["Azure Function connector<br/>src/connectors/azure_foundry/.../aegion_guard/"]
-  SRC -->|"byte-copy: FULL package (now 12 modules<br/>incl. NEW local_floor.py + mutated config.py/guard.py)"| DEMO["demo agents<br/>azure-{telecom,identity}-agent/tools/aegion_guard/"]
-  SRC -->|"copy AT BUILD by deploy script (build_zip)"| PAY["payments Lambda zip<br/>aws-payments-agent/deploy/deploy_payments_agent.py"]
+  SRC -->|"byte-copy: FULL package (now 12 modules<br/>incl. NEW local_floor.py + mutated config.py/guard.py)"| DEMO["acme-telecom + acme-identity (Azure)<br/>azure-{telecom,identity}-agent/tools/aegion_guard/"]
+  SRC -->|"copy AT BUILD by deploy script (build_zip)"| PAY["acme-payments-agent Lambda zip (AWS)<br/>aws-payments-agent/deploy/deploy_payments_agent.py"]
   AZ --> V["shasum -a 256 re-verify<br/>vendored == released source (byte-for-byte)"]
   DEMO --> V
   PAY --> V
@@ -295,8 +308,8 @@ flowchart LR
 | Connector | Vendored modules (per-manifest) | Carries the seam? | Vendoring mechanism | Re-verify command |
 |---|---|---|---|---|
 | Azure Function (`tool_interceptor`) | **subset**: `redaction.py`, `exceptions.py`, import-free `__init__.py` shim ([`.../aegion_guard/__init__.py`](../src/connectors/azure_foundry/azure_function/tool_interceptor/aegion_guard/__init__.py)) — **NOT** `guard.py`, `config.py`, or the new `local_floor.py` | **No — intentional** (it never vendors `guard.py`/`config.py`; the seam is a no-op today, so the subset is unaffected). The checksum gate must **not** drift-fail this connector for lacking `guard.py`/`config.py`/`local_floor.py`. | manual byte-copy (re-sync after any redactor change) | `shasum -a 256 <sdk>/{redaction,exceptions}.py <connector>/{redaction,exceptions}.py` — the **subset** pairs must match (config/guard/local_floor are out-of-manifest, not compared) |
-| Demo agents `azure-telecom-agent`, `azure-identity-agent` | **full** package — the **12-module set** = the 11 current modules (`__init__`, `_time`, `adapters`, `client`, `config`, `context`, `exceptions`, `guard`, `identity`, `provision`, `redaction`) **+ the NEW `local_floor.py`**; this release **mutates `guard.py`/`config.py`** and **adds `local_floor.py`** | **Yes** — full copy carries the flag + seam + enum | manual byte-copy | `diff -r <sdk-src>/aegion_guard <agent>/tools/aegion_guard` (must include `local_floor.py`) |
-| Payments Lambda (`aws-payments-agent`) | **full** package (12 modules) via `SDK_SRC` at package time | **Yes** — full copy | **automatic at build** — `build_zip()` copies from `SDK_SRC` ([`deploy_payments_agent.py:35,64`](../demo-agents/aws-payments-agent/deploy/deploy_payments_agent.py#L35)); rebuild ⇒ re-vendored | rebuild the zip after the version bump; the copy is deterministic from source |
+| Azure Functions `acme-telecom` (`azure-telecom-agent`), `acme-identity` (`azure-identity-agent`) | **full** package — the **12-module set** = the 11 current modules (`__init__`, `_time`, `adapters`, `client`, `config`, `context`, `exceptions`, `guard`, `identity`, `provision`, `redaction`) **+ the NEW `local_floor.py`**; this release **mutates `guard.py`/`config.py`** and **adds `local_floor.py`** | **Yes** — full copy carries the flag + seam + enum | manual byte-copy | `diff -r <sdk-src>/aegion_guard <agent>/tools/aegion_guard` (must include `local_floor.py`) — run for **both** Azure agents |
+| AWS `acme-payments-agent` Lambda (`aws-payments-agent`) | **full** package (12 modules) via `SDK_SRC` at package time | **Yes** — full copy | **automatic at build** — `build_zip()` copies from `SDK_SRC` ([`deploy_payments_agent.py:35,64`](../demo-agents/aws-payments-agent/deploy/deploy_payments_agent.py#L35)); rebuild ⇒ re-vendored | rebuild the zip after the version bump; the copy is deterministic from source |
 
 > **The re-vendor step is a release-gate item, not a follow-up.** After the `0.2.0` bump lands, the Azure-subset and demo-agent copies must be re-copied and the checksums re-run (the equality shown in §3 must still hold); the payments Lambda re-vendors automatically on its next `build_zip()`. A vendored copy that drifts from the released source ships **different code at the edge** than was released and tested — the exact silent-divergence the checksum gate exists to catch. §9 pins this as an automated test.
 >
@@ -382,7 +395,7 @@ All tests are unit tests in the SDK suite unless marked *(integration)*. The **f
 | `test_verdict_enum_frozen` | `LocalFloorVerdict` has exactly the four members with their string values (frozen contract for lld/37 + WS-J) | unit |
 | `test_version_and_contract_pin` | `__version__ == "0.2.0"`, `pyproject` version matches, `__contract__ == "v1"` | unit |
 | `test_stdlib_only_holds` | no non-stdlib runtime import introduced by the seam; `dependencies == []`; **no `[local-floor]` extra declared** | unit ([`test_stdlib_only.py`](../demo-agents/sdk/aegion-guard-python/tests/test_stdlib_only.py)) |
-| `test_revendor_checksum_equality` | **per-manifest, CI-blocking release-tag gate** (§4.4): full-copy families (demo agents, payments Lambda) are byte-for-byte equal on **exactly the 12-module manifest incl. `local_floor.py` + the mutated `config.py`/`guard.py`** — a **missing** `local_floor.py` (or any manifest member) is a **FAIL, not an ignored-file pass**; the Azure subset is exactly `{redaction.py, exceptions.py, __init__ shim}` and is **NOT** drift-failed for lacking `guard.py`/`config.py`/`local_floor.py` (asserted absent-by-design, not merely un-compared) | unit |
+| `test_revendor_checksum_equality` | **per-manifest, CI-blocking release-tag gate** (§4.4): **all three `acme-*` full-copy families — `acme-payments-agent` (AWS), `acme-telecom` + `acme-identity` (Azure)** — are byte-for-byte equal on **exactly the 12-module manifest incl. `local_floor.py` + the mutated `config.py`/`guard.py`** (a **missing** `local_floor.py` or any manifest member is a **FAIL, not an ignored-file pass**); asserted **once per agent** so no agent is silently left on the old copy. The Azure-Function `tool_interceptor` subset is exactly `{redaction.py, exceptions.py, __init__ shim}` and is **NOT** drift-failed for lacking `guard.py`/`config.py`/`local_floor.py` (asserted absent-by-design, not merely un-compared) | unit |
 | `test_azure_connector_redaction_tie_in` *(integration)* | the Azure Function `tool_interceptor` redacts via the vendored subset identically to the SDK on a shared PAN/SSN fixture | integration |
 
 > **Green-≠-correct guard.** `test_seam_off_routes_to_send` must fail if the seam were removed (assert `_send` is reached via a spy), and `test_revendor_checksum_equality` must fail on any drift — neither is a vacuous always-green test.
