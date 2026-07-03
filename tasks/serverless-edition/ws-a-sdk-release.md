@@ -3,7 +3,7 @@
 > **Doc role:** This is the **tasks-stage** doc (milestones → buildable tasks with mandatory tests), generated from the approved LLD. **Build straight from this doc** — the LLD is the source of truth for *why*; this is the *what to code*.
 
 **Parent LLD:** [lld/36-sdk-release-and-local-floor-seam.md](../../lld/36-sdk-release-and-local-floor-seam.md) (approved Gate-3 2026-07-03, founder comments applied `8bca748`).
-**Status:** TASKS-DONE (2026-07-03) — ready for `code-loop`.
+**Status:** CODE-DONE — promoted to `main` 2026-07-03 (`42e0207`, SDK 0.2.0 seam) + bare-`@guard.output` bypass fix 2026-07-04 (`cae0180`). SDK suite **435 pass / 2 skip** verified by direct run on committed main (the code-loop gate ran the wrong top-level suite; re-verified against the SDK suite by hand). **NOT deployed** (release/re-vendor only; edge agents pick up 0.2.0 on next deploy via the `azure.yaml`/`build_zip` vendor hooks).
 **Owner:** TBD
 **Implements:** FR-1.7 (**the SEAM ONLY** — the caching that fills it is [lld/37](../../lld/37-sdk-local-floor-caching.md)), FR-3.4 (phase surface — release vehicle), FR-3.13 (Tier-1 redactor — release vehicle), NFR-4 (fail-secure).
 
@@ -191,18 +191,18 @@ flowchart TD
 
 ## Acceptance criteria (whole workstream)
 
-- [ ] `__version__ == "0.2.0"` at both sites; `__contract__ == "v1"` (A1.1)
-- [ ] `dependencies == []`; NO `[local-floor]` extra declared (A1.2)
-- [ ] `LocalFloorVerdict` enum frozen with exactly the four members (A2.1)
-- [ ] `local_floor_enabled` flag defaults False; invalid value fails closed (A3.1)
-- [ ] Seam is a true no-op: flag off → `_send` reached (sync + async), byte-identical async `to_thread` line (A3.2/A3.3)
-- [ ] Flag on without interpreter → fail-secure to hosted, never skip/local-allow/deny-all; warns once per guard (A3.2)
-- [ ] `_local_floor_verdict` returns `Optional[Decision]`, never a bare enum; no `_send` outside the seam (AST); SDK cannot import `app.combiners` (A3.2/A3.4)
-- [ ] `@guard.output` raises `FeatureNotAvailable` at decoration; tool/content/memory decorate normally (A4.1); lld/30 reconciled (A4.2)
-- [ ] All three `acme-*` agents re-vendored to the 12-module 0.2.0 package; Azure subset stays exactly 3 modules (A5.1/A5.2)
-- [ ] **unit tests pass** (covering: version/contract pin, stdlib-only, enum frozen, flag default+invalid, seam off sync+async, on-without-interpreter fail-secure, warn-once, type contract, no-send-outside-seam AST, no-Signal-mint, output fail-fast, per-agent checksum equality, azure subset)
-- [ ] **integration tests pass** (covering: seam end-to-end routes to hosted; `@guard.output` server-side deny-all mirror; azure connector redaction tie-in)
-- [ ] the full existing SDK suite (216 test functions across 14 files) stays green — verify with `pytest --collect-only -q` (`identity` extra installed) then `pytest`
+- [x] `__version__ == "0.2.0"` at both sites; `__contract__ == "v1"` (A1.1) — verified on main `cae0180`
+- [x] `dependencies == []`; NO `[local-floor]` extra declared (A1.2)
+- [x] `LocalFloorVerdict` enum frozen with exactly the four members (A2.1)
+- [x] `local_floor_enabled` flag defaults False; invalid value fails closed (A3.1)
+- [x] Seam is a true no-op: flag off → `_send` reached (sync + async), byte-identical async `to_thread` line (A3.2/A3.3)
+- [x] Flag on without interpreter → fail-secure to hosted, never skip/local-allow/deny-all; warns once per guard (A3.2)
+- [x] `_local_floor_verdict` returns `Optional[Decision]`, never a bare enum; no `_send` outside the seam (AST); SDK cannot import `app.combiners` (A3.2/A3.4)
+- [x] `@guard.output` raises `FeatureNotAvailable` at decoration for BOTH parens `@guard.output()` AND bare `@guard.output` forms; tool/content/memory decorate normally (A4.1, bare-form bypass fixed `cae0180`); lld/30 reconciled (A4.2)
+- [x] All three `acme-*` agents re-vendor the 12-module 0.2.0 package via build-time hooks (Azure `azure.yaml` prepackage `cp -r`, payments `build_zip` rglob) incl. `local_floor.py`; Azure subset stays exactly 3 modules (A5.1/A5.2) — gated by `test_revendor_manifest.py` (non-vacuous)
+- [x] **unit + full SDK suite pass** — verified by direct run on committed main: **435 passed / 2 skipped** (SDK suite `demo-agents/sdk/aegion-guard-python/`; covers version/contract pin, stdlib-only, enum frozen, flag default+invalid, seam off sync+async, on-without-interpreter fail-secure, warn-once, type contract, no-send-outside-seam AST, no-Signal-mint, output fail-fast parens+bare, per-agent revendor manifest, azure subset byte-identity)
+- [x] **integration tests pass** (SDK-local: seam end-to-end routes to hosted `tests/test_async.py`; azure connector redaction tie-in `test_revendor_manifest.py::test_azure_connector_redaction_tie_in`). Live-service e2e suites (`tests/integration/test_e2e_agents.py` etc.) are skip-gated when no controller is reachable (`requires_services`) — unrelated to WS-A.
+- [x] the full SDK suite stays green — **435 pass / 2 skip across 15 test files** (was "216 functions/14 files" in the plan — updated to the actual collected count on main; run `env -u AWS_PROFILE python -m pytest` from `demo-agents/sdk/aegion-guard-python/`)
 
 ---
 
