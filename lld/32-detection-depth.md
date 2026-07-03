@@ -338,29 +338,29 @@ This means:
 ```mermaid
 sequenceDiagram
   participant AG as Agent interceptor
-  participant RT as routes.py validate()
-  participant VS as validation_service.validate_tool_call
-  participant DAG as run_dag(phase)
-  participant BAR as redaction.ner (barrier)
-  participant TR as sentra.trust (tier-0 caller gate)
-  participant AB as sentra.abuse (tier-0 rate/cost cap)
-  participant DN as D-node (D2 content / D3 memory)
-  AG->>RT: POST /v1/validate {phase=content, content_text}
-  RT->>RT: GUARD 1: phase in KNOWN_PHASES? (422 if not)
-  RT->>RT: GUARD 2: phase != request → route INTO pipeline (WS-L; was DENY-stub)
-  RT->>VS: validate_tool_call(request)
-  VS->>DAG: run_dag(build_dag(service, "content", ctx), ...)
-  DAG->>BAR: barrier FIRST & ALONE — redact content_text in place
-  BAR-->>DAG: ALLOW/ABSTAIN (content_text now redacted view)
-  DAG->>TR: tier-0 caller-scoped trust gate (quarantine/low-trust)
-  TR-->>DAG: ALLOW / DENY (QUARANTINE_* / low-trust)
-  DAG->>AB: tier-0 rate/cost cap on caller (before the model)
-  AB-->>DAG: ALLOW / DENY (RATE_LIMIT_EXCEEDED)
-  DAG->>DN: tier-1 D2 node reads redacted content_text
-  DN-->>DAG: ALLOW / DENY (SENTRA_INDIRECT)
-  DAG-->>VS: (ValidationResult, signals[])
-  VS-->>RT: verdict + reason + source
-  RT-->>AG: 200 ALLOW / 200 DENY (honest status; §11)
+  participant RT as routes validate
+  participant VS as validation_service
+  participant DAG as run_dag
+  participant BAR as redaction ner barrier
+  participant TR as sentra trust tier0
+  participant AB as sentra abuse tier0
+  participant DN as D-node D2 D3
+  AG->>RT: POST validate phase=content plus content_text
+  RT->>RT: GUARD 1 phase in KNOWN_PHASES else 422
+  RT->>RT: GUARD 2 phase not request route into pipeline
+  RT->>VS: validate_tool_call request
+  VS->>DAG: run_dag build_dag service content ctx
+  DAG->>BAR: barrier first and alone redact content_text
+  BAR-->>DAG: ALLOW or ABSTAIN redacted view
+  DAG->>TR: tier0 caller-scoped trust gate
+  TR-->>DAG: ALLOW or DENY quarantine or low-trust
+  DAG->>AB: tier0 rate cost cap on caller
+  AB-->>DAG: ALLOW or DENY RATE_LIMIT_EXCEEDED
+  DAG->>DN: tier1 D2 node reads redacted content_text
+  DN-->>DAG: ALLOW or DENY SENTRA_INDIRECT
+  DAG-->>VS: ValidationResult and signals
+  VS-->>RT: verdict reason source
+  RT-->>AG: 200 ALLOW or 200 DENY honest status
 ```
 
 ### 6.2 content → D2 (P0, standalone injection detector — Q2)
