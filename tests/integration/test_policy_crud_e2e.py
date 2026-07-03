@@ -24,6 +24,38 @@ API_BASE_URL = os.getenv("SECURITY_CONTROLLER_URL", "http://localhost:8080")
 OPERATOR_EMAIL = "test-integration@sentra.com"
 TEST_AGENT_ID = "test-integration-agent"
 
+# These are LIVE-SERVICE e2e tests: every case drives POST/GET/DELETE /v1/policies
+# against a deployed (or locally-run) controller. Mark the whole module so a runner
+# can `-m "not requires_services"` to exclude them, and mirror the codebase's
+# skip-when-absent contract (test_post_cutover_suite.py:47) so an offline run SKIPs
+# cleanly instead of hard-failing with a raw ConnectionError.
+pytestmark = [pytest.mark.integration, pytest.mark.requires_services]
+
+# Short connect+read timeout so an absent endpoint fails fast rather than hanging.
+_HEALTH_TIMEOUT = float(os.environ.get("SENTRA_HEALTH_TIMEOUT", "10"))
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _require_reachable():
+    """One `GET /v1/health` probe per session. If the controller is unreachable
+    (no deployed target from this env — e.g. nothing listening on :8080), skip the
+    WHOLE suite cleanly rather than erroring, so the file is safe to collect/run
+    anywhere (mirrors test_post_cutover_suite.py:_require_reachable).
+
+    A reachable controller that returns a non-200 (e.g. 503 = a dependency is
+    unhealthy) is NOT a skip — the suite should run and surface that as real
+    failures; only an unreachable endpoint (connection refused / DNS / timeout)
+    skips."""
+    base_url = API_BASE_URL.rstrip("/")
+    try:
+        requests.get(f"{base_url}/v1/health", timeout=_HEALTH_TIMEOUT)
+    except requests.exceptions.RequestException as exc:
+        pytest.skip(
+            f"controller not reachable at {base_url} ({exc.__class__.__name__}); "
+            "policy-CRUD e2e requires a running controller "
+            "(set SECURITY_CONTROLLER_URL to the prod/staging ALB, or start it locally)."
+        )
+
 
 @pytest.fixture(scope="module")
 def api_headers():
