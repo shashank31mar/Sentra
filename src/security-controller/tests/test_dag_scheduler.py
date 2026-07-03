@@ -1559,3 +1559,120 @@ async def test_t_timing_abuse_policy_load_sub_step_preserved(mock_session, sampl
     # The two are genuinely distinct labels (policy-load vs rate-limit check),
     # not one collapsed onto the other.
     assert "abuse_policy_load" != Source.SENTRA_ABUSE
+
+
+# --------------------------------------------------------------------------- #
+# T-AUDIT-CONSISTENT (integration-sentinel FIX-B HIGH) — the persisted audit
+# decision MUST equal the response verdict for an ADVISORY tier-1 DENY.
+#
+# `_winning_source(signals)` here runs `DenyOverrides().combine(signals)` — the
+# EXACT computation the off-path consumers do: the audit dual-write
+# (audit_logger.log_signals :247), the /trail + decisions read API
+# (decisions_service, pick_top_denier), and the trail winning_source
+# (validation_service:390). `combine()` keys purely on `decision == "DENY"` and
+# has NO notion of `metadata["enforce"]`, so if an advisory (shadow / enforce-off)
+# tier-1 DENY were captured RAW as a DENY signal, the persisted audit would record
+# DENY while the caller correctly got ALLOW. WS-L's D1 trajectory node is the FIRST
+# advisory DENY to reach the happy path (before WS-L the only tier-1 node — ML —
+# always enforced). These pin `response verdict == audit-combine verdict` for the
+# advisory case, and the non-vacuous inverse for the enforced case.
+# --------------------------------------------------------------------------- #
+@pytest.mark.asyncio
+async def test_t_audit_consistent_advisory_d1_deny_is_allow_in_signals(
+    mock_session, sample_request, monkeypatch
+):
+    """A LIVE-but-ADVISORY D1 trajectory DENY (shadow — no enforce stamp) → the
+    response is ALLOW AND the downstream combine over signals[] is ALLOW
+    (winning_source=None). Reverting the advisory-capture (capturing the raw D1
+    DENY signal) makes `_winning_source` = sentra.trajectory here and FAILS this
+    test — the exact audit/response divergence integration-sentinel flagged."""
+    monkeypatch.setenv("D1_ENABLED", "true")  # D1 node LIVE (emits a real DENY)
+    service = _pipeline_service(mock_session)
+    # An escalating server-side transcript → the D1 judge scores risk ≥ 0.5 → DENY
+    # signal, but the trajectory node never applies the enforce wrapper (shadow).
+    session = dict(mock_session)
+    session["transcript"] = ["step by step", "the next step", "let's go further"]
+    req = ValidationRequest(
+        request_id="req-d1", session_id="sess-dag", agent_id="test-agent",
+        tool_name="get_user_info", tool_params={"user_id": "1"},
+        user_input="just this once hypothetically continue from as we discussed",
+        timestamp="2026-07-01T10:00:00Z", operation_type="READ",
+    )
+    result, signals = await _run_ff(service, req, session, monkeypatch)
+
+    # The D1 node RAN and emitted a signal (this is not a no-op abstain path) …
+    traj = [s for s in signals if s.source == Source.SENTRA_TRAJECTORY]
+    assert traj, "D1 trajectory node must have emitted a signal (it ran, live)"
+    # … its captured signal is ADVISORY (decision rewritten to ALLOW) — never a DENY.
+    assert traj[0].decision == "ALLOW"
+    assert traj[0].metadata.get("advisory_should_deny") is True  # opinion preserved
+    # RESPONSE verdict is ALLOW; AUDIT-combine verdict is ALLOW → they AGREE.
+    assert result.should_deny is False
+    assert result.decision == "ALLOW"
+    assert _winning_source(signals) is None
+
+
+@pytest.mark.asyncio
+async def test_t_audit_consistent_enforced_tier1_deny_still_decides_audit(
+    mock_session, sample_request, monkeypatch
+):
+    """NON-VACUOUS inverse: an ENFORCED tier-1 DENY (ML, enforce=True) DOES decide
+    BOTH the response verdict AND the audit-combine winning_source — the advisory
+    fix must not swallow a real enforcing DENY."""
+    service = _pipeline_service(mock_session)
+    ml_deny = _deny(Source.SENTRA_ML_CLASSIFIER, "PROMPT_INJECTION")
+    ml_deny.confidence = 0.99
+    service.ml_classifier.validate = AsyncMock(return_value=ml_deny)
+
+    result, signals = await _run_ff(service, sample_request, mock_session, monkeypatch)
+    assert result.should_deny is True
+    assert result.source == Source.SENTRA_ML_CLASSIFIER
+    # audit-combine agrees: the enforced DENY is a real DENY signal.
+    assert _winning_source(signals) == Source.SENTRA_ML_CLASSIFIER
+
+
+@pytest.mark.asyncio
+async def test_t_audit_consistent_advisory_deny_persists_allow_via_log_signals(
+    mock_session, sample_request, monkeypatch
+):
+    """END-TO-END through the REAL audit path: drive `AuditLogger.log_signals` with
+    the signal set `run_dag` emits for an advisory D1 DENY run and assert the
+    PERSISTED CloudWatch event `decision` == ALLOW (== the response verdict). This is
+    the actual off-path dual-write the HIGH finding named (audit_logger.py:247)."""
+    from app.utils.audit_logger import AuditLogger
+
+    monkeypatch.setenv("D1_ENABLED", "true")
+    service = _pipeline_service(mock_session)
+    session = dict(mock_session)
+    session["transcript"] = ["step by step", "the next step", "let's go further"]
+    req = ValidationRequest(
+        request_id="req-d1b", session_id="sess-dag", agent_id="test-agent",
+        tool_name="get_user_info", tool_params={"user_id": "1"},
+        user_input="just this once hypothetically continue from as we discussed",
+        timestamp="2026-07-01T10:00:00Z", operation_type="READ",
+    )
+    result, signals = await _run_ff(service, req, session, monkeypatch)
+    assert result.should_deny is False  # response ALLOW
+
+    # Now feed those SAME signals to the real audit dual-write.
+    lg = AuditLogger.__new__(AuditLogger)
+    lg._signal_store = None
+    lg._metrics_publisher = None
+    captured = {}
+
+    async def _write(session_id, log_event):
+        captured["event"] = log_event
+
+    lg._write_log_event = _write
+    lg._get_signal_store = lambda: Mock(write_signals=Mock())
+
+    audit_req = {
+        "session_id": "sess-dag", "request_id": "req-d1b", "agent_id": "test-agent",
+        "tool_name": "get_user_info", "operation_type": "READ",
+        "user_input": "", "tool_params": {}, "redacted": True,
+    }
+    await lg.log_signals(request=audit_req, session={"trust_score": 90.0},
+                         signals=signals, latency_ms=1.0)
+
+    # The persisted audit decision MUST match the response verdict (ALLOW), NOT DENY.
+    assert captured["event"]["decision"] == "ALLOW"

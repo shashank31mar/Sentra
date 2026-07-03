@@ -502,13 +502,40 @@ async def run_dag(
                 # advisory-for-trail — never let it become the deciding source.
                 capture(_advisory_for_trail(r))
                 continue
-            capture(r)
             # A tier-1 DENY is a candidate deciding-verdict ONLY if it asserted
             # enforce-mode (`_is_hard_deny`). NO-FLAG: the ML node's wrapper stamps
             # enforce=True on every concrete verdict, so a live ML DENY IS a
             # candidate. A future tier-1 node that forgets the flag defaults to
             # advisory (fail-safe: under-block, not surprise-block).
-            if r.should_deny and _is_hard_deny(r):
+            hard = r.should_deny and _is_hard_deny(r)
+            # AUDIT/RESPONSE VERDICT CONSISTENCY (integration-sentinel FIX-B HIGH):
+            # an ADVISORY (shadow / enforce-off) tier-1 DENY must NOT surface as a
+            # DENY *signal* either. `run_dag` already refuses to let it decide the
+            # returned verdict (it stays out of `hard_denies`), but every OFF-PATH
+            # consumer — the audit dual-write (audit_logger.log_signals →
+            # DenyOverrides.combine, :247), the /trail + decisions read API
+            # (decisions_service, pick_top_denier), and the trail `winning_source`
+            # (validation_service:390) — recomputes the verdict over the captured
+            # `signals[]` via `DenyOverrides.combine()`, which keys PURELY on
+            # `decision == "DENY"` and has NO notion of `metadata["enforce"]`. So a
+            # raw-captured advisory DENY (e.g. D1 trajectory shadow priority 68, or
+            # D2/D3 with d{2,3}_enforce_enabled=False — the shipped default) would
+            # make the PERSISTED audit `decision` = DENY while the caller correctly
+            # got ALLOW. Capturing the advisory DENY via `_advisory_for_trail`
+            # (decision→ALLOW, opinion preserved under metadata) is the SAME lever
+            # the tier0-already-decided branch uses: it keeps the deep tier in the
+            # trail without ever flipping any downstream combine to DENY. An
+            # enforce-deciding DENY (ML, or D2/D3 enforce-on) is captured RAW so it
+            # still decides both the verdict AND the audit. Only an ADVISORY DENY is
+            # rewritten — an ALLOW / abstain is captured untouched (no spurious
+            # `trail_advisory` stamp on a plain ALLOW signal).
+            # enforce-deciding DENY (ML, or D2/D3 enforce-on) is captured RAW so it
+            # still decides both the verdict AND the audit. Only an ADVISORY DENY is
+            # rewritten — an ALLOW / abstain is captured untouched (no spurious
+            # `trail_advisory` stamp on a plain ALLOW signal).
+            advisory_deny = r.should_deny and not hard
+            capture(_advisory_for_trail(r) if advisory_deny else r)
+            if hard:
                 hard_denies.append(r)
         # When ≥2 tier-1 nodes hard-DENY, the deciding verdict MUST be the
         # SHARED-ranking winner — NOT the first hard-DENY in gather/iteration
