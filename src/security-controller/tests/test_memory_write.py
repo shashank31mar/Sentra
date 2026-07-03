@@ -126,6 +126,61 @@ async def test_d3_missing_mac_denies_elevated_trust():
 
 
 @pytest.mark.asyncio
+async def test_d3_trusted_label_no_trust_weight_no_mac_denies():
+    """integration-sentinel FIX-B MEDIUM — the closed bypass: a write claiming a
+    TRUSTED provenance label ("operator_directive") with `trust_weight` OMITTED and
+    NO mac/birth_facts must DENY. Before the fix this slipped past the MAC gate (the
+    gate keyed on `trust_weight > cap`, and a None weight made `asserts_elevated_trust`
+    False), letting a self-declared trusted label ALLOW with zero integrity proof. The
+    MAC gate now keys on the trusted LABEL alone, so this DENYs."""
+    mem = {
+        "provenance": {"source": "operator_directive", "actor": "attacker"},
+        "kind": "OPERATOR_DIRECTIVE",
+        "effects": {},                 # benign effects — the ONLY thing that saved it before
+    }                                  # trust_weight OMITTED, birth_facts/mac OMITTED
+    assert "trust_weight" not in mem and "mac" not in mem and "birth_facts" not in mem
+    result = await MemoryWriteValidator().validate(_req(memory=mem))
+    assert result.should_deny, "a trusted-label write with no trust_weight and no MAC must DENY"
+    assert result.violation_type == "MEMORY_POISONING"
+    assert "must carry" in result.reason.lower()
+
+
+@pytest.mark.asyncio
+async def test_d3_trusted_label_at_cap_no_mac_denies():
+    """Companion to the None-weight bypass: a trusted-label write with `trust_weight`
+    AT/below the untrusted cap (0.3) and no MAC also self-declares a trusted label
+    without proof — the MAC gate (keyed on the label) must still DENY. Before the fix
+    `trust_weight <= cap` also made `asserts_elevated_trust` False and let it through."""
+    mem = {
+        "provenance": {"source": "operator_directive", "actor": "attacker"},
+        "kind": "OPERATOR_DIRECTIVE",
+        "trust_weight": 0.3,           # AT the cap — not > cap, so the old gate skipped it
+        "effects": {},
+    }
+    result = await MemoryWriteValidator().validate(_req(memory=mem))
+    assert result.should_deny, "a trusted-label write at/below cap with no MAC must DENY"
+    assert result.violation_type == "MEMORY_POISONING"
+    assert "must carry" in result.reason.lower()
+
+
+@pytest.mark.asyncio
+async def test_d3_untrusted_label_no_mac_allows():
+    """The MAC gate must NOT over-fire: a benign UNTRUSTED-labelled write (an ordinary
+    inference/tool memory) with no trust_weight and no MAC still ALLOWs — it is already
+    capped in step 2 and cannot self-promote, so it does not need a birth-fact MAC. The
+    fix closes the trusted-label bypass without forcing every memory write to carry a MAC."""
+    mem = {
+        "provenance": {"source": "tool_output", "actor": "search"},
+        "kind": "TOOL_OUTPUT",
+        "effects": {},                 # tightening/neutral; no trust_weight, no mac
+    }
+    result = await MemoryWriteValidator().validate(_req(memory=mem))
+    assert result.decision == "ALLOW"
+    assert result.should_deny is False
+    assert result.source == Source.SENTRA_MEMORY
+
+
+@pytest.mark.asyncio
 async def test_d3_local_dev_mac_not_authentic_in_enforce():
     """A `mac` computed with the offline local dev key must NOT verify on the enforce
     (KMS-configured) path — only a KMS-produced MAC is authentic there. A KMS client
