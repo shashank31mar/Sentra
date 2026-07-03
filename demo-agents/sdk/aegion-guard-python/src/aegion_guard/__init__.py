@@ -25,6 +25,7 @@ from .exceptions import (
     AegionGuardError,
     BadRequest,
     ConfigError,
+    FeatureNotAvailable,
     IdentityError,
     RedactionError,
     SentraUnavailable,
@@ -32,6 +33,7 @@ from .exceptions import (
     UnknownAgentError,
 )
 from .guard import AegionGuard, Decision, infer_operation_type
+from .local_floor import LocalFloorVerdict
 from .redaction import redact, redact_detailed, redact_params
 
 # Identity (signing) helpers live behind the optional `identity` extra. Importing
@@ -40,7 +42,13 @@ from .identity import AgentIdentity, JwtSigner, generate_keypair
 
 # Distribution/import name is `aegion_guard`; the market brand is AegionAI.
 # "Sentra" remains the internal control-plane codename.
-__version__ = "0.1.0"
+#
+# 0.2.0 (WS-A ship-now): releases the already-merged phase surface + Tier-1
+# redactor + trail passthrough, and adds the no-op local-floor seam
+# (`LocalFloorVerdict`, `local_floor_enabled`). MUST stay in lock-step with
+# `pyproject.toml`'s `version` — a release-gate test (test_config.py::
+# test_version_and_contract_pin) fails if the two sites drift.
+__version__ = "0.2.0"
 
 # The /v1/validate contract version this SDK targets (LLD 23 §5). Informational
 # only: the controller does not advertise a contract version on the response
@@ -54,11 +62,13 @@ __all__ = [
     "AegionGuard",
     "Decision",
     "GuardConfig",
+    "LocalFloorVerdict",
     "ToolDenied",
     "UnknownAgentError",
     "SentraUnavailable",
     "BadRequest",
     "ConfigError",
+    "FeatureNotAvailable",
     "IdentityError",
     "RedactionError",
     "AegionGuardError",

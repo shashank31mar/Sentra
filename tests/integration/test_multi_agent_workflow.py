@@ -53,6 +53,45 @@ SECURITY_CONTROLLER_URL = os.environ.get(
 # Test timeout
 REQUEST_TIMEOUT = 30.0
 
+# These are LIVE-SERVICE e2e tests: the CQA→controller→payment-agent flow needs all
+# three services running. Mark the whole module so a runner can exclude it with
+# `-m "not requires_services"`, and mirror the codebase's skip-when-absent contract
+# (test_post_cutover_suite.py:47) so an offline run SKIPs cleanly rather than
+# hard-failing with a raw ConnectionError.
+pytestmark = [pytest.mark.integration, pytest.mark.requires_services]
+
+# Short connect+read timeout so an absent endpoint fails fast rather than hanging.
+_HEALTH_TIMEOUT = float(os.environ.get("SENTRA_HEALTH_TIMEOUT", "10"))
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _require_services_reachable():
+    """One health probe per service, per session. If ANY of the three services
+    (CQA / payment-agent / controller) is unreachable — no deployed target from this
+    env, e.g. nothing on :8080 — skip the WHOLE suite cleanly rather than erroring,
+    so the file is safe to collect/run anywhere (mirrors
+    test_post_cutover_suite.py:_require_reachable).
+
+    A reachable service returning a non-200 is NOT a skip — let TestServiceHealth
+    and the workflow tests surface that as real failures; only an unreachable
+    endpoint (connection refused / DNS / timeout) skips."""
+    probes = {
+        "customer-query-agent": CUSTOMER_QUERY_AGENT_URL,
+        "payment-agent": PAYMENT_AGENT_URL,
+        "security-controller": SECURITY_CONTROLLER_URL,
+    }
+    for name, base in probes.items():
+        url = f"{base.rstrip('/')}/v1/health"
+        try:
+            requests.get(url, timeout=_HEALTH_TIMEOUT)
+        except requests.exceptions.RequestException as exc:
+            pytest.skip(
+                f"{name} not reachable at {base} ({exc.__class__.__name__}); "
+                "multi-agent workflow e2e requires the CQA, payment-agent, and "
+                "controller all running (set the *_URL env vars to deployed targets, "
+                "or start them locally)."
+            )
+
 
 # ==================== Fixtures ====================
 

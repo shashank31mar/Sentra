@@ -221,16 +221,22 @@ def test_tool_payload_has_no_phase_key(make_guard, fake_client):
     assert "content_text" not in fake_client.last
 
 
+# WS-A A4.1: `output` is DELIBERATELY dropped from this parametrization —
+# @guard.output now raises FeatureNotAvailable at decoration (lld/36 §4.1(a-out)),
+# so it can no longer be exercised here as a normally-decorating surface. Its
+# fail-fast behavior is pinned in test_output_decorator_fails_fast below. content
+# and memory keep decorating normally (their handlers are LIVE, routes.py:98-118).
 @pytest.mark.parametrize(
     "surface,phase,expected_op",
-    [("content", "content", "READ"), ("output", "output", "READ"),
-     ("memory", "memory", "WRITE")],
+    [("content", "content", "READ"), ("memory", "memory", "WRITE")],
 )
 def test_guard_content_sets_phase_and_content_text(
     make_guard, fake_client, surface, phase, expected_op
 ):
     """A per-phase decorator's built payload has phase == <phase>, a populated
-    content_text, and the per-phase operation_type default (B3.2 + B3.3)."""
+    content_text, and the per-phase operation_type default (B3.2 + B3.3).
+
+    Only tool/content/memory decorate (output is gated — A4.1)."""
     guard = make_guard()
     fake_client.set_default({"decision": "ALLOW"})
 
@@ -246,6 +252,79 @@ def test_guard_content_sets_phase_and_content_text(
     assert fake_client.last["phase"] == phase
     assert fake_client.last["content_text"] == "the-untrusted-content"
     assert fake_client.last["operation_type"] == expected_op
+
+
+def test_output_decorator_fails_fast(make_guard):
+    """A4.1: @guard.output raises FeatureNotAvailable at DECORATION time (the
+    output phase is unenforced — WS-L D5 unbuilt), while @guard.tool/content/memory
+    decorate WITHOUT raising (content/memory have live server handlers).
+
+    Non-vacuous: if the gate is removed, @guard.output would decorate silently and
+    this test's pytest.raises would fail."""
+    from aegion_guard import AegionGuardError, FeatureNotAvailable
+
+    guard = make_guard()
+
+    # @guard.output raises at decoration (when applied to the function).
+    with pytest.raises(FeatureNotAvailable) as exc:
+        @guard.output()
+        def emit_result(payload):
+            return payload
+    assert "output" in str(exc.value)
+    # FeatureNotAvailable is an AegionGuardError (catchable by the base handler).
+    assert isinstance(exc.value, AegionGuardError)
+
+    # tool / content / memory decorate normally — no raise.
+    @guard.tool()
+    def do_action(x):
+        return x
+
+    @guard.content()
+    def ingest(doc):
+        return doc
+
+    @guard.memory()
+    def remember(fact):
+        return fact
+
+    assert callable(do_action) and callable(ingest) and callable(remember)
+
+
+def test_output_gate_raise_is_at_application_not_factory_call(make_guard):
+    """A4.1 nuance (integration-sentinel FIX-B, LOW gap): the gate raises inside the
+    RETURNED decorator closure, so the FeatureNotAvailable fires when the decorator
+    is APPLIED to a function, NOT when `guard.output()` is called to build it.
+
+    This pins the exact deferred-raise semantics so a reader knows the contract:
+      * `guard.output()` returns a callable and does NOT raise (idiomatic
+        `@guard.output()` applies it on the next line, so users still see the raise);
+      * applying that callable to a function DOES raise — and the raise is NOT
+        swallowed / does NOT silently produce a working (fail-open) decorator.
+
+    Non-vacuous: if the gate ever moved to raise inside `_phase_decorator('output')`
+    (per-call) or returned a real decorator, `guard.output()` would still not raise
+    (fine) but the application would return a callable instead of raising — the
+    second assertion would fail."""
+    from aegion_guard import FeatureNotAvailable
+
+    guard = make_guard()
+
+    # Building the decorator (calling the factory) does NOT raise — the raise is
+    # deferred to application. This documents the nuance; idiomatic use applies it
+    # immediately so the developer still fails fast.
+    dec = guard.output()
+    assert callable(dec)
+
+    # Applying the built decorator to a function raises — the gate is NOT swallowed
+    # and does NOT fall through to a silent (fail-open) decorated function.
+    def emit_result(payload):
+        return payload
+
+    with pytest.raises(FeatureNotAvailable) as exc:
+        dec(emit_result)
+    assert "output" in str(exc.value)
+    # The raise short-circuits: `dec(...)` never returned a callable to fall through to.
+    assert "not yet enforced" in str(exc.value)
 
 
 def test_egress_content_text_is_redacted_ws_e(make_guard, fake_client):

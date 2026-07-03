@@ -265,14 +265,19 @@ def test_single_nonce_binds_all_fields(make_guard, fake_client):
 # tests pin the redaction onto that canonical seam (do NOT reintroduce per-phase
 # content fields / session(phase=...) — that divergence was reverted).
 # --------------------------------------------------------------------------- #
+# WS-A A4.1: `output` DELIBERATELY dropped from this map + the two
+# parametrizations below. @guard.output now raises FeatureNotAvailable at
+# decoration (lld/36 §4.1(a-out)), so it cannot be applied to `ingest` here. The
+# content_text redaction contract is identical across egressing phases and stays
+# pinned on content + memory; the output decoration gate is pinned in
+# test_guard_sync.py::test_output_decorator_fails_fast.
 _PHASE_DECORATOR = {
     "content": lambda g: g.content(),
-    "output": lambda g: g.output(),
     "memory": lambda g: g.memory(),
 }
 
 
-@pytest.mark.parametrize("phase", ["content", "output", "memory"])
+@pytest.mark.parametrize("phase", ["content", "memory"])
 def test_content_text_field_is_redacted_before_egress(make_guard, fake_client, phase):
     # §3.5 footgun: an egressing phase carries its content in the single
     # `content_text` field (the richest PII surface). That field MUST be redacted,
@@ -299,7 +304,7 @@ def test_content_text_field_is_redacted_before_egress(make_guard, fake_client, p
     assert _nonces_in(sent["content_text"]) == {sent["redaction_nonce"]}
 
 
-@pytest.mark.parametrize("phase", ["content", "output", "memory"])
+@pytest.mark.parametrize("phase", ["content", "memory"])
 def test_content_text_equals_redacted_user_input_for_egressing_phases(
     make_guard, fake_client, phase
 ):

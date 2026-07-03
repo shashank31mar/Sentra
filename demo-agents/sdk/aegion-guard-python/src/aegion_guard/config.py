@@ -22,6 +22,13 @@ ENV_API_KEY = "SENTRA_API_KEY"
 ENV_TIMEOUT = "SENTRA_VALIDATE_TIMEOUT_S"
 ENV_FAIL_SECURE = "SENTRA_FAIL_SECURE"
 ENV_CONNECT_RETRIES = "SENTRA_CONNECT_RETRIES"
+# Local-floor seam (WS-A ship-now; lld/36 §4.2.2). Opt-in flag that a future
+# in-process floor (lld/37) keys off. In 0.2.0 it is a NO-OP: `off` (the default)
+# is exactly today's behavior (every call routes to the hosted PDP); `on` still
+# routes to hosted (fail-secure) because no interpreter is installed yet — it only
+# emits a one-time warning that edge enforcement is not active. Default MUST be
+# False: a True default would route at a floor that does not exist.
+ENV_LOCAL_FLOOR = "SENTRA_LOCAL_FLOOR_ENABLED"
 
 # Data-plane identity (opt-in; LLD-26 §3 / WS-A). All three of tenant_id, kid and
 # a private key must be supplied together — partial identity config is a hard
@@ -92,6 +99,9 @@ class GuardConfig:
     timeout_s: float
     fail_secure: bool
     connect_retries: int
+    # Local-floor seam (WS-A; lld/36 §4.2.2). False = today's behavior (route every
+    # call to hosted). No-op in 0.2.0 regardless (no interpreter shipped).
+    local_floor_enabled: bool = False
     # Data-plane identity (None unless all three are configured together).
     tenant_id: Optional[str] = None
     kid: Optional[str] = None
@@ -117,6 +127,7 @@ class GuardConfig:
         timeout_s: Optional[float] = None,
         fail_secure: Optional[bool] = None,
         connect_retries: Optional[int] = None,
+        local_floor_enabled: Optional[bool] = None,
         tenant_id: Optional[str] = None,
         kid: Optional[str] = None,
         private_key: Optional[str] = None,
@@ -175,6 +186,14 @@ class GuardConfig:
         else:
             resolved_retries = _env_int(ENV_CONNECT_RETRIES, _DEFAULT_CONNECT_RETRIES)
 
+        # Local-floor seam flag (WS-A; lld/36 §4.2.2). Reuse `_env_bool`, which
+        # RAISES ConfigError on an unparseable value (fail-closed at construction),
+        # so `SENTRA_LOCAL_FLOOR_ENABLED=maybe` fails now, not silently as False.
+        if local_floor_enabled is not None:
+            resolved_local_floor = bool(local_floor_enabled)
+        else:
+            resolved_local_floor = _env_bool(ENV_LOCAL_FLOOR, False)
+
         # ---- data-plane identity (opt-in, all-or-none) --------------------- #
         r_tenant = (tenant_id or os.environ.get(ENV_TENANT_ID) or "").strip() or None
         r_kid = (kid or os.environ.get(ENV_KID) or "").strip() or None
@@ -220,6 +239,7 @@ class GuardConfig:
             timeout_s=resolved_timeout,
             fail_secure=resolved_fail_secure,
             connect_retries=resolved_retries,
+            local_floor_enabled=resolved_local_floor,
             tenant_id=r_tenant,
             kid=r_kid,
             private_key=r_private_key,

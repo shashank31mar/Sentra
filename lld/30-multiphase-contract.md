@@ -395,6 +395,8 @@ def remember_fact(user_id: str, fact: str) -> None:
 
 **`@guard.output` — wrap the agent's EMITTED output** (D5 DLP/exfil). *Caveat (a named later deliverable):* output **detection** can run server-side in serverless the same way input does, but the output **redact/rewrite verdict** — *mutating* the outgoing content — is the harder piece the decorator can't do today. The decorator surface is **ALLOW/DENY only**; a "rewrite this output to strip the SSN" verdict (vs. block the whole emission) is deferred to the WS-E/redaction line, not shipped by WS-B.
 
+> **SDK 0.2.0 gate (WS-A / lld/36 §4.1(a-out)):** `@guard.output` **ships in SDK 0.2.0 but raises `FeatureNotAvailable` at decoration** until WS-L's D5 handler lands — the `output` phase has no live server handler, so rather than silently fail-secure a wired-to-prod emission per call, the decorator fails fast at wire time and points the developer to `@guard.tool`. `@guard.content`/`@guard.memory` decorate normally (their D2/D3 handlers are ship-order P0 / live). When D5 lands, the gate is removed and `@guard.output` decorates like the others with no other SDK change.
+
 ```python
 # AFTER — the agent's drafted reply is checked for exfil/DLP before it is returned.
 @guard.output(name="compose_reply")            # phase="output"; content_text = the emitted reply
