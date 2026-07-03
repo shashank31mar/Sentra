@@ -1,17 +1,28 @@
-# WS-A / lld/36 — Approved plan (Gate-3, 2026-07-03)
+# WS-A (caching) / lld/37 — Approved plan (Gate-3, 2026-07-03) — DEFERRED
 
-> Founder-approved outline + locked decisions for `lld/36-local-floor-signed-bundle.md`.
+> Founder-approved outline + locked decisions for `lld/37-local-floor-caching.md`.
 > This is the input the design-loop BUILD phase writes from. Canonical order: HLD -> LLD -> tasks.
 > WS-0 is SIGNED (2026-07-02, COMMIT) so the LLD carries NO "do-not-start / spike-gated" language.
-> **Scope decision (founder 2026-07-03): WRITE THE LLD NOW, DEFER THE BUILD.** The LLD is the
-> deliverable this pass; it must split P1-core vs P2-hardening and state that the BUILD is a
-> SEPARATE gate, reasonably sequenced behind WS-F/G/H (no fail-open risk in deferring; the floor's
-> Serverless win is benign-reads + availability, not the money-movement path which routes to in-VPC).
+>
+> **WS-A SPLIT (founder 2026-07-03):** WS-A was one monolith. It is now two LLDs:
+> - **lld/36 (SHIP-NOW):** release the SDK with all merged changes + a no-op `local_floor_enabled`
+>   SEAM (off = route to hosted = today). No caching, no crypto. Buildable now, unblocks dependents.
+>   Plan: `tasks/serverless-edition/ws-a-sdk-release-plan.md`.
+> - **lld/37 (THIS doc, DEFERRED):** the caching that FILLS lld/36's seam — the closed-subset
+>   interpreter + signed-bundle client + staleness/epoch/anti-rollback + crypto `[local-floor]` extra
+>   + durable meter journal.
+>
+> **Scope decision: WRITE THE LLD NOW, DEFER THE BUILD.** The LLD is the deliverable this pass; it must
+> split P1-core vs P2-hardening and state the BUILD is a SEPARATE gate, reasonably sequenced behind
+> WS-F/G/H (no fail-open risk in deferring; the floor's Serverless win is benign-reads + availability,
+> not the money-movement path which routes to in-VPC). **lld/37 is written AFTER lld/36 lands** so it
+> binds to lld/36's frozen seam (the verdict enum + hook signature + `local_floor_enabled` flag).
 
 ## Ownership boundary (one line)
-WS-A / lld/36 owns the **SDK-side INTERPRETER + bundle-client + signing-key VERIFY/lifecycle side + the
-edge meter journal**. lld/28 (WS-I) owns the **emitter + allowlist compiler + corpus oracle**. WS-J owns
-the **differential GATING RUNNER**. WS-H owns the **hosted durable meter ledger** WS-A's journal flushes into.
+lld/37 owns the **SDK-side INTERPRETER + bundle-client + signing-key VERIFY/lifecycle side + the
+edge meter journal** — the code that FILLS lld/36's no-op seam. lld/28 (WS-I) owns the **emitter +
+allowlist compiler + corpus oracle**. WS-J owns the **differential GATING RUNNER**. WS-H owns the
+**hosted durable meter ledger** lld/37's journal flushes into.
 
 ## LOCKED DECISIONS (founder-ratified — the LLD states these as decided, does not re-open)
 
