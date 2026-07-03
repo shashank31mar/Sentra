@@ -18,7 +18,7 @@ Public surface (the contract WS-L populates with D1–D7 nodes):
 from __future__ import annotations
 
 from app.services.scheduler.node import CostTier, ValidatorNode
-from app.services.scheduler.registry import build_dag
+from app.services.scheduler.registry import assert_registration_complete, build_dag
 from app.services.scheduler.run import run_dag
 
 __all__ = [
@@ -26,4 +26,5 @@ __all__ = [
     "ValidatorNode",
     "build_dag",
     "run_dag",
+    "assert_registration_complete",
 ]

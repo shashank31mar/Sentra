@@ -307,6 +307,14 @@ class ValidationService:
         # logs surface "validator present, flag off" instead of "validator missing".
         self.ml_classifier = MLClassifierValidator()  # WS19 ✅
 
+        # WS-L M6 — the distilled front-runner (LLD 32 §4.1, FR-3.12). The LIVE
+        # cheap tier-1 chain-HEAD in front of the Haiku ML classifier; a confident
+        # verdict short-circuits Haiku (intrinsic, no shadow). Until the real §8
+        # artifact swaps in behind this interface, `classify` returns an interim
+        # escalate verdict so Haiku still runs (T-EQUIV).
+        from app.validators.distilled_classifier import DistilledClassifier
+        self.distilled_classifier = DistilledClassifier()  # WS-L M6 ✅
+
         # Cedar policy engine (feature: cedar-policy). Constructed only when
         # enabled; it reuses self.policy_engine for binding resolution + cloud
         # stamping. In shadow mode it runs alongside the legacy engine at STEP 2
@@ -631,12 +639,79 @@ class ValidationService:
         async def _timed_node(label: str, coro):
             # Per-node timing preserved so validation.timing still emits the
             # per-validator ms breakdown (LLD 24 M1 / LLD 31 §6.6).
-            return await _timed(label, coro)
+            #
+            # WS-L M1.6/M5.1 (LLD 32 §14.1) — also emit the per-detector-node
+            # CloudWatch metric from this seam, keyed on the node source (`label`
+            # IS the dotted `node.source` at the run_dag call site) + phase. It is
+            # fire-and-forget OFF the response path — a metrics failure must never
+            # change or delay a verdict, so it is wrapped in _fire_and_forget and
+            # its own guard (publish_node_metrics swallows every exception).
+            t = time.perf_counter()
+            result = await _timed(label, coro)
+            try:
+                latency_ms = round((time.perf_counter() - t) * 1000, 2)
+                decision = "ABSTAIN" if getattr(result, "is_abstain", False) else (
+                    getattr(result, "decision", None) or "UNKNOWN"
+                )
+                _fire_and_forget(
+                    self.metrics_publisher.publish_node_metrics(
+                        node_source=label, phase=phase,
+                        decision=decision, latency_ms=latency_ms,
+                    ),
+                    "node_metrics",
+                )
+            except Exception:  # noqa: BLE001 — telemetry never blocks a verdict
+                logger.debug("node-metric emit skipped for %s", label, exc_info=True)
+            return result
+
+        # Per-phase node selection. WS-A adds the FR-3.4 `phase` field to
+        # ValidationRequest (default "request"). build_dag is looked up on the
+        # package (not imported by name) so tests can patch the seam.
+        #
+        # FIX-J (WS-L M2.2) — `phase` is HOISTED ABOVE the `_all_allow` closure so
+        # the closure captures a BOUND `phase` (a definition below the closure but
+        # referenced inside it captures the enclosing name; leaving `phase` unbound
+        # at closure-def time raised `UnboundLocalError` at call time on a
+        # content/memory run).
+        phase = getattr(request, "phase", "request") or "request"
+
+        # The content/memory deep-detector source whose CONCRETE verdict makes the
+        # run's ALLOW real (LLD 32 §6.2). `all_allow` is only reached when no node
+        # DENIED; for content/memory we still fail secure UNLESS the deep D-node
+        # actually RAN and voted (a concrete ALLOW signal) — an ABSTAIN (no signal)
+        # means the deep check produced no verdict → fail-secure DENY (invariant 5).
+        _phase_decider_source = {
+            "content": "sentra.indirect_injection",
+            "memory": "sentra.memory",
+        }.get(phase)
 
         def _all_allow() -> ValidationResult:
-            # Reproduces the synthetic ALLOW at the sequential tail, carrying the
-            # policy-sourced cross-cloud fields (was validation_service ALLOW's
-            # platform_from_policy / cloud_region_from_policy).
+            # WS-L M2.2 (FIX-H) — phase-aware no-denier tail. The synthetic ALLOW is
+            # correct for `request` (reproduces the sequential tail, carrying the
+            # policy-sourced cross-cloud fields). For content/memory: an ALLOW is
+            # real ONLY if the deep D-node ran and voted ALLOW (a concrete signal in
+            # `signals`); if the D-node ABSTAINed (emitted no signal), the deep check
+            # produced no verdict → FAIL SECURE `phase_handler_abstain:<phase>`
+            # (there is no synthetic ALLOW tail for a content/memory deep check).
+            if phase in ("content", "memory"):
+                deep_ran = any(
+                    getattr(sig, "source", None) == _phase_decider_source
+                    and getattr(sig, "decision", None) is not None
+                    for sig in signals
+                )
+                if not deep_ran:
+                    return ValidationResult(
+                        decision="DENY",
+                        reason=f"phase_handler_abstain:{phase}",
+                        violation_type="PHASE_ABSTAIN",
+                        should_deny=True,
+                    )
+                # The D-node ran and no denier fired → a real content/memory ALLOW.
+                return ValidationResult(
+                    decision="ALLOW",
+                    reason=f"{phase} checks passed",
+                    should_deny=False,
+                )
             return ValidationResult(
                 decision="ALLOW",
                 reason="All validation checks passed",
@@ -645,11 +720,6 @@ class ValidationService:
                 cloud_region=stamp_ctx.get("cloud_region"),
             )
 
-        # Per-phase node selection (LLD 31 §5.4). WS-A adds the FR-3.4 `phase`
-        # field to ValidationRequest (default "request"); if it has not landed,
-        # degrade to request-only (getattr default). build_dag is looked up on
-        # the package (not imported by name) so tests can patch the seam.
-        phase = getattr(request, "phase", "request") or "request"
         nodes = scheduler_pkg.build_dag(self, phase, stamp_ctx)
         # WS-D / LLD 33 §8.2 (D3.2): high-assurance sources the mode from
         # EVALUATE_ALL (run the whole frontier verdict-neutrally for the trail);

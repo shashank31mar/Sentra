@@ -94,17 +94,28 @@ async def validate_tool_call(request: ValidationRequest, http_request: Request) 
         raise HTTPException(status_code=422, detail=f"unknown phase: {phase}")
 
     # GUARD 2 (only reached with phase IN KNOWN_PHASES):
-    if phase != "request":
-        # content/output/memory: known phase, no live handler yet → fail-secure
-        # DENY (§3.1 right column, tenet 2). WS-L replaces this line with the real
-        # D2/D3/D5 handler when it ships — no contract / endpoint / SDK change.
+    #
+    # WS-L M2.1 (FIX-I / SEC-13) — `content` and `memory` now have LIVE handlers
+    # (D2 / D3), so they FALL THROUGH to the identity gate + pipeline exactly like
+    # `request`. `output` (and any future known-but-unbuilt phase) STAYS on the
+    # fail-secure stub (D5 not built — §8). CRITICAL: content/memory route into the
+    # pipeline BELOW the identity gate (never in place of GUARD 2) — routing a
+    # content/memory call into the D-nodes BEFORE identity resolves would run them
+    # for an unauthenticated caller (elevation-of-privilege). The identity gate below
+    # calls `validation_service.validate_tool_call(request)` on every accept branch;
+    # content/memory ride those same branches, so the D-nodes never run before
+    # identity is resolved.
+    if phase not in ("request", "content", "memory"):   # i.e. "output" today
+        # Known phase, no live handler yet → fail-secure DENY (§3.1 right column,
+        # tenet 2). WS-L replaces this line for D5 when the output handler ships.
         return await _phase_not_implemented_deny(
             request, reason=f"phase_handler_not_implemented:{phase}"
         )
 
-    # phase == "request": fall through to the EXISTING path, byte-for-byte
-    # unchanged — tenant derivation, quota, _run_validation_pipeline (incl. the
-    # FR-2.3 sequence check in context_validator). WS-B adds NOTHING to this branch.
+    # phase in (request, content, memory): fall through to the EXISTING path —
+    # tenant derivation, quota, _run_validation_pipeline. For content/memory the
+    # per-phase build_dag picks the D2/D3 node set; the request path is byte-for-byte
+    # unchanged (WS-B adds NOTHING to it).
 
     # Reuse the process-wide ValidationService built at startup (app/main.py
     # lifespan, LLD 24 / WS24 M2). Per-request construction rebuilt ~10 boto3
