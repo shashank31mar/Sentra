@@ -2,7 +2,7 @@
 
 **Parent HLD**: [hld/serverless-edition.md](../../hld/serverless-edition.md) · **Sub-PRD**: [prd/serverless-edition.md](../../prd/serverless-edition.md)
 **Status**: Approved 2026-06-29 (Gate-3) · **Last Updated**: 2026-07-02
-**Overall**: Planned — 12 workstreams below. WS-0 (the gating spike) is 🟢 **SIGNED 2026-07-02** (packet `9e31dca`; gate date filled) — a/b/c measured on real Bedrock+WAN, both kills adjudicated (neither fires), thresholds pre-registered `28581a2`. **→ WS-A and WS-E decomposition-to-build are now UNBLOCKED.** B/F/G/H/I/K were always start-now. **WS-C, WS-D, WS-E also had their WS-0 gate independently OVERRIDDEN (C 2026-07-01; D 2026-07-02; E 2026-07-01).** **Shipped to `main`:** WS-B (`9a8074a`), WS-C (`720d87a`, deployed), WS-D (`42bcaeb`). First go-live gate = WS-K (FR-10.5 prod TENANCY_V2 activation). **GA positioning ratified at sign-off:** money-movement routes to the in-VPC edition (Serverless deep tier is for non-money-movement / latency-tolerant flows) — the escalated p99 ≈ 3s blows NFR-2.
+**Overall**: Planned — 13 workstreams below (WS-M auth/authz added 2026-07-03 — P0-security, NOT spike-gated, start-now). WS-0 (the gating spike) is 🟢 **SIGNED 2026-07-02** (packet `9e31dca`; gate date filled) — a/b/c measured on real Bedrock+WAN, both kills adjudicated (neither fires), thresholds pre-registered `28581a2`. **→ WS-A and WS-E decomposition-to-build are now UNBLOCKED.** B/F/G/H/I/K were always start-now. **WS-C, WS-D, WS-E also had their WS-0 gate independently OVERRIDDEN (C 2026-07-01; D 2026-07-02; E 2026-07-01).** **Shipped to `main`:** WS-B (`9a8074a`), WS-C (`720d87a`, deployed), WS-D (`42bcaeb`). First go-live gate = WS-K (FR-10.5 prod TENANCY_V2 activation). **GA positioning ratified at sign-off:** money-movement routes to the in-VPC edition (Serverless deep tier is for non-money-movement / latency-tolerant flows) — the escalated p99 ≈ 3s blows NFR-2.
 
 > **Doc-role map (canonical order: HLD → LLD → tasks).** There is **one `ws-*.md` per workstream** here. Its content evolves through the pipeline: it starts as the workstream **SCOPE** (boundary, dependency edges, real `file:line` anchors, footguns, acceptance criteria); once that workstream's **implementation-grade LLD** (`lld/NN-*.md`) is approved, the same `ws-*.md` is **rewritten to carry the granular buildable tasks** generated *from* that LLD (milestones → granular tasks → acceptance-criteria checklist) — the LLD remains the source of truth. So a `ws-*.md` is either *scope-stage* (LLD not yet written) or *tasks-stage* (LLD approved, tasks generated); the "LLD" column below tracks which. LLDs are written **one at a time**, reviewed individually.
 >
@@ -36,6 +36,7 @@
 | **J** | [ws-j-canary-tests.md](ws-j-canary-tests.md) | Canary + e2e test harness spanning all workstreams (continuous green-and-correct gate). | ✍️ scope | ⬜ | no — spans all |
 | **K** | [ws-k-production-activation.md](ws-k-production-activation.md) | FR-10.5 production activation: Cedar-authoritative + TENANCY_V2 enforcing in prod; the first go-live predecessor. | **✅ [lld/27](../../lld/27-serverless-production-activation.md)** | ✅ **done (verification-only, 2026-06-30, live)** — K6 purge deferred per founder; K2.5/K5 N-A | no — start now; **first go-live gate** |
 | **L** | [ws-l-detection-depth.md](ws-l-detection-depth.md) | **Detection depth — ALL IN ONE (FR-3.2/3.5–3.12/3.14/3.15):** D1–D7 layers + the **distilled model (FR-3.12, P0)** + the heavy-tier escalation model + the **offline reclassify-with-heavy-mode / retrain loop (FR-3.14)** + multimodal. Consolidates LLD 19 (models) + LLD 20 (D1–D7) as the Serverless build-of-record; layers register as nodes into WS-C's DAG. | ✍️ scope (→ lld/32) | ⬜ | spike-gated → **needs WS-C's node-registry contract** (author WS-C first) |
+| **M** | [ws-m-authz.md](ws-m-authz.md) | **Auth & authz (control-plane RBAC + anti-IDOR + edge authorizer):** close BUG-1 (policy-CRUD + agent-policy-bind + credential/connection CRUD get `require_role` + anti-IDOR tenant-ownership assert; drop spoofable `X-Operator-Email`) + **platform-operator gate on the `PATCH /sigma-rules` retire path (WS-F merge-gate)**; own `require_role` coverage across all mutating `routes.py` routes; ADR-036 edge authorizer / shared-key replacement; AD-7 GA-gate adjudication. Consumes the ADR-035 seam (does **not** swap the IdP). | ✍️ scope (→ lld/36) | ⬜ | **no — start now (NOT spike-gated); P0-security (BUG-1 live prod IDOR); merge-gate predecessor of WS-F** |
 
 ## Dependency graph
 
@@ -57,6 +58,7 @@ flowchart TD
   D["WS-D decision-trail"]
   E["WS-E redaction (incl P0 server-side PHI)"]
   J["WS-J canary / e2e tests"]
+  M["WS-M auth & authz<br/>(RBAC + anti-IDOR + edge authz)"]
 
   WS0 -->|gates| A
   WS0 -->|gates| E
@@ -64,12 +66,15 @@ flowchart TD
   C --> D
   A -.pairs with.- I
   B -->|feeds| E
+  M -->|merge-gate: sigma platform-authz| F
+  M -.pairs with.- G
   J -.spans all.- WS0
   J -.spans all.- now
   J -.spans all.- A
+  J -.spans all.- M
 ```
 
-Edges: WS-0 **gates** A, E, D · WS-C → WS-D (WS-D rides on WS-C's scheduler) · **WS-C's WS-0 gate is overridden (founder 2026-07-01); it builds now** · WS-A **pairs with** WS-I (bundle-emit ↔ interpreter, shared differential corpus) · WS-B **feeds** WS-E (the `phase` contract carries the content/output phases redaction acts on) · WS-J **spans all** · WS-K is the **prod-activation predecessor** (first go-live gate).
+Edges: WS-0 **gates** A, E, D · WS-C → WS-D (WS-D rides on WS-C's scheduler) · **WS-C's WS-0 gate is overridden (founder 2026-07-01); it builds now** · WS-A **pairs with** WS-I (bundle-emit ↔ interpreter, shared differential corpus) · WS-B **feeds** WS-E (the `phase` contract carries the content/output phases redaction acts on) · **WS-M is the merge-gate predecessor of WS-F** (it lands the platform-operator gate on the `PATCH /sigma-rules` retire path that WS-F's CI assertion requires) and **pairs with WS-G** (WS-M owns the server-side `require_role` boundary; WS-G owns the client render-gate + the ADR-035 federation seam) · WS-J **spans all** · WS-K is the **prod-activation predecessor** (first go-live gate).
 
 ## THE ONE GATING RULE — the measure-first gate (HLD §8)
 
@@ -85,7 +90,7 @@ The gate date is filled → **WS-A and WS-E decomposition-to-build are now UNBLO
 
 ## Build order
 
-1. **Now (parallel):** WS-0 spike **+** WS-B, WS-F, WS-G, WS-H, WS-I, WS-K (none spike-gated) **+ WS-C** (its WS-0 code-merge gate is OVERRIDDEN per the founder 2026-07-01, mirroring WS-E — buildable/mergeable now).
+1. **Now (parallel):** WS-0 spike **+** WS-B, WS-F, WS-G, WS-H, WS-I, WS-K, **WS-M** (none spike-gated; WS-M is P0-security and the WS-F merge-gate predecessor — land its sigma platform-gate before WS-F merges) **+ WS-C** (its WS-0 code-merge gate is OVERRIDDEN per the founder 2026-07-01, mirroring WS-E — buildable/mergeable now).
 2. **✅ Spike packet SIGNED 2026-07-02 (gate date filled) → WS-A and WS-E are now OPEN for decomposition-to-build.** (WS-C/WS-D never waited on this — overridden.)
 3. **After WS-C:** WS-D (decision-trail rides the scheduler; WS-D itself stays WS-0-gated).
 4. **Throughout:** WS-J (canary/e2e) runs continuously across every workstream.
@@ -101,7 +106,7 @@ The gate date is filled → **WS-A and WS-E decomposition-to-build are now UNBLO
 - **Each WS's next step is an implementation-grade LLD** (per the HLD §8 anchor-LLD column) — not direct coding. `plan-workstreams`/`write-lld` start from the approved HLD option and do not re-litigate it.
 
 ## Cross-references
-- Implements: FR-1.7, FR-2.8, FR-3.4, FR-3.13, FR-6.4, FR-6.8, FR-10.5, NFR-10 (sub-PRD)
-- Upstream: [hld/serverless-edition.md](../../hld/serverless-edition.md) §6 (the four benders + redaction + console + metering + Cedar mode), §8 (LLD hand-off), §6.4 (the measure-first / combined GA-gate)
-- Decisions: ADR-029 (local-floor bundle), ADR-030 (DAG scheduler), ADR-031 (record-what-ran decision-trail), ADR-032 (two-tier redactor), AD-2 (Cedar), AD-3 (phase contract), AD-6 (editions/data-boundary), AD-7 (verified identity / TENANCY_V2)
+- Implements: FR-1.7, FR-2.8, FR-3.4, FR-3.13, FR-6.4, FR-6.8, FR-10.1, FR-10.5, FR-13.1, FR-13.3, NFR-10 (sub-PRD)
+- Upstream: [hld/serverless-edition.md](../../hld/serverless-edition.md) §6 (the four benders + redaction + console + metering + Cedar mode + §6.2(f)/§6.3 auth), §8 (LLD hand-off), §6.4 (the measure-first / combined GA-gate)
+- Decisions: ADR-029 (local-floor bundle), ADR-030 (DAG scheduler), ADR-031 (record-what-ran decision-trail), ADR-032 (two-tier redactor), ADR-034 (non-disableable floor → sigma retire = platform-authz), ADR-035 (console federation seam), **ADR-036 (WS-M — edge authorizer / shared-key replacement)**, AD-2 (Cedar), AD-3 (phase contract), AD-6 (editions/data-boundary), AD-7 (verified identity / TENANCY_V2), AD-8 / ADR-019 (console RBAC)
 - Shared contracts: `POST /v1/validate`, signed policy bundle + stdlib interpreter subset, deny-overrides combiner; **decision-trail (WS-D, [lld/33](../../lld/33-decision-trail.md)):** `GET /v1/sessions/{session_id}/trail?request_id=…` read endpoint · `NotRunMarker` record type (`record_type ∈ {not_run,abstain,error}`, no `decision`) · `SignalStoreWriter.write_not_run_markers`/`_build_marker_item` · `phase` shared attribute on ran+marker rows · `_fail_secure_deny` `source=Source.SENTRA_POLICY` stamp + frozen `winning_source=sentra.policy` `POLICY_NOT_MIGRATED` baseline (shared w/ WS-C) · `STEP_LABEL_TO_SOURCE` + `STATIC_FALLBACK_ORDER` + `SOURCE_DISPLAY_NAMES` + `STATE_DISPLAY_NAMES` (in `combiners/sources.py`) · `TrailPersistFailures` metric. **WS-C→WS-D seams owed in lld/31:** pure `coverage_sources(phase)` accessor + per-request `mode` seam.
