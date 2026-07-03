@@ -653,3 +653,54 @@ class MetricsPublisher:
         except Exception as e:
             logger.exception(f"Failed to publish policy validation metric (non-blocking): {e}")
             # Don't raise - metrics publishing should not block operations
+
+    async def publish_node_metrics(
+        self,
+        node_source: str,
+        phase: str,
+        decision: str,
+        latency_ms: float,
+    ):
+        """WS-L M1.6 (LLD 32 §14.1) — per-detector-node latency + decision count.
+
+        Keyed on `node_source` (the dotted `Source.*` string) + `phase` dimensions,
+        modeled on `publish_cedar_shadow_metric`. Emits `NodeLatencyMs` (per-node
+        latency) + `NodeDecision` (an ALLOW/DENY/ABSTAIN count) so §14's per-detector
+        latency (p50/p95/p99) + decision-count families are computable.
+
+        Fire-and-forget, self-guarding: it is emitted from the scheduler's
+        `timed(node.source, …)` seam OFF the response path, so a metrics failure
+        must NEVER change or delay a verdict (mirror the best-effort pattern used
+        elsewhere — swallow every exception, never re-raise into the verdict path).
+        """
+        try:
+            self.cloudwatch.put_metric_data(
+                Namespace=self.namespace,
+                MetricData=[
+                    {
+                        'MetricName': 'NodeLatencyMs',
+                        'Value': latency_ms,
+                        'Unit': 'Milliseconds',
+                        'Dimensions': [
+                            {'Name': 'node_source', 'Value': node_source},
+                            {'Name': 'phase', 'Value': phase},
+                        ],
+                    },
+                    {
+                        'MetricName': 'NodeDecision',
+                        'Value': 1,
+                        'Unit': 'Count',
+                        'Dimensions': [
+                            {'Name': 'node_source', 'Value': node_source},
+                            {'Name': 'phase', 'Value': phase},
+                            {'Name': 'decision', 'Value': decision},
+                        ],
+                    },
+                ],
+            )
+            logger.debug(
+                "Published node metrics source=%s phase=%s decision=%s",
+                node_source, phase, decision,
+            )
+        except Exception as e:  # noqa: BLE001 — off the response path; never blocks a verdict
+            logger.warning("Failed to publish node metrics (non-blocking): %s", e)

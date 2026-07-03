@@ -28,6 +28,26 @@ class Source:
     SENTRA_CROSS_AGENT: Final[str] = "sentra.cross_agent"
     SENTRA_COMBINED: Final[str] = "sentra.combined"
 
+    # WS-L / LLD 32 §9.1 — the detection-depth signal taxonomy (the 8+1). ALL ten
+    # are registered here even though only trajectory (D1) / indirect_injection
+    # (D2) / memory (D3) + distilled get a NODE in this workstream — the rest are
+    # SCAFFOLD (D4-D8 node logic is NOT built; see the WS-L §8 blocker table). The
+    # constants persist in the DDB audit + are read by the SOC console
+    # `winning_source`, so they carry the `SENTRA_*` prefix (LLD 32 C5 — a
+    # deliberate divergence from LLD 31 §5's "no new sentra-prefixed identifier"
+    # rule; they join LLD 31 §16's rename backlog, do NOT rename them here).
+    # Distilled is a DISTINCT producer — never reuse SENTRA_ML_CLASSIFIER.
+    SENTRA_TRAJECTORY: Final[str] = "sentra.trajectory"          # D1 (built M4)
+    SENTRA_INDIRECT: Final[str] = "sentra.indirect_injection"    # D2 (built M2)
+    SENTRA_MEMORY: Final[str] = "sentra.memory"                  # D3 (built M3)
+    SENTRA_TAINT: Final[str] = "sentra.taint"                    # D4 (NOT built)
+    SENTRA_OUTPUT_DLP: Final[str] = "sentra.output_dlp"          # D5 (NOT built)
+    SENTRA_NETWORK: Final[str] = "sentra.network"               # D6 (NOT built)
+    SENTRA_EGRESS: Final[str] = "sentra.egress"                 # D6 (NOT built)
+    SENTRA_PROVENANCE: Final[str] = "sentra.provenance"        # D7 (NOT built)
+    SENTRA_ANOMALY: Final[str] = "sentra.anomaly"              # D8 (NOT built)
+    SENTRA_DISTILLED: Final[str] = "sentra.distilled"          # distilled model (M6, LIVE)
+
     # Tier-2 free-text PHI redaction barrier node (WS-E2 / LLD 29 §4.1, F1).
     # DELIBERATELY a NON-`sentra` name (LLD 31 line-185 standing rule: zero new
     # `sentra`-prefixed identifiers). The node redacts `content_text` in place and
@@ -65,6 +85,24 @@ DEFAULT_PRIORITIES: dict[str, int] = {
     Source.SENTRA_CROSS_AGENT: 50,
     Source.BEDROCK_GUARDRAIL: 40,
     Source.AZURE_CONTENT_FILTER: 40,
+    # WS-L / LLD 32 §9.2 — the detection-depth priorities (additive; higher =
+    # stronger, LLD 20 §11 convention). NO existing value above moves and the
+    # tie-break order is unchanged (invariant 7 / WS-C T-COMBINER-CLEAN) — every
+    # new entry slots BETWEEN existing values, never on one. Only trajectory (68),
+    # indirect (62), memory (58), and distilled (66) have a NODE this WS; the D4-D8
+    # entries are scaffold so a future D-node inherits its priority (the add-a-node
+    # recipe, WS-L §9). `default_priority()` still returns 0 for an unknown source —
+    # these entries merely mean these ten are no longer unknown.
+    Source.SENTRA_NETWORK: 85,      # D6 (NOT built)
+    Source.SENTRA_TAINT: 78,        # D4 (NOT built)
+    Source.SENTRA_EGRESS: 77,       # D6 (NOT built)
+    Source.SENTRA_PROVENANCE: 75,   # D7 (NOT built)
+    Source.SENTRA_TRAJECTORY: 68,   # D1 — below sigma 70, above ml 65
+    Source.SENTRA_DISTILLED: 66,    # distilled — above ml 65, below sigma 70
+    Source.SENTRA_OUTPUT_DLP: 63,   # D5 (NOT built)
+    Source.SENTRA_INDIRECT: 62,     # D2
+    Source.SENTRA_MEMORY: 58,       # D3
+    Source.SENTRA_ANOMALY: 55,      # D8 (NOT built)
     # The redaction barrier never votes on the verdict (ALLOW/ABSTAIN only), so its
     # priority is not used to rank a DENY. Registered at 0 explicitly so the source
     # is a KNOWN taxonomy entry for the WS-D trail join (LLD 29 §4.1 FOOTGUN 2) —
@@ -100,6 +138,16 @@ STEP_LABEL_TO_SOURCE: dict[str, str] = {
     "context": Source.SENTRA_CONTEXT,
     "abuse": Source.SENTRA_ABUSE,
     "ml": Source.SENTRA_ML_CLASSIFIER,
+    # WS-L (FIX-K / LLD 33 T-TRAIL-14(a), invariant #8a) — the two LIVE request-
+    # phase D-nodes WS-L adds. The scheduler keys `_step_timings` by the DOTTED
+    # `node.source` (run.py `timed(node.source, …)`), so these rows key on the
+    # dotted source and map it TO ITSELF — unlike the existing SHORT-label rows
+    # (`"ml"→sentra.ml_classifier`). Both are added in the SAME PR as their node +
+    # their STATIC_FALLBACK_ORDER + _ORDER entries so the trail drift-guard's
+    # triple-equality (set(STATIC_FALLBACK_ORDER) == set(_ORDER) ==
+    # set(STEP_LABEL_TO_SOURCE.values())) stays green.
+    Source.SENTRA_TRAJECTORY: Source.SENTRA_TRAJECTORY,   # D1 (M4)
+    Source.SENTRA_DISTILLED: Source.SENTRA_DISTILLED,     # distilled (M6)
 }
 # DELIBERATELY UNMAPPED (plumbing, NOT detectors): session, pipeline, handle,
 # abuse_policy_load, policy_fallback. `policy_fallback` is the legacy re-run after
@@ -118,6 +166,17 @@ STATIC_FALLBACK_ORDER: list[str] = [
     Source.SENTRA_CONTEXT,
     Source.SENTRA_ABUSE,
     Source.SENTRA_ML_CLASSIFIER,
+    # WS-L (FIX-K / LLD 33 T-TRAIL-14(a)) — the two LIVE request-phase D-nodes.
+    # ONLY request-phase sources that ACTUALLY EMIT a Signal on every floor-
+    # survivor go here (invariant 8): sentra.trajectory (D1, M4) and
+    # sentra.distilled (M6, LIVE front-runner) both emit on every survivor.
+    # D2/D3 are content/memory-phase → they are NEVER in this request-phase list
+    # (LLD 32 §9.4). D4/D6/D7/D8 get SOURCE_DISPLAY_NAMES labels only, NOT a
+    # fallback-order entry, until their node emits. `set(STATIC_FALLBACK_ORDER)`
+    # must equal the emitted request-phase set == set(_ORDER) ==
+    # set(STEP_LABEL_TO_SOURCE.values()) (the trail drift-guard triple-equality).
+    Source.SENTRA_DISTILLED,
+    Source.SENTRA_TRAJECTORY,
 ]
 
 # Raw source → human label (§9A.2.2). The raw source string stays the join key
@@ -135,6 +194,25 @@ SOURCE_DISPLAY_NAMES: dict[str, str] = {
     Source.SENTRA_CONTEXT: "Context integrity",
     Source.SENTRA_ABUSE: "Abuse / rate",
     Source.SENTRA_CROSS_AGENT: "Cross-agent",
+    # WS-L / LLD 32 §9.3 — human labels for all ten new sources. Labels are
+    # display-only (never a join key), so it is safe to add all ten even though
+    # most (D4-D8) have no node yet — an un-labelled source just renders as its
+    # raw string via `.get(source, source)`.
+    Source.SENTRA_TRAJECTORY: "Conversation trajectory",
+    Source.SENTRA_INDIRECT: "Indirect injection",
+    Source.SENTRA_MEMORY: "Memory integrity",
+    Source.SENTRA_TAINT: "Taint flow",
+    Source.SENTRA_OUTPUT_DLP: "Output DLP",
+    Source.SENTRA_NETWORK: "Network firewall",
+    Source.SENTRA_EGRESS: "Egress reputation",
+    Source.SENTRA_PROVENANCE: "Provenance",
+    Source.SENTRA_ANOMALY: "Anomaly",
+    Source.SENTRA_DISTILLED: "Distilled classifier",
+    # The Tier-2 NER redaction barrier is a REGISTERED source (the trail joins on
+    # it) — give it a display label too so the WS-L boot registration-completeness
+    # assertion (SEC-5) passes for the content/memory node sets it appears in. It
+    # never votes on a verdict (priority 0), the label is display-only.
+    Source.REDACTION_NER: "PHI redaction (NER)",
 }
 
 # Raw state → human label (§9A.2.2). The raw `state` stays the four-bucket

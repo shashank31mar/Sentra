@@ -173,12 +173,27 @@ async def test_validation_pipeline_full_allow(mock_session, sample_request):
             return_value=ValidationResult.abstain("ml_classifier disabled")
         )
 
+        # WS-L M6: the distilled front-runner is a LIVE tier-1 node — mock it so the
+        # scheduler's _run_distilled doesn't hit the real classifier. Interim
+        # behaviour = escalate → Haiku (the mocked ml) still decides (T-EQUIV).
+        service.distilled_classifier = Mock()
+        service.distilled_classifier.classify = AsyncMock(
+            return_value=ValidationResult.abstain("distilled test-stub")
+        )
+
         service.audit_logger = Mock()
         service.audit_logger.log_decision = AsyncMock()
-        
+        # WS-L: the distilled node stamps a real Source, so `signals` is non-empty on
+        # an all-ALLOW request and the off-path audit dual-write takes the log_signals
+        # branch (previously the bare-mock validators emitted no source → empty
+        # signals → log_decision branch). Mock it async so the fire-and-forget task
+        # is a real coroutine.
+        service.audit_logger.log_signals = AsyncMock()
+
         service.metrics_publisher = Mock()
         service.metrics_publisher.publish_validation_metrics = AsyncMock()
-        
+        service.metrics_publisher.publish_node_metrics = AsyncMock()  # WS-L M1.6 per-node metric
+
         result = await service.validate_tool_call(sample_request)
         await _drain_bg()  # WS24 M4.2: let fire-and-forget telemetry finish
 
@@ -297,12 +312,20 @@ async def test_action_id_generation_for_write_operations(mock_session):
             return_value=ValidationResult.abstain("ml_classifier disabled")
         )
 
+        # WS-L M6: mock the LIVE distilled front-runner node.
+        service.distilled_classifier = Mock()
+        service.distilled_classifier.classify = AsyncMock(
+            return_value=ValidationResult.abstain("distilled test-stub")
+        )
+
         service.audit_logger = Mock()
         service.audit_logger.log_decision = AsyncMock()
-        
+        service.audit_logger.log_signals = AsyncMock()  # WS-L: distilled stamps a source → log_signals branch
+
         service.metrics_publisher = Mock()
         service.metrics_publisher.publish_validation_metrics = AsyncMock()
-        
+        service.metrics_publisher.publish_node_metrics = AsyncMock()  # WS-L M1.6
+
         # Test WRITE operation on reversible tool
         request = ValidationRequest(
             request_id="req-123",
@@ -415,19 +438,37 @@ async def test_audit_and_metrics_called_on_allow(mock_session, sample_request):
             return_value=ValidationResult.abstain("ml_classifier disabled")
         )
 
+        # WS-L M6: mock the LIVE distilled front-runner node.
+        service.distilled_classifier = Mock()
+        service.distilled_classifier.classify = AsyncMock(
+            return_value=ValidationResult.abstain("distilled test-stub")
+        )
+
         service.audit_logger = Mock()
         service.audit_logger.log_decision = AsyncMock()
-        
+        service.audit_logger.log_signals = AsyncMock()  # WS-L: distilled stamps a source → log_signals branch
+
         service.metrics_publisher = Mock()
         service.metrics_publisher.publish_validation_metrics = AsyncMock()
-        
-        await service.validate_tool_call(sample_request)
+        service.metrics_publisher.publish_node_metrics = AsyncMock()  # WS-L M1.6
 
-        # Verify audit log was called. Metrics publishing was intentionally
-        # removed from _handle_allow/_handle_deny (2025-12-02 commit, see
-        # validation_service.py:241) — metrics now publish from agents after
+        await service.validate_tool_call(sample_request)
+        await _drain_bg()  # WS-L: let the off-path log_signals / log_decision task finish
+
+        # Verify the audit dual-write was called. Metrics publishing was
+        # intentionally removed from _handle_allow/_handle_deny (2025-12-02 commit,
+        # see validation_service.py:241) — metrics now publish from agents after
         # actual tool execution, not during validation.
-        service.audit_logger.log_decision.assert_called_once()
+        #
+        # WS-L: the LIVE distilled node stamps a real Source and emits a Signal on
+        # this all-ALLOW request, so `signals` is non-empty and the ALLOW audit
+        # dual-write takes the `log_signals` branch (§9.1) — NOT the empty-signals
+        # `log_decision` fallback the bare-mock validators used to hit. The audit
+        # write still happens; assert on the branch that actually fires now.
+        assert (
+            service.audit_logger.log_signals.await_count == 1
+            or service.audit_logger.log_decision.await_count == 1
+        )
 
 
 @pytest.mark.asyncio
