@@ -272,12 +272,21 @@ class AegionGuard:
         """
         from .exceptions import FeatureNotAvailable
 
-        def _decoration_gate(fn: F) -> F:
-            raise FeatureNotAvailable(
-                "@guard.output: the output phase is not yet enforced (WS-L D5 "
-                "unbuilt); do not wire it to a production path — use @guard.tool "
-                "for action validation"
-            )
+        _msg = (
+            "@guard.output: the output phase is not yet enforced (WS-L D5 "
+            "unbuilt); do not wire it to a production path — use @guard.tool "
+            "for action validation"
+        )
+        # Bare `@guard.output` (no parens — the form this docstring advertises) calls
+        # output(fn), binding the target function to `name`. Raise HERE so the bare
+        # form fails fast at decoration too; otherwise it would return the un-called
+        # gate and SILENTLY replace the user's function with a broken stub (a cryptic
+        # TypeError only at call-time, never the intended FeatureNotAvailable).
+        if callable(name):
+            raise FeatureNotAvailable(_msg)
+
+        def _decoration_gate(fn: F) -> F:   # parens form `@guard.output()` raises on application
+            raise FeatureNotAvailable(_msg)
 
         return _decoration_gate
 

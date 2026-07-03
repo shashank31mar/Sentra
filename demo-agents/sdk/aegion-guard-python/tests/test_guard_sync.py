@@ -290,6 +290,34 @@ def test_output_decorator_fails_fast(make_guard):
     assert callable(do_action) and callable(ingest) and callable(remember)
 
 
+def test_output_decorator_fails_fast_bare_form(make_guard):
+    """A4.1 (code-review MEDIUM close): the BARE `@guard.output` form (no parens —
+    the exact form the docstring advertises) must ALSO raise FeatureNotAvailable at
+    decoration, not silently replace the function with a broken gate stub.
+
+    Bare `@guard.output` calls `output(fn)`, binding the target function to `name`.
+    Before the fix, `output()` returned the un-called `_decoration_gate`, so the
+    decorated name became that gate object — no FeatureNotAvailable, and calling it
+    raised a cryptic TypeError instead. The `if callable(name): raise` guard closes it.
+
+    Non-vacuous: revert the callable(name) guard and the bare form decorates to a
+    stub without raising — `pytest.raises` fails."""
+    from aegion_guard import FeatureNotAvailable
+
+    guard = make_guard()
+
+    # BARE form (no parens) must raise at decoration.
+    with pytest.raises(FeatureNotAvailable) as exc:
+        @guard.output
+        def emit_bare(payload):
+            return payload
+    assert "output" in str(exc.value) and "not yet enforced" in str(exc.value)
+
+    # Directly calling output(fn) with a callable first arg raises too (the guard).
+    with pytest.raises(FeatureNotAvailable):
+        guard.output(lambda payload: payload)
+
+
 def test_output_gate_raise_is_at_application_not_factory_call(make_guard):
     """A4.1 nuance (integration-sentinel FIX-B, LOW gap): the gate raises inside the
     RETURNED decorator closure, so the FeatureNotAvailable fires when the decorator
