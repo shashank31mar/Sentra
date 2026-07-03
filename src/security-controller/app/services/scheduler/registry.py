@@ -173,7 +173,21 @@ def build_dag(service, phase: str, stamp_ctx: Dict) -> List[ValidatorNode]:
                 service.distilled_classifier.classify(req),
                 timeout=settings.distilled_timeout_ms / 1000,
             )
-            return result
+            # M6.2 (integration-sentinel FIX-B HIGH) — a CONFIDENT distilled verdict
+            # SHORT-CIRCUITS Haiku (`_run_ml` abstains for it below). For that to be
+            # SOUND, a confident distilled DENY must be able to DECIDE the verdict:
+            # `run_dag` only lets a tier-1 DENY block if it asserted enforce-mode
+            # (`_is_hard_deny` -> `metadata["enforce"] is True`, run.py:80). Without
+            # this stamp a confident MALICIOUS distilled DENY would suppress Haiku AND
+            # then fall through to all_allow()=ALLOW (blocking nothing while ALSO
+            # having disabled Haiku — strictly worse than not short-circuiting). Stamp
+            # enforce=True on EXACTLY the confident-DENY the short-circuit fires for,
+            # via the SAME `_is_confident_distilled` gate `_run_ml` reads, so "distilled
+            # decides" and "Haiku is skipped" can never disagree. A confident ALLOW,
+            # or a low-confidence / escalate / error verdict, is NOT stamped (an ALLOW
+            # never needs enforce; a non-confident verdict is escalated to Haiku, which
+            # decides). Mirrors `_apply_ml_enforce_wrapper` / `_apply_enforce_if`.
+            return _apply_distilled_enforce(result)
         except Exception as exc:  # noqa: BLE001 — timeout/4XX/5XX → escalate to Haiku (fail-secure)
             logger.warning("distilled classify failed; escalating to Haiku: %s", exc)
             return ValidationResult(
@@ -195,13 +209,14 @@ def build_dag(service, phase: str, stamp_ctx: Dict) -> List[ValidatorNode]:
         # threshold — NOT ml_confidence_trust_threshold; FIX-A3). A confident
         # distilled verdict skips Haiku entirely — this node abstains so it emits no
         # signal, and the distilled node's own captured verdict (ALLOW or DENY) is
-        # what the combiner sees. Read `sess[SENTRA_DISTILLED]`, never re-invoke the
-        # classifier (double-run + breaks the single-awaitable contract).
+        # what the combiner sees (a confident DENY was enforce-stamped in
+        # `_run_distilled` so it can DECIDE — the SAME `_is_confident_distilled` gate
+        # is used on both sides so "distilled decides" and "Haiku is skipped" never
+        # disagree; integration-sentinel FIX-B HIGH). Read `sess[SENTRA_DISTILLED]`,
+        # never re-invoke the classifier (double-run + breaks the single-awaitable
+        # contract).
         distilled = sess.get(Source.SENTRA_DISTILLED)
-        if (distilled is not None
-                and not (distilled.metadata or {}).get("escalate")
-                and distilled.confidence is not None
-                and distilled.confidence >= settings.distilled_confidence_trust_threshold):
+        if _is_confident_distilled(distilled):
             return ValidationResult.abstain("distilled_shortcircuit")
 
         # else — low-confidence / escalate / error / interim distilled → run Haiku.
@@ -590,6 +605,54 @@ def _apply_ml_enforce_wrapper(result: ValidationResult) -> ValidationResult:
     if result.is_abstain:
         return result
 
+    wrapped = result.model_copy(deep=True)
+    meta = dict(wrapped.metadata or {})
+    meta["enforce"] = True
+    wrapped.metadata = meta
+    return wrapped
+
+
+def _is_confident_distilled(distilled: ValidationResult | None) -> bool:
+    """Does the upstream distilled verdict short-circuit Haiku? — WS-L M6.2 (LLD 32 §4.1).
+
+    The ONE shared gate for the intrinsic short-circuit (integration-sentinel FIX-B
+    HIGH). It is read on BOTH sides so they can never drift:
+      * `_run_ml` — abstains (skips Haiku) exactly when this is True; and
+      * `_run_distilled` — enforce-stamps a DENY exactly when this is True, so the
+        confident DENY can DECIDE (`_is_hard_deny`) after Haiku is suppressed.
+    A confident verdict = a CONCRETE (non-escalate, non-error) distilled result whose
+    `confidence` meets the distilled OWN trust threshold (NOT `ml_confidence_trust_
+    threshold`; FIX-A3). Guards `metadata` None and `confidence` None (models.py
+    Optional) fail-safe to "NOT confident" → escalate to Haiku.
+    """
+    return bool(
+        distilled is not None
+        and not (distilled.metadata or {}).get("escalate")
+        and distilled.confidence is not None
+        and distilled.confidence >= settings.distilled_confidence_trust_threshold
+    )
+
+
+def _apply_distilled_enforce(result: ValidationResult) -> ValidationResult:
+    """Enforce-stamp a CONFIDENT distilled DENY so it can decide — WS-L M6.2
+    (integration-sentinel FIX-B HIGH).
+
+    The distilled short-circuit suppresses Haiku for a confident verdict
+    (`_run_ml`). For that to be sound a confident distilled DENY must be able to
+    BLOCK: `run_dag` only lets a tier-1 DENY decide when it asserted enforce-mode
+    (`metadata["enforce"] is True`, `_is_hard_deny`). This stamps `enforce=True` on
+    EXACTLY the verdict the short-circuit fires for (the SAME `_is_confident_distilled`
+    gate `_run_ml` reads), and ONLY when it is a DENY:
+      * a confident ALLOW never needs the stamp (an ALLOW cannot be a hard-DENY);
+      * a low-confidence / escalate / error verdict is NOT confident → Haiku runs and
+        decides, so stamping would be wrong (it would let a non-confident distilled
+        DENY block despite Haiku being the intended decider). Left un-stamped it is
+        captured ADVISORY (non-deciding) — fail-safe under-block, never surprise-block
+        (same posture as `_apply_enforce_if` / `_is_hard_deny`).
+    Copied before mutation so the classifier's returned object is not aliased.
+    """
+    if not (result.should_deny and _is_confident_distilled(result)):
+        return result
     wrapped = result.model_copy(deep=True)
     meta = dict(wrapped.metadata or {})
     meta["enforce"] = True

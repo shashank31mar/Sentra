@@ -166,6 +166,114 @@ async def test_confident_distilled_shortcircuits_haiku():
 
 
 @pytest.mark.asyncio
+async def test_confident_distilled_deny_is_enforce_stamped():
+    """integration-sentinel FIX-B HIGH — a CONFIDENT distilled DENY returned by the
+    `_run_distilled` NODE carries metadata['enforce']=True, so `_is_hard_deny` lets it
+    DECIDE the verdict after it short-circuits Haiku. Before the fix the DENY was never
+    enforce-stamped → excluded from hard_denies → run_dag fell through to ALLOW (blocked
+    nothing while ALSO disabling Haiku). A confident ALLOW is NOT stamped."""
+    from app.services.scheduler.run import _is_hard_deny
+
+    class _ConfidentDeny:
+        async def classify(self, req):
+            return ValidationResult(
+                decision="DENY", reason="distilled: malicious", should_deny=True,
+                confidence=0.95, source=Source.SENTRA_DISTILLED, metadata={})
+
+    svc = _svc(distilled=_ConfidentDeny())
+    node = next(n for n in build_dag(svc, "request", {"platform": None, "cloud_region": None})
+                if n.source == Source.SENTRA_DISTILLED)
+    result = await node.run(_req(), {})
+    assert result.should_deny is True
+    assert (result.metadata or {}).get("enforce") is True
+    assert _is_hard_deny(result) is True, "a confident distilled DENY must be able to decide"
+
+    # A confident ALLOW is not enforce-stamped (an ALLOW is never a hard-DENY).
+    class _ConfidentAllow:
+        async def classify(self, req):
+            return ValidationResult(
+                decision="ALLOW", reason="distilled: clean", should_deny=False,
+                confidence=0.95, source=Source.SENTRA_DISTILLED, metadata={})
+
+    svc2 = _svc(distilled=_ConfidentAllow())
+    node2 = next(n for n in build_dag(svc2, "request", {"platform": None, "cloud_region": None})
+                 if n.source == Source.SENTRA_DISTILLED)
+    allow = await node2.run(_req(), {})
+    assert allow.should_deny is False
+    assert (allow.metadata or {}).get("enforce") is not True
+
+
+@pytest.mark.asyncio
+async def test_lowconf_distilled_deny_not_enforce_stamped():
+    """A LOW-confidence distilled DENY (below the distilled threshold) is NOT
+    enforce-stamped: it does not short-circuit Haiku, so Haiku is the intended
+    decider and a non-confident distilled DENY must stay advisory (fail-safe
+    under-block, never surprise-block)."""
+    from app.services.scheduler.run import _is_hard_deny
+
+    class _LowConfDeny:
+        async def classify(self, req):
+            return ValidationResult(
+                decision="DENY", reason="distilled: maybe", should_deny=True,
+                confidence=0.4, source=Source.SENTRA_DISTILLED, metadata={})
+
+    svc = _svc(distilled=_LowConfDeny())
+    node = next(n for n in build_dag(svc, "request", {"platform": None, "cloud_region": None})
+                if n.source == Source.SENTRA_DISTILLED)
+    result = await node.run(_req(), {})
+    assert result.should_deny is True
+    assert (result.metadata or {}).get("enforce") is not True
+    assert _is_hard_deny(result) is False
+
+
+@pytest.mark.asyncio
+async def test_confident_distilled_deny_blocks_full_pipeline():
+    """integration-sentinel FIX-B HIGH (the end-to-end repro) — a CONFIDENT distilled
+    DENY drives the FULL pipeline to a blocking DENY verdict with winning_source =
+    sentra.distilled, AND Haiku (ml_classifier.validate) is NOT called. Before the fix
+    this trajectory returned ALLOW (all_allow fall-through) while having suppressed
+    Haiku — strictly worse than not short-circuiting."""
+    from app.services.validation_service import ValidationService
+
+    class _ConfidentDeny:
+        async def classify(self, req):
+            return ValidationResult(
+                decision="DENY", reason="distilled: injection detected", should_deny=True,
+                confidence=0.97, source=Source.SENTRA_DISTILLED, metadata={})
+
+    with patch.object(ValidationService, "__init__", lambda self: None):
+        svc = ValidationService()
+    svc.cedar_engine = None
+    allow = ValidationResult(decision="ALLOW", reason="ok", should_deny=False)
+    svc.trust_checker = Mock(); svc.trust_checker.check = AsyncMock(return_value=allow)
+    svc.policy_engine = Mock()
+    svc.policy_engine.validate = AsyncMock(return_value=allow)
+    svc.policy_engine.get_agent_policy = AsyncMock(return_value={"rate_limit": 100})
+    svc.policy_engine.get_agent_cloud_identity = Mock(return_value=(None, None))
+    svc.cross_agent_validator = Mock()
+    svc.cross_agent_validator.validate = AsyncMock(return_value=allow)
+    svc.sigma_engine = Mock()
+    svc.sigma_engine.match_rules = AsyncMock(return_value=allow)
+    svc.context_validator = Mock()
+    svc.context_validator.validate_sequence = AsyncMock(return_value=allow)
+    svc.abuse_detector = Mock()
+    svc.abuse_detector.check_rate_limit = AsyncMock(return_value=allow)
+    svc.ml_classifier = Mock()
+    svc.ml_classifier.validate = AsyncMock(return_value=ValidationResult.abstain("off"))
+    svc.distilled_classifier = _ConfidentDeny()
+    svc.metrics_publisher = Mock()
+    svc.metrics_publisher.publish_node_metrics = AsyncMock()
+
+    session = {"session_id": "s", "agent_id": "a", "trust_score": 80.0, "action_count": 1}
+    result, _signals = await svc._run_validation_pipeline(_req(), dict(session))
+
+    assert result.should_deny is True, "a confident distilled DENY must BLOCK the pipeline"
+    assert result.decision == "DENY"
+    assert result.source == Source.SENTRA_DISTILLED
+    svc.ml_classifier.validate.assert_not_called()  # Haiku was short-circuited
+
+
+@pytest.mark.asyncio
 async def test_interim_distilled_runs_haiku():
     """The interim distilled result (escalate True, confidence 0.0) → Haiku runs."""
     svc = _svc()

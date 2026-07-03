@@ -189,24 +189,31 @@ class MemoryWriteValidator:
             return self._deny(f"memory write loosens security: {loosen}")
 
         # 4) tamper-evidence — the MAC is MANDATORY for any write that ASSERTS
-        #    elevated trust (a trusted-label write claiming trust_weight above the
-        #    untrusted cap), never optional. Omitting `mac`/`birth_facts` must NOT
+        #    elevated trust, never optional. Omitting `mac`/`birth_facts` must NOT
         #    skip the integrity gate (that is a fail-open where a poisoning attacker
         #    just drops the field). A write that carries a MAC is always re-verified.
+        #
+        #    A write ASSERTS elevated trust when it claims a trusted PROVENANCE LABEL
+        #    (`source_is_trusted`) — the label IS the elevation claim, and per the
+        #    module note (lines ~68-74) a self-declared label is NOT a proof of trust.
+        #    So the MAC gate keys on `source_is_trusted` ALONE, NOT on
+        #    `trust_weight > cap`: a trusted-label write with `trust_weight` OMITTED
+        #    (or set at/below the cap) would otherwise slip past a `trust_weight > cap`
+        #    gate and self-promote via the label with NO integrity proof
+        #    (integration-sentinel FIX-B MEDIUM — the `trust_weight=None` + trusted-
+        #    label + no-mac bypass). Requiring the MAC on EVERY trusted-labelled write
+        #    forces a poisoning attacker to forge a birth-fact MAC (which the enforce/
+        #    KMS path rejects), closing the bypass. An UNTRUSTED-labelled write is
+        #    already capped in step 2 and cannot self-promote regardless of the MAC, so
+        #    it does not need this gate (a benign inference/tool memory stays MAC-free).
         birth_facts = memory.get("birth_facts")
         claimed_mac = memory.get("mac")
-        try:
-            asserts_elevated_trust = (
-                source_is_trusted
-                and trust_weight is not None
-                and float(trust_weight) > UNTRUSTED_TRUST_CAP
-            )
-        except (TypeError, ValueError):
-            return self._deny(f"memory trust_weight not numeric: {trust_weight!r}")
+        asserts_elevated_trust = source_is_trusted
         if asserts_elevated_trust and (birth_facts is None or claimed_mac is None):
             return self._deny(
-                "elevated-trust memory write must carry a birth-fact MAC "
-                "(missing mac/birth_facts — integrity gate is mandatory, not skip)"
+                "trusted-label memory write must carry a birth-fact MAC "
+                "(missing mac/birth_facts — a self-declared trusted label is not a "
+                "proof of trust; integrity gate is mandatory, not skip)"
             )
         if birth_facts is not None and claimed_mac is not None:
             # Never accept a self-forgeable LOCAL-dev-key MAC as authentic in an
