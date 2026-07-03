@@ -112,7 +112,7 @@ flowchart TB
 
 | Component | Role | Reference |
 |---|---|---|
-| **Checkpoint / SDK** | PEP — intercepts the action, calls the controller, enforces the verdict (fail-secure) | FR-1.x, `lld/18`, `lld/23` |
+| **Checkpoint / SDK** | PEP — intercepts the action, calls the controller, enforces the verdict (fail-secure) | FR-1.x, `lld/18`, `lld/23` (SDK design; superseded for release surface by `lld/36`), `lld/36` (SDK 0.2.0 release + no-op local-floor seam), `lld/37` (local-floor caching — planned/deferred) |
 | **Policy decision engine** | Cedar evaluation of tool / parameter / single-session sequence | FR-2.x, `features/cedar-policy`, `lld/18` |
 | **Detectors** | Sigma (live), ML classifier (shadow), D1–D7 layers across phases, **multimodal/image** threats (fraud photos, adversarial/image-borne injection) | FR-3.x, `lld/19`, `lld/20` |
 | **Trust & containment** | Per-agent/session trust, quarantine, cross-agent filtering, abuse/rate | FR-4.x, `lld/12` |
