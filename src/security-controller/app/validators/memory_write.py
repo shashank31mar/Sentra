@@ -57,8 +57,22 @@ _DECAY_TTL_SECONDS = {
     "OPERATOR_DIRECTIVE": None,       # long/none
 }
 
-# Sources considered UNTRUSTED for the self-promotion cap.
-_UNTRUSTED_SOURCES = frozenset({"agent_inference", "tool_output", "ingested", "external"})
+# The self-promotion cap is DEFAULT-UNTRUSTED (fail-secure): EVERY write is capped
+# at UNTRUSTED_TRUST_CAP unless its provenance is in this small server-recognized
+# TRUSTED allowlist. Keying the cap on an "is this source in an UNTRUSTED denylist?"
+# check is a bypass — `provenance.source` rides in the attacker-controlled request
+# payload, so any string OUTSIDE a denylist (e.g. "operator"/"system"/"user") would
+# skip the cap and self-promote to trust_weight 1.0. Default-untrusted closes that:
+# an unrecognized/self-asserted label is treated as untrusted and capped.
+#
+# NOTE (design): membership here is a *recognized-trusted label*, NOT a proof of
+# trust. The durable fix (SEC / engineering.md "never trust external data") is to
+# derive the trusted determination from a SERVER-ATTESTED provenance stamp (the
+# verified identity-gate anchor), never a self-declared label; this allowlist is the
+# fail-secure floor until that server-set stamp exists. Do NOT widen it to accept an
+# arbitrary caller-supplied string — in particular the bare "operator"/"system"/"user"
+# labels a poisoning attacker sets are NOT trusted (they are not server-attested).
+_TRUSTED_SOURCES = frozenset({"operator_directive"})
 
 
 def _canonicalize(value: Any) -> bytes:
@@ -98,16 +112,32 @@ def compute_mac(birth_facts: Dict[str, Any], *, kms_client=None, key_id: Optiona
             KeyId=key_id, MacAlgorithm="HMAC_SHA_256", Message=message,
         )
         return resp["Mac"].hex() if isinstance(resp["Mac"], (bytes, bytearray)) else str(resp["Mac"])
-    # Local HMAC fallback (dev / offline). The key is a fixed non-secret dev key —
-    # the point offline is the CANONICALIZATION determinism, not key custody. In
-    # prod the KMS path is taken (key custody in KMS).
+    # A KMS client configured but NO key_id is a MISCONFIG on the enforce path — do
+    # NOT silently fall back to the offline dev key (that would let a KMS-mode
+    # deployment authenticate a self-forgeable MAC). Fail secure.
+    if kms_client is not None:
+        raise ValueError("KMS client configured but no key_id — refusing local dev-key MAC fallback")
+    # Local HMAC fallback (dev / offline ONLY). The key is a fixed, non-secret dev
+    # key: it is offline-forgeable by anyone, so it is NEVER authoritative in an
+    # enforce decision (that path requires KMS above). Its only job offline is to
+    # exercise the CANONICALIZATION determinism, not key custody.
     return hmac.new(b"sentra-memory-integrity-dev", message, hashlib.sha256).hexdigest()
 
 
 def verify_mac(birth_facts: Dict[str, Any], expected_mac: str, *, kms_client=None,
                key_id: Optional[str] = None) -> bool:
-    """Constant-time compare of the recomputed MAC against `expected_mac`."""
-    recomputed = compute_mac(birth_facts, kms_client=kms_client, key_id=key_id)
+    """Constant-time compare of the recomputed MAC against `expected_mac`.
+
+    Fail-secure: when a KMS client is configured (prod/enforce) the recompute goes
+    through the KMS `GenerateMac` path — a self-forgeable local dev-key MAC is never
+    accepted as authentic here. If the KMS recompute cannot be performed (misconfig
+    / KMS error) the verification FAILS rather than falling back to the dev key.
+    """
+    try:
+        recomputed = compute_mac(birth_facts, kms_client=kms_client, key_id=key_id)
+    except Exception:  # noqa: BLE001 — KMS misconfig/error on an enforce verify → fail secure
+        logger.warning("MAC recompute failed; failing verification secure")
+        return False
     return hmac.compare_digest(recomputed, expected_mac)
 
 
@@ -135,15 +165,20 @@ class MemoryWriteValidator:
         if not provenance:
             return self._deny("memory write lacks provenance")
 
-        # 2) untrusted cannot self-promote.
+        # 2) untrusted cannot self-promote (DEFAULT-UNTRUSTED, fail-secure).
+        #    The cap applies to EVERY write whose provenance is NOT a recognized
+        #    trusted label — an attacker-set "operator"/"system"/"user"/unknown
+        #    string is untrusted and capped (closing the denylist bypass where any
+        #    label outside a closed untrusted set skipped the cap).
         source = str(provenance.get("source", "")).lower()
         trust_weight = memory.get("trust_weight")
-        if source in _UNTRUSTED_SOURCES and trust_weight is not None:
+        source_is_trusted = source in _TRUSTED_SOURCES
+        if not source_is_trusted and trust_weight is not None:
             try:
                 if float(trust_weight) > UNTRUSTED_TRUST_CAP:
                     return self._deny(
-                        f"untrusted-sourced memory ({source}) claims trust_weight "
-                        f"{trust_weight} > cap {UNTRUSTED_TRUST_CAP}"
+                        f"untrusted/unattested-sourced memory ({source!r}) claims "
+                        f"trust_weight {trust_weight} > cap {UNTRUSTED_TRUST_CAP}"
                     )
             except (TypeError, ValueError):
                 return self._deny(f"memory trust_weight not numeric: {trust_weight!r}")
@@ -153,11 +188,32 @@ class MemoryWriteValidator:
         if loosen:
             return self._deny(f"memory write loosens security: {loosen}")
 
-        # 4) tamper-evidence: if the candidate carries a MAC over its birth facts,
-        #    re-verify it (canonicalize-before-verify holds over the redacted view).
+        # 4) tamper-evidence — the MAC is MANDATORY for any write that ASSERTS
+        #    elevated trust (a trusted-label write claiming trust_weight above the
+        #    untrusted cap), never optional. Omitting `mac`/`birth_facts` must NOT
+        #    skip the integrity gate (that is a fail-open where a poisoning attacker
+        #    just drops the field). A write that carries a MAC is always re-verified.
         birth_facts = memory.get("birth_facts")
         claimed_mac = memory.get("mac")
+        try:
+            asserts_elevated_trust = (
+                source_is_trusted
+                and trust_weight is not None
+                and float(trust_weight) > UNTRUSTED_TRUST_CAP
+            )
+        except (TypeError, ValueError):
+            return self._deny(f"memory trust_weight not numeric: {trust_weight!r}")
+        if asserts_elevated_trust and (birth_facts is None or claimed_mac is None):
+            return self._deny(
+                "elevated-trust memory write must carry a birth-fact MAC "
+                "(missing mac/birth_facts — integrity gate is mandatory, not skip)"
+            )
         if birth_facts is not None and claimed_mac is not None:
+            # Never accept a self-forgeable LOCAL-dev-key MAC as authentic in an
+            # enforce decision: when a KMS client is configured (prod/enforce),
+            # authenticity REQUIRES the KMS VerifyMac path. The local HMAC fallback
+            # (fixed dev key, offline-forgeable) is dev/offline-only and must not
+            # decide a security verdict when KMS is available.
             if not verify_mac(birth_facts, claimed_mac, kms_client=self._kms, key_id=self._key_id):
                 return self._deny("memory birth-fact MAC verification failed (tampered)")
 

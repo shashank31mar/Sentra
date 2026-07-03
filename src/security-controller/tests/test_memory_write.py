@@ -98,6 +98,55 @@ async def test_d3_clean_memory_allows():
 
 
 @pytest.mark.asyncio
+async def test_d3_self_asserted_source_cannot_bypass_cap():
+    """A poisoning write sets provenance.source to an attacker-chosen label outside
+    the server-recognized trusted set (e.g. "operator"/"system"/"user") and claims
+    trust_weight 1.0 — the DEFAULT-UNTRUSTED cap must still DENY (the denylist bypass
+    is closed: an unrecognized/self-asserted label is untrusted, not exempt)."""
+    for bogus in ("operator", "system", "user", "root", "trusted"):
+        mem = _good_memory(provenance={"source": bogus, "actor": "attacker"},
+                           trust_weight=1.0, kind="AGENT_INFERENCE")
+        result = await MemoryWriteValidator().validate(_req(memory=mem))
+        assert result.should_deny, f"source={bogus!r} claiming trust 1.0 must be capped/DENIED"
+        assert result.violation_type == "MEMORY_POISONING"
+
+
+@pytest.mark.asyncio
+async def test_d3_missing_mac_denies_elevated_trust():
+    """An elevated-trust write (trusted label, trust_weight > cap) with NO mac/
+    birth_facts must DENY — the integrity gate is mandatory, not skip-on-omission
+    (a poisoning attacker cannot drop `mac` to skip the check)."""
+    mem = _good_memory(trust_weight=0.9)  # source operator_directive, > 0.3, no birth_facts/mac
+    mem.pop("birth_facts", None)
+    mem.pop("mac", None)
+    result = await MemoryWriteValidator().validate(_req(memory=mem))
+    assert result.should_deny
+    assert result.violation_type == "MEMORY_POISONING"
+    assert "mandatory" in result.reason.lower() or "must carry" in result.reason.lower()
+
+
+@pytest.mark.asyncio
+async def test_d3_local_dev_mac_not_authentic_in_enforce():
+    """A `mac` computed with the offline local dev key must NOT verify on the enforce
+    (KMS-configured) path — only a KMS-produced MAC is authentic there. A KMS client
+    with no key_id fails secure (no silent dev-key fallback)."""
+    birth = {"kind": "OPERATOR_DIRECTIVE", "text": "allow reporting"}
+    dev_mac = compute_mac(birth)  # local dev-key MAC (no KMS)
+
+    class _KmsStub:
+        def generate_mac(self, **kw):
+            # A real KMS produces a DIFFERENT MAC than the offline dev key.
+            return {"Mac": b"\x01" * 32}
+
+    # KMS configured with a key → recompute goes through KMS → dev-key MAC does NOT match.
+    assert verify_mac(birth, dev_mac, kms_client=_KmsStub(), key_id="alias/mem") is False
+    # KMS configured but NO key_id → fail secure (no dev-key fallback), verify False.
+    assert verify_mac(birth, dev_mac, kms_client=_KmsStub(), key_id=None) is False
+    # Offline (no KMS) the dev-key MAC still verifies — that path is dev-only.
+    assert verify_mac(birth, dev_mac) is True
+
+
+@pytest.mark.asyncio
 async def test_d3_source_and_reason():
     result = await MemoryWriteValidator().validate(_req(memory={"kind": "AGENT_INFERENCE"}))
     assert result.source == Source.SENTRA_MEMORY
