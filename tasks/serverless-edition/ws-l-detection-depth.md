@@ -369,33 +369,121 @@ Every behavior-changing task carries BOTH a named unit test (real `test_<name>` 
 - **Touches:** `registry.py` (new `sentra.distilled` ValidatorNode + the `sentra.ml_classifier` node's `depends_on`), `run.py` `run_chain` (the chain the two nodes form), the M1 `SENTRA_DISTILLED` constant (already scaffolded), `config.py` (the `DISTILLED_CONFIDENCE_TRUST_THRESHOLD` + `DISTILLED_ENABLED` flags), a new `app/validators/distilled_classifier.py`.
 - **Read before coding — the decision flow (lld/32 §4.1, founder-locked; confident-ALLOW short-circuits):** distilled runs FIRST in the model chain → **confident DENY → DENY + short-circuit** (Haiku does not run) · **confident ALLOW → ALLOW + short-circuit** (Haiku does not run — the latency win) · **low-confidence → run Haiku** (escalate) · **error 4XX/5XX / timeout(>100ms) → run Haiku (FAIL-SECURE fallback — NEVER treat an errored distilled call as ALLOW)**. Then Haiku unchanged (ALLOW→allow, DENY→deny, undecided→Sonnet).
 
+### M6.0 — config fields + the `DistilledClassifier` stub (HOW the model plugs in) — lld/32 §4.1 / FIX-A3
+
+- **Change 1 — config fields** (`app/config.py`, in `class Settings(BaseSettings)`, mirror the existing `Field(default=…, validation_alias=…)` pattern at [config.py:10-70](../../src/security-controller/app/config.py#L10)):
+  ```python
+  # --- distilled model (WS-L M6) ---
+  distilled_enabled: bool = Field(default=False, validation_alias="DISTILLED_ENABLED")
+  # the node registers + runs only when enabled; OFF → not in the request node set (M6.1)
+  distilled_shortcircuit_enabled: bool = Field(default=False, validation_alias="DISTILLED_SHORTCIRCUIT_ENABLED")
+  # the LATENCY LEVER — OFF until Part B (M6.3) graduates it on the measured disagreement rate
+  distilled_confidence_trust_threshold: float = Field(default=0.9, validation_alias="DISTILLED_CONFIDENCE_TRUST_THRESHOLD")
+  # its OWN threshold — NOT ml_confidence_trust_threshold (the small model's confidence scale differs; FIX-A3)
+  distilled_timeout_ms: int = Field(default=100, validation_alias="DISTILLED_TIMEOUT_MS")
+  # the <100ms wall; breach → concrete escalate verdict (→ Haiku), never abstain (M6.1 footgun)
+  ```
+- **Change 2 — the classifier class** (new `app/validators/distilled_classifier.py`, mirror `ml_classifier.py`'s `class …Validator` + `async def validate(self, req) -> ValidationResult` shape). It returns a `ValidationResult` whose `confidence` (0.0–1.0, [models.py:230](../../src/security-controller/app/api/models.py#L230)) + `should_deny` + `decision` drive the M6.2 branch:
+  ```python
+  class DistilledClassifier:
+      """Cheap tier-1 chain-HEAD. v1 ships a STUB verdict (M6.0); the real
+      small text-classifier artifact (from the §8 offline distill loop /
+      WS-E feedback store) drops in behind this SAME interface (M6.3)."""
+      async def classify(self, req: ValidationRequest) -> ValidationResult:
+          # STUB (Part A): deterministic, no model call — proves the wiring.
+          #   returns ValidationResult(decision="ALLOW", should_deny=False,
+          #     confidence=0.0, metadata={"escalate": True, "model": "distilled_stub"})
+          #   → confidence 0.0 < threshold ⇒ always the low-confidence/escalate path
+          #     ⇒ Haiku always runs ⇒ T-EQUIV holds (M6.1). The stub NEVER short-circuits.
+          # REAL (Part B, M6.3): loads the distilled artifact, returns a real
+          #   {decision, should_deny, confidence}; SAME return contract, no wiring change.
+          ...
+  ```
+- **FOOTGUN — the stub must emit `confidence=0.0` + `metadata['escalate']=True`, a CONCRETE non-abstain ALLOW.** That guarantees the stub always takes the escalate branch (→ Haiku) and NEVER the confident short-circuit — so Part A is verdict-neutral (T-EQUIV) by construction, independent of the `DISTILLED_SHORTCIRCUIT_ENABLED` flag. Do NOT return `ValidationResult.abstain(...)` from the stub (that would abort the chain and skip Haiku — M6.1 footgun).
+- **Wire it on the service** (`ValidationService.__init__`, next to `self.ml_classifier`): `self.distilled_classifier = DistilledClassifier()`.
+- **UT** (`tests/test_wsl_distilled.py`):
+  - **`test_distilled_config_defaults`** — `distilled_enabled`/`distilled_shortcircuit_enabled` default **False**; `distilled_confidence_trust_threshold` default 0.9; each reads its `validation_alias` env var.
+  - **`test_distilled_stub_is_escalate_not_abstain`** — the stub `classify()` returns `should_deny=False`, `confidence==0.0`, `metadata['escalate'] is True`, and **`is_abstain` is False** (concrete verdict, so `run_chain` does not abort).
+- **INTEG:** none (config + a stub class; the seam is exercised by M6.1/M6.2). *(no standalone integ — pure wiring; the contract seam is covered downstream.)*
+
 ### M6.1 — the `sentra.distilled` node + the chain edge (Part A, buildable now) — lld/32 §4.3
 
-- **Change:** add a `sentra.distilled` `ValidatorNode` (`cost_tier=EXPENSIVE_MODEL` — it is a model node, tier-1; NOT a new CostTier) at [registry.py:284](../../src/security-controller/app/services/scheduler/registry.py#L284) region, `depends_on=(Source.SENTRA_POLICY,)`, `phase=request`. Change the existing `sentra.ml_classifier` node's `depends_on` from `(Source.SENTRA_POLICY,)` to **`(Source.SENTRA_DISTILLED,)`** so `_build_chains`/`run_chain` ([run.py:299](../../src/security-controller/app/services/scheduler/run.py#L299)) sequence distilled→ml as ONE tier-1 chain. The distilled node's `run()` is ONE awaitable — **NO in-node `asyncio.gather`** (the only gather is `_run_tier1_with_edges`, run.py:256).
-- **FOOTGUN — T-EQUIV (WS-C golden baseline).** This adds a node to the request-phase set AND re-points ml's `depends_on`. The request-phase *verdict* must stay equivalent: since distilled defaults to always-escalate (short-circuit OFF, M6.2), Haiku still runs on every survivor exactly as today → the verdict is unchanged. The T-EQUIV test must assert **verdict-equivalence with the short-circuit OFF**, not byte-identical node lists (the node list legitimately grows by one).
-- **FOOTGUN — chain abort semantics (run.py `run_chain`).** `run_chain` aborts the chain to the floor on an upstream **abstain**. So the distilled node must NOT return `abstain` for the escalate/error case (that would skip Haiku); it returns a **concrete non-deciding escalate verdict** (`ValidationResult.allow(...)` + `metadata['escalate']=True`) so the chain continues to Haiku. Reserve `abstain` for a hard distilled outage where dropping to the floor IS intended (but the founder's directive is error→Haiku, so in practice the node never abstains — low-conf OR error OR timeout all return the concrete escalate verdict).
+- **Change — the node factory + registration** (`registry.py`, mirror `_run_ml` at [registry.py:153-159](../../src/security-controller/app/services/scheduler/registry.py#L153) and its `ValidatorNode` at [registry.py:326-332](../../src/security-controller/app/services/scheduler/registry.py#L326)). Add, inside `build_dag` next to `_run_ml`:
+  ```python
+  async def _run_distilled(req: ValidationRequest, sess: Dict) -> ValidationResult:
+      # Cheap tier-1 chain-HEAD. ONE awaitable — NO asyncio.gather (the only
+      # gather is _run_tier1_with_edges, run.py:256). Hard <100ms wall; on
+      # timeout OR error return a CONCRETE escalate verdict (→ Haiku runs),
+      # NEVER abstain (would abort the chain, run_chain run.py:322) and NEVER
+      # a silent ALLOW (fail-secure fallback, founder-locked §4.1).
+      try:
+          result = await asyncio.wait_for(
+              service.distilled_classifier.classify(req),
+              timeout=settings.distilled_timeout_ms / 1000,
+          )
+      except (asyncio.TimeoutError, Exception):   # 4XX/5XX/timeout → escalate to Haiku
+          return ValidationResult(decision="ALLOW", should_deny=False,
+                                  confidence=0.0,
+                                  metadata={"escalate": True, "distilled_error": True})
+      return result   # its own {decision, should_deny, confidence, metadata}
+  ```
+  and register it (only when enabled) in the request-phase node list:
+  ```python
+  # in the request-phase branch of build_dag, alongside the ml node:
+  if settings.distilled_enabled:
+      nodes.append(ValidatorNode(
+          source=Source.SENTRA_DISTILLED,          # M1.1 constant, priority 66 (M1.2)
+          cost_tier=CostTier.EXPENSIVE_MODEL,      # tier-1 model node; NOT a new CostTier
+          run=_run_distilled,
+          depends_on=(Source.SENTRA_POLICY,),      # runs after the tier-0 floor resolves
+          order_key=_ORDER.get(Source.SENTRA_ML_CLASSIFIER, 0),  # head of the model chain
+      ))
+  ```
+- **Change — re-point the ml node to make the chain** (edit the existing `ValidatorNode` at [registry.py:326-332](../../src/security-controller/app/services/scheduler/registry.py#L326)): `depends_on=(Source.SENTRA_POLICY,)` → **`depends_on=(Source.SENTRA_DISTILLED,)` ONLY when `distilled_enabled`** (else leave `(SENTRA_POLICY,)` so today's graph is byte-identical when the node is absent). So `_build_chains` groups `distilled → ml` into one `run_chain` ([run.py:299](../../src/security-controller/app/services/scheduler/run.py#L299)) that threads the distilled result into `ctx[Source.SENTRA_DISTILLED]` for the ml node to read (M6.2).
+- **FOOTGUN — T-EQUIV (WS-C golden baseline).** Two states: **`distilled_enabled=False` (default)** → node absent, ml's `depends_on` unchanged → the request graph is **byte-identical** to today (strongest T-EQUIV). **`distilled_enabled=True`** → node present + ml re-pointed, but the stub always escalates (M6.0) so Haiku still runs on every survivor → **verdict-equivalent** (the node list legitimately grows by one; assert verdict-equivalence, not byte-identity).
+- **FOOTGUN — chain abort semantics** (`run_chain`, [run.py:318-323](../../src/security-controller/app/services/scheduler/run.py#L318)): an upstream **abstain aborts the chain** (downstream fails to the floor, skipping Haiku). So `_run_distilled` must return the concrete escalate verdict (above) on low-conf/error/timeout — **never `abstain`** — or Haiku is skipped exactly when it's needed. (An upstream hard-DENY does NOT abort; the DENY is captured and the combiner is order-independent.)
 - **UT** (`tests/test_wsl_distilled.py`):
-  - **`test_distilled_is_tier1_chain_head`** — `sentra.distilled` is `EXPENSIVE_MODEL`; `sentra.ml_classifier.depends_on == (Source.SENTRA_DISTILLED,)`; `_build_chains` groups them into one chain (distilled before ml).
-  - **`test_distilled_never_abstains_on_error`** — a distilled `run()` whose inner classify raises / times out returns a concrete non-deciding ALLOW carrying `metadata['escalate']=True` (NOT `abstain`), so the chain continues to Haiku (fail-secure fallback, never ALLOW-and-stop).
-  - **`test_distilled_run_is_single_awaitable`** — the node `run` performs no `asyncio.gather` (static check / no concurrent inner calls).
-- **INTEG** (`tests/test_wsl_distilled.py`): a `phase="request"` run with the stub distilled node present returns the SAME verdict as before the node was added (T-EQUIV verdict-equivalence with short-circuit OFF) — the load-bearing regression guard.
+  - **`test_distilled_is_tier1_chain_head`** — with `distilled_enabled=True`: `sentra.distilled` is in the request node set, `cost_tier==EXPENSIVE_MODEL`, `sentra.ml_classifier.depends_on == (Source.SENTRA_DISTILLED,)`; `_build_chains` yields one chain with distilled before ml.
+  - **`test_distilled_absent_when_disabled`** — with `distilled_enabled=False`: no `sentra.distilled` node, and `sentra.ml_classifier.depends_on == (Source.SENTRA_POLICY,)` (byte-identical-graph T-EQUIV).
+  - **`test_distilled_never_abstains_on_error`** — `_run_distilled` whose inner `classify` raises / exceeds `distilled_timeout_ms` returns a concrete `should_deny=False` verdict with `metadata['escalate']=True` and `is_abstain==False` (chain continues to Haiku; fail-secure, never ALLOW-and-stop).
+  - **`test_distilled_run_is_single_awaitable`** — `_run_distilled` issues no `asyncio.gather` (one `classify` awaitable).
+- **INTEG** (`tests/test_wsl_distilled.py`): a `phase="request"` run with `distilled_enabled=True` + the stub returns the SAME verdict as `distilled_enabled=False` (T-EQUIV verdict-equivalence, short-circuit OFF) — the load-bearing regression guard against WS-C's baseline.
 
-### M6.2 — the decision flow + the enforce-gated short-circuit (Part A logic; short-circuit OFF by default) — lld/32 §4.1
+### M6.2 — the four-way decision flow in the ml (chain-tail) node — lld/32 §4.1
 
-- **Change:** implement the four-way branch in the chain. The `sentra.ml_classifier` node (the chain TAIL) reads `ctx[Source.SENTRA_DISTILLED]` and: if the distilled verdict is **confident** (`confidence ≥ DISTILLED_CONFIDENCE_TRUST_THRESHOLD`, a NEW config field — NOT the Haiku `ML_CONFIDENCE_TRUST_THRESHOLD`; the small model's confidence scale differs, lld/32 FIX-A3) **AND the short-circuit is enabled** → Haiku returns `abstain` (no Bedrock call, distilled decides); else Haiku runs normally. The short-circuit `DISTILLED_SHORTCIRCUIT_ENABLED` flag **defaults OFF** (Part B gates it on the measured disagreement rate) — so out of the box Haiku always runs and there is no latency change, exactly as M6.1's T-EQUIV asserts.
-- **FOOTGUN — do NOT enable the short-circuit in this workstream.** Enabling it is Part B (needs the SEC-7 disagreement measurement + WS-0 escalation number). Shipping it ON here would open the adversarial-clean fast-path (SEC-7) with no measurement behind it. The flag is wired + tested but ships OFF.
+- **Change — the short-circuit branch inside `_run_ml`** (edit the ml factory at [registry.py:153-159](../../src/security-controller/app/services/scheduler/registry.py#L153); it receives the chain-local `ctx` as `sess` — `run_chain` calls `node.run(request, {**session, **ctx})`, [run.py:326](../../src/security-controller/app/services/scheduler/run.py#L326), so the distilled result is at `sess[Source.SENTRA_DISTILLED]`):
+  ```python
+  async def _run_ml(req: ValidationRequest, sess: Dict) -> ValidationResult:
+      distilled = sess.get(Source.SENTRA_DISTILLED)          # upstream chain result, or None
+      if (settings.distilled_shortcircuit_enabled            # the gate — DEFAULT OFF (M6.0)
+              and distilled is not None
+              and not distilled.metadata.get("escalate")     # confident (not the escalate path)
+              and distilled.confidence is not None
+              and distilled.confidence >= settings.distilled_confidence_trust_threshold):
+          # CONFIDENT distilled verdict + short-circuit ON → skip Haiku entirely.
+          # Return abstain so THIS ml node emits no signal; the distilled node's
+          # own captured verdict (ALLOW or DENY) is what the combiner sees.
+          return ValidationResult.abstain("distilled_shortcircuit")
+      # else — the DEFAULT this workstream ships: run Haiku exactly as today.
+      result = await service.ml_classifier.validate(req)
+      return _apply_ml_enforce_wrapper(result)
+  ```
+- **The four outcomes this realizes** (founder-locked §4.1): distilled **confident-DENY** → distilled's DENY is the captured verdict, ml abstains (Haiku skipped) → DENY wins the combiner; distilled **confident-ALLOW** → ml abstains, distilled's ALLOW stands (no other denier) → ALLOW, Haiku skipped (the latency win); distilled **low-conf / escalate** → `metadata['escalate']` truthy → ml runs Haiku; distilled **error/timeout** → M6.1 returns escalate → ml runs Haiku (fail-secure).
+- **FOOTGUN — DO NOT ship the short-circuit ON.** `distilled_shortcircuit_enabled` is wired + tested but **defaults OFF** and stays OFF this workstream. Turning it ON is Part B (M6.3) — it needs the SEC-7 disagreement measurement + the WS-0 escalation number; ON without them opens the adversarial-confident-clean fast-path (SEC-7) that skips the strong Haiku→Sonnet tier with no measurement behind it.
+- **FOOTGUN — read `sess[SENTRA_DISTILLED]`, not a fresh call.** The distilled verdict is already computed by the chain head and threaded via `ctx`; re-invoking the classifier here would double-run it and break the single-awaitable contract.
 - **UT** (`tests/test_wsl_distilled.py`):
-  - **`test_shortcircuit_off_haiku_always_runs`** — with `DISTILLED_SHORTCIRCUIT_ENABLED=false` (default), even a confident distilled verdict lets Haiku run (assert an `ml_classifier` signal is emitted). Pins the safe default.
-  - **`test_confident_distilled_shortcircuits_when_enabled`** — with the flag ON + a confident distilled verdict, Haiku returns abstain (no `ml_classifier` Bedrock call); the distilled signal decides. Both confident-ALLOW and confident-DENY short-circuit.
-  - **`test_lowconf_distilled_runs_haiku`** — a low-confidence distilled verdict runs Haiku regardless of the flag.
-  - **`test_distilled_own_threshold`** — the confident gate reads `DISTILLED_CONFIDENCE_TRUST_THRESHOLD`, NOT `ML_CONFIDENCE_TRUST_THRESHOLD` (FIX-A3).
-- **INTEG** (`tests/test_wsl_distilled.py`): a `phase="request"` run, flag ON, confident-clean stub → the response is served without a Haiku Bedrock call (latency-win path proven); flag OFF → Haiku runs (default path).
+  - **`test_shortcircuit_off_haiku_always_runs`** — `distilled_shortcircuit_enabled=False` (default) + a *confident* distilled result in `sess` → `_run_ml` still calls `ml_classifier.validate` and emits a `sentra.ml_classifier` signal. Pins the safe default.
+  - **`test_confident_distilled_shortcircuits_when_enabled`** — flag ON + confident distilled (ALLOW and, separately, DENY) → `_run_ml` returns `abstain("distilled_shortcircuit")`, `ml_classifier.validate` is NOT called (mock asserts zero calls); the distilled signal decides.
+  - **`test_lowconf_distilled_runs_haiku`** — flag ON + distilled `metadata['escalate']=True` (or confidence < threshold) → Haiku runs.
+  - **`test_distilled_own_threshold`** — the gate compares against `distilled_confidence_trust_threshold`, NOT `ml_confidence_trust_threshold` (construct a confidence between the two values, assert the distilled threshold governs). FIX-A3.
+- **INTEG** (`tests/test_wsl_distilled.py`): `phase="request"`, flag ON, confident-clean stub-forced verdict → response served with **zero** Haiku Bedrock calls (spy on the Bedrock client) — the latency-win path proven; flag OFF → Haiku called (default path).
 
 ### M6.3 — Part B: the real artifact + short-circuit graduation (GATED — documented, not built) — lld/32 §4.1/§8
 
-- **NOT BUILT in this workstream — documented as the gated tail.** The `distilled_classifier.py` stub (M6.1) is replaced by the **real distilled model** only when: (1) the **§8 offline distill loop** exists (reads the **WS-E feedback store** — NOT built, WS-E spike-gated); (2) the loop has distilled Sonnet/Opus labels into the small model artifact; (3) the **measured distilled-vs-heavy disagreement rate** on the obfuscated corpus (SEC-7) clears the graduation bar; (4) the **WS-0 escalation-rate number** justifies distillation (founder round-5). Only then does `DISTILLED_SHORTCIRCUIT_ENABLED` flip ON.
-- **No UT/INTEG here** — this task builds no code (it is the gated dependency statement). The stub-vs-real swap is a future PR that reuses the M6.1/M6.2 wiring unchanged (that's the point of building the wiring now).
-- **Cross-WS dependency:** WS-E feedback store → §8 offline loop → this. Tracked, not built.
+- **NOT BUILT here — the gated tail.** The `DistilledClassifier.classify` **stub** (M6.0) is swapped for the **real** small text-classifier only when all four hold: (1) the **§8 offline distill loop** exists (reads the **WS-E feedback store** — NOT built, WS-E spike-gated); (2) the loop has distilled Sonnet/Opus labels into the artifact; (3) the **measured distilled-vs-heavy disagreement rate** on the obfuscated corpus (SEC-7) clears the graduation bar; (4) the **WS-0 escalation-rate number** justifies distillation (founder round-5). Only then is `DISTILLED_SHORTCIRCUIT_ENABLED` flipped ON.
+- **HOW the swap works (why the wiring-now pays off):** the real artifact drops in behind the **same `DistilledClassifier.classify` interface** (M6.0) and the **same `_run_distilled`/`_run_ml` branch** (M6.1/M6.2) — the future PR changes only the classifier body (load artifact + infer) and flips the flag. No scheduler, node, chain, or config-shape change. That is the entire point of building Part A now.
+- **No UT/INTEG here** — this task ships no code; it is the gated dependency statement + the swap recipe. *(no-code task: exempt from UT/INTEG by declaration.)*
+- **Cross-WS dependency chain:** WS-E feedback store → §8 offline distill loop → real artifact → flip `DISTILLED_SHORTCIRCUIT_ENABLED`. Tracked, not built.
 
 ---
 
@@ -477,7 +565,7 @@ For a future D-layer build (D4-D8 or distilled), each step is a small additive P
 - [ ] **D1** request-phase LLM-judge v1 (no corpus); a SIGNAL never a standalone gate; `trajectory_state` server-side-write-only (SEC-3); shadow→enforce; ADDITIVE node (existing 7 frozen); GRU v2 deferred. *(test_d1_escalating_transcript_signals, test_d1_is_signal_not_gate, test_d1_abstains_on_outage_and_disabled, test_d1_source_and_reason, test_d1_ignores_client_asserted_trajectory, test_d1_shadow_by_default)*
 - [ ] `sentra.trajectory` added to `STATIC_FALLBACK_ORDER` **in the D1 PR** (FIX-K); `set(STATIC_FALLBACK_ORDER)` equals the request-phase emitted set (T-TRAIL-14(a)); D2/D3 sources absent from it. *(test_trajectory_in_request_fallback_order)*
 - [ ] Per-detector latency + FP/FN/precision/recall/F1 via `MetricsPublisher`; offline eval-harness is the authoritative quality gate; R5-C FP-budget gate blocks enforce-graduation. *(test_every_node_emits_latency_metric, test_eval_harness_computes_prf1, test_fp_budget_gate_blocks_enforce)*
-- [ ] **M6 distilled — wiring built (Part A), artifact + short-circuit gated (Part B).** `sentra.distilled` is a tier-1 chain-head; `sentra.ml_classifier.depends_on == (SENTRA_DISTILLED,)`; the node never abstains on error (returns concrete escalate → Haiku, fail-secure); the four-way decision flow reads `DISTILLED_CONFIDENCE_TRUST_THRESHOLD` (not the Haiku threshold); the short-circuit `DISTILLED_SHORTCIRCUIT_ENABLED` **defaults OFF** (Haiku always runs → request verdict T-EQUIV-equivalent); when toggled ON a confident verdict short-circuits Haiku. Real artifact + graduation are the gated Part-B PR. *(test_distilled_is_tier1_chain_head, test_distilled_never_abstains_on_error, test_distilled_run_is_single_awaitable, test_shortcircuit_off_haiku_always_runs, test_confident_distilled_shortcircuits_when_enabled, test_lowconf_distilled_runs_haiku, test_distilled_own_threshold)*
+- [ ] **M6 distilled — wiring built (Part A), artifact + short-circuit gated (Part B).** Config fields (`distilled_enabled`/`distilled_shortcircuit_enabled` default OFF, `distilled_confidence_trust_threshold` 0.9, `distilled_timeout_ms` 100) + `DistilledClassifier` stub (concrete escalate, `confidence=0.0`, never abstain); `sentra.distilled` is a tier-1 chain-head registered only when `distilled_enabled`; `sentra.ml_classifier.depends_on` → `(SENTRA_DISTILLED,)` only when enabled (else byte-identical graph); `_run_distilled` never abstains on error/timeout (concrete escalate → Haiku, fail-secure); the four-way branch lives in `_run_ml` reading `sess[SENTRA_DISTILLED]` + `DISTILLED_CONFIDENCE_TRUST_THRESHOLD` (not the Haiku threshold); short-circuit **defaults OFF** (Haiku always runs → request verdict T-EQUIV-equivalent); ON → confident verdict skips Haiku. Real artifact + graduation are the gated Part-B PR (same-interface swap). *(test_distilled_config_defaults, test_distilled_stub_is_escalate_not_abstain, test_distilled_is_tier1_chain_head, test_distilled_absent_when_disabled, test_distilled_never_abstains_on_error, test_distilled_run_is_single_awaitable, test_shortcircuit_off_haiku_always_runs, test_confident_distilled_shortcircuits_when_enabled, test_lowconf_distilled_runs_haiku, test_distilled_own_threshold)*
 - [ ] **unit tests pass** (covering: the 10 Source constants + priorities-additive + display labels + boot completeness; per-phase node-set builder + request-DAG-unchanged; per-node metrics contract; content/memory route-after-identity + phase-aware all_allow + FIX-J hoist; D2 content-text sigma + heuristics + clean-allow + advisory-until-enforce; D3 provenance/self-promote/loosen/canonicalize/clean + advisory-until-enforce; D1 escalation-signal + signal-not-gate + abstain + SEC-3 + shadow-by-default; fallback-order FIX-K; eval-harness P/R/F1 + FP-budget gate). *(run: `env -u AWS_PROFILE AWS_DEFAULT_REGION=us-east-1 AWS_ACCESS_KEY_ID=test AWS_SECRET_ACCESS_KEY=test venv/bin/python -m pytest src/security-controller/tests/test_wsl_*.py src/security-controller/tests/test_indirect_injection.py src/security-controller/tests/test_memory_write.py src/security-controller/tests/test_trajectory.py src/security-controller/tests/test_wsl_distilled.py -v`)* — includes M6 distilled wiring UTs.
 - [ ] **integration tests pass** (covering the seams: `phase="content"` reaches the pipeline only after identity + returns a real D2 verdict; `phase="memory"` returns a real D3 verdict; identity ENFORCE + bad token blocks content/memory before the D-node; the request pipeline + T-EQUIV baseline unchanged after the D1 node; request-phase trail coverage-set = emitted set with `sentra.trajectory` and NOT flagging expected-but-not-run; per-node metrics emitted off-path; eval-harness FP-budget gate). *(run: `env -u AWS_PROFILE AWS_DEFAULT_REGION=us-east-1 AWS_ACCESS_KEY_ID=test AWS_SECRET_ACCESS_KEY=test venv/bin/python -m pytest src/security-controller/tests/test_multiphase_contract.py src/security-controller/tests/eval/ -v`)*
 
