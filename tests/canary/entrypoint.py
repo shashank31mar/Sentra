@@ -102,6 +102,12 @@ def expected_check_count() -> int:
 _SUITE_DIR = "tests/canary/"
 # Only live-safe scenarios run in prod: pr_gate_only (billing-hygiene J5) never runs
 # against real prod; requires_live-marked scenarios DO (they need the live target).
+# NOTE the collection narrowing is enforced in conftest.py's CANARY_TARGET-driven
+# ``collect_ignore`` (NOT this marker): in the lean live container ONLY the two
+# black-box httpx scenario modules (test_all_routes.py + test_metrics_live.py) are
+# collected — every app-standing-up / meta / harness-unit module is ignored so a
+# module-level app.*/aegion_guard/fastapi/pydantic import cannot error collection and
+# blank out the metrics. This marker only additionally deselects pr_gate_only rows.
 _SUITE_MARKERS = "not pr_gate_only"
 
 
