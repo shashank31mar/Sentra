@@ -32,29 +32,29 @@
 
 ---
 
-## Milestone A1 — Version bump + release surface
+## Milestone A1 — Version bump + release surface ✅ DONE (`42e0207`)
 
 **Implements:** S3 (release the merged surface) | contract: `__version__`/`__contract__`
 
-### A1.1 — Bump the SDK version 0.1.0 → 0.2.0 (two sites, kept in sync)
+### A1.1 — Bump the SDK version 0.1.0 → 0.2.0 (two sites, kept in sync) ✅ DONE
 - **Touches:** [`src/aegion_guard/__init__.py:43`](../../demo-agents/sdk/aegion-guard-python/src/aegion_guard/__init__.py#L43) (`__version__ = "0.1.0"` → `"0.2.0"`), [`pyproject.toml:7`](../../demo-agents/sdk/aegion-guard-python/pyproject.toml#L7) (`version = "0.1.0"` → `"0.2.0"`).
 - `__contract__` at [`__init__.py:51`](../../demo-agents/sdk/aegion-guard-python/src/aegion_guard/__init__.py#L51) **stays `"v1"`** — the wire contract is unchanged (bare string `"v1"`, not `"/v1"`). The `User-Agent` `aegion-guard/{__version__}` ([guard.py:157](../../demo-agents/sdk/aegion-guard-python/src/aegion_guard/guard.py#L157)) picks up the new value automatically.
 - **Footgun:** the two version sites drift silently if edited separately — a release-gate test asserts they match.
 - **Unit tests:** `test_version_and_contract_pin` in `tests/test_config.py` — asserts `aegion_guard.__version__ == "0.2.0"`, the `pyproject.toml` `version` parses to the same string, and `__contract__ == "v1"`. *(no other UT — pure constant.)*
 - **Integration test:** covered by A1.2's `test_contract_live` tie-in (the `User-Agent` reaching the server carries `0.2.0`).
 
-### A1.2 — Confirm `dependencies = []` holds + no `[local-floor]` extra
+### A1.2 — Confirm `dependencies = []` holds + no `[local-floor]` extra ✅ DONE
 - **Touches:** [`pyproject.toml:26`](../../demo-agents/sdk/aegion-guard-python/pyproject.toml#L26) (`dependencies = []` — unchanged), [`pyproject.toml:33`](../../demo-agents/sdk/aegion-guard-python/pyproject.toml#L33) (`identity` extra remains the ONLY optional extra).
 - **Footgun:** do NOT add a `[local-floor]` extra (crypto is lld/37). This task is a guard, not an add.
 - **Unit tests:** extend existing [`tests/test_stdlib_only.py`](../../demo-agents/sdk/aegion-guard-python/tests/test_stdlib_only.py) — `test_stdlib_only_holds` asserts (a) no non-stdlib runtime import is introduced by the seam (walk `local_floor.py` + the seam edits; `enum`/`typing` are stdlib), (b) `pyproject` `dependencies == []`, (c) `[project.optional-dependencies]` has NO `local-floor` key. *(no integ — build-config assertion.)*
 
 ---
 
-## Milestone A2 — The frozen verdict enum (`local_floor.py`)
+## Milestone A2 — The frozen verdict enum (`local_floor.py`) ✅ DONE (`42e0207`)
 
 **Implements:** S2 (frozen contract) | contract: `LocalFloorVerdict` (**owned here**)
 
-### A2.1 — Create `local_floor.py` with the frozen `LocalFloorVerdict` enum
+### A2.1 — Create `local_floor.py` with the frozen `LocalFloorVerdict` enum ✅ DONE
 - **Touches:** NEW file [`src/aegion_guard/local_floor.py`](../../demo-agents/sdk/aegion-guard-python/src/aegion_guard/local_floor.py); export from [`__init__.py`](../../demo-agents/sdk/aegion-guard-python/src/aegion_guard/__init__.py) `__all__` ([:53](../../demo-agents/sdk/aegion-guard-python/src/aegion_guard/__init__.py#L53)).
 - **Content (lld/36 §4.2.1):**
   ```python
@@ -70,7 +70,7 @@
 
 ---
 
-## Milestone A3 — The no-op seam (config flag + hook)
+## Milestone A3 — The no-op seam (config flag + hook) ✅ DONE (`42e0207`)
 
 **Implements:** S2 (the seam) | contract: `local_floor_enabled`, `_local_floor_verdict` (**owned here**)
 
@@ -83,12 +83,12 @@ flowchart TD
   SEND --> PARSE["_parse_decision → Decision"]
 ```
 
-### A3.1 — Add the `local_floor_enabled` config flag (default False)
+### A3.1 — Add the `local_floor_enabled` config flag (default False) ✅ DONE
 - **Touches:** [`config.py:20-33`](../../demo-agents/sdk/aegion-guard-python/src/aegion_guard/config.py#L20) (add `ENV_LOCAL_FLOOR = "SENTRA_LOCAL_FLOOR_ENABLED"` to the env-var block), the `GuardConfig` `@dataclass(frozen=True)` ([config.py:87](../../demo-agents/sdk/aegion-guard-python/src/aegion_guard/config.py#L87)) — add field `local_floor_enabled: bool = False`, `resolve()` ([config.py:112](../../demo-agents/sdk/aegion-guard-python/src/aegion_guard/config.py#L112)) — add a keyword `local_floor_enabled: Optional[bool] = None` and resolve it via the existing `_env_bool(ENV_LOCAL_FLOOR, False)` ([config.py:45](../../demo-agents/sdk/aegion-guard-python/src/aegion_guard/config.py#L45)).
 - **Footgun:** reuse `_env_bool` — it **raises `ConfigError` on an unparseable value** (fail-closed at construction). Do NOT silently coerce an invalid value to `False`. Default MUST be `False` (a `True` default routes at a floor that doesn't exist).
 - **Unit tests:** in `tests/test_config.py` / extend [`tests/test_config_env_branches.py`](../../demo-agents/sdk/aegion-guard-python/tests/test_config_env_branches.py) — `test_invalid_flag_value_fails_closed` (`SENTRA_LOCAL_FLOOR_ENABLED=maybe` → `ConfigError` at `GuardConfig.resolve()`, no guard built); `test_local_floor_flag_default_false` (unset env → `config.local_floor_enabled is False`). *(no integ — config resolution; the routing behavior is A3.2/A3.3.)*
 
-### A3.2 — Add the `_local_floor_verdict` hook + wire the sync path
+### A3.2 — Add the `_local_floor_verdict` hook + wire the sync path ✅ DONE
 - **Touches:** [`guard.py`](../../demo-agents/sdk/aegion-guard-python/src/aegion_guard/guard.py) — new method `_local_floor_verdict(self, payload) -> Optional[Decision]`; wire into `validate()` replacing the direct `return self._send(payload)` at [guard.py:358](../../demo-agents/sdk/aegion-guard-python/src/aegion_guard/guard.py#L358); init `self._floor_absent_warned = False` in `AegionGuard.__init__` ([guard.py:89](../../demo-agents/sdk/aegion-guard-python/src/aegion_guard/guard.py#L89)).
 - **Pseudo-code (lld/36 §4.2.3):**
   ```python
@@ -113,7 +113,7 @@ flowchart TD
 - **Footguns:** the WARNING line is **static** (no payload/PII interpolated — it's on the redacted-payload hot path). `self._floor_absent_warned` MUST be initialized in `__init__` or the first read `AttributeError`s. Return type is `Optional[Decision]` — **never** the bare enum.
 - **Unit tests:** in NEW `tests/test_local_floor_seam.py` — `test_seam_off_routes_to_send` (flag off → `_local_floor_verdict` returns `None`, `_send` reached exactly once, via a spy); `test_seam_on_without_interpreter_fails_secure_to_hosted` (flag on, no interpreter → routes to `_send`, never skips/local-allows/deny-alls); `test_floor_absent_warns_once_per_guard` (N guards flag-on → WARNING fires **once per guard**, log record carries NO payload substring); `test_seam_returns_decision_or_none` (the type contract — `_local_floor_verdict` returns `Decision` or `None`, never a `LocalFloorVerdict`). *(integ: A3.4.)*
 
-### A3.3 — Wire the async path (BYTE-IDENTICAL — pre-check only)
+### A3.3 — Wire the async path (BYTE-IDENTICAL — pre-check only) ✅ DONE
 - **Touches:** `avalidate()` — insert the same pre-check ABOVE the unchanged [guard.py:388](../../demo-agents/sdk/aegion-guard-python/src/aegion_guard/guard.py#L388) `return await asyncio.to_thread(ctx.run, self._send, payload)`.
 - **Pseudo-code:**
   ```python
@@ -125,7 +125,7 @@ flowchart TD
 - **Footgun (LOAD-BEARING):** do **NOT** introduce a `_dispatch` closure or move the seam inside the `to_thread` worker — that is lld/37's restructure (it owns the contextvars/exception-ordering equivalence proof). The `to_thread(ctx.run, self._send, payload)` line stays literally today's.
 - **Unit tests:** `test_seam_off_routes_to_send_async` in NEW `tests/test_local_floor_seam.py` (extend patterns from [`tests/test_async.py`](../../demo-agents/sdk/aegion-guard-python/tests/test_async.py)) — a spy proves `avalidate` traverses `_local_floor_verdict` **exactly once, before `_send`, inside the `to_thread` worker**, including under an exception raised between the two calls; `test_seam_on_without_interpreter_fails_secure_to_hosted` also asserted on `avalidate`. *(integ: A3.4.)*
 
-### A3.4 — Structural guards (no-`_send`-outside-seam, no-Signal-mint)
+### A3.4 — Structural guards (no-`_send`-outside-seam, no-Signal-mint) ✅ DONE
 - **Unit tests (structural):**
   - `test_no_send_outside_seam` — **AST dominator** assertion (NOT a `grep 'self._send('`; the async site is a bare reference `to_thread(ctx.run, self._send, payload)` with no `(`): every reference to `_send` in `guard.py` — call form `self._send(...)` and bare-attribute form — is dominated by a `_local_floor_verdict` reference in the same function/closure. If expressed as a regex it MUST be `self\._send\b` (word-boundary).
   - `test_seam_mints_no_signal` — import-graph assertion: the `aegion_guard` package has **no import path to `app.combiners`**, so no `LocalFloorVerdict` can leak into `DenyOverrides.combine()` (ADR-031 boundary frozen before lld/37 wires a producer).
@@ -133,45 +133,45 @@ flowchart TD
 
 ---
 
-## Milestone A4 — `@guard.output` fails fast at decoration time
+## Milestone A4 — `@guard.output` fails fast at decoration time ✅ DONE (`cae0180`)
 
 **Implements:** §4.1(a-out) (booby-trap fix) | contract: `@guard.output` (nuance propagated to [lld/30](../../lld/30-multiphase-contract.md))
 
-### A4.1 — Make `@guard.output` raise `FeatureNotAvailable` at decoration time
+### A4.1 — Make `@guard.output` raise `FeatureNotAvailable` at decoration time ✅ DONE (parens + bare forms, `cae0180`)
 - **Touches:** [`guard.py:249`](../../demo-agents/sdk/aegion-guard-python/src/aegion_guard/guard.py#L249) (`def output`); a new `FeatureNotAvailable` exception in [`exceptions.py`](../../demo-agents/sdk/aegion-guard-python/src/aegion_guard/exceptions.py) (subclass `AegionGuardError`, alongside the existing types at [:29-123](../../demo-agents/sdk/aegion-guard-python/src/aegion_guard/exceptions.py#L29)); export it in `__init__.py __all__`.
 - **Behavior:** `@guard.output` raises `FeatureNotAvailable("@guard.output: the output phase is not yet enforced (WS-L D5 unbuilt); do not wire it to a production path — use @guard.tool for action validation")` **when the decorator is APPLIED** (decoration time / import), not at first call. `@guard.tool`, `@guard.content`, `@guard.memory` decorate normally (content/memory have LIVE server handlers, [routes.py:98-118](../../src/security-controller/app/api/routes.py#L98)).
 - **Footgun:** raise at **decoration** (developer-actionable at wire time), NOT a per-call prod DENY. Only `output` — do NOT gate content/memory.
 - **Unit tests:** `test_output_decorator_fails_fast` in `tests/test_guard_sync.py` — `@guard.output(...)` applied to a fn raises `FeatureNotAvailable` at decoration; `@guard.tool/content/memory` decorate without raising; `test_phase_decorators_carry_phase` (regression) updated so it only exercises tool/content/memory carrying the right `phase`+`content_text`. *(integ: A4.2.)*
 
-### A4.2 — Propagate the `@guard.output` nuance into lld/30 (sibling reconcile)
+### A4.2 — Propagate the `@guard.output` nuance into lld/30 (sibling reconcile) ✅ DONE
 - **Touches:** [lld/30-multiphase-contract.md](../../lld/30-multiphase-contract.md) — add a one-line note on the `@guard.output` decorator: "ships in SDK 0.2.0 but raises `FeatureNotAvailable` at decoration until WS-L D5 lands (see lld/36 §4.1(a-out))."
 - **Footgun:** this is a doc reconcile (WS-B owns the decorator contract) — do NOT silently change the decorator without the lld/30 note.
 - **Integration test:** `test_output_phase_still_deny_alls_server_side` — a live `@guard.tool`-shaped request with `phase="output"` to the server returns `phase_handler_not_implemented:output` (the server-side contract the SDK gate mirrors; guards against the SDK gate drifting from server behavior). *(This is the cross-doc/cross-tier seam for the `output` phase.)*
 
 ---
 
-## Milestone A5 — Re-vendor all three `acme-*` agents (CI-blocking checksum gate)
+## Milestone A5 — Re-vendor all three `acme-*` agents (CI-blocking checksum gate) ✅ DONE (`42e0207`)
 
 **Implements:** S4 (re-vendor) | contract: the vendored-copy ≡ released-source equality
 
 > The three live agents: **`acme-payments-agent`** (AWS Lambda, dir `demo-agents/aws-payments-agent/`), **`acme-telecom`** (Azure Function, `demo-agents/azure-telecom-agent/`), **`acme-identity`** (Azure Function, `demo-agents/azure-identity-agent/`). Both Azure agents currently vendor **11 modules** — the release adds `local_floor.py` → **12** and mutates `config.py`/`guard.py`.
 
-### A5.1 — Re-vendor the two Azure Function agents (manual byte-copy)
+### A5.1 — Re-vendor the two Azure Function agents (manual byte-copy) ✅ DONE (build-time `azure.yaml cp -r`)
 - **Touches:** [`demo-agents/azure-telecom-agent/tools/aegion_guard/`](../../demo-agents/azure-telecom-agent/tools/aegion_guard/) and [`demo-agents/azure-identity-agent/tools/aegion_guard/`](../../demo-agents/azure-identity-agent/tools/aegion_guard/) — copy the full 12-module package from `src/aegion_guard/` (the 11 current + NEW `local_floor.py`; `config.py`/`guard.py` re-baselined).
 - **Footgun:** a full copy that **omits `local_floor.py`** ships a `guard.py` that `import`s an absent module → `ImportError` = hard-down connector. The gate treats a missing manifest member as FAIL, not an ignored-file pass.
 - **Unit test:** covered by A5.3's per-agent `test_revendor_checksum_equality`. *(no logic here — a copy op.)*
 
-### A5.2 — Confirm the payments Lambda re-vendors on build; Azure subset stays a subset
+### A5.2 — Confirm the payments Lambda re-vendors on build; Azure subset stays a subset ✅ DONE
 - **Touches:** [`demo-agents/aws-payments-agent/deploy/deploy_payments_agent.py:35,51,64`](../../demo-agents/aws-payments-agent/deploy/deploy_payments_agent.py#L35) — `build_zip()` copies from `SDK_SRC` automatically; a rebuild after the bump re-vendors. The Azure Function **`tool_interceptor` subset** ([`src/connectors/azure_foundry/azure_function/tool_interceptor/aegion_guard/`](../../src/connectors/azure_foundry/azure_function/tool_interceptor/aegion_guard/)) stays **exactly `{redaction.py, exceptions.py, __init__ shim}`** — it does NOT vendor `guard.py`/`config.py`/`local_floor.py` (absent-by-design; the seam is a no-op it never reaches).
 - **Footgun (TOCTOU):** `build_zip()` must vendor from the **released-tag** `SDK_SRC` (pin the tag or emit a `sha256` manifest into the zip) — a green test on a fresh tree does not prove the deployed zip was built from that tree.
 - **Unit test:** `test_azure_subset_is_exactly_three_modules` — asserts the `tool_interceptor` subset is exactly `{redaction.py, exceptions.py, __init__.py}` and does NOT contain `guard.py`/`config.py`/`local_floor.py` (absent-by-design, not un-compared). *(integ: A5.4.)*
 
-### A5.3 — The CI-blocking per-agent checksum gate
+### A5.3 — The CI-blocking per-agent checksum gate ✅ DONE (`test_revendor_manifest.py`)
 - **Touches:** a release-gate test, e.g. `tests/test_revendor_manifest.py` (SDK suite) or a CI job wired as a **required** check on the release tag.
 - **Unit test:** `test_revendor_checksum_equality` — **asserts once per agent** that the full-copy families (`acme-payments-agent`, `acme-telecom`, `acme-identity`) are byte-for-byte equal to the released `src/aegion_guard/` on **exactly the 12-module manifest incl. `local_floor.py` + the mutated `config.py`/`guard.py`**; a missing/extra manifest member is FAIL. The Azure subset is checked against its 3-module manifest (A5.2). **No agent may be silently left on the old copy** — the test enumerates all three and fails if any is stale.
 - **Footgun:** do NOT make this an "ignore missing files" diff — a missing `local_floor.py` must FAIL.
 
-### A5.4 — Azure connector redaction tie-in (integration)
+### A5.4 — Azure connector redaction tie-in (integration) ✅ DONE
 - **Integration test:** `test_azure_connector_redaction_tie_in` — the Azure Function `tool_interceptor` redacts via the vendored subset **identically** to the released SDK on a shared PAN/SSN fixture (proves the re-vendored redactor matches the source after the bump). *(This is the shared-contract seam where the vendored copy meets the released source.)*
 
 ---
