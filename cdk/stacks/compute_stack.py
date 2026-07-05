@@ -261,6 +261,16 @@ class ComputeStack(Stack):
                 resources=[
                     storage_stack.audit_log_group_arn,
                     f"{storage_stack.audit_log_group_arn}:*",  # Include log streams
+                    # SEC-11 (WS-J / lld/38 §424-425): the fail-closed canary audit sink.
+                    # Canary-tenant (canary-*) audit events are routed to a SEPARATE log
+                    # group so synthetic attack-traffic never reaches the shared audit
+                    # group / behavioral-signal store the flywheel + SOC readers consume.
+                    # AuditLogger creates this group lazily on first canary event
+                    # (CANARY_AUDIT_LOG_GROUP, default /sentra/canary-audit) — grant it or
+                    # the CreateLogGroup/PutLogEvents is denied and the (fire-and-forget)
+                    # canary audit write silently drops.
+                    f"arn:aws:logs:{self.region}:{self.account}:log-group:/sentra/canary-audit",
+                    f"arn:aws:logs:{self.region}:{self.account}:log-group:/sentra/canary-audit:*",
                 ]
             )
         )
