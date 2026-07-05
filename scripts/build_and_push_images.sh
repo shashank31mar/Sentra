@@ -38,8 +38,8 @@ aws ecr get-login-password --region $AWS_REGION --profile $AWS_PROFILE | \
 echo -e "${GREEN}✓ ECR login successful${NC}"
 echo ""
 
-# Define services
-SERVICES=("security-controller" "dashboard" "customer-query-agent" "payment-agent")
+# Define services (WS-J Ji.2: "canary" is the 8th image — the ECS synthetic monitor)
+SERVICES=("security-controller" "dashboard" "customer-query-agent" "payment-agent" "canary")
 
 # Build and push each service
 for SERVICE in "${SERVICES[@]}"; do

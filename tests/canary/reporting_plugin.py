@@ -1,0 +1,201 @@
+"""WS-J J-report — the pytest reporting plugin (lld/38 §9) + the three-state model.
+
+Maps each check's outcome → ``status`` (PASS/FAIL/INFRA/SKIPPED_OVERLAP) and, in
+``live`` mode ONLY, writes one durable ``sentra-canary-results`` row per check
+(``(run_id, check_id)`` + failure_reason + expected/actual + http_status +
+latency_ms + correlation_id + scenario + route + ttl) so RCA is a query, not a hunt.
+A local/on-demand ``inprocess`` run emits to stdout only — NEVER writes prod.
+
+Three-state model (§9.1):
+  * INFRA  — a live transport error with NO HTTP response (DNS / conn-reset /
+             conn-refused / TLS / client-timeout) → bounded retry, then INFRA.
+  * FAIL   — a deterministic assertion failure OR any service-returned 5xx
+             (ALB 502/503, controller 500) → NEVER retried, pages.
+  * PASS   — assertion passed.
+
+Defense-in-depth (§9.3): before an SNS publish to the shared critical topic the
+plugin asserts ``sts:GetCallerIdentity`` is the canary task-role ARN — belt-and-
+suspenders on top of the IAM scoping (the load-bearing boundary is IAM).
+"""
+from __future__ import annotations
+
+import datetime as _dt
+import os
+import time
+import uuid
+from dataclasses import dataclass, field
+from typing import Any, Dict, List, Optional
+
+CANARY_TARGET_ENV = "CANARY_TARGET"
+RESULTS_TABLE_ENV = "CANARY_RESULTS_TABLE"
+CANARY_ROLE_SUBSTR = "sentra-canary"  # the canary task-role ARN carries this.
+_TTL_DAYS = 90
+
+
+class InfraError(Exception):
+    """Raised by the retry wrapper when a live transport error has NO HTTP response
+    after N bounded retries → recorded as INFRA (never FAIL, never swallowed)."""
+
+
+@dataclass
+class CanaryResult:
+    run_id: str
+    check_id: str
+    status: str
+    scenario: str = ""
+    route: str = ""
+    failure_reason: str = ""
+    expected: str = ""
+    actual: str = ""
+    http_status: Optional[int] = None
+    latency_ms: Optional[float] = None
+    correlation_id: Optional[str] = None
+
+    def to_item(self) -> Dict[str, Any]:
+        ttl = int(time.time()) + _TTL_DAYS * 86400
+        item = {
+            "run_id": self.run_id,
+            "check_id": self.check_id,
+            "status": self.status,
+            "scenario": self.scenario,
+            "route": self.route,
+            "failure_reason": self.failure_reason,
+            "expected": self.expected,
+            "actual": self.actual,
+            "correlation_id": self.correlation_id or "",
+            "ttl": ttl,
+        }
+        if self.http_status is not None:
+            item["http_status"] = self.http_status
+        if self.latency_ms is not None:
+            item["latency_ms"] = str(round(self.latency_ms, 3))
+        return item
+
+
+def new_run_id() -> str:
+    stamp = _dt.datetime.now(_dt.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    return f"canary-{stamp}-{uuid.uuid4().hex}"
+
+
+def classify_outcome(*, passed: bool, infra: bool, service_5xx: bool) -> str:
+    """The three-state decision (§9.1). A service 5xx is a FAIL that pages, NOT an
+    INFRA blip; only a no-HTTP-response transport error is INFRA."""
+    if infra:
+        return "INFRA"
+    if not passed or service_5xx:
+        return "FAIL"
+    return "PASS"
+
+
+def retry_transport(fn, *, retries: int = 2, backoff: float = 0.2):
+    """Bounded retry for a LIVE transport error with no HTTP response (§9.1). A
+    deterministic assertion failure is NEVER retried — only pass a transport call
+    here. After ``retries`` no-response failures raises ``InfraError``."""
+    last: Optional[Exception] = None
+    for attempt in range(retries + 1):
+        try:
+            return fn()
+        except _NO_RESPONSE_ERRORS as exc:  # transport-only
+            last = exc
+            if attempt < retries:
+                time.sleep(backoff * (attempt + 1))
+                continue
+    raise InfraError(f"transport error after {retries} retries: {last!r}")
+
+
+def _no_response_error_types():
+    try:
+        import httpx  # noqa: WPS433
+
+        return (
+            httpx.ConnectError,
+            httpx.ConnectTimeout,
+            httpx.ReadTimeout,
+            httpx.RemoteProtocolError,
+            ConnectionError,
+        )
+    except Exception:  # noqa: BLE001
+        return (ConnectionError, TimeoutError)
+
+
+_NO_RESPONSE_ERRORS = _no_response_error_types()
+
+
+class ResultSink:
+    """Writes results in ``live`` mode; stdout-only otherwise. The load-bearing
+    boundary is IAM (only the canary task role has PutItem/Publish) — the
+    ``mode=='live'`` branch is ONE guard on top of that."""
+
+    def __init__(self, mode: str, table_name: Optional[str] = None):
+        self.mode = mode
+        self.table_name = table_name or os.environ.get(RESULTS_TABLE_ENV)
+        self.written: List[CanaryResult] = []
+
+    def write(self, result: CanaryResult) -> bool:
+        """Return True iff a durable row was written (live only)."""
+        if self.mode != "live":
+            # Local / PR-gate inprocess run — stdout only, NEVER touch prod.
+            print(f"[canary] {result.status} {result.check_id} {result.failure_reason}")
+            return False
+        import boto3
+
+        boto3.resource("dynamodb").Table(self.table_name).put_item(Item=result.to_item())
+        self.written.append(result)
+        return True
+
+    def publish_critical(self, topic_arn: str, message: str, *, sts_client=None) -> bool:
+        """Publish to the shared critical topic ONLY after asserting we are the
+        canary task role (§9.3 defense-in-depth). Returns True iff published."""
+        import boto3
+
+        sts = sts_client or boto3.client("sts")
+        arn = sts.get_caller_identity().get("Arn", "")
+        if CANARY_ROLE_SUBSTR not in arn:
+            # A non-canary caller (e.g. a developer's sentra creds) must NOT page the
+            # shared critical audience — fail closed on the publish.
+            return False
+        boto3.client("sns").publish(TopicArn=topic_arn, Message=message)
+        return True
+
+
+# --------------------------------------------------------------------------- pytest hook
+# The plugin is OPT-IN via -p canary.reporting_plugin (the ECS entrypoint enables it);
+# a normal PR-gate run does not load it, so importing this module is side-effect free.
+_RUN_STATE: Dict[str, Any] = {}
+
+
+def pytest_configure(config):  # pragma: no cover - exercised via the ECS entrypoint
+    mode = os.environ.get(CANARY_TARGET_ENV, "inprocess")
+    _RUN_STATE["run_id"] = new_run_id()
+    _RUN_STATE["sink"] = ResultSink(mode)
+    _RUN_STATE["counts"] = {"PASS": 0, "FAIL": 0, "INFRA": 0}
+
+
+def pytest_runtest_makereport(item, call):  # pragma: no cover - ECS entrypoint path
+    if call.when != "call":
+        return
+    sink: ResultSink = _RUN_STATE.get("sink")
+    if sink is None:
+        return
+    infra = isinstance(call.excinfo.value, InfraError) if call.excinfo else False
+    passed = call.excinfo is None
+    status = classify_outcome(passed=passed, infra=infra, service_5xx=False)
+    _RUN_STATE["counts"][status] = _RUN_STATE["counts"].get(status, 0) + 1
+    result = CanaryResult(
+        run_id=_RUN_STATE["run_id"],
+        check_id=item.nodeid,
+        status=status,
+        route=item.nodeid,
+        failure_reason=repr(call.excinfo.value) if call.excinfo else "",
+    )
+    sink.write(result)
+
+
+__all__ = [
+    "CanaryResult",
+    "ResultSink",
+    "InfraError",
+    "classify_outcome",
+    "retry_transport",
+    "new_run_id",
+]
