@@ -27,6 +27,24 @@ from app.config import settings
 MOCK_BUCKET = "sentra-test-artifacts"
 
 
+def _create_bucket(s3, bucket: str, region: str) -> None:
+    """Create an S3 bucket honoring the real-S3/moto region contract.
+
+    `create_bucket` only omits a LocationConstraint in ``us-east-1``; every
+    other region MUST pass ``CreateBucketConfiguration`` or moto raises
+    ``IllegalLocationConstraintException``. ``settings`` defaults to
+    ``us-west-2`` (config/dev.yaml), so a bare ``create_bucket`` errors on
+    setup — this helper makes the moto fixtures region-safe.
+    """
+    if region == "us-east-1":
+        s3.create_bucket(Bucket=bucket)
+    else:
+        s3.create_bucket(
+            Bucket=bucket,
+            CreateBucketConfiguration={"LocationConstraint": region},
+        )
+
+
 def _policy_yaml(agent_id: str, allowed_tools: list, allowed_agents: list,
                  max_calls: int = 30, status: str = "active",
                  platform: str = "bedrock", cloud_region: str = "us-east-1") -> str:
@@ -86,7 +104,7 @@ def mocked_aws(aws_credentials):
 
         # 2) S3 bucket for full policy YAMLs.
         s3 = boto3.client("s3", region_name=settings.aws_region)
-        s3.create_bucket(Bucket=MOCK_BUCKET)
+        _create_bucket(s3, MOCK_BUCKET, settings.aws_region)
 
         # Helper to register a policy in both layers consistently.
         def register(agent_id: str, allowed_tools: list, allowed_agents: list,

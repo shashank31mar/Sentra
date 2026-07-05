@@ -21,6 +21,24 @@ from app.config import settings
 from app.utils import tenancy
 
 
+def _create_bucket(s3, bucket: str, region: str) -> None:
+    """Create an S3 bucket honoring the real-S3/moto region contract.
+
+    `create_bucket` only omits a LocationConstraint in ``us-east-1``; every
+    other region MUST pass ``CreateBucketConfiguration`` or moto raises
+    ``IllegalLocationConstraintException``. ``settings`` defaults to
+    ``us-west-2`` (config/dev.yaml), so a bare ``create_bucket`` errors on
+    setup — this helper makes the moto fixtures region-safe.
+    """
+    if region == "us-east-1":
+        s3.create_bucket(Bucket=bucket)
+    else:
+        s3.create_bucket(
+            Bucket=bucket,
+            CreateBucketConfiguration={"LocationConstraint": region},
+        )
+
+
 # --------------------------------------------------------------------------- #
 # Helper unit tests (no AWS, no flag mutation beyond the local toggle)
 # --------------------------------------------------------------------------- #
@@ -227,7 +245,7 @@ def test_policy_engine_resolves_v2_agent_index(v2_env):
     from app.validators.policy_engine import PolicyEngine
 
     s3 = _b.client("s3", region_name=settings.aws_region)
-    s3.create_bucket(Bucket=settings.s3_bucket)
+    _create_bucket(s3, settings.s3_bucket, settings.aws_region)
     s3_key = "policies/agents/agentA/v1.yaml"
     s3.put_object(Bucket=settings.s3_bucket, Key=s3_key,
                   Body=b"agent_id: agentA\nallowed_tools:\n  - read_thing\nallowed_agents: []\n")

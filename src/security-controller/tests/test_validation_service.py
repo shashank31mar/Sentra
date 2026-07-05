@@ -347,21 +347,29 @@ async def test_action_id_generation_for_write_operations(mock_session):
 
 
 @pytest.mark.asyncio
-async def test_validation_pipeline_fail_secure_on_error():
-    """Test that validation fails secure (DENY) on unexpected errors"""
+async def test_validation_pipeline_raises_on_error():
+    """WS-F F6.6 (lld/35 §6f items 1+2): a total inability-to-evaluate the pipeline
+    RAISES `PipelineError` (mapped to an honest 5XX at the HTTP boundary), it does
+    NOT return a fabricated 200-body `{decision:DENY, violation_type:SYSTEM_ERROR}`.
+
+    DELIBERATELY replaces the old `test_validation_pipeline_fail_secure_on_error`,
+    which pinned the fake-200-DENY. A fake-200 hides the failure from every gateway,
+    retry policy and monitor and forces the client to string-parse the body. The
+    error surfaces as a real 5XX; the PEP's `fail_secure` decides. The raised error
+    carries a correlation id but NO internal exception text."""
+    from app.services.validation_service import ValidationService, PipelineError
+
     with patch('app.utils.session_manager.SessionManager') as mock_sm, \
          patch('app.utils.audit_logger.AuditLogger'), \
          patch('app.utils.metrics_publisher.MetricsPublisher'):
-        
+
         # Make session_manager raise an error
         mock_sm_instance = Mock()
         mock_sm_instance.get_or_create_session = AsyncMock(side_effect=Exception("Test error"))
         mock_sm.return_value = mock_sm_instance
-        
-        from app.services.validation_service import ValidationService
-        
+
         service = ValidationService()
-        
+
         request = ValidationRequest(
             request_id="test-123",
             session_id="sess-123",
@@ -372,14 +380,17 @@ async def test_validation_pipeline_fail_secure_on_error():
             timestamp="2025-11-19T10:00:00Z",
             operation_type="READ"
         )
-        
-        result = await service.validate_tool_call(request)
-        
-        # Should fail secure with DENY
-        assert result["decision"] == "DENY"
-        assert "error" in result["reason"].lower() or "internal" in result["reason"].lower()
-        assert result["trust_score"] == 0.0
-        assert result["violation_type"] == "SYSTEM_ERROR"
+
+        with pytest.raises(PipelineError) as excinfo:
+            await service.validate_tool_call(request)
+
+        # Customer-safe: a correlation id, and NO internal exception text leaked.
+        assert excinfo.value.correlation_id
+        assert "Test error" not in excinfo.value.public_message
+        # A generic, customer-safe message (session/internal) — never the raw cause.
+        assert excinfo.value.public_message.lower() in (
+            "session management error", "internal validation error",
+        )
 
 
 @pytest.mark.asyncio

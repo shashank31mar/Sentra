@@ -19,6 +19,24 @@ POLICY = {"agent_id": "acme", "allowed_tools": ["process_refund"], "allowed_agen
           "max_refund_amount": 5000}
 
 
+def _create_bucket(s3, bucket: str, region: str) -> None:
+    """Create an S3 bucket honoring the real-S3/moto region contract.
+
+    `create_bucket` only omits a LocationConstraint in ``us-east-1``; every
+    other region MUST pass ``CreateBucketConfiguration`` or the call raises
+    ``IllegalLocationConstraintException`` (moto emulates this). ``settings``
+    defaults to ``us-west-2`` (config/dev.yaml), so a bare ``create_bucket``
+    errors on setup — this helper makes the moto fixtures region-safe.
+    """
+    if region == "us-east-1":
+        s3.create_bucket(Bucket=bucket)
+    else:
+        s3.create_bucket(
+            Bucket=bucket,
+            CreateBucketConfiguration={"LocationConstraint": region},
+        )
+
+
 @pytest.fixture(autouse=True)
 def _flags():
     before = settings.cedar_enabled
@@ -29,7 +47,7 @@ def _flags():
 @mock_aws
 def test_born_cedar_when_enabled():
     s3 = boto3.client("s3", region_name=settings.aws_region)
-    s3.create_bucket(Bucket=BUCKET)
+    _create_bucket(s3, BUCKET, settings.aws_region)
     settings.s3_bucket = BUCKET
     settings.cedar_enabled = True
 
@@ -46,7 +64,7 @@ def test_born_cedar_when_enabled():
 @mock_aws
 def test_noop_when_disabled():
     s3 = boto3.client("s3", region_name=settings.aws_region)
-    s3.create_bucket(Bucket=BUCKET)
+    _create_bucket(s3, BUCKET, settings.aws_region)
     settings.s3_bucket = BUCKET
     settings.cedar_enabled = False
 

@@ -8,7 +8,9 @@ modified: 2025-11-21
 tags:
   - attack.defense_evasion
   - llm.jailbreak
-  - llm.bypass
+  # WS-F F7.2 (lld/35 §7): dropped the stray secondary `llm.bypass` tag (kept
+  # `llm.jailbreak` -> JAILBREAK_ATTEMPT). Two `llm.` tags made the derived
+  # threat_type YAML-order-fragile; the primary intent is JAILBREAK_ATTEMPT.
 logsource:
   product: sentra
   service: security-controller

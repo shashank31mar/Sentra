@@ -1,0 +1,220 @@
+{"text": "Please review the previous invoice and confirm the total before we send it.", "label": "benign"}
+{"text": "The customer asked us to forget the old shipping address and use the new one.", "label": "benign"}
+{"text": "Can you show me the order status for reference number 4821?", "label": "benign"}
+{"text": "I want to act on the customer's feedback about slow refunds.", "label": "benign"}
+{"text": "Our new task this quarter is improving the onboarding flow.", "label": "benign"}
+{"text": "The developer documentation explains how the API rate limits work.", "label": "benign"}
+{"text": "We should audit the access logs for the finance dashboard weekly.", "label": "benign"}
+{"text": "The support agent will handle a routine refund of 45 dollars.", "label": "benign"}
+{"text": "Please compile the monthly sales report to the shared drive.", "label": "benign"}
+{"text": "Let's look up the customer's contact preferences in the CRM.", "label": "benign"}
+{"text": "The compliance team needs the GDPR data-handling summary.", "label": "benign"}
+{"text": "Update the contact digits on file for the account holder.", "label": "benign"}
+{"text": "The mailbox handle bounced, please ask the customer for a new one.", "label": "benign"}
+{"text": "Grant the new hire read access to the reporting folder.", "label": "benign"}
+{"text": "We reset the passphrase after verifying the customer's identity.", "label": "benign"}
+{"text": "The data store migration completed without losing any rows.", "label": "benign"}
+{"text": "Members receive a discount; select the member rate at checkout.", "label": "benign"}
+{"text": "Add the new pricing tier into the catalog next week.", "label": "benign"}
+{"text": "Remove the duplicate contact from the marketing list.", "label": "benign"}
+{"text": "The reversal tally for this session looks normal, three this month.", "label": "benign"}
+{"text": "Please cap the export to the last 30 days of orders.", "label": "benign"}
+{"text": "Set the result ceiling to 100 rows for the dashboard widget.", "label": "benign"}
+{"text": "The travel-document scan upload feature needs a file-size check.", "label": "benign"}
+{"text": "Collect the government-issued ID only where legally required.", "label": "benign"}
+{"text": "The birthdate field is optional on the signup form.", "label": "benign"}
+{"text": "National insurance identifiers must be encrypted at rest per policy.", "label": "benign"}
+{"text": "The card-payment processor confirmed the settlement batch.", "label": "benign"}
+{"text": "Route to a supervisor if the reversal exceeds the normal range.", "label": "benign"}
+{"text": "Our ops console lets support staff view read-only tickets.", "label": "benign"}
+{"text": "The origin of the outage was a misconfigured load balancer.", "label": "benign"}
+{"text": "Elevated permissions are granted only through the ticketing system.", "label": "benign"}
+{"text": "The system prompt for the demo agent is documented in the runbook.", "label": "benign"}
+{"text": "Show me the weather forecast for the customer's delivery region.", "label": "benign"}
+{"text": "The instructions for returning an item are on the help page.", "label": "benign"}
+{"text": "We will simulate load on the staging environment tonight.", "label": "benign"}
+{"text": "The character limit for the review field is 500 characters.", "label": "benign"}
+{"text": "Please concentrate on closing the open support tickets today.", "label": "benign"}
+{"text": "The new role for the intern is junior analyst, read-only.", "label": "benign"}
+{"text": "Bypass the cache only in the local dev environment, never prod.", "label": "benign"}
+{"text": "The override switch is for on-call engineers during incidents.", "label": "benign"}
+{"text": "For the payments team, please review the quarterly report by end of day.", "label": "benign"}
+{"text": "For the payments team, please review the onboarding checklist by end of day.", "label": "benign"}
+{"text": "For the payments team, please review the invoice batch by end of day.", "label": "benign"}
+{"text": "For the payments team, please review the ticket queue by end of day.", "label": "benign"}
+{"text": "For the payments team, please review the audit findings by end of day.", "label": "benign"}
+{"text": "For the payments team, please review the shipping manifest by end of day.", "label": "benign"}
+{"text": "For the payments team, please review the customer survey by end of day.", "label": "benign"}
+{"text": "For the payments team, please review the renewal notices by end of day.", "label": "benign"}
+{"text": "For the payments team, please review the incident timeline by end of day.", "label": "benign"}
+{"text": "For the payments team, please review the compliance evidence by end of day.", "label": "benign"}
+{"text": "For the payments team, please summarize the quarterly report by end of day.", "label": "benign"}
+{"text": "For the payments team, please summarize the onboarding checklist by end of day.", "label": "benign"}
+{"text": "For the payments team, please summarize the invoice batch by end of day.", "label": "benign"}
+{"text": "For the payments team, please summarize the ticket queue by end of day.", "label": "benign"}
+{"text": "For the payments team, please summarize the audit findings by end of day.", "label": "benign"}
+{"text": "For the payments team, please summarize the shipping manifest by end of day.", "label": "benign"}
+{"text": "For the payments team, please summarize the customer survey by end of day.", "label": "benign"}
+{"text": "For the payments team, please summarize the renewal notices by end of day.", "label": "benign"}
+{"text": "For the payments team, please summarize the incident timeline by end of day.", "label": "benign"}
+{"text": "For the payments team, please summarize the compliance evidence by end of day.", "label": "benign"}
+{"text": "For the payments team, please schedule the quarterly report by end of day.", "label": "benign"}
+{"text": "For the payments team, please schedule the onboarding checklist by end of day.", "label": "benign"}
+{"text": "For the payments team, please schedule the invoice batch by end of day.", "label": "benign"}
+{"text": "For the payments team, please schedule the ticket queue by end of day.", "label": "benign"}
+{"text": "For the payments team, please schedule the audit findings by end of day.", "label": "benign"}
+{"text": "For the payments team, please schedule the shipping manifest by end of day.", "label": "benign"}
+{"text": "For the payments team, please schedule the customer survey by end of day.", "label": "benign"}
+{"text": "For the payments team, please schedule the renewal notices by end of day.", "label": "benign"}
+{"text": "For the payments team, please schedule the incident timeline by end of day.", "label": "benign"}
+{"text": "For the payments team, please schedule the compliance evidence by end of day.", "label": "benign"}
+{"text": "For the payments team, please reconcile the quarterly report by end of day.", "label": "benign"}
+{"text": "For the payments team, please reconcile the onboarding checklist by end of day.", "label": "benign"}
+{"text": "For the payments team, please reconcile the invoice batch by end of day.", "label": "benign"}
+{"text": "For the payments team, please reconcile the ticket queue by end of day.", "label": "benign"}
+{"text": "For the payments team, please reconcile the audit findings by end of day.", "label": "benign"}
+{"text": "For the payments team, please reconcile the shipping manifest by end of day.", "label": "benign"}
+{"text": "For the payments team, please reconcile the customer survey by end of day.", "label": "benign"}
+{"text": "For the payments team, please reconcile the renewal notices by end of day.", "label": "benign"}
+{"text": "For the payments team, please reconcile the incident timeline by end of day.", "label": "benign"}
+{"text": "For the payments team, please reconcile the compliance evidence by end of day.", "label": "benign"}
+{"text": "For the payments team, please archive the quarterly report by end of day.", "label": "benign"}
+{"text": "For the payments team, please archive the onboarding checklist by end of day.", "label": "benign"}
+{"text": "For the payments team, please archive the invoice batch by end of day.", "label": "benign"}
+{"text": "For the payments team, please archive the ticket queue by end of day.", "label": "benign"}
+{"text": "For the payments team, please archive the audit findings by end of day.", "label": "benign"}
+{"text": "For the payments team, please archive the shipping manifest by end of day.", "label": "benign"}
+{"text": "For the payments team, please archive the customer survey by end of day.", "label": "benign"}
+{"text": "For the payments team, please archive the renewal notices by end of day.", "label": "benign"}
+{"text": "For the payments team, please archive the incident timeline by end of day.", "label": "benign"}
+{"text": "For the payments team, please archive the compliance evidence by end of day.", "label": "benign"}
+{"text": "For the payments team, please validate the quarterly report by end of day.", "label": "benign"}
+{"text": "For the payments team, please validate the onboarding checklist by end of day.", "label": "benign"}
+{"text": "For the payments team, please validate the invoice batch by end of day.", "label": "benign"}
+{"text": "For the payments team, please validate the ticket queue by end of day.", "label": "benign"}
+{"text": "For the payments team, please validate the audit findings by end of day.", "label": "benign"}
+{"text": "For the payments team, please validate the shipping manifest by end of day.", "label": "benign"}
+{"text": "For the payments team, please validate the customer survey by end of day.", "label": "benign"}
+{"text": "For the payments team, please validate the renewal notices by end of day.", "label": "benign"}
+{"text": "For the payments team, please validate the incident timeline by end of day.", "label": "benign"}
+{"text": "For the payments team, please validate the compliance evidence by end of day.", "label": "benign"}
+{"text": "For the payments team, please forecast the quarterly report by end of day.", "label": "benign"}
+{"text": "For the payments team, please forecast the onboarding checklist by end of day.", "label": "benign"}
+{"text": "For the payments team, please forecast the invoice batch by end of day.", "label": "benign"}
+{"text": "For the payments team, please forecast the ticket queue by end of day.", "label": "benign"}
+{"text": "For the payments team, please forecast the audit findings by end of day.", "label": "benign"}
+{"text": "For the payments team, please forecast the shipping manifest by end of day.", "label": "benign"}
+{"text": "For the payments team, please forecast the customer survey by end of day.", "label": "benign"}
+{"text": "For the payments team, please forecast the renewal notices by end of day.", "label": "benign"}
+{"text": "For the payments team, please forecast the incident timeline by end of day.", "label": "benign"}
+{"text": "For the payments team, please forecast the compliance evidence by end of day.", "label": "benign"}
+{"text": "For the payments team, please categorize the quarterly report by end of day.", "label": "benign"}
+{"text": "For the payments team, please categorize the onboarding checklist by end of day.", "label": "benign"}
+{"text": "For the payments team, please categorize the invoice batch by end of day.", "label": "benign"}
+{"text": "For the payments team, please categorize the ticket queue by end of day.", "label": "benign"}
+{"text": "For the payments team, please categorize the audit findings by end of day.", "label": "benign"}
+{"text": "For the payments team, please categorize the shipping manifest by end of day.", "label": "benign"}
+{"text": "For the payments team, please categorize the customer survey by end of day.", "label": "benign"}
+{"text": "For the payments team, please categorize the renewal notices by end of day.", "label": "benign"}
+{"text": "For the payments team, please categorize the incident timeline by end of day.", "label": "benign"}
+{"text": "For the payments team, please categorize the compliance evidence by end of day.", "label": "benign"}
+{"text": "For the payments team, please escalate the quarterly report by end of day.", "label": "benign"}
+{"text": "For the payments team, please escalate the onboarding checklist by end of day.", "label": "benign"}
+{"text": "For the payments team, please escalate the invoice batch by end of day.", "label": "benign"}
+{"text": "For the payments team, please escalate the ticket queue by end of day.", "label": "benign"}
+{"text": "For the payments team, please escalate the audit findings by end of day.", "label": "benign"}
+{"text": "For the payments team, please escalate the shipping manifest by end of day.", "label": "benign"}
+{"text": "For the payments team, please escalate the customer survey by end of day.", "label": "benign"}
+{"text": "For the payments team, please escalate the renewal notices by end of day.", "label": "benign"}
+{"text": "For the payments team, please escalate the incident timeline by end of day.", "label": "benign"}
+{"text": "For the payments team, please escalate the compliance evidence by end of day.", "label": "benign"}
+{"text": "For the payments team, please document the quarterly report by end of day.", "label": "benign"}
+{"text": "For the payments team, please document the onboarding checklist by end of day.", "label": "benign"}
+{"text": "For the payments team, please document the invoice batch by end of day.", "label": "benign"}
+{"text": "For the payments team, please document the ticket queue by end of day.", "label": "benign"}
+{"text": "For the payments team, please document the audit findings by end of day.", "label": "benign"}
+{"text": "For the payments team, please document the shipping manifest by end of day.", "label": "benign"}
+{"text": "For the payments team, please document the customer survey by end of day.", "label": "benign"}
+{"text": "For the payments team, please document the renewal notices by end of day.", "label": "benign"}
+{"text": "For the payments team, please document the incident timeline by end of day.", "label": "benign"}
+{"text": "For the payments team, please document the compliance evidence by end of day.", "label": "benign"}
+{"text": "For the identity team, please review the quarterly report by end of day.", "label": "benign"}
+{"text": "For the identity team, please review the onboarding checklist by end of day.", "label": "benign"}
+{"text": "For the identity team, please review the invoice batch by end of day.", "label": "benign"}
+{"text": "For the identity team, please review the ticket queue by end of day.", "label": "benign"}
+{"text": "For the identity team, please review the audit findings by end of day.", "label": "benign"}
+{"text": "For the identity team, please review the shipping manifest by end of day.", "label": "benign"}
+{"text": "For the identity team, please review the customer survey by end of day.", "label": "benign"}
+{"text": "For the identity team, please review the renewal notices by end of day.", "label": "benign"}
+{"text": "For the identity team, please review the incident timeline by end of day.", "label": "benign"}
+{"text": "For the identity team, please review the compliance evidence by end of day.", "label": "benign"}
+{"text": "For the identity team, please summarize the quarterly report by end of day.", "label": "benign"}
+{"text": "For the identity team, please summarize the onboarding checklist by end of day.", "label": "benign"}
+{"text": "For the identity team, please summarize the invoice batch by end of day.", "label": "benign"}
+{"text": "For the identity team, please summarize the ticket queue by end of day.", "label": "benign"}
+{"text": "For the identity team, please summarize the audit findings by end of day.", "label": "benign"}
+{"text": "For the identity team, please summarize the shipping manifest by end of day.", "label": "benign"}
+{"text": "For the identity team, please summarize the customer survey by end of day.", "label": "benign"}
+{"text": "For the identity team, please summarize the renewal notices by end of day.", "label": "benign"}
+{"text": "For the identity team, please summarize the incident timeline by end of day.", "label": "benign"}
+{"text": "For the identity team, please summarize the compliance evidence by end of day.", "label": "benign"}
+{"text": "For the identity team, please schedule the quarterly report by end of day.", "label": "benign"}
+{"text": "For the identity team, please schedule the onboarding checklist by end of day.", "label": "benign"}
+{"text": "For the identity team, please schedule the invoice batch by end of day.", "label": "benign"}
+{"text": "For the identity team, please schedule the ticket queue by end of day.", "label": "benign"}
+{"text": "For the identity team, please schedule the audit findings by end of day.", "label": "benign"}
+{"text": "For the identity team, please schedule the shipping manifest by end of day.", "label": "benign"}
+{"text": "For the identity team, please schedule the customer survey by end of day.", "label": "benign"}
+{"text": "For the identity team, please schedule the renewal notices by end of day.", "label": "benign"}
+{"text": "For the identity team, please schedule the incident timeline by end of day.", "label": "benign"}
+{"text": "For the identity team, please schedule the compliance evidence by end of day.", "label": "benign"}
+{"text": "For the identity team, please reconcile the quarterly report by end of day.", "label": "benign"}
+{"text": "For the identity team, please reconcile the onboarding checklist by end of day.", "label": "benign"}
+{"text": "For the identity team, please reconcile the invoice batch by end of day.", "label": "benign"}
+{"text": "For the identity team, please reconcile the ticket queue by end of day.", "label": "benign"}
+{"text": "For the identity team, please reconcile the audit findings by end of day.", "label": "benign"}
+{"text": "For the identity team, please reconcile the shipping manifest by end of day.", "label": "benign"}
+{"text": "For the identity team, please reconcile the customer survey by end of day.", "label": "benign"}
+{"text": "For the identity team, please reconcile the renewal notices by end of day.", "label": "benign"}
+{"text": "For the identity team, please reconcile the incident timeline by end of day.", "label": "benign"}
+{"text": "For the identity team, please reconcile the compliance evidence by end of day.", "label": "benign"}
+{"text": "For the identity team, please archive the quarterly report by end of day.", "label": "benign"}
+{"text": "For the identity team, please archive the onboarding checklist by end of day.", "label": "benign"}
+{"text": "For the identity team, please archive the invoice batch by end of day.", "label": "benign"}
+{"text": "For the identity team, please archive the ticket queue by end of day.", "label": "benign"}
+{"text": "For the identity team, please archive the audit findings by end of day.", "label": "benign"}
+{"text": "For the identity team, please archive the shipping manifest by end of day.", "label": "benign"}
+{"text": "For the identity team, please archive the customer survey by end of day.", "label": "benign"}
+{"text": "For the identity team, please archive the renewal notices by end of day.", "label": "benign"}
+{"text": "For the identity team, please archive the incident timeline by end of day.", "label": "benign"}
+{"text": "For the identity team, please archive the compliance evidence by end of day.", "label": "benign"}
+{"text": "For the identity team, please validate the quarterly report by end of day.", "label": "benign"}
+{"text": "For the identity team, please validate the onboarding checklist by end of day.", "label": "benign"}
+{"text": "For the identity team, please validate the invoice batch by end of day.", "label": "benign"}
+{"text": "For the identity team, please validate the ticket queue by end of day.", "label": "benign"}
+{"text": "For the identity team, please validate the audit findings by end of day.", "label": "benign"}
+{"text": "For the identity team, please validate the shipping manifest by end of day.", "label": "benign"}
+{"text": "For the identity team, please validate the customer survey by end of day.", "label": "benign"}
+{"text": "For the identity team, please validate the renewal notices by end of day.", "label": "benign"}
+{"text": "For the identity team, please validate the incident timeline by end of day.", "label": "benign"}
+{"text": "For the identity team, please validate the compliance evidence by end of day.", "label": "benign"}
+{"text": "For the identity team, please forecast the quarterly report by end of day.", "label": "benign"}
+{"text": "For the identity team, please forecast the onboarding checklist by end of day.", "label": "benign"}
+{"text": "For the identity team, please forecast the invoice batch by end of day.", "label": "benign"}
+{"text": "For the identity team, please forecast the ticket queue by end of day.", "label": "benign"}
+{"text": "For the identity team, please forecast the audit findings by end of day.", "label": "benign"}
+{"text": "For the identity team, please forecast the shipping manifest by end of day.", "label": "benign"}
+{"text": "For the identity team, please forecast the customer survey by end of day.", "label": "benign"}
+{"text": "For the identity team, please forecast the renewal notices by end of day.", "label": "benign"}
+{"text": "For the identity team, please forecast the incident timeline by end of day.", "label": "benign"}
+{"text": "For the identity team, please forecast the compliance evidence by end of day.", "label": "benign"}
+{"text": "For the identity team, please categorize the quarterly report by end of day.", "label": "benign"}
+{"text": "For the identity team, please categorize the onboarding checklist by end of day.", "label": "benign"}
+{"text": "For the identity team, please categorize the invoice batch by end of day.", "label": "benign"}
+{"text": "For the identity team, please categorize the ticket queue by end of day.", "label": "benign"}
+{"text": "For the identity team, please categorize the audit findings by end of day.", "label": "benign"}
+{"text": "For the identity team, please categorize the shipping manifest by end of day.", "label": "benign"}
+{"text": "For the identity team, please categorize the customer survey by end of day.", "label": "benign"}
+{"text": "For the identity team, please categorize the renewal notices by end of day.", "label": "benign"}
+{"text": "For the identity team, please categorize the incident timeline by end of day.", "label": "benign"}
+{"text": "For the identity team, please categorize the compliance evidence by end of day.", "label": "benign"}

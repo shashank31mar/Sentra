@@ -21,6 +21,15 @@ from app.combiners import Source
 from app.config import settings
 from app.utils.clients import get_clients
 from app.validators._signal_stamp import stamps
+from app.validators import sigma_dialect
+from app.validators.sigma_dialect import (
+    Condition,
+    DialectError,
+    Selection,
+    compile_selections,
+    parse_condition,
+)
+from app.validators.threat_type_remap import derive_threat_type
 
 logger = logging.getLogger(__name__)
 
@@ -29,6 +38,15 @@ logger = logging.getLogger(__name__)
 # it (throttled) and reloads when it moves.
 _SIGMA_VERSION_ITEM_ID = "__sigma_version__"
 
+# WS-F §6d: HARD cap on total matchers across the whole ruleset (fat-corpus DoS).
+_MATCHERS_PER_RULESET = sigma_dialect.DEFAULT_MATCHERS_PER_RULESET
+
+# WS-F §12/§6c: stale-pin page thresholds — page (not WARN-log) when the engine
+# serves a last-known-good ruleset across N consecutive failed reloads OR > T
+# seconds since the last successful compile.
+_STALE_PIN_MAX_CONSEC_FAILS = 3
+_STALE_PIN_MAX_STALE_SECONDS = 30 * 60  # 30 minutes
+
 
 class SigmaRulesLoadError(Exception):
     """Raised when Sigma rules cannot be loaded"""
@@ -36,7 +54,14 @@ class SigmaRulesLoadError(Exception):
 
 
 class SigmaRule:
-    """Represents a parsed Sigma rule"""
+    """Represents a parsed prompt-signature rule (WS-F closed dialect, lld/35 §4).
+
+    Grown ADDITIVELY (lld/35 §4.1): `selections` + `condition` carry the compiled
+    dialect (matched on the hot path via the boolean-AST fold); `patterns` is
+    retained (the flat list of raw `|contains`/`|all` literals) for logging/console/
+    trail AND as the F1 migration oracle's substring surface. `tags` is retained so
+    F7's threat-type derivation is reorder-stable and testable.
+    """
 
     def __init__(
         self,
@@ -46,6 +71,9 @@ class SigmaRule:
         severity: str,
         threat_type: str,
         action: str,
+        selections: Optional[Dict[str, Selection]] = None,
+        condition: Optional[Condition] = None,
+        tags: Optional[List[str]] = None,
     ):
         self.id = rule_id
         self.title = title
@@ -53,6 +81,17 @@ class SigmaRule:
         self.severity = severity
         self.threat_type = threat_type
         self.action = action
+        # WS-F additive dialect fields.
+        self.selections: Dict[str, Selection] = selections if selections is not None else {}
+        self.condition: Condition = condition if condition is not None else parse_condition(None)
+        self.tags: List[str] = tags or []
+
+    def evaluate(self, text: str) -> bool:
+        """Hot-path match: compute each selection's bool via compiled `.search()`,
+        then FOLD the condition AST over the per-selection bool map. NO re.compile
+        here (all compilation is load-time, lld/35 §4.4 / NFR-1) and NO eval()."""
+        sel_bools = {name: sel.matches(text) for name, sel in self.selections.items()}
+        return self.condition.evaluate(sel_bools)
 
 
 class SigmaEngine:
@@ -72,14 +111,29 @@ class SigmaEngine:
         s3_prefix: str = None,
         cache_ttl_seconds: int = None,
         metrics_publisher=None,
+        remap_threat_types: bool = True,
     ):
         self.s3_bucket = s3_bucket or settings.s3_bucket
         self.s3_prefix = s3_prefix or "sigma_rules/llm/"
         self.cache_ttl_seconds = cache_ttl_seconds or getattr(
             settings, "sigma_rules_cache_ttl_seconds", 300
         )
+        # WS-F F7: when True (the shipped default) the derived `threat_type` is the
+        # canonical 8-value enum (via threat_type_remap). The F1 equivalence-freeze
+        # sets this False to reproduce the OLD first-tag-uppercase extraction so the
+        # migration diff is measured against the true legacy behavior (the remap is
+        # a LABELED F7 change, NOT part of the 0-diff migration).
+        self.remap_threat_types = remap_threat_types
         self.rules_cache: Optional[List[SigmaRule]] = None
         self.cache_timestamp = 0.0
+        # WS-F §12/§6c: last-known-good resiliency + stale-pin bookkeeping.
+        self._last_good_compile_ts: float = 0.0
+        self._consecutive_reload_failures: int = 0
+        # Retain fire-and-forget alarm tasks: asyncio only holds a WEAK reference
+        # to a bare ensure_future() Task, so CPython may GC a still-pending task and
+        # silently drop the stale-pin page it exists to fire. Keep a strong ref until
+        # the task completes (discarded in the done-callback).
+        self._pending_alarms: set = set()
         # WS24 M3.2: the rule-set version we last loaded against. A cheap,
         # throttled get_item on the shared version row lets this task notice a
         # rule change (made via the CRUD API on any task) within
@@ -216,16 +270,37 @@ class SigmaEngine:
             fetched = await asyncio.gather(*[_fetch_rule(m) for m in metadata_list])
             rules = [r for r in fetched if r is not None]
 
+            # WS-F §6d: HARD ruleset-wide matcher cap (fat-corpus DoS). If the whole
+            # loaded set exceeds the cap, treat the reload as failed — keep the last
+            # known-good (do NOT admit a DoS-sized set into the hot path).
+            total_matchers = sum(len(sel.matchers) for r in rules for sel in r.selections.values())
+            if total_matchers > _MATCHERS_PER_RULESET:
+                logger.error(
+                    "prompt-signature ruleset exceeds matcher cap (%d > %d) — reload rejected",
+                    total_matchers, _MATCHERS_PER_RULESET,
+                )
+                rules = []  # force the last-known-good / cold-start-fail path below
+
             # Step 3: Update cache
             if rules:
                 self.rules_cache = rules
                 self.cache_timestamp = current_time
                 self.cache_version = loaded_version  # WS24 M3.2
+                # WS-F §6c: record a successful compile — resets the stale-pin clock.
+                self._last_good_compile_ts = current_time
+                self._consecutive_reload_failures = 0
                 logger.info(f"Loaded {len(rules)} Sigma rules into cache (hybrid approach)")
             else:
+                # WS-F §6c mitigation-1: a reload that produced ZERO usable rules
+                # while a previously-good set exists KEEPS the last-known-good (do NOT
+                # go blind). ABSTAIN happens only on genuine cold-start-no-cache.
                 logger.warning("No rules successfully loaded")
                 if self.rules_cache:
-                    logger.warning("Using stale cache")
+                    self._note_failed_reload(current_time)
+                    logger.warning(
+                        "Keeping last-known-good ruleset (%d rules) — reload produced none",
+                        len(self.rules_cache),
+                    )
                     return self.rules_cache
                 raise SigmaRulesLoadError("No rules could be loaded")
 
@@ -236,8 +311,11 @@ class SigmaEngine:
             raise
         except ClientError as e:
             logger.exception("S3 error loading Sigma rules")
-            # If cache exists, use stale cache (fail-open for availability)
+            # If cache exists, serve stale cache (availability) — but count it toward
+            # the stale-pin page so a persistent outage cannot silently freeze the
+            # floor on an old ruleset forever (WS-F §12).
             if self.rules_cache:
+                self._note_failed_reload(time.time())
                 logger.warning(
                     f"Using stale cache due to S3 error ({len(self.rules_cache)} rules)"
                 )
@@ -247,9 +325,44 @@ class SigmaEngine:
         except Exception as e:
             logger.exception("Unexpected error loading Sigma rules")
             if self.rules_cache:
+                self._note_failed_reload(time.time())
                 logger.warning("Using stale cache due to error")
                 return self.rules_cache
             raise SigmaRulesLoadError(f"Unexpected error: {e}")
+
+    def _note_failed_reload(self, now: float) -> None:
+        """WS-F §12/§6c stale-pin control. Increment the consecutive-failure counter
+        and PAGE (a HIGH alarm, not just a WARN log) when the engine has served a
+        last-known-good set across N consecutive failed reloads OR > T seconds since
+        the last successful compile — the signal that an attacker may be pushing
+        repeated compile-FAILING version bumps to freeze the floor on a stale set."""
+        self._consecutive_reload_failures += 1
+        stale_seconds = (
+            now - self._last_good_compile_ts if self._last_good_compile_ts else 0.0
+        )
+        if (
+            self._consecutive_reload_failures >= _STALE_PIN_MAX_CONSEC_FAILS
+            or (self._last_good_compile_ts and stale_seconds > _STALE_PIN_MAX_STALE_SECONDS)
+        ):
+            task = asyncio.ensure_future(self._fire_alarm(
+                "PromptSignatureRulesStalePinned",
+                consecutive_failures=self._consecutive_reload_failures,
+                stale_seconds=int(stale_seconds),
+            ))
+            # Strong-ref the task so it can't be GC'd before it fires (see __init__).
+            self._pending_alarms.add(task)
+            task.add_done_callback(self._pending_alarms.discard)
+
+    async def _fire_alarm(self, alarm_name: str, **dims) -> None:
+        """Fire a HIGH operational alarm (fire-and-forget). A publish failure must
+        never turn an otherwise-correct verdict into an error (WS-F §6a/§12)."""
+        try:
+            if self._metrics_publisher is None:
+                from app.utils.metrics_publisher import MetricsPublisher
+                self._metrics_publisher = MetricsPublisher()
+            await self._metrics_publisher.publish_sigma_alarm_metric(alarm_name, **dims)
+        except Exception as e:
+            logger.warning("Could not fire prompt-signature alarm %s: %s", alarm_name, e)
 
     async def _fetch_version(self) -> int:
         """Read the shared sigma rule-set version (one cheap get_item).
@@ -279,29 +392,43 @@ class SigmaEngine:
 
     def _parse_sigma_rule(self, rule_data: Dict) -> SigmaRule:
         """
-        Parse Sigma rule YAML into SigmaRule object.
+        Parse a prompt-signature rule YAML into a SigmaRule (WS-F F1/F2/F6.3).
 
-        Args:
-            rule_data: Parsed YAML dict
+        Compiles every `|contains`/`|all` (escaped) + `|re` (validated as untrusted
+        external data) matcher at LOAD, parses the `condition` to a boolean AST, and
+        verifies every condition Ref names a defined selection.
 
-        Returns:
-            SigmaRule object
+        Raises DialectError on a rule that violates the closed dialect (uncompilable
+        condition, undefined selection, matcher-cap over) so the caller SKIPS that
+        rule + logs — one bad rule never fails the whole set (§6d), but it never
+        silently evaluates false either.
         """
-        patterns = []
         detection = rule_data.get("detection", {})
 
-        # Extract all pattern lists from detection selections
-        for selection_name, selection_data in detection.items():
-            if selection_name == "condition":
-                continue  # Skip condition field
+        # --- F2: compile selections (escaped |contains/|all, validated |re) --- #
+        selections, _ = compile_selections(detection)
 
-            if isinstance(selection_data, dict):
-                for field, values in selection_data.items():
-                    if "|contains" in field and isinstance(values, list):
-                        patterns.extend(values)
+        # --- flat raw-pattern list retained for logging + F1 oracle surface --- #
+        patterns: List[str] = []
+        for sel in selections.values():
+            patterns.extend(m.raw for m in sel.matchers)
 
-        # Extract threat type from tags
-        threat_type = self._extract_threat_type(rule_data)
+        # --- F2.3/F2.4: parse condition AST + reject an undefined-selection ref - #
+        condition = parse_condition(detection.get("condition"))
+        undefined = condition.refs() - set(selections.keys())
+        if undefined:
+            # A condition naming a selection that has no compiled matcher is a
+            # fail-open trap (a typo'd/param-only selection that "passes"). Fail the
+            # rule's LOAD (skip + log), never silently evaluate it false. A
+            # param/session-only selection legitimately drops to zero matchers, so
+            # only FAIL when the condition still REFERENCES the dropped name; a rule
+            # whose condition doesn't name the dropped selection is left inert.
+            raise DialectError(
+                f"condition references undefined/empty selection(s) {sorted(undefined)}"
+            )
+
+        tags = rule_data.get("tags", []) or []
+        threat_type = self._derive_threat_type(rule_data, tags)
 
         return SigmaRule(
             rule_id=rule_data.get("id", "unknown"),
@@ -310,10 +437,27 @@ class SigmaEngine:
             severity=rule_data.get("level", "medium"),
             threat_type=threat_type,
             action=rule_data.get("response", {}).get("action", "DENY"),
+            selections=selections,
+            condition=condition,
+            tags=tags,
         )
 
+    def _derive_threat_type(self, rule_data: Dict, tags: List[str]) -> str:
+        """Derive the rule's threat_type.
+
+        Default (remap_threat_types=True): the canonical, reorder-stable 8-value
+        enum (WS-F F7, via threat_type_remap). When False: the LEGACY first-tag-
+        uppercase extraction — used ONLY by the F1 equivalence-freeze so the 0-diff
+        migration is measured against true legacy behavior before the F7 relabel.
+        """
+        if self.remap_threat_types:
+            return derive_threat_type(tags)
+        return self._extract_threat_type(rule_data)
+
     def _extract_threat_type(self, rule_data: Dict) -> str:
-        """Extract threat type from tags or title"""
+        """LEGACY threat-type extraction (first `llm.<x>` tag by YAML order,
+        uppercased). Retained ONLY for the F1 migration oracle; the shipped engine
+        uses `derive_threat_type` (F7). YAML-order-fragile by design here."""
         tags = rule_data.get("tags", [])
         for tag in tags:
             if tag.startswith("llm."):
@@ -339,68 +483,76 @@ class SigmaEngine:
     @stamps(Source.SENTRA_SIGMA)
     async def match_rules(self, user_input: str) -> ValidationResult:
         """
-        Match user input against all Sigma rules.
+        Match user input against every prompt-signature rule (WS-F closed dialect).
 
-        Args:
-            user_input: User's input text to check
+        Per rule: compute each selection's bool via its COMPILED matchers (`.search()`
+        — no per-request re.compile, NFR-1) then FOLD the condition AST. On a True
+        condition, emit the SAME DENY ValidationResult the substring engine did.
 
-        Returns:
-            ValidationResult with decision (ALLOW/DENY)
+        Error contract (lld/35 §6):
+          * rule-load failure with no usable cache -> ABSTAIN (no signal) + HIGH
+            `PromptSignatureRulesUnavailable` alarm. NOT a fabricated `RULE_ENGINE_ERROR`
+            DENY — a fake-200-DENY lies to every audit/console consumer and can mask a
+            real detection outage. ABSTAIN lets the other tier-0 layers + the tier-1
+            ML backstop still decide (abstain != deny).
+          * a genuine unexpected crash PROPAGATES (raise) to the honest outer handler
+            (5XX) — it is NOT swallowed into a per-layer DENY.
         """
         try:
-            # Load rules (from cache or S3)
+            # Load rules (from cache or S3). On genuine no-cache this raises
+            # SigmaRulesLoadError (-> ABSTAIN below), NOT a fabricated DENY.
             rules = await self.load_rules_from_s3()
-            user_input_lower = user_input.lower()
 
-            # Check each rule
+            # Single case-fold pass over the whole prompt (NFR-1). Matchers are
+            # compiled IGNORECASE, so we match on the raw text; the lowering here is
+            # retained only for the raw-substring log parity in _emit-adjacent code.
             for rule in rules:
-                for pattern in rule.patterns:
-                    if pattern.lower() in user_input_lower:
-                        logger.warning(
-                            f"Sigma rule matched: {rule.title} - pattern: '{pattern}'"
-                        )
-                        # Record the match in CloudWatch (per-RuleId series). This
-                        # is what drives the console's "Matches" column; the DDB
-                        # stats.match_count_* fields are dead. Fire-and-forget so
-                        # a metrics failure never blocks the DENY.
-                        await self._emit_match(rule.id)
-                        return ValidationResult(
-                            decision="DENY",
-                            reason=f"Threat detected: {rule.threat_type}",
-                            violation_type=rule.threat_type,
-                            threat_type=rule.threat_type,
-                            matched_rule=rule.title,
-                            severity=rule.severity.upper(),
-                            penalty=-20 if rule.severity == "high" else -15,
-                            should_deny=True,
-                        )
+                if rule.evaluate(user_input):
+                    logger.warning(
+                        "prompt-signature rule matched: %s (threat_type=%s)",
+                        rule.title, rule.threat_type,
+                    )
+                    # §6e reason discipline: cite the indicator (threat_type + rule
+                    # title), NEVER the prompt verbatim (avoids prompt-echo / co-tenant
+                    # content leak). The matched pattern is logged server-side only.
+                    logger.warning(
+                        "prompt-signature match detail (server-side only): rule=%s selections=%s",
+                        rule.id, list(rule.selections.keys()),
+                    )
+                    # Record the match in CloudWatch (per-RuleId series). This is
+                    # what drives the console's "Matches" column; fire-and-forget so
+                    # a metrics failure never blocks the DENY.
+                    await self._emit_match(rule.id)
+                    return ValidationResult(
+                        decision="DENY",
+                        reason=f"Threat detected: {rule.threat_type}",
+                        violation_type=rule.threat_type,
+                        threat_type=rule.threat_type,
+                        matched_rule=rule.title,
+                        severity=rule.severity.upper(),
+                        penalty=-20 if rule.severity == "high" else -15,
+                        should_deny=True,
+                    )
 
             # No threats detected
-            logger.debug("No Sigma rule matches found")
+            logger.debug("No prompt-signature rule matches found")
             return ValidationResult(
                 decision="ALLOW", reason="No threats detected", should_deny=False
             )
 
         except SigmaRulesLoadError as e:
-            logger.error(f"Sigma rules load error: {e}", exc_info=True)
-            # Fail-secure: deny if rules can't be loaded
-            return ValidationResult(
-                decision="DENY",
-                reason="Threat detection unavailable",
-                violation_type="RULE_ENGINE_ERROR",
-                penalty=-10,
-                should_deny=True,
+            # WS-F §6a: rule store unavailable AND no usable cache -> ABSTAIN (emit
+            # NO signal), NOT a fabricated `RULE_ENGINE_ERROR` DENY. Fire a HIGH
+            # alarm so the signature-blind window is visible/paged. The other layers
+            # + ML backstop still decide the request.
+            logger.error("prompt-signature rules unavailable — ABSTAIN: %s", e)
+            await self._fire_alarm("PromptSignatureRulesUnavailable")
+            return ValidationResult.abstain(
+                "prompt-signature rules unavailable (rule store outage)"
             )
-        except Exception as e:
-            logger.exception(f"Sigma rule matching error: {e}")
-            # Fail-secure: deny on errors
-            return ValidationResult(
-                decision="DENY",
-                reason="Threat detection error",
-                violation_type="RULE_ENGINE_ERROR",
-                penalty=-10,
-                should_deny=True,
-            )
+        # NOTE: no blanket `except Exception` here (was a §6b fake-200-DENY). A
+        # genuine crash (e.g. a TypeError in AST eval) PROPAGATES to the honest
+        # outer handler -> 5XX, never a fabricated per-layer DENY.
 
 
 # --------------------------------------------------------------------------- #

@@ -462,6 +462,31 @@ async def test_t_equiv_sigma_deny_ml_never_runs(mock_session, sample_request, mo
 
 
 @pytest.mark.asyncio
+async def test_ws_f_sigma_abstain_does_not_short_circuit(mock_session, sample_request, monkeypatch):
+    """WS-F F6.1 seam (lld/35 §6a): a sigma ABSTAIN (rule-store outage) emits NO
+    signal and does NOT short-circuit — the other tier-0 layers + the tier-1 ML
+    backstop still decide. Here every other layer ALLOWs and ML DENYs; the request
+    must still reach the ML DENY (proving the ABSTAIN did not fake-DENY nor
+    fail-open into a silent ALLOW). abstain != deny != allow."""
+    service = _pipeline_service(mock_session)
+    # sigma ABSTAINs (no vote)
+    service.sigma_engine.match_rules = AsyncMock(
+        return_value=ValidationResult.abstain("prompt-signature rules unavailable")
+    )
+    # ML backstop DENYs
+    ml_deny = _deny(Source.SENTRA_ML_CLASSIFIER, "PROMPT_INJECTION")
+    ml_deny.confidence = 0.95
+    service.ml_classifier.validate = AsyncMock(return_value=ml_deny)
+
+    result, signals = await _run_ff(service, sample_request, mock_session, monkeypatch)
+    # The ML backstop decided — sigma's ABSTAIN neither short-circuited nor fake-DENYed.
+    assert result.decision == "DENY"
+    assert _winning_source(signals) == Source.SENTRA_ML_CLASSIFIER
+    # sigma contributed NO signal (abstain -> to_signal() is None -> skipped).
+    assert Source.SENTRA_SIGMA not in [s.source for s in signals]
+
+
+@pytest.mark.asyncio
 async def test_t_equiv_abuse_deny(mock_session, sample_request, monkeypatch):
     """GOLDEN: the last tier-0 node (abuse) DENYs → DENY, winning_source=abuse;
     ML still never runs (abuse short-circuits before tier-1)."""

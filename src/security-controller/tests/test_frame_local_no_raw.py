@@ -67,19 +67,25 @@ async def test_request_scrubbed_after_normal_return():
 
 @pytest.mark.asyncio
 async def test_request_scrubbed_after_midpipeline_crash():
-    """THE F7 case: the pipeline raises mid-flight. validate_tool_call catches it and
-    returns an error response — and the finally STILL scrubs the request, so the raw
-    PAN/SSN are absent from the frame's `request` locals a traceback/APM would capture."""
+    """THE F7 case: the pipeline raises mid-flight. UPDATED for WS-F F6.6 (§6f 1+2):
+    `validate_tool_call` no longer returns a fabricated 200-DENY on a crash — it RAISES
+    `PipelineError` (mapped to an honest 5XX at the HTTP boundary). The scrub-on-crash
+    invariant this test protects STILL holds: the `finally: _scrub_raw_content(request)`
+    runs on the raise path too, so the raw PAN/SSN are absent from the frame's `request`
+    locals a traceback/APM would capture — even though the exception propagates."""
+    from app.services.validation_service import PipelineError
+
     svc = ValidationService()
     req = _raw_request()
     svc.session_manager = Mock()
     svc.session_manager.get_or_create_session = AsyncMock(return_value={"trust_score": 90.0})
     boom = RuntimeError("simulated mid-pipeline crash")
     with patch.object(svc, "_run_validation_pipeline", AsyncMock(side_effect=boom)):
-        resp = await svc.validate_tool_call(req)
-    # the crash was caught → fail-secure error response (not a 200-ALLOW)
-    assert resp.get("decision") == "DENY" or "error" in json.dumps(resp).lower()
-    # and the raw content is GONE from the request object the frame held
+        # honest 5XX contract: the crash PROPAGATES (no fake 200-DENY)
+        with pytest.raises(PipelineError):
+            await svc.validate_tool_call(req)
+    # and the raw content is STILL GONE from the request object the frame held (the
+    # finally scrubbed it before the raise unwound the frame) — the actual invariant.
     blob = json.dumps({"tp": req.tool_params, "ui": req.user_input})
     assert _RAW_PAN not in blob, "raw PAN survived on the request frame-local after a crash (F7 leak)"
     assert _RAW_SSN not in blob, "raw SSN survived on the request frame-local after a crash (F7 leak)"

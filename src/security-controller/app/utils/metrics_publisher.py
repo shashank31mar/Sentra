@@ -174,6 +174,41 @@ class MetricsPublisher:
             logger.exception(f"Failed to publish Sigma match metric (non-blocking): {e}")
             # Don't raise - metrics publishing should not block validation
 
+    async def publish_sigma_alarm_metric(self, alarm_name: str, **dims):
+        """Publish a prompt-signature operational alarm metric (WS-F §6a/§12).
+
+        Fires ONE count under the given metric name (e.g.
+        ``PromptSignatureRulesUnavailable`` on a rule-store outage that forced the
+        engine to ABSTAIN, or ``PromptSignatureRulesStalePinned`` when the engine
+        has served a last-known-good set across N failed reloads / T minutes). A
+        CloudWatch alarm pages on these — the signature-blind / stale-pin window
+        must never be silent.
+
+        Note: Fire-and-forget. An alarm-publish failure must never turn an
+        otherwise-correct verdict (an ABSTAIN, a DENY) into an error.
+        """
+        try:
+            dimensions = [
+                {'Name': str(k), 'Value': str(v)} for k, v in dims.items()
+            ]
+            self.cloudwatch.put_metric_data(
+                Namespace=self.namespace,
+                MetricData=[
+                    {
+                        'MetricName': alarm_name,
+                        'Value': 1,
+                        'Unit': 'Count',
+                        **({'Dimensions': dimensions} if dimensions else {}),
+                    }
+                ],
+            )
+            logger.warning("prompt-signature alarm fired: %s %s", alarm_name, dims)
+        except Exception as e:
+            logger.exception(
+                "Failed to publish prompt-signature alarm %s (non-blocking): %s",
+                alarm_name, e,
+            )
+
     async def publish_cedar_shadow_metric(self, agreed: bool, disagreement_kind: str = "none"):
         """Publish a Cedar shadow-mode comparison result (feature: cedar-policy CT07).
 

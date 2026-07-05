@@ -26,6 +26,25 @@ from app.utils.session_manager import SessionManager, SessionUpdateError
 logger = logging.getLogger(__name__)
 
 
+class PipelineError(Exception):
+    """A total inability-to-evaluate the pipeline (WS-F F6.6 / lld/35 §6f items 1+2).
+
+    Raised INSTEAD of returning a fabricated 200-body `SYSTEM_ERROR` DENY. The
+    honest error contract is: a request that cannot be processed surfaces the real
+    5XX at the HTTP boundary (the `main.py` exception handler + the validate route),
+    with a CUSTOMER-SAFE message + a correlation id — NEVER a 200 wrapping an error
+    string (which hides the failure from every gateway/retry/monitor and forces the
+    client to string-parse the body). The PEP's `fail_secure` then decides from the
+    status code. `correlation_id` lets the customer-safe message be traced to the
+    server-side log without leaking the internal exception/stack/host/query.
+    """
+
+    def __init__(self, correlation_id: str, public_message: str = "Internal validation error"):
+        self.correlation_id = correlation_id
+        self.public_message = public_message
+        super().__init__(f"{public_message} (correlation_id={correlation_id})")
+
+
 # --- M1 latency instrumentation (LLD 24 / WS24) ---------------------------------
 # Per-request per-step wall-clock timings, kept in a contextvar so concurrent
 # requests don't collide (each request runs in its own asyncio task → its own
@@ -491,19 +510,21 @@ class ValidationService:
             return response
 
         except SessionUpdateError as e:
-            logger.exception(f"Session update error: {e}")
-            return self._create_error_response(
-                request.session_id,
-                "Session management error",
-                start_time
+            # WS-F F6.6 (§6f items 1+2): a total inability-to-evaluate is an HONEST
+            # 5XX, NOT a fabricated 200-body `SYSTEM_ERROR` DENY. Log the internal
+            # detail server-side under a correlation id; surface only the id +
+            # a customer-safe message to the caller.
+            correlation_id = secrets.token_hex(8)
+            logger.exception(
+                "Session update error (correlation_id=%s): %s", correlation_id, e
             )
+            raise PipelineError(correlation_id, "Session management error")
         except Exception as e:
-            logger.exception(f"Validation pipeline error: {e}")
-            return self._create_error_response(
-                request.session_id,
-                "Internal validation error",
-                start_time
+            correlation_id = secrets.token_hex(8)
+            logger.exception(
+                "Validation pipeline error (correlation_id=%s): %s", correlation_id, e
             )
+            raise PipelineError(correlation_id, "Internal validation error")
         finally:
             # WS-E2 / LLD 29 §5.4 (E4.4, F7) — strip the raw content fields off the
             # request object on EVERY exit path (clean return OR exception), now that
@@ -1048,21 +1069,11 @@ class ValidationService:
         
         return None
     
-    def _create_error_response(
-        self,
-        session_id: str,
-        reason: str,
-        start_time: float
-    ) -> Dict:
-        """
-        Create error response for system failures.
-        Fail-secure: always returns DENY.
-        """
-        return {
-            "decision": "DENY",
-            "reason": reason,
-            "trust_score": 0.0,
-            "session_id": session_id,
-            "latency_ms": (time.time() - start_time) * 1000,
-            "violation_type": "SYSTEM_ERROR"
-        }
+    # WS-F F6.6 (§6f items 1+2, item 5): `_create_error_response` is REMOVED. It
+    # returned a 200-body `{decision:DENY, violation_type:SYSTEM_ERROR}` — a fake-200
+    # wrapping a pipeline failure, which hid the error from every gateway/retry/
+    # monitor and forced clients to string-parse the body to learn a request failed.
+    # A total inability-to-evaluate now raises `PipelineError`, which the validate
+    # route + the `main.py` @app.exception_handler map to an HONEST 5XX with a
+    # customer-safe body + a correlation id (run.py:349-354's docstring — item 5 —
+    # becomes true now that the outer handler is honest).

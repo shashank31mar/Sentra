@@ -9,7 +9,10 @@ tags:
   - attack.initial_access
   - attack.t1566  # Phishing (adapted for LLM context)
   - llm.prompt_injection
-  - llm.jailbreak
+  # WS-F F7.2 (lld/35 §7): dropped the stray secondary `llm.jailbreak` tag. Two
+  # `llm.` tags made the derived threat_type YAML-order-fragile; the primary intent
+  # here is PROMPT_INJECTION. Jailbreak content is covered by sigma-llm-002.
+  - attack.defense_evasion  # (secondary intent moved to a non-llm. descriptive tag)
 logsource:
   product: sentra
   service: security-controller

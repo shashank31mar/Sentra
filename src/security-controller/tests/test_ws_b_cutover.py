@@ -17,6 +17,24 @@ from app.utils import tenancy
 from tests.mt_helpers import run, create_mt_tables
 
 
+def _create_bucket(s3, bucket: str, region: str) -> None:
+    """Create an S3 bucket honoring the real-S3/moto region contract.
+
+    `create_bucket` only omits a LocationConstraint in ``us-east-1``; every
+    other region MUST pass ``CreateBucketConfiguration`` or moto raises
+    ``IllegalLocationConstraintException``. ``settings`` defaults to
+    ``us-west-2`` (config/dev.yaml), so a bare ``create_bucket`` errors on
+    setup — this helper makes the moto fixtures region-safe.
+    """
+    if region == "us-east-1":
+        s3.create_bucket(Bucket=bucket)
+    else:
+        s3.create_bucket(
+            Bucket=bucket,
+            CreateBucketConfiguration={"LocationConstraint": region},
+        )
+
+
 # =========================================================================== #
 # B3 — explicit per-tenant S3 policy prefix
 # =========================================================================== #
@@ -67,7 +85,7 @@ def test_get_policy_object_dual_read(monkeypatch):
     monkeypatch.setenv("AWS_DEFAULT_REGION", settings.aws_region)
     with mock_aws():
         s3 = boto3.client("s3", region_name=settings.aws_region)
-        s3.create_bucket(Bucket="test-policy-bucket")
+        _create_bucket(s3, "test-policy-bucket", settings.aws_region)
         legacy = "policies/agents/acme-payments-agent/v1.0.0.yaml"
         s3.put_object(Bucket="test-policy-bucket", Key=legacy, Body=b"name: acme")
         from app.utils.s3_policy_store import get_policy_object

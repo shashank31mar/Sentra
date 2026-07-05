@@ -5,17 +5,20 @@ This is the core security enforcement engine that validates EVERY tool call
 from EVERY agent before execution.
 """
 import logging
+import secrets
 import time
 from contextlib import asynccontextmanager
 from typing import Dict
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from pythonjsonlogger import jsonlogger
 
 from app.api import routes
 from app.api import tenancy_routes
 from app.config import settings
+from app.services.validation_service import PipelineError
 
 # Configure structured JSON logging
 logger = logging.getLogger()
@@ -80,6 +83,47 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# ============================================================
+# WS-F F6.6 (lld/35 §6f items 1+2) — honest error contract.
+# NO @app.exception_handler existed before this (verified). An unhandled path fell
+# back to a fabricated 200-body DENY (via _create_error_response, now removed) or a
+# leaked default-500 detail. These handlers surface the HONEST 5XX with a
+# CUSTOMER-SAFE body (never the internal exception / stack / host / query) + a
+# correlation id the customer can quote to support (the real detail is logged
+# server-side). The PEP's `fail_secure` decides what to do from the status code.
+# ============================================================
+
+@app.exception_handler(PipelineError)
+async def _pipeline_error_handler(request: Request, exc: PipelineError) -> JSONResponse:
+    """A total inability-to-evaluate the pipeline -> honest 500 + customer-safe body."""
+    return JSONResponse(
+        status_code=500,
+        content={
+            "error": exc.public_message,
+            "correlation_id": exc.correlation_id,
+        },
+    )
+
+
+@app.exception_handler(Exception)
+async def _unhandled_exception_handler(request: Request, exc: Exception) -> JSONResponse:
+    """Catch-all for any path that raises an unhandled exception. Logs the internal
+    detail under a correlation id server-side; returns ONLY a sanitized message + the
+    id (no exception text / stack / host / query leaks across the API boundary)."""
+    correlation_id = secrets.token_hex(8)
+    logger.exception(
+        "Unhandled exception (correlation_id=%s) on %s %s",
+        correlation_id, request.method, request.url.path,
+    )
+    return JSONResponse(
+        status_code=500,
+        content={
+            "error": "Internal server error",
+            "correlation_id": correlation_id,
+        },
+    )
+
 
 # Include API routes
 app.include_router(routes.router)

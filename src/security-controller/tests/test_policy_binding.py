@@ -24,6 +24,24 @@ from app.api.models import ValidationRequest
 MOCK_BUCKET = "sentra-test-artifacts"
 
 
+def _create_bucket(s3, bucket: str, region: str) -> None:
+    """Create an S3 bucket honoring the real-S3/moto region contract.
+
+    `create_bucket` only omits a LocationConstraint in ``us-east-1``; every
+    other region MUST pass ``CreateBucketConfiguration`` or moto raises
+    ``IllegalLocationConstraintException``. ``settings`` defaults to
+    ``us-west-2`` (config/dev.yaml), so a bare ``create_bucket`` errors on
+    setup — this helper makes the moto fixtures region-safe.
+    """
+    if region == "us-east-1":
+        s3.create_bucket(Bucket=bucket)
+    else:
+        s3.create_bucket(
+            Bucket=bucket,
+            CreateBucketConfiguration={"LocationConstraint": region},
+        )
+
+
 @pytest.fixture
 def aws_credentials(monkeypatch):
     for k in ("AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY",
@@ -68,7 +86,7 @@ def env(aws_credentials):
             BillingMode="PAY_PER_REQUEST",
         )
         s3 = boto3.client("s3", region_name=settings.aws_region)
-        s3.create_bucket(Bucket=MOCK_BUCKET)
+        _create_bucket(s3, MOCK_BUCKET, settings.aws_region)
 
         def put_policy(policy_id, agent_id, allowed_tools, *, status="active",
                        platform="bedrock", cloud_region="us-east-1", created_by="system"):

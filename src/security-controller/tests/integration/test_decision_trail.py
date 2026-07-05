@@ -96,8 +96,18 @@ def test_pii_short_circuit_sigma_deny_one_query():
     if live:
         _run_body()
     else:
+        # Create the moto table in the SAME region SignalStoreWriter /
+        # DecisionsService use (settings.aws_region). Those consumers build
+        # their boto3 clients from settings.aws_region (signal_store_writer.py:218,
+        # decisions_service.py:50), which resolves to us-west-2 (config), NOT the
+        # AWS_DEFAULT_REGION=us-east-1 the hermetic run exports. A hardcoded
+        # us-east-1 here put the table in a region the writer never queries →
+        # ResourceNotFoundException ("4 items lost") before any assertion. moto
+        # keeps per-region state, so the create-region MUST match the client region.
+        from app.config import settings
+
         with mock_aws():
-            ddb = boto3.resource("dynamodb", region_name="us-east-1")
+            ddb = boto3.resource("dynamodb", region_name=settings.aws_region)
             _create_signals_table(ddb)
             _run_body()
 
