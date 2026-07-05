@@ -147,6 +147,29 @@ def test_canary_alarms():
     })
 
 
+def test_canary_product_5xx_alarm_escalates_to_critical_topic():
+    """§9.1 — the ProductFivexxFail alarm exists and (when the critical topic is
+    imported) escalates there. The metric it watches is emitted every run by
+    entrypoint.emit_run_metrics (the alarm-to-emitter seam is asserted end-to-end by
+    tests/canary/test_metric_emission_seam.py)."""
+    t = _canary_template()
+    t.has_resource_properties("AWS::CloudWatch::Alarm", {
+        "MetricName": "ProductFivexxFail",
+        "Namespace": "Sentra/Canary",
+    })
+
+
+def test_alarm_metric_names_are_all_in_the_emitter_contract():
+    """The stack's ALARM_METRIC_NAMES contract lists exactly the metrics the alarms
+    watch — the join anchor the seam test uses to prove every one is emitted."""
+    from stacks.canary_stack import ALARM_METRIC_NAMES
+
+    assert ALARM_METRIC_NAMES == frozenset({
+        "ChecksFailed", "ChecksPassed", "InfraErrors", "ChecksExpected",
+        "CanarySkippedOverlap", "ProductFivexxFail",
+    })
+
+
 def test_canary_ecr_repo_created():
     """Ji.2 — the StorageStack synthesizes an ECR repo sentra/canary (the 8th image)."""
     os.environ["ENV"] = "dev"

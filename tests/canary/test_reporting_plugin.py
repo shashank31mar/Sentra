@@ -5,13 +5,16 @@ import boto3
 import pytest
 from moto import mock_aws
 
+import canary.reporting_plugin as reporting_plugin
 from canary.reporting_plugin import (
     CanaryResult,
     InfraError,
     ResultSink,
     classify_outcome,
     new_run_id,
+    record_service_5xx,
     retry_transport,
+    run_counts,
 )
 from app.config import settings
 
@@ -124,3 +127,111 @@ def test_sts_guard_blocks_non_canary_publish():
         sts_client=_FakeSts(),
     )
     assert published is False  # fail-closed: a non-canary caller cannot page.
+
+
+# ---- run-state accounting: the makereport → counts → emitter wiring ------------
+class _FakeItem:
+    def __init__(self, nodeid: str):
+        self.nodeid = nodeid
+
+
+class _FakeCall:
+    def __init__(self, when="call", exc=None):
+        self.when = when
+
+        class _ExcInfo:
+            def __init__(self, value):
+                self.value = value
+
+        self.excinfo = _ExcInfo(exc) if exc is not None else None
+
+
+@pytest.fixture
+def _active_plugin(monkeypatch):
+    """Drive the plugin hooks directly (they are ECS-entrypoint-path in prod). Uses an
+    inprocess sink so nothing writes real AWS; resets the shared run-state after."""
+    monkeypatch.setenv("CANARY_TARGET", "inprocess")
+
+    class _Cfg:
+        pass
+
+    reporting_plugin.pytest_configure(_Cfg())
+    yield
+    reporting_plugin._RUN_STATE.clear()
+
+
+def test_makereport_counts_pass_fail_infra(_active_plugin):
+    """The plugin tallies PASS / FAIL / INFRA into run_counts (the numbers the
+    end-of-run emitter turns into CloudWatch metrics)."""
+    reporting_plugin.pytest_runtest_makereport(_FakeItem("t::pass"), _FakeCall())
+    reporting_plugin.pytest_runtest_makereport(
+        _FakeItem("t::fail"), _FakeCall(exc=AssertionError("nope"))
+    )
+    reporting_plugin.pytest_runtest_makereport(
+        _FakeItem("t::infra"), _FakeCall(exc=InfraError("conn refused"))
+    )
+    c = run_counts()
+    assert c["PASS"] == 1
+    assert c["FAIL"] == 1
+    assert c["INFRA"] == 1
+
+
+def test_makereport_service_5xx_is_fail_and_counts_product_5xx(_active_plugin):
+    """A live client that recorded a product 5xx (record_service_5xx) makes the check a
+    FAIL that ALSO increments SERVICE_5XX (drives ProductFivexxFail escalation) — the
+    hardcoded service_5xx=False bug is fixed."""
+    reporting_plugin.pytest_runtest_setup(_FakeItem("t::5xx"))
+    record_service_5xx()  # the live CanaryClient did this on a 5xx response
+    reporting_plugin.pytest_runtest_makereport(
+        _FakeItem("t::5xx"), _FakeCall(exc=AssertionError("GET /v1/x → 502"))
+    )
+    c = run_counts()
+    assert c["FAIL"] == 1
+    assert c["SERVICE_5XX"] == 1  # counted exactly once (no double count)
+
+
+def test_makereport_service_5xx_fallback_from_assertion_message(_active_plugin):
+    """Even WITHOUT the client flag, a 5xx status embedded in the assertion message is
+    detected as a product 5xx (belt-and-suspenders fallback)."""
+    reporting_plugin.pytest_runtest_setup(_FakeItem("t::5xx"))
+    reporting_plugin.pytest_runtest_makereport(
+        _FakeItem("t::5xx"), _FakeCall(exc=AssertionError("POST /v1/y → 500: boom"))
+    )
+    c = run_counts()
+    assert c["FAIL"] == 1
+    assert c["SERVICE_5XX"] == 1
+
+
+def test_makereport_infra_is_not_a_product_5xx(_active_plugin):
+    """An InfraError (no HTTP response) is INFRA, never a product 5xx — a transient
+    blip must NOT page the critical topic."""
+    reporting_plugin.pytest_runtest_setup(_FakeItem("t::infra"))
+    reporting_plugin.pytest_runtest_makereport(
+        _FakeItem("t::infra"), _FakeCall(exc=InfraError("transport error after 2 retries"))
+    )
+    c = run_counts()
+    assert c["INFRA"] == 1
+    assert c["SERVICE_5XX"] == 0
+
+
+def test_5xx_flag_does_not_leak_across_checks(_active_plugin):
+    """setup clears the per-check flag so a 5xx in one check is not attributed to the
+    next passing check."""
+    reporting_plugin.pytest_runtest_setup(_FakeItem("t::a"))
+    record_service_5xx()
+    reporting_plugin.pytest_runtest_makereport(
+        _FakeItem("t::a"), _FakeCall(exc=AssertionError("→ 503"))
+    )
+    reporting_plugin.pytest_runtest_setup(_FakeItem("t::b"))  # clears flag
+    reporting_plugin.pytest_runtest_makereport(_FakeItem("t::b"), _FakeCall())  # a PASS
+    c = run_counts()
+    assert c["SERVICE_5XX"] == 1  # only check a
+    assert c["PASS"] == 1
+
+
+def test_record_service_5xx_noop_without_active_plugin():
+    """record_service_5xx is a safe no-op when the plugin isn't active (e.g. a plain
+    unit-test import path) — it must not raise."""
+    reporting_plugin._RUN_STATE.clear()
+    record_service_5xx()  # no exception
+    assert run_counts() == {}

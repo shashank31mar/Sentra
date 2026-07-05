@@ -32,6 +32,22 @@ CANARY_ROLE_SUBSTR = "sentra-canary"  # the canary task-role ARN carries this.
 _TTL_DAYS = 90
 
 
+def _is_service_5xx(exc: Optional[BaseException]) -> bool:
+    """A raw assertion failure whose message carries a service-returned 5xx status is
+    a product 5xx (FAIL that also increments ``ProductFivexxFail`` for the critical
+    escalation, §9.1). The scenario library asserts ``status_code < 500`` and includes
+    the observed status in the assertion message, so a 5xx surfaces here. Belt-and-
+    suspenders: the live ``CanaryClient`` also records a 5xx directly (``record_service_5xx``)
+    so the escalation does not depend on message-string matching alone."""
+    if exc is None:
+        return False
+    # A live transport error (InfraError) is NOT a service 5xx.
+    if isinstance(exc, InfraError):
+        return False
+    msg = str(exc)
+    return any(f"{code}" in msg for code in (500, 502, 503, 504))
+
+
 class InfraError(Exception):
     """Raised by the retry wrapper when a live transport error has NO HTTP response
     after N bounded retries → recorded as INFRA (never FAIL, never swallowed)."""
@@ -161,14 +177,50 @@ class ResultSink:
 # --------------------------------------------------------------------------- pytest hook
 # The plugin is OPT-IN via -p canary.reporting_plugin (the ECS entrypoint enables it);
 # a normal PR-gate run does not load it, so importing this module is side-effect free.
+# ``counts`` carries the FOUR numbers the alarms watch: PASS/FAIL/INFRA drive
+# ChecksPassed/ChecksFailed/InfraErrors (+ ChecksExpected, §9.4), and ``SERVICE_5XX``
+# drives the ProductFivexxFail critical escalation (§9.1). The end-of-run emitter
+# (entrypoint.emit_run_metrics / the pytest_sessionfinish belt-and-suspenders below)
+# is what turns these counts into the CloudWatch metrics every canary_stack alarm
+# reads — WITHOUT it the counts are computed and thrown away (the dead-seam bug).
 _RUN_STATE: Dict[str, Any] = {}
+
+
+def _fresh_counts() -> Dict[str, int]:
+    return {"PASS": 0, "FAIL": 0, "INFRA": 0, "SERVICE_5XX": 0}
+
+
+def run_counts() -> Dict[str, int]:
+    """The current run's outcome tally (public accessor for the entrypoint emitter).
+    Empty dict before ``pytest_configure`` ran (e.g. a bare import)."""
+    return dict(_RUN_STATE.get("counts", {}))
+
+
+def record_service_5xx() -> None:
+    """The live ``CanaryClient`` calls this the moment it sees a service-returned 5xx
+    response, BEFORE the scenario assertion raises. This is the authoritative signal
+    that the current check hit a product 5xx (drives ProductFivexxFail, §9.1); the
+    assertion-message fallback in ``pytest_runtest_makereport`` only fires if this
+    per-check flag was NOT set (e.g. a 5xx observed off the client path). No-op if the
+    plugin isn't active (e.g. a pure unit-test import)."""
+    if "counts" in _RUN_STATE:
+        _RUN_STATE["pending_5xx"] = True
 
 
 def pytest_configure(config):  # pragma: no cover - exercised via the ECS entrypoint
     mode = os.environ.get(CANARY_TARGET_ENV, "inprocess")
     _RUN_STATE["run_id"] = new_run_id()
+    _RUN_STATE["mode"] = mode
     _RUN_STATE["sink"] = ResultSink(mode)
-    _RUN_STATE["counts"] = {"PASS": 0, "FAIL": 0, "INFRA": 0}
+    _RUN_STATE["counts"] = _fresh_counts()
+    _RUN_STATE["pending_5xx"] = False
+
+
+def pytest_runtest_setup(item):  # pragma: no cover - ECS entrypoint path
+    # Clear the per-check 5xx flag so a 5xx recorded during THIS check is not
+    # attributed to the next one.
+    if "counts" in _RUN_STATE:
+        _RUN_STATE["pending_5xx"] = False
 
 
 def pytest_runtest_makereport(item, call):  # pragma: no cover - ECS entrypoint path
@@ -177,16 +229,23 @@ def pytest_runtest_makereport(item, call):  # pragma: no cover - ECS entrypoint 
     sink: ResultSink = _RUN_STATE.get("sink")
     if sink is None:
         return
-    infra = isinstance(call.excinfo.value, InfraError) if call.excinfo else False
+    exc = call.excinfo.value if call.excinfo else None
+    infra = isinstance(exc, InfraError)
     passed = call.excinfo is None
-    status = classify_outcome(passed=passed, infra=infra, service_5xx=False)
+    # A service-returned 5xx is a FAIL (never INFRA) that ALSO pages the critical
+    # topic. Authoritative signal: the live client's record_service_5xx (per-check
+    # flag); fallback: the observed status embedded in the assertion message.
+    service_5xx = bool(_RUN_STATE.get("pending_5xx")) or _is_service_5xx(exc)
+    status = classify_outcome(passed=passed, infra=infra, service_5xx=service_5xx)
     _RUN_STATE["counts"][status] = _RUN_STATE["counts"].get(status, 0) + 1
+    if service_5xx:
+        _RUN_STATE["counts"]["SERVICE_5XX"] = _RUN_STATE["counts"].get("SERVICE_5XX", 0) + 1
     result = CanaryResult(
         run_id=_RUN_STATE["run_id"],
         check_id=item.nodeid,
         status=status,
         route=item.nodeid,
-        failure_reason=repr(call.excinfo.value) if call.excinfo else "",
+        failure_reason=repr(exc) if exc else "",
     )
     sink.write(result)
 
@@ -198,4 +257,6 @@ __all__ = [
     "classify_outcome",
     "retry_transport",
     "new_run_id",
+    "run_counts",
+    "record_service_5xx",
 ]
