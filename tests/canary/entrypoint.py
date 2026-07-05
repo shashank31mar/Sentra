@@ -81,6 +81,12 @@ def emit_run_metrics(cloudwatch_client, counts: Dict[str, int], *, expected: int
         {"MetricName": "InfraErrors", "Value": float(counts.get("INFRA", 0)), "Unit": "Count"},
         {"MetricName": "ChecksExpected", "Value": float(expected), "Unit": "Count"},
         {"MetricName": "ProductFivexxFail", "Value": float(counts.get("SERVICE_5XX", 0)), "Unit": "Count"},
+        # CanarySkippedOverlap=0 on every NON-skipped run. The overlap guard emits it as
+        # 1 ONLY when it skips (and returns before this fn), so without a 0 here the
+        # metric is SPARSE — its NOT_BREACHING alarm re-evaluates the last-two-available
+        # datapoints forever and NEVER self-clears after a skip (stuck-ALARM observed in
+        # prod 2026-07-05). Emitting 0 makes it dense so a clean run clears the alarm.
+        {"MetricName": "CanarySkippedOverlap", "Value": 0.0, "Unit": "Count"},
     ]
     cloudwatch_client.put_metric_data(Namespace=NAMESPACE, MetricData=md)
 

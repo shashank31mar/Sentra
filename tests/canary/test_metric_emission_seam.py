@@ -119,6 +119,18 @@ def test_emit_run_metrics_reports_product_5xx_count():
     assert md["ChecksFailed"] == 2.0
 
 
+def test_emit_run_metrics_emits_overlap_zero_every_clean_run():
+    """REGRESSION (stuck-ALARM found in prod 2026-07-05): CanarySkippedOverlap must be
+    emitted as 0 on every NON-skipped run so the metric is DENSE. The overlap guard
+    emits it as 1 only on a skip (and returns before emit_run_metrics), so without this
+    0 the metric is sparse and its NOT_BREACHING alarm re-evaluates the last-two nonzero
+    datapoints forever — it never self-clears after a one-off skip."""
+    cw = _FakeCw()
+    entrypoint.emit_run_metrics(cw, {"PASS": 10, "FAIL": 0, "INFRA": 0}, expected=10)
+    md = {m["MetricName"]: m["Value"] for c in cw.calls for m in c["MetricData"]}
+    assert md["CanarySkippedOverlap"] == 0.0
+
+
 def test_alarm_metric_names_is_the_documented_set():
     """The alarm-metric set is exactly the six the stack alarms depend on — a guard so
     a new alarm added without an emitter is caught by the seam test above."""
