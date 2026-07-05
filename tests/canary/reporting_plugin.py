@@ -53,6 +53,19 @@ class InfraError(Exception):
     after N bounded retries → recorded as INFRA (never FAIL, never swallowed)."""
 
 
+class TransportRetryable(Exception):
+    """Signals a GATEWAY 5xx (502/503/504 — the edge could not reach the backend, same
+    transient class as a no-response transport error) that ``retry_transport`` should
+    RE-ATTEMPT. It carries the last HTTP response so that, if all retries return a
+    gateway 5xx (a genuine PERSISTENT edge outage), the wrapper returns that response
+    and the scenario's status assertion fails normally — a persistent 502 IS a failure,
+    while a single transient one is retried away and never pages."""
+
+    def __init__(self, response):
+        self.response = response
+        super().__init__(f"gateway {getattr(response, 'status_code', '5xx')} (retryable)")
+
+
 @dataclass
 class CanaryResult:
     run_id: str
@@ -104,19 +117,29 @@ def classify_outcome(*, passed: bool, infra: bool, service_5xx: bool) -> str:
 
 
 def retry_transport(fn, *, retries: int = 2, backoff: float = 0.2):
-    """Bounded retry for a LIVE transport error with no HTTP response (§9.1). A
-    deterministic assertion failure is NEVER retried — only pass a transport call
-    here. After ``retries`` no-response failures raises ``InfraError``."""
-    last: Optional[Exception] = None
+    """Bounded retry for a LIVE transient condition (§9.1). Two retryable classes:
+      * a transport error with NO HTTP response (DNS/conn-reset/timeout) — after
+        ``retries`` failures raises ``InfraError`` → recorded INFRA (never FAIL).
+      * a ``TransportRetryable`` (gateway 502/503/504) — after ``retries`` failures
+        RETURNS the last response so the caller's status assertion fails normally
+        (a PERSISTENT edge outage is a real FAIL; a single transient 502 is retried away).
+    A deterministic assertion failure is NEVER retried — only pass a transport call here."""
+    last_exc: Optional[Exception] = None
     for attempt in range(retries + 1):
         try:
             return fn()
-        except _NO_RESPONSE_ERRORS as exc:  # transport-only
-            last = exc
+        except TransportRetryable as exc:  # gateway 5xx — retry, else return last resp
+            last_exc = exc
             if attempt < retries:
                 time.sleep(backoff * (attempt + 1))
                 continue
-    raise InfraError(f"transport error after {retries} retries: {last!r}")
+            return exc.response  # exhausted → hand back the persistent gateway 5xx
+        except _NO_RESPONSE_ERRORS as exc:  # transport-only, no HTTP response
+            last_exc = exc
+            if attempt < retries:
+                time.sleep(backoff * (attempt + 1))
+                continue
+    raise InfraError(f"transport error after {retries} retries: {last_exc!r}")
 
 
 def _no_response_error_types():
@@ -254,6 +277,7 @@ __all__ = [
     "CanaryResult",
     "ResultSink",
     "InfraError",
+    "TransportRetryable",
     "classify_outcome",
     "retry_transport",
     "new_run_id",

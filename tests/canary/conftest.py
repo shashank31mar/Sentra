@@ -129,12 +129,30 @@ class CanaryClient:
             # A deterministic assertion failure is NEVER retried (it is not raised here).
             from canary.reporting_plugin import record_service_5xx, retry_transport
 
-            resp = retry_transport(
-                lambda: getattr(self._inner, verb)(path, headers=headers, **kwargs)
-            )
-            # A service-RETURNED 5xx (the transport succeeded, the server erred) is a
-            # product FAIL that ALSO pages the critical topic (ProductFivexxFail, §9.1)
-            # — record it before the scenario's status assertion raises.
+            # Two kinds of "5xx" must NOT be conflated (prod incident 2026-07-05: a
+            # single transient 502 hard-failed the run + paged):
+            #   * GATEWAY 5xx (502 Bad Gateway / 503 Unavailable / 504 Timeout) — the
+            #     EDGE could not reach the backend. Same class as a no-response transport
+            #     error: transient/infra. RETRY it (bounded); only a PERSISTENT gateway
+            #     5xx (all retries fail) falls through to the assertion.
+            #   * A true APP 500 (transport succeeded, the controller itself erred) — a
+            #     real product FAIL that pages the critical topic (ProductFivexxFail).
+            _GATEWAY_5XX = (502, 503, 504)
+
+            def _once():
+                r = getattr(self._inner, verb)(path, headers=headers, **kwargs)
+                if getattr(r, "status_code", 0) in _GATEWAY_5XX:
+                    # raise so retry_transport re-attempts (same path as a conn error);
+                    # on the FINAL attempt retry_transport returns the last response.
+                    from canary.reporting_plugin import TransportRetryable
+                    raise TransportRetryable(r)
+                return r
+
+            resp = retry_transport(_once)
+            # A genuine app-returned 500 (NOT a gateway 502/503/504) is a product FAIL
+            # that ALSO pages the critical topic (ProductFivexxFail, §9.1) — record it
+            # before the scenario's status assertion raises. A persistent gateway 5xx
+            # that exhausted retries also lands here (a real edge outage IS a failure).
             if getattr(resp, "status_code", 0) >= 500:
                 record_service_5xx()
         else:

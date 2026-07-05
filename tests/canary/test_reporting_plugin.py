@@ -77,6 +77,50 @@ def test_retry_transport_succeeds_without_retry():
     assert calls["n"] == 1
 
 
+class _Resp:
+    def __init__(self, code):
+        self.status_code = code
+
+
+def test_transient_gateway_502_retries_then_succeeds():
+    """REGRESSION (prod 2026-07-05): a SINGLE transient 502 Bad Gateway (edge couldn't
+    reach backend) must be retried away, NOT hard-fail the run + page. First attempt
+    502 → retry → 200 returned, no exception."""
+    from canary.reporting_plugin import TransportRetryable
+
+    seq = [502, 200]
+    calls = {"n": 0}
+
+    def _flaky():
+        code = seq[calls["n"]]
+        calls["n"] += 1
+        if code in (502, 503, 504):
+            raise TransportRetryable(_Resp(code))
+        return _Resp(code)
+
+    resp = retry_transport(_flaky, retries=2, backoff=0.0)
+    assert resp.status_code == 200
+    assert calls["n"] == 2  # one 502 retry, then success
+
+
+def test_persistent_gateway_502_returns_the_5xx_for_the_assertion_to_fail():
+    """A PERSISTENT gateway 502 (all retries return 502) is a REAL edge outage: after
+    exhausting retries the wrapper RETURNS the 502 response (does NOT raise InfraError),
+    so the scenario's `status_code < 500` assertion fails and it is recorded FAIL — a
+    sustained 502 IS a failure, only a one-off is retried away."""
+    from canary.reporting_plugin import TransportRetryable
+
+    calls = {"n": 0}
+
+    def _always_502():
+        calls["n"] += 1
+        raise TransportRetryable(_Resp(502))
+
+    resp = retry_transport(_always_502, retries=2, backoff=0.0)
+    assert resp.status_code == 502   # handed back, not raised as INFRA
+    assert calls["n"] == 3           # initial + 2 retries
+
+
 # ---- live-write vs stdout-only (Jr.1) -------------------------------------------
 def test_inprocess_writes_zero_rows(capsys):
     """inprocess mode → stdout only, NEVER writes prod (Jr.1)."""
