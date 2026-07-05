@@ -14,7 +14,7 @@ Routes are kept clean and focused on HTTP handling only.
 import logging
 from typing import Dict, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Header, Request
+from fastapi import APIRouter, Depends, HTTPException, Header, Request, Response
 
 from app.api.deps import OperatorContext, require_role
 from app.api.models import (
@@ -26,6 +26,58 @@ from app.api.models import (
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/v1")
+
+# WS-J / LLD 38 §319 (J4.2 hook) — the debug-gated capture response header name and
+# the reserved canary tenant prefix. Kept module-level so the value is unambiguous
+# and testable. The prefix matches the audit_logger's SEC-11 isolation prefix.
+_CANARY_CAPTURE_HEADER = "x-canary-capture"
+_CANARY_TENANT_PREFIX = "canary-"
+# Header values must be bounded (a header is not a payload channel); cap the echoed
+# redacted content so an oversized (but redacted) body can't bloat the response.
+_CANARY_CAPTURE_MAX_LEN = 2000
+
+
+def _maybe_attach_canary_capture(
+    response: Response,
+    request: "ValidationRequest",
+    *,
+    tenant_id: Optional[str],
+) -> None:
+    """Attach the debug-gated `x-canary-capture` header — J4.2 `live` hook (LLD 38
+    §319). NO-OP unless BOTH gates pass:
+      1. `settings.canary_capture_enabled` is True (default False → zero prod change);
+      2. `tenant_id` is a reserved `canary-*` tenant (the VERIFIED tenant from the
+         agent JWT — never the client-claimed body).
+
+    When it fires, the header carries ONLY the ALREADY-REDACTED `user_input` /
+    `tool_params` from the incoming request — the post-Tier-1-redaction form the SDK/
+    connector sent, which is the SAME value the audit writer receives (log_signals is
+    called with `request.model_dump()`). It is IMPOSSIBLE for this to echo raw content:
+    it never reads any raw source, only the fields the edge already masked, and it only
+    runs for a canary tenant with the flag explicitly on. Fail-secure: on ANY error
+    building the value it attaches nothing (no header) rather than risk a partial/raw
+    echo, and it NEVER raises into the validate path."""
+    try:
+        from app.config import settings
+        if not getattr(settings, "canary_capture_enabled", False):
+            return
+        if not tenant_id or not tenant_id.startswith(_CANARY_TENANT_PREFIX):
+            return
+        import json
+        # Echo ONLY the already-redacted content-bearing fields the audit writer sees.
+        # These are the post-edge-redaction values on the request (redacted=True on a
+        # real canary call); no raw source is ever read here.
+        payload = {
+            "user_input": request.user_input,
+            "tool_params": request.tool_params,
+            "redacted": request.redacted,
+        }
+        value = json.dumps(payload, ensure_ascii=True, separators=(",", ":"))
+        if len(value) > _CANARY_CAPTURE_MAX_LEN:
+            value = value[:_CANARY_CAPTURE_MAX_LEN]
+        response.headers[_CANARY_CAPTURE_HEADER] = value
+    except Exception:  # noqa: BLE001 — the capture is a debug echo; never break validate
+        logger.debug("x-canary-capture attach skipped", exc_info=True)
 
 
 @router.get("/health")
@@ -54,7 +106,9 @@ async def health_check() -> Dict:
 
 
 @router.post("/validate")
-async def validate_tool_call(request: ValidationRequest, http_request: Request) -> Dict:
+async def validate_tool_call(
+    request: ValidationRequest, http_request: Request, response: Response
+) -> Dict:
     """
     Validate tool call before execution.
 
@@ -67,6 +121,12 @@ async def validate_tool_call(request: ValidationRequest, http_request: Request) 
 
     Returns:
         ValidationResponse (ALLOW) or ValidationDenyResponse (DENY)
+
+    WS-J / LLD 38 §319 (J4.2 hook): `response` is an injected FastAPI Response the
+    handler uses ONLY to (optionally) attach the debug-gated `x-canary-capture`
+    header (see `_maybe_attach_canary_capture`). The returned dict body is unchanged;
+    FastAPI merges this Response's headers into the final response, so no caller or
+    return shape is affected.
     """
     # Capture the caller IP for the audit trail / forensics view. Behind API Gateway + VPC Link the
     # real client is the first hop of X-Forwarded-For; fall back to the socket peer. Stored on the
@@ -134,6 +194,18 @@ async def validate_tool_call(request: ValidationRequest, http_request: Request) 
     from app.utils import tenancy
 
     ctx = await resolve_tenant_from_jwt(http_request)
+
+    # WS-J / LLD 38 §319 (J4.2 hook) — debug-gated `x-canary-capture` echo. Attaches
+    # ONLY when `settings.canary_capture_enabled` is True AND the verified tenant is a
+    # reserved `canary-*` tenant. It echoes the ALREADY-REDACTED user_input/tool_params
+    # that will be handed to the audit writer (the post-Tier-1-redaction form the SDK/
+    # connector sent) so the `live` canary can prove no raw PII entered the audit write
+    # without reaching `_bg_tasks`. Off by default → zero prod behavior change. Placed
+    # here (after identity resolves the tenant, before the routing returns) so it rides
+    # whichever verdict the canary's enforce path returns; a no-op for every real
+    # tenant. `ctx.tenant_id` is the verified tenant (never the client-claimed body).
+    _maybe_attach_canary_capture(response, request, tenant_id=ctx.tenant_id)
+
     if ctx.state == "disabled":
         return await validation_service.validate_tool_call(request)
 

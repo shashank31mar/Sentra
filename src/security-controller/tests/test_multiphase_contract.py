@@ -407,7 +407,7 @@ async def test_out_of_set_phase_bypassing_literal_422s_never_denies(spy_service,
     route the out-of-set phase to `_phase_not_implemented_deny` (a phantom verdict)
     instead of raising 422 — so this asserts BOTH the 422 AND that neither the
     audit nor the metric-publish seam was touched."""
-    from fastapi import HTTPException
+    from fastapi import HTTPException, Response
 
     from app.api.models import ValidationRequest
     from app.api.routes import validate_tool_call
@@ -420,8 +420,10 @@ async def test_out_of_set_phase_bypassing_literal_422s_never_denies(spy_service,
     http_request.headers = {}  # .get("x-forwarded-for") → None
     http_request.client = None
 
+    # WS-J: the handler gained an injected `response: Response` param (for the
+    # debug-gated x-canary-capture echo). GUARD 1 fires before it is ever touched.
     with pytest.raises(HTTPException) as exc_info:
-        await validate_tool_call(bad, http_request)
+        await validate_tool_call(bad, http_request, Response())
 
     assert exc_info.value.status_code == 422
     # NOT a verdict: neither the service pipeline nor the DENY audit/metric seams ran.

@@ -41,6 +41,33 @@ _GATE_DROPPED_MARKER = "⟦AEGR:blocked_from_log⟧"
 # _bg_tasks discipline). The done-callback discards, so the set does not grow.
 _ALARM_TASKS: set = set()
 
+# WS-J / LLD 38 §424-425 (SEC-11) — the reserved canary tenant-id prefix. The hourly
+# synthetic-monitoring canary uses `canary-<uuid4hex>` tenant ids; an audit/signal
+# event whose tenant starts with this prefix is a synthetic-attack event that MUST
+# NOT poison the behavioral flywheel or mask a real tamper during incident review.
+# The isolation is STRUCTURAL + FAIL-CLOSED: canary audit goes to a separate log
+# group and canary signal rows are NOT written to the shared signal store at all
+# (see log_signals). Real traffic never matches this prefix, so its path is unchanged.
+_CANARY_TENANT_PREFIX = "canary-"
+
+
+def _is_canary_tenant() -> bool:
+    """True when the CURRENT-request tenant is a reserved canary tenant (`canary-*`).
+
+    Reads the SAME `tenancy.current_tenant()` contextvar the signal-store partition
+    and the trail metrics key off (audit_logger._emit_trail_metric) — it is NOT
+    re-derived from the request body (SEC-11 FOOTGUN: use the same tenant the rest of
+    the row uses). FAIL-CLOSED semantics live at the call site: this returns False
+    only when the tenant is genuinely a non-canary value; on any error resolving the
+    tenant it also returns False, but the branch that consumes it never routes a
+    real tenant to the canary sink and never routes a canary tenant to the shared
+    store — the ONLY divergence is `startswith(canary-)`."""
+    try:
+        from app.utils import tenancy
+        return tenancy.current_tenant().startswith(_CANARY_TENANT_PREFIX)
+    except Exception:  # noqa: BLE001 — a tenant-resolution error is not a canary event
+        return False
+
 
 def _has_content(val: Any) -> bool:
     """True if `val` is a non-empty content-bearing value worth gating."""
@@ -83,6 +110,12 @@ class AuditLogger:
         self.cloudwatch_logs = boto3.client('logs', region_name=settings.aws_region)
         self.log_group = settings.cloudwatch_log_group
         self._ensure_log_group_exists()
+        # WS-J / LLD 38 §424-425 (SEC-11) — the SEPARATE canary audit sink. Its name
+        # is read from settings but the group is created LAZILY (only the first time a
+        # canary event actually occurs — see _write_log_event), so a controller that
+        # never sees a canary request never creates it (and moto tests stay unaffected).
+        self.canary_log_group = settings.cloudwatch_canary_log_group
+        self._canary_group_ensured = False
         # DDB dual-write target — Workstream 17. Constructed lazily so unit
         # tests can monkey-patch or swap the writer without DDB connections.
         self._signal_store: Optional[SignalStoreWriter] = None
@@ -128,6 +161,28 @@ class AuditLogger:
         except ClientError as e:
             if e.response['Error']['Code'] != 'ResourceAlreadyExistsException':
                 logger.warning(f"Could not create log group: {e}")
+
+    def _ensure_canary_log_group_exists(self):
+        """Create the SEPARATE canary log group lazily — ONLY the first time a
+        canary event is written (WS-J / LLD 38 SEC-11). Mirrors
+        `_ensure_log_group_exists` but is guarded by `_canary_group_ensured` so the
+        create fires at most once per process and NEVER at __init__ — a controller
+        that never sees a canary request never creates it (keeping moto/unit tests
+        that don't exercise canary traffic byte-for-byte unaffected)."""
+        if self._canary_group_ensured:
+            return
+        try:
+            self.cloudwatch_logs.create_log_group(logGroupName=self.canary_log_group)
+            logger.info(f"Created CloudWatch canary log group: {self.canary_log_group}")
+        except ClientError as e:
+            if e.response['Error']['Code'] != 'ResourceAlreadyExistsException':
+                logger.warning(f"Could not create canary log group: {e}")
+        finally:
+            # Mark ensured even on ResourceAlreadyExistsException / benign errors so we
+            # don't re-issue create on every canary event. A genuine create failure is
+            # logged; the subsequent put_log_events will surface it (and is swallowed,
+            # audit being fire-and-forget) — never blocks a verdict.
+            self._canary_group_ensured = True
     
     async def log_decision(
         self,
@@ -258,6 +313,13 @@ class AuditLogger:
         # whole method is fire-and-forget); a guard failure never blocks a verdict.
         request = self._guard_persist(request, combined_reason=(legacy_vr or {}).get("reason"))
 
+        # WS-J / LLD 38 §424-425 (SEC-11) — is THIS a canary-origin event? Resolved
+        # ONCE from the `tenancy.current_tenant()` contextvar (the same tenant the
+        # signal-store partition + trail metrics key off — not re-derived), so both
+        # the CW route and the signal-store skip below make the SAME decision. The
+        # ONLY divergence from real traffic is `current_tenant().startswith(canary-)`.
+        is_canary = _is_canary_tenant()
+
         # CloudWatch event (compliance archive — backward-compatible).
         try:
             log_event = self._build_log_event(
@@ -269,10 +331,21 @@ class AuditLogger:
             )
             # Workstream 17 — add signals[] for new consumers.
             log_event["signals"] = [s.to_dict() for s in signals]
-            await self._write_log_event(
-                session_id=request.get("session_id"),
-                log_event=log_event,
-            )
+            if is_canary:
+                # SEC-11: canary events go to the SEPARATE canary log group the
+                # SOC/flywheel readers are NOT wired to (fail-closed).
+                await self._write_log_event(
+                    session_id=request.get("session_id"),
+                    log_event=log_event,
+                    log_group=self.canary_log_group,
+                )
+            else:
+                # Real traffic — call with NO extra kwarg so the write path (and any
+                # existing test double of `_write_log_event`) is byte-for-byte unchanged.
+                await self._write_log_event(
+                    session_id=request.get("session_id"),
+                    log_event=log_event,
+                )
         except Exception as e:
             logger.exception(f"Failed to write audit log to CloudWatch: {e}")
             # WS-D / LLD 33 §9.2.1 — the `sentra.combined` reconstruction-of-record
@@ -280,6 +353,17 @@ class AuditLogger:
             # AND the markers is the only case where the reconstructable complement is
             # actually lost, so it is separately alarmable. Off-path, swallowed.
             await self._emit_trail_metric("publish_combined_event_persist_failure")
+
+        # WS-J / LLD 38 §424-425 (SEC-11) — FAIL-CLOSED structural separation. A
+        # canary-origin event NEVER touches the shared SignalStoreWriter (the
+        # behavioral-flywheel + SOC substrate) or the decision-trail markers on it.
+        # Its only durable record is the canary log group written above. A future
+        # flywheel/SOC consumer that never learned about canary data therefore cannot
+        # ingest a synthetic attack (fail closed), rather than depending on every
+        # reader remembering a `canary-*` filter (which fails open). Real traffic
+        # (is_canary False) falls through to the unchanged dual-write below.
+        if is_canary:
+            return
 
         # DDB dual-write (fast-read substrate).
         if signals:
@@ -589,28 +673,45 @@ class AuditLogger:
 
         return event
     
-    async def _write_log_event(self, session_id: str, log_event: Dict[str, Any]):
+    async def _write_log_event(
+        self,
+        session_id: str,
+        log_event: Dict[str, Any],
+        log_group: Optional[str] = None,
+    ):
         """
         Write log event to CloudWatch Logs.
-        
+
         Uses session_id as log stream name for easy querying.
+
+        WS-J / LLD 38 SEC-11: `log_group` selects the target group. None (the
+        default) → the shared audit group `self.log_group`, so every existing caller
+        and all real traffic write EXACTLY as before. A canary caller passes
+        `self.canary_log_group`, which is created lazily on first use (guarded, so a
+        controller that never sees a canary request never creates it).
         """
         try:
+            target_group = log_group or self.log_group
+            # Lazily create the canary group the first time (and ONLY when) a canary
+            # event is actually written — never eagerly at __init__ (SEC-11 FOOTGUN).
+            if log_group is not None and target_group == self.canary_log_group:
+                self._ensure_canary_log_group_exists()
+
             log_stream_name = session_id
-            
+
             # Create log stream if it doesn't exist
             try:
                 self.cloudwatch_logs.create_log_stream(
-                    logGroupName=self.log_group,
+                    logGroupName=target_group,
                     logStreamName=log_stream_name
                 )
             except ClientError as e:
                 if e.response['Error']['Code'] != 'ResourceAlreadyExistsException':
                     raise
-            
+
             # Put log event
             self.cloudwatch_logs.put_log_events(
-                logGroupName=self.log_group,
+                logGroupName=target_group,
                 logStreamName=log_stream_name,
                 logEvents=[
                     {
@@ -619,7 +720,7 @@ class AuditLogger:
                     }
                 ]
             )
-            
+
             logger.debug(f"Wrote audit log for session {session_id}")
             
         except Exception as e:

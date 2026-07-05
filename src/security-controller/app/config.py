@@ -20,6 +20,16 @@ class Settings(BaseSettings):
     dynamodb_session_table: str = Field(default="sentra-session-context", validation_alias="SESSION_CONTEXT_TABLE")
     s3_bucket: str = Field(default="sentra-mvp-artifacts", validation_alias="ARTIFACTS_BUCKET")
     cloudwatch_log_group: str = Field(default="/sentra/audit-logs", validation_alias="AUDIT_LOG_GROUP")
+    # WS-J / LLD 38 §424-425 (SEC-11) — the SEPARATE canary audit sink. Canary-origin
+    # audit events (tenant_id prefixed `canary-`) are routed HERE, not to the shared
+    # `cloudwatch_log_group` above, so the SOC/flywheel readers — wired only to the
+    # shared group + signal store — NEVER see synthetic-attack rows. This is the
+    # structural, FAIL-CLOSED separation SEC-11 mandates (a reader that never learned
+    # about canary data simply can't read it), NOT a "readers must filter canary-*"
+    # rule (which fails open). Default is a distinct group; real traffic is unaffected.
+    cloudwatch_canary_log_group: str = Field(
+        default="/sentra/canary-audit", validation_alias="CANARY_AUDIT_LOG_GROUP"
+    )
     
     # Data Model v2 Tables (Workstream 6, Task 1.5)
     dynamodb_agent_registry_table: str = Field(
@@ -222,6 +232,17 @@ class Settings(BaseSettings):
     # secret injected via env; NEVER a hardcoded value.
     feedback_subject_locator_salt: str = Field(
         default="", validation_alias="FEEDBACK_SUBJECT_LOCATOR_SALT"
+    )
+
+    # WS-J / LLD 38 §319 (J4.2 hook) — debug-gated `x-canary-capture` response echo.
+    # OFF by default → ZERO prod behavior change. When ON *and* the request tenant is
+    # `canary-*`, `/v1/validate` attaches an `x-canary-capture` header carrying only
+    # the ALREADY-REDACTED user_input/tool_params the audit writer received (the
+    # post-Tier-1-redaction form the SDK/connector sent) — NEVER raw content — so the
+    # `live` canary can assert "no raw PII entered the audit write" without reaching
+    # `_bg_tasks`. Only ever echoes for canary tenants, only when this is True.
+    canary_capture_enabled: bool = Field(
+        default=False, validation_alias="CANARY_CAPTURE_ENABLED"
     )
 
     # Validation Configuration
