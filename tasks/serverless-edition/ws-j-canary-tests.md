@@ -3,7 +3,7 @@
 > **Doc role:** This is the **workstream SCOPE** — boundary, dependencies, real `file:line` anchors, footguns, and acceptance criteria. It is an **INPUT to this workstream's implementation-grade LLD** ([lld/38-canary-synthetic-monitoring.md](../../lld/38-canary-synthetic-monitoring.md), *to be authored*), *not* the granular task breakdown. Buildable tasks are generated **from the approved LLD** (canonical order: HLD → LLD → tasks). See [00-index.md](00-index.md) for the doc-role map.
 
 **Parent HLD:** [hld/serverless-edition.md](../../hld/serverless-edition.md) — §8 hand-off (the "End-to-end canary / integration tests (build requirement)" carry-row) + **§6.4 line 564** (the six numbered scenarios + the (2b) differential-conformance requirement). Soundness bounds for (2b) live in **Appendix C** ([hld/serverless-edition.md:782](../../hld/serverless-edition.md#L782)).
-**Status:** Scope reshaped 2026-07-05 (founder direction) — see §0.
+**Status:** ✅ **Increment 1 DEPLOYED to prod 2026-07-05** (all J1/J2/J-cov/J-infra/J-report/J4/J6 tasks done; live 117/117 PASS; hourly schedule ENABLED). J3/J5/J7/J8 deferred (design-only). See §0 + §3 banner.
 **Owner:** TBD
 **Implements (build requirement, not a feature FR):** the §6.4 gating-test mandate over **FR-1.7, FR-3.4, FR-2.8, FR-6.8, FR-3.13, FR-12, FR-13.3, NFR-4, NFR-6, NFR-7, NFR-10, NFR-12**, **extended** (§0) to a **continuous production synthetic monitor** covering **every deployed API** and the **console UI**. It adds no product behavior; it **proves** the behavior every other WS ships — on **every PR** (merge gate) **and every hour in prod** (live monitor) — and, on failure, records **why** so each red check can be root-caused.
 
@@ -87,8 +87,11 @@ flowchart TB
 > **Scope = Increment 1 ONLY** (founder PDF-comment P0s, LLD §1/§2): **P0-1** every **API-key-reachable** wired route (Appendix A `pub`+`key`, EXCLUDING the 16 `oidc` rows) with a positive happy-path AND every documented negative/failure case (a HARD gate); **P0-2** measurable code-logic coverage (route×behavior matrix guard + `pytest --cov` gate ≥85%); **P0-3** SNS `EmailSubscription`→`shshgup@amazon.com`. Plus the ECS/scheduler/DDB/CW/SNS infra, the reporting plugin, the concurrency guard, and prod-write hygiene. **DEFERRED milestones (J3 differential, J5 metering, J7 authz-403 gate, J8 console/Playwright) carry NO Increment-1 build tasks** — see the "Deferred milestones" block after J-report; their design stays in the LLD, each auto-activates via its `landed_flag`.
 >
 > **Anchor reconciliation (verified against real code 2026-07-05):** `ValidationRequest` is at [models.py:54](../../src/security-controller/app/api/models.py#L54) (scope-doc's earlier `:17` was stale); `_run_validation_pipeline` at [validation_service.py:575](../../src/security-controller/app/services/validation_service.py#L575); `_fire_and_forget` [:118](../../src/security-controller/app/services/validation_service.py#L118) + module `_bg_tasks` [:55](../../src/security-controller/app/services/validation_service.py#L55); `phase` Field [models.py:77](../../src/security-controller/app/api/models.py#L77), `content_text` [:87](../../src/security-controller/app/api/models.py#L87). The Increment-1 milestone set is **J1, J2, J-cov, J-infra, J-report, J4, J6**.
+>
+> ## ✅ ALL INCREMENT-1 MILESTONES COMPLETE + DEPLOYED (2026-07-05)
+> Every Increment-1 milestone below (**J1, J2, J-cov, J-infra, J-report, J4, J6** — all tasks) is **built, merged to `main`, and DEPLOYED live to prod**. Full suite green (207 canary + 12 CDK). The `Sentra-DEV-Canary-Stack` is `CREATE_COMPLETE`, the hourly EventBridge schedule is **ENABLED**, and a live prod run scored **117/117 checks PASS** (durable rows in `sentra-canary-results`, all 5 CloudWatch alarms OK). Deployed via image `sentra/canary:milestone-3` + controller `milestone-101` (carries the SEC-11 + J4.2 controller followups). Post-deploy alarm fix applied (ChecksFailed → NOT_BREACHING + a dedicated `canary-not-running` heartbeat alarm). **DEFERRED milestones J3/J5/J7/J8 remain design-only (no Increment-1 tasks), each auto-activating via its `landed_flag`.**
 
-### Milestone J1 — Harness skeleton + transport-parameterized fixtures + route manifest
+### Milestone J1 — Harness skeleton + transport-parameterized fixtures + route manifest ✅ DONE
 
 - **J1.1 — Create `tests/canary/` package + the `canary_client` transport switch.**
   - **Touches:** new `tests/canary/__init__.py`, `tests/canary/conftest.py`; extends [tests/integration/conftest.py:47](../../tests/integration/conftest.py#L47) (`service_urls`) + [:66](../../tests/integration/conftest.py#L66) (`aws_config`) via import (do NOT re-declare them); mirrors the `TestClient(app)` pattern at [src/security-controller/tests/test_health.py:8-14](../../src/security-controller/tests/test_health.py#L8) (`from app.main import app`, `TestClient(app)` — `app` object is [main.py:68](../../src/security-controller/app/main.py#L68)).
@@ -126,7 +129,7 @@ flowchart TB
   - **FOOTGUN:** `/v1/tenants/{id}` is GET/**PATCH**/DELETE (not PUT — [tenancy_routes.py:230](../../src/security-controller/app/api/tenancy_routes.py#L230) `@router.patch`); `DELETE /v1/feedback/subjects/{locator}` lives in [routes.py:834](../../src/security-controller/app/api/routes.py#L834) (require_role-gated) but is api-key-reachable — mark it `oidc`/gated. There is **NO skip-list** — `GET /v1/metrics` + `/v1/sessions/{id}/signals` are WIRED after `ff4fdfc` and are live `key` rows.
   - **Unit test** — `test_route_manifest` in `tests/canary/test_route_manifest.py`: (a) exactly 65 rows; (b) exactly 1 `public`, 16 `oidc`, 4 `demo_proxy`, rest `key`; (c) every `authz_gap_flag=True` row is a mutation (`POST/PUT/DELETE/PATCH`); (d) every `oidc` row has `landed_flag=False` (Increment-1 deferral); (e) `failure_axis` values are a subset of the allowed axis set `{"400","401","403","404","409","422","429","DENY"}`; (f) `RouteSpec` is frozen (mutation raises `FrozenInstanceError`). **Integration test** — the J-cov `test_every_wired_route_has_a_canary` join (below) is the manifest↔`app.routes` integration.
 
-### Milestone J2 — Validate ALLOW/DENY round-trip + the all-route positive/negative generator (P0-1)
+### Milestone J2 — Validate ALLOW/DENY round-trip + the all-route positive/negative generator (P0-1) ✅ DONE
 
 - **J2.1 — ALLOW round-trip (REQUIRED).**
   - **Touches:** `tests/canary/test_j2_validate.py`; `POST /v1/validate` handler `validate_tool_call` [routes.py:57](../../src/security-controller/app/api/routes.py#L57) → `_run_validation_pipeline` [validation_service.py:575](../../src/security-controller/app/services/validation_service.py#L575) → `DenyOverrides` [deny_overrides.py](../../src/security-controller/app/combiners/deny_overrides.py); request body `ValidationRequest` [models.py:54](../../src/security-controller/app/api/models.py#L54).
@@ -161,7 +164,7 @@ flowchart TB
   - **FOOTGUN:** negative coverage is a **HARD gate**, not "where applicable" — a route with only a positive check is a RED `ROUTE_NEGATIVE_AXIS_UNCOVERED` gap. Do NOT drive `429` on the shared/enforcement plan (would 429 the action path — the 2026-06-13 outage class). Assert `DENY`-is-`200`, never a 4xx on a DENY.
   - **Unit test** — `test_all_routes` (parametrized `(route, axis)`) in `test_all_routes.py` (`inprocess`): every `pub`+`key` landed route's positive + each failure-axis probe passes. **Integration test** — the same generator run against the real API Gateway in `live` mode (marked so it can run in the hourly monitor) exercises the actual edge auth + throttling contract.
 
-### Milestone J-cov — Coverage guard + measurable code-logic gate (P0-2)
+### Milestone J-cov — Coverage guard + measurable code-logic gate (P0-2) ✅ DONE
 
 - **Jc.1 — Route×behavior coverage guard.**
   - **Touches:** new `tests/canary/test_coverage_guard.py`; introspects `app.routes` (`from app.main import app`); joins against `ROUTE_MANIFEST` (J1.4) and the `_collect_canary_targets()` registry the J2.4/J2/J4/J6 scenarios populate.
@@ -195,7 +198,7 @@ flowchart TB
   - **FOOTGUN 1:** use the **dotted** `--cov=app.api.routes` (module) form in `.coveragerc`, NOT the path form `--cov=app/api` — the path form resolves against repo-root cwd, misses `PYTHONPATH=src/security-controller`, and silently reports **0.00%** (a vacuous gate). **FOOTGUN 2:** do NOT scope to the whole `app/api`+`app/services` tree — it holds schedulers/scanners/purge code no HTTP request reaches (→ meaningless ~37%). **FOOTGUN 3:** do NOT put the coverage floor on the `live` ECS entrypoint (black-box; would false-fail). This gate is orthogonal to Jc.1's behavioral matrix — both are required for P0-2.
   - **No UT — this is a run-config/wiring task.** Its proof is the on-demand run itself producing a coverage number ≥ the floor; the acceptance checklist carries the `fail_under=50` box. **Integration test** — the documented on-demand command runs green at ≥50% over the `.coveragerc` request-path scope.
 
-### Milestone J-infra — `canary_stack.py` CDK + docker/canary + 8th image + DDB + CW + scheduler (P0-3 wiring)
+### Milestone J-infra — `canary_stack.py` CDK + docker/canary + 8th image + DDB + CW + scheduler (P0-3 wiring) ✅ DONE + DEPLOYED
 
 - **Ji.1 — `docker/canary/Dockerfile` (Increment 1: httpx + boto3, NO Playwright).**
   - **Touches:** new `docker/canary/Dockerfile`, `docker/canary/entrypoint` (or the pytest invocation); mirrors the other 7 Dockerfiles.
@@ -233,7 +236,7 @@ flowchart TB
   - **FOOTGUN:** the email endpoint MUST be `shshgup@amazon.com` verbatim (founder P0-3). Route routine FAILs to `sentra-canary-alerts`, ONLY sustained/product-5xx escalations to `sentra-mvp-critical-alerts` (SEC-8) — do NOT point routine FAILs at the shared critical topic. `treat_missing_data=BREACHING` so a canary that fails to run at all also alarms.
   - **No UT — CDK infra/config.** **Integration test** — `test_canary_sns_email` in `tests/unit/`: template has a `sentra-canary-alerts` SNS topic with an `EmailSubscription` endpoint `shshgup@amazon.com`, and the `ChecksFailed` alarm with `TreatMissingData: breaching` actioning the canary topic (the P0-3 + alarm contract).
 
-### Milestone J-report — Reporting plugin + `sentra-canary-results` writes + concurrency guard
+### Milestone J-report — Reporting plugin + `sentra-canary-results` writes + concurrency guard ✅ DONE
 
 - **Jr.1 — `reporting_plugin.py` — pytest `pytest_runtest_makereport` hook (`live`-write only).**
   - **Touches:** new `tests/canary/reporting_plugin.py`; writes `sentra-canary-results` (Ji.3); reads `CanaryClient.correlation_id`/`latency_ms`.
@@ -259,7 +262,7 @@ flowchart TB
   - **FOOTGUN:** a bare `exit 0` skip emits ZERO PASS/FAIL rows, which reads as "nothing failed" — the `SKIPPED_OVERLAP` row + metric are MANDATORY or a persistent skip silently stops coverage. The deadline reap must be EXTERNAL (a wedged task can't stop itself).
   - **Unit test** — `test_startup_guard` in `tests/canary/test_entrypoint.py`: with a mocked `ecs:ListTasks` returning another RUNNING canary → exit 0 + emits `CanarySkippedOverlap` metric + `SKIPPED_OVERLAP` row; with no other task → proceeds to run. **Integration test** — `test_skipped_overlap_alarm` in `tests/unit/`: the `CanarySkippedOverlap` 2-period composite alarm exists (the overlap-visibility contract).
 
-### Milestone J4 — Redaction-before-egress (redaction-plumbing, REQUIRED now, live-safe)
+### Milestone J4 — Redaction-before-egress (redaction-plumbing, REQUIRED now, live-safe) ✅ DONE
 
 - **J4.1 — No raw sentinel at egress (a sentinel SET, not one literal).**
   - **Touches:** `tests/canary/test_j4_redaction.py`; SDK `_send` [guard.py:642](../../demo-agents/sdk/aegion-guard-python/src/aegion_guard/guard.py#L642) (call site [:396](../../demo-agents/sdk/aegion-guard-python/src/aegion_guard/guard.py#L396)); WS-E redactor (Tier-1 edge + stage-2 server, DONE).
@@ -279,7 +282,7 @@ flowchart TB
   - **FOOTGUN:** pick a request whose DENY is driven by a field that survives redaction (e.g. tool identity / param bound), so redaction masking the sentinel doesn't remove the DENY trigger itself.
   - **Unit test** — `test_j4_3_functional` in `test_j4_redaction.py`: masked DENY-request → still DENY. **Integration test** — over the real pipeline (redaction↔decision contract).
 
-### Milestone J6 — Multi-tenant isolation (landed-today, REQUIRED now)
+### Milestone J6 — Multi-tenant isolation (landed-today, REQUIRED now) ✅ DONE
 
 - **J6.1 — No cross-tenant read.**
   - **Touches:** `tests/canary/test_j6_tenancy.py`; `canary_tenant` fixture (J1.2, two instances A/B); `tenant_identity_mode: enforce` [dev.yaml:37](../../cdk/config/dev.yaml#L37); `resolve_tenant_from_jwt` [deps.py:111](../../src/security-controller/app/api/deps.py#L111).
@@ -328,41 +331,41 @@ Every RED/`INFRA` check records its `failure_reason` + `expected`/`actual` + `co
 > Scope = Increment 1 (P0-1/P0-2/P0-3 + infra). The deferred milestones (J3/J5/J7/J8) are NOT in this checklist — their acceptance lands with their owning increment.
 
 **Harness + fixtures + manifest (J1)**
-- [ ] `tests/canary/` package exists with **transport-parameterized** fixtures (`canary_client` — the ONLY reader of `CANARY_TARGET`; `canary_tenant`; `canary_operator` `inprocess`-only) that **extend** (not duplicate) `tests/integration/conftest.py` `service_urls`/`aws_config`.
-- [ ] `canary_client` in `inprocess` mode wraps `TestClient(app)` and `GET /v1/health` → 200; in `live` mode builds an `httpx.Client` with the `X-Api-Key` from `sentra/canary/api-key`; every call injects a fresh `X-Correlation-Id` and records `latency_ms`.
-- [ ] `canary_tenant` yields `canary-<uuid4hex>`, seeds one `sentra-tenant-members` row, and tears down best-effort/idempotent in a finalizer; **no writes to `acme-*` / prod `sentra-meter-events` / real-operator rows**; every canary write is tenant-prefixed.
-- [ ] `route_manifest.py` has exactly **65** `RouteSpec` rows (1 public + 16 oidc[`landed_flag=False`] + 4 demo_proxy + rest key), each with `failure_axis`, `landed_flag`, `authz_gap_flag`; the 17 `G`-marked mutations carry `authz_gap_flag=True`.
+- [x] `tests/canary/` package exists with **transport-parameterized** fixtures (`canary_client` — the ONLY reader of `CANARY_TARGET`; `canary_tenant`; `canary_operator` `inprocess`-only) that **extend** (not duplicate) `tests/integration/conftest.py` `service_urls`/`aws_config`.
+- [x] `canary_client` in `inprocess` mode wraps `TestClient(app)` and `GET /v1/health` → 200; in `live` mode builds an `httpx.Client` with the `X-Api-Key` from `sentra/canary/api-key`; every call injects a fresh `X-Correlation-Id` and records `latency_ms`.
+- [x] `canary_tenant` yields `canary-<uuid4hex>`, seeds one `sentra-tenant-members` row, and tears down best-effort/idempotent in a finalizer; **no writes to `acme-*` / prod `sentra-meter-events` / real-operator rows**; every canary write is tenant-prefixed.
+- [x] `route_manifest.py` has exactly **65** `RouteSpec` rows (1 public + 16 oidc[`landed_flag=False`] + 4 demo_proxy + rest key), each with `failure_axis`, `landed_flag`, `authz_gap_flag`; the 17 `G`-marked mutations carry `authz_gap_flag=True`.
 
 **P0-1 — all-API positive + negative (HARD gate)**
-- [ ] Every **API-key-reachable** landed route in Appendix A (public + key, excluding the 16 oidc rows) has a **positive** happy-path check AND a check for **every** entry in its `failure_axis` (`400`/`401`/`403`/`404`/`409`/`422`/`429`/`DENY`-is-`200`, per route).
-- [ ] `POST /v1/validate` ALLOW → 200+ALLOW+`winning_source` present; DENY → **HTTP 200**+`decision=="DENY"`+`winning_source` names the validator (never a 4xx/5xx on a DENY); unknown `phase` → 422; per-`phase` round-trip over `KNOWN_PHASES`.
-- [ ] `429` is asserted **only** against the canary's own dedicated usage plan, never the enforcement/shared plan.
+- [x] Every **API-key-reachable** landed route in Appendix A (public + key, excluding the 16 oidc rows) has a **positive** happy-path check AND a check for **every** entry in its `failure_axis` (`400`/`401`/`403`/`404`/`409`/`422`/`429`/`DENY`-is-`200`, per route).
+- [x] `POST /v1/validate` ALLOW → 200+ALLOW+`winning_source` present; DENY → **HTTP 200**+`decision=="DENY"`+`winning_source` names the validator (never a 4xx/5xx on a DENY); unknown `phase` → 422; per-`phase` round-trip over `KNOWN_PHASES`.
+- [x] `429` is asserted **only** against the canary's own dedicated usage plan, never the enforcement/shared plan.
 
 **P0-2 — measurable code-logic coverage**
-- [ ] `test_coverage_guard.py` route×behavior matrix goes **RED** on `LANDED_ROUTE_UNCOVERED`, `ROUTE_NEGATIVE_AXIS_UNCOVERED` (a positive-only route is a gap), and `UNKNOWN_ROUTE_NOT_IN_MANIFEST`; exempts `landed_flag=False` routes.
-- [ ] The transport-purity lint (`test_no_scenario_reads_CANARY_TARGET`) passes — no scenario reads the transport env var.
-- [ ] **pytest-cov gate:** `CANARY_TARGET=inprocess pytest tests/canary/ -m "not requires_live" --cov --cov-config=tests/canary/.coveragerc` passes at ≥ the `.coveragerc` `fail_under=50` floor (measured ~52%; `50%` labeled target-to-tune; scope = request-path modules, dotted-module form not path form); the gate is `inprocess`-only (not on the `live` entrypoint).
+- [x] `test_coverage_guard.py` route×behavior matrix goes **RED** on `LANDED_ROUTE_UNCOVERED`, `ROUTE_NEGATIVE_AXIS_UNCOVERED` (a positive-only route is a gap), and `UNKNOWN_ROUTE_NOT_IN_MANIFEST`; exempts `landed_flag=False` routes.
+- [x] The transport-purity lint (`test_no_scenario_reads_CANARY_TARGET`) passes — no scenario reads the transport env var.
+- [x] **pytest-cov gate:** `CANARY_TARGET=inprocess pytest tests/canary/ -m "not requires_live" --cov --cov-config=tests/canary/.coveragerc` passes at ≥ the `.coveragerc` `fail_under=50` floor (measured ~52%; `50%` labeled target-to-tune; scope = request-path modules, dotted-module form not path form); the gate is `inprocess`-only (not on the `live` entrypoint).
 
 **Infra (J-infra) + P0-3**
-- [ ] `docker/canary/Dockerfile` (`python:3.11-slim` + `httpx` + `boto3`, **NO Playwright**) is the 8th image in `build_and_push_images.sh` `SERVICES` with an `ecr.Repository` `sentra/canary` in `storage_stack.py`.
-- [ ] `canary_stack.py` synthesizes: `sentra-canary-results` DDB (PK `run_id`/SK `check_id`, `PAY_PER_REQUEST`, TTL `ttl` 90d, `DESTROY`); a `sentra-canary` Fargate task def (512/1024, `PRIVATE_WITH_EGRESS`, `CANARY_TARGET=live`) with a minimal SEC-4 task role (secrets `sentra/canary/*`, CW `Sentra/Canary`, DDB `sentra-canary-results`, SNS both canary topics, `ecs:ListTasks` cluster-scoped — **no product-table write, no `apigateway:GET`**); an EventBridge Scheduler `rate(1 hour)`→`RunTask` + a scheduler role with `ecs:RunTask`+`iam:PassRole` on both roles + an on-demand path.
-- [ ] **P0-3:** a dedicated `sentra-canary-alerts` SNS topic carries an `EmailSubscription` to **`shshgup@amazon.com`**; the `ChecksFailed>=1` alarm (`treat_missing_data=BREACHING`) actions the canary topic; only sustained/product-5xx escalations action `sentra-mvp-critical-alerts`.
+- [x] `docker/canary/Dockerfile` (`python:3.11-slim` + `httpx` + `boto3`, **NO Playwright**) is the 8th image in `build_and_push_images.sh` `SERVICES` with an `ecr.Repository` `sentra/canary` in `storage_stack.py`.
+- [x] `canary_stack.py` synthesizes: `sentra-canary-results` DDB (PK `run_id`/SK `check_id`, `PAY_PER_REQUEST`, TTL `ttl` 90d, `DESTROY`); a `sentra-canary` Fargate task def (512/1024, `PRIVATE_WITH_EGRESS`, `CANARY_TARGET=live`) with a minimal SEC-4 task role (secrets `sentra/canary/*`, CW `Sentra/Canary`, DDB `sentra-canary-results`, SNS both canary topics, `ecs:ListTasks` cluster-scoped — **no product-table write, no `apigateway:GET`**); an EventBridge Scheduler `rate(1 hour)`→`RunTask` + a scheduler role with `ecs:RunTask`+`iam:PassRole` on both roles + an on-demand path.
+- [x] **P0-3:** a dedicated `sentra-canary-alerts` SNS topic carries an `EmailSubscription` to **`shshgup@amazon.com`**; the `ChecksFailed>=1` alarm (`treat_missing_data=NOT_BREACHING` — fires only on a real failure; a once-per-hour metric under BREACHING false-flaps on the gap between runs, observed+fixed in prod 2026-07-05) actions the canary topic; a dedicated `canary-not-running` heartbeat alarm (`ChecksExpected` LESS_THAN, BREACHING, 2/2 periods) owns the "did not run" concern; only sustained/product-5xx escalations action `sentra-mvp-critical-alerts`.
 
 **Reporting + resiliency (J-report)**
-- [ ] The `pytest_runtest_makereport` plugin writes one `sentra-canary-results` row per check **in `live` mode only** (`inprocess` = stdout only); the `sts:GetCallerIdentity`==canary-task-role guard blocks a non-canary publish.
-- [ ] Three-state model holds: a no-HTTP-response transport error retries N=2 then→`INFRA`; a service-returned `5xx`→`FAIL` (+`ProductFivexxFail`, pages critical) with no retry; a deterministic assertion failure→`FAIL` with no retry; nothing retried-into-green.
-- [ ] The plugin emits `ChecksPassed/ChecksFailed/InfraErrors/ChecksExpected`; a `Passed+Failed+Infra < Expected` composite alarm fires on a check-dropping run; a 2-run health-INFRA streak pages.
-- [ ] At-most-one startup guard: on an already-`RUNNING` canary the entrypoint exits 0 but emits a `CanarySkippedOverlap` metric + a `status=SKIPPED_OVERLAP` results row (a skip is never indistinguishable from green); a 2-period `CanarySkippedOverlap` composite alarm pages.
+- [x] The `pytest_runtest_makereport` plugin writes one `sentra-canary-results` row per check **in `live` mode only** (`inprocess` = stdout only); the `sts:GetCallerIdentity`==canary-task-role guard blocks a non-canary publish.
+- [x] Three-state model holds: a no-HTTP-response transport error retries N=2 then→`INFRA`; a service-returned `5xx`→`FAIL` (+`ProductFivexxFail`, pages critical) with no retry; a deterministic assertion failure→`FAIL` with no retry; nothing retried-into-green.
+- [x] The plugin emits `ChecksPassed/ChecksFailed/InfraErrors/ChecksExpected`; a `Passed+Failed+Infra < Expected` composite alarm fires on a check-dropping run; a 2-run health-INFRA streak pages.
+- [x] At-most-one startup guard: on an already-`RUNNING` canary the entrypoint exits 0 but emits a `CanarySkippedOverlap` metric + a `status=SKIPPED_OVERLAP` results row (a skip is never indistinguishable from green); a 2-period `CanarySkippedOverlap` composite alarm pages.
 
 **Landed security scenarios (J4, J6)**
-- [ ] **J4** redaction: the sentinel SET (PAN/SSN/email/phone) in both `user_input` and `tool_params` is each **absent** at egress; the `inprocess` no-PII-in-logs form drains `validation_service._bg_tasks` before scanning (never a poll) OR asserts the redacted `log_decision`/`log_signals` args positively; a masked DENY-request still yields DENY. (J4.2 `live` is exempt-until-the-hook-lands.)
-- [ ] **J6** tenancy: no cross-tenant read or decision bleed under `tenant_identity_mode:enforce`; the cross-tenant denial is asserted via the audit `IDENTITY_*` reason (not a decision metric); DENY-tripping scenarios use a fresh `session_id`.
+- [x] **J4** redaction: the sentinel SET (PAN/SSN/email/phone) in both `user_input` and `tool_params` is each **absent** at egress; the `inprocess` no-PII-in-logs form drains `validation_service._bg_tasks` before scanning (never a poll) OR asserts the redacted `log_decision`/`log_signals` args positively; a masked DENY-request still yields DENY. (J4.2 `live` is exempt-until-the-hook-lands.)
+- [x] **J6** tenancy: no cross-tenant read or decision bleed under `tenant_identity_mode:enforce`; the cross-tenant denial is asserted via the audit `IDENTITY_*` reason (not a decision metric); DENY-tripping scenarios use a fresh `session_id`.
 
 **Cross-cutting**
-- [ ] **unit tests pass** (covering: `canary_client`/`canary_tenant`/`canary_operator` fixtures, the `RouteSpec` manifest shape, the J2 ALLOW/DENY/phase asserts, the J2.4 all-route positive+negative probes, the three coverage-guard RED conditions + transport-purity lint, the reporting plugin's live-write/three-state/metric-emission/startup-guard, and the J4/J6 sentinel + isolation asserts).
-- [ ] **integration tests pass** (covering: the `/v1/validate`→`_run_validation_pipeline`→`DenyOverrides` end-to-end seam; the all-route generator against the real API Gateway edge in `live`; the manifest↔`app.routes` coverage join; the WS-E redactor edge→egress + `_bg_tasks` audit barrier; the LLD-26 `enforce`-mode tenancy isolation; and the synthesized CDK templates — ECR repo, results table, task def + least-privilege role, scheduler, `EmailSubscription`→`shshgup@amazon.com`, the anti-false-PASS + overlap alarms).
-- [ ] No scenario uses skip/xfail/retry to reach green; an unestablished precondition errors **RED/`INFRA`**, never a silent skip; ECS transport flake is `INFRA`, never green.
-- [ ] No real PII and no real egress of secrets; all sensitive markers are the synthetic sentinel `CANARY-PII-7F3A`; secrets live only in `sentra/canary/*` (Secrets Manager); the canary carries **no standing `_platform` grant** (SEC-7).
+- [x] **unit tests pass** (covering: `canary_client`/`canary_tenant`/`canary_operator` fixtures, the `RouteSpec` manifest shape, the J2 ALLOW/DENY/phase asserts, the J2.4 all-route positive+negative probes, the three coverage-guard RED conditions + transport-purity lint, the reporting plugin's live-write/three-state/metric-emission/startup-guard, and the J4/J6 sentinel + isolation asserts).
+- [x] **integration tests pass** (covering: the `/v1/validate`→`_run_validation_pipeline`→`DenyOverrides` end-to-end seam; the all-route generator against the real API Gateway edge in `live`; the manifest↔`app.routes` coverage join; the WS-E redactor edge→egress + `_bg_tasks` audit barrier; the LLD-26 `enforce`-mode tenancy isolation; and the synthesized CDK templates — ECR repo, results table, task def + least-privilege role, scheduler, `EmailSubscription`→`shshgup@amazon.com`, the anti-false-PASS + overlap alarms).
+- [x] No scenario uses skip/xfail/retry to reach green; an unestablished precondition errors **RED/`INFRA`**, never a silent skip; ECS transport flake is `INFRA`, never green.
+- [x] No real PII and no real egress of secrets; all sensitive markers are the synthetic sentinel `CANARY-PII-7F3A`; secrets live only in `sentra/canary/*` (Secrets Manager); the canary carries **no standing `_platform` grant** (SEC-7).
 
 ---
 

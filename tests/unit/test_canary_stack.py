@@ -142,16 +142,35 @@ def test_canary_scheduler_rate_1_hour():
 
 
 def test_canary_alarms():
-    """Ji.6 / Jr.3 — ChecksFailed>=1 (BREACHING) + overlap alarms exist."""
+    """Ji.6 / Jr.3 — ChecksFailed>=1 fires on a REAL failure (NOT_BREACHING: the metric
+    posts once/hour, so BREACHING would re-fire on the gap between runs — a false ALARM
+    observed in prod 2026-07-05) + overlap alarm exists."""
     t = _canary_template()
     t.has_resource_properties("AWS::CloudWatch::Alarm", {
         "MetricName": "ChecksFailed",
         "Namespace": "Sentra/Canary",
-        "TreatMissingData": "breaching",
+        "TreatMissingData": "notBreaching",
     })
     t.has_resource_properties("AWS::CloudWatch::Alarm", {
         "MetricName": "CanarySkippedOverlap",
         "EvaluationPeriods": 2,
+    })
+
+
+def test_canary_heartbeat_alarm_catches_no_run():
+    """The 'did-it-run' monitor-the-monitor signal (separated from ChecksFailed): watch
+    ChecksExpected (emitted by EVERY real run) with BREACHING missing-data over 2/2
+    periods, so two consecutive missed hourly fires page. This is the correct home for
+    the no-run concern the old ChecksFailed=BREACHING alarm mis-handled — a single-metric
+    LESS_THAN alarm that fires when the canary stops emitting."""
+    t = _canary_template()
+    t.has_resource_properties("AWS::CloudWatch::Alarm", {
+        "MetricName": "ChecksExpected",
+        "Namespace": "Sentra/Canary",
+        "ComparisonOperator": "LessThanThreshold",
+        "TreatMissingData": "breaching",
+        "EvaluationPeriods": 2,
+        "DatapointsToAlarm": 2,
     })
 
 

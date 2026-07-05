@@ -294,13 +294,18 @@ class CanaryStack(Stack):
             threshold=1,
             evaluation_periods=1,
             comparison_operator=cloudwatch.ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD,
-            # Monitor-the-monitor: entrypoint.emit_run_metrics emits ChecksFailed EVERY
-            # hourly run (0 on a clean run, ≥1 on a real failure), so BREACHING fires
-            # ONLY when a run produced no datapoint at all — i.e. the hourly canary did
-            # not run / crashed before emit. (Before the emitter was wired this metric
-            # was never produced, so BREACHING meant a permanent false ALARM — the
-            # dead-seam bug this WS closes; the emission is asserted by the seam test.)
-            treat_missing_data=cloudwatch.TreatMissingData.BREACHING,
+            # This alarm fires on a REAL failure: a run emitted ChecksFailed>=1.
+            # It uses NOT_BREACHING for missing data, NOT breaching — the canary emits
+            # ChecksFailed exactly ONCE per hourly run, so with a 1h period the single
+            # datapoint ages out of every subsequent evaluation window; BREACHING there
+            # re-fires the alarm on the GAP BETWEEN runs even when the last run was clean
+            # (a permanent false ALARM — observed in prod 2026-07-05). The DISTINCT
+            # concern "the canary did not run / dropped checks" is owned by the shortfall
+            # alarm below (expected > reported), which is the correct monitor-the-monitor
+            # signal; overloading THIS alarm with missing-data-as-failure conflates the
+            # two. A clean run emits 0 (clears); a failing run emits >=1 (fires); a
+            # no-run is caught by shortfall — clean separation, no false flap.
+            treat_missing_data=cloudwatch.TreatMissingData.NOT_BREACHING,
         )
         self.checks_failed_alarm.add_alarm_action(
             cw_actions.SnsAction(self.canary_alerts_topic)
@@ -385,3 +390,31 @@ class CanaryStack(Stack):
             else self.canary_alerts_topic
         )
         self.product_5xx_alarm.add_alarm_action(cw_actions.SnsAction(product_5xx_topic))
+
+        # ---- heartbeat: "the canary did not RUN" (monitor-the-monitor, done right) ----
+        # This is the concern the old ChecksFailed=BREACHING alarm mis-handled. A run
+        # that never fired emits NOTHING (not even ChecksExpected), so no failure/
+        # shortfall alarm above can see it. Watch ChecksExpected (emitted by EVERY real
+        # run) with BREACHING missing-data — but over 2 periods, so a single missed
+        # hourly fire does not instantly page (the schedule has some jitter); two
+        # consecutive missed hours means the hourly canary is genuinely not running.
+        heartbeat = cloudwatch.Metric(
+            namespace=CANARY_NAMESPACE, metric_name="ChecksExpected",
+            period=Duration.hours(1), statistic="Maximum",
+        )
+        self.heartbeat_alarm = cloudwatch.Alarm(
+            self,
+            "CanaryHeartbeatAlarm",
+            alarm_name=f"{prefix}-canary-not-running",
+            metric=heartbeat,
+            threshold=1,
+            evaluation_periods=2,
+            datapoints_to_alarm=2,
+            comparison_operator=cloudwatch.ComparisonOperator.LESS_THAN_THRESHOLD,
+            # BREACHING: missing ChecksExpected = the canary did not run = the thing we
+            # want to know. 2/2 periods so a single jittered/missed hour is tolerated.
+            treat_missing_data=cloudwatch.TreatMissingData.BREACHING,
+        )
+        self.heartbeat_alarm.add_alarm_action(
+            cw_actions.SnsAction(self.canary_alerts_topic)
+        )
