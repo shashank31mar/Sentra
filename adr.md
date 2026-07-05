@@ -1467,6 +1467,50 @@ Write the **SAML + OIDC + SCIM federation** design **now**, but **defer the actu
 
 ---
 
+## ADR-036: Detection-Depth Enforce Overrides — D1 Past the Solvability Ceiling, D2 Past the FP Budget
+
+**Status**: Accepted (founder) — D1 override 2026-07-03, D2/D3 override 2026-07-05
+**Amends**: the enforce posture in [lld/32](lld/32-detection-depth.md) §5.1 (D1 "never a standalone gate") and the R5-C FP-budget gate in §5.2 / §5.3 (D2/D3). Design tenets in lld/32 are unchanged; this ADR records the deployed reality that deviates from them.
+
+### Context
+
+WS-L (detection depth) shipped D1/D2/D3 in prod (milestone-98/99, task-def `:58`) with the postures lld/32 designed:
+- **D1 (conversation-trajectory)** — shadow-by-design: a *probabilistic signal into the deny-overrides combiner, never a standalone gate*, grounded in a published multi-turn-detection solvability ceiling (`[FACT]` arXiv 2507.02956: safety-aligned models see Crescendo attacks as *more* benign the longer they run; no method reliably detects multi-turn at low FP). Code default `d1_enforce_enabled=False`.
+- **D2 (indirect injection) / D3 (memory integrity)** — built to *live-enforce, gated on a measured FP/precision budget* (R5-C): default OFF, flipped ON only once the offline eval-harness clears the budget. Code defaults `d2/d3_enforce_enabled=False`.
+
+The founder elected to enable all three enforcing ahead of those conditions.
+
+### Decision
+
+1. **D1 enforces in prod** (`D1_ENFORCE_ENABLED=true`) — a D1 trajectory DENY now decides the verdict, deviating from the "never a standalone gate" tenet. Deliberate, accepted-risk.
+2. **D2 + D3 enforce in prod** (`D2_ENFORCE_ENABLED=true`, `D3_ENFORCE_ENABLED=true`) despite the R5-C budget **not** being cleared: the faithful 662-item measurement (`scripts/meas_d2_d3_fp_budget.py`, in-region Bedrock) gave D2 **FP-rate 1.25% > the 1% budget** (precision 0.97, recall 0.63); D3 benign FP 0.0 but recall **unmeasured** (no memory-poisoning corpus). This is an accepted-risk override, **not** a budget-clear.
+
+The code defaults stay `False` (safe default); prod overrides via env var in `cdk/stacks/compute_stack.py`. Each is reversible by a single flag flip + `cdk deploy`.
+
+### Consequences
+
+- ⚠️ **Both overrides are live but currently DORMANT.** Measured over the first 48h: 100% of prod traffic is `phase=request`, so D2/D3 ran on **0** requests, and D1 decided **0** of 14,640 DENYs (all decided by `sentra.trust`; D1 sits at priority 68, below sigma 70, so the floor decides first). The risk activates only when (a) connectors emit `content`/`memory` phases → D2/D3 begin blocking, or (b) a floor-survivor trips D1.
+- ⚠️ **Tripwire — re-review at phase-activation.** When any connector begins emitting `content` phase, D2's 1.25% benign-block rate becomes real (≈1 in 80 benign ingests wrongly blocked). The FP-budget override MUST be re-examined at that moment, not silently inherited.
+- ⚠️ **The 1.25% was measured on a proxy corpus** (user-prompt-shaped `labeled_prompts.jsonl`), not fetched-doc / tool-output-shaped ingested content. The *real* ingested-content FP-rate is still unmeasured (see `research/wsl-detection-corpus-assessment-2026-07-05.md`: D2's true gap is benign ingested-content negatives).
+- ⚠️ **D3 enforces without a validated catch rate** — its recall on real memory-poisoning is unmeasured (the measurement corpus was injection text, the wrong threat class). D3 is benign-clean (0 FP) but its true recall needs a memory-poisoning corpus (ASB, MIT — see the research doc) or the §8 synthetic loop.
+- ✅ **Fail-secure floor unaffected.** The deterministic floor + `sentra.trust`/`sentra.abuse` still decide independently; these overrides only let the deep detectors *also* decide — they cannot weaken the floor (ADR-034).
+
+### Alternatives Considered
+
+1. **Run MEAS-D2-RECALL to clear the R5-C budget before enabling D2** — the design-intended path; deferred by founder (enable now, measure/improve in place). This ADR records that choice.
+2. **Keep D1 shadow (honor the ceiling tenet)** — Rejected by founder in favor of enforcing; the priority ordering (D1 below the floor) + reversibility bound the downside.
+3. **Tune the 1% budget to 1.5% so D2 "clears"** — Rejected: re-labeling the override as a pass would hide the deviation; the honest record is "measured 1.25%, overrode the 1% gate."
+
+### References
+
+- **LLD**: [lld/32-detection-depth.md](lld/32-detection-depth.md) §5.1 (D1 ceiling), §5.2 (D2 R5-C), §5.3 (D3), §11 SEC-7
+- **Research**: [research/wsl-detection-corpus-assessment-2026-07-05.md](research/wsl-detection-corpus-assessment-2026-07-05.md) (D1/D2/D3 corpus + the unmeasured-recall gaps)
+- **Tasks**: [tasks/serverless-edition/ws-l-detection-depth.md](tasks/serverless-edition/ws-l-detection-depth.md) M4.3 (D1 enforce seam), M2.4/M3.3 (D2/D3 R5-C)
+- **Code**: `cdk/stacks/compute_stack.py` (the three `*_ENFORCE_ENABLED` env vars); `src/security-controller/app/config.py` (defaults `False`); `src/security-controller/app/services/scheduler/registry.py` (`_apply_enforce_if`)
+- **Builds on ADR-034** (the floor is non-disableable — these overrides sit *above* the floor, never weaken it)
+
+---
+
 ## Future ADRs to Consider (Post-MVP)
 
 - **ADR-023**: Migration from ECS Fargate to EKS
