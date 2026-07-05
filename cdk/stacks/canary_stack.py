@@ -146,7 +146,7 @@ class CanaryStack(Stack):
             self,
             "CanaryTaskRole",
             assumed_by=iam.ServicePrincipal("ecs-tasks.amazonaws.com"),
-            description="WS-J canary task — minimal SEC-4 permissions only.",
+            description="WS-J canary task - minimal SEC-4 permissions only.",
         )
         self.canary_task_role.add_to_policy(
             iam.PolicyStatement(
@@ -221,7 +221,7 @@ class CanaryStack(Stack):
             self,
             "CanarySecurityGroup",
             vpc=vpc,
-            description="WS-J canary task — egress to public API Gateway via NAT.",
+            description="WS-J canary task - egress to public API Gateway via NAT.",
             allow_all_outbound=True,
         )
 
@@ -230,7 +230,7 @@ class CanaryStack(Stack):
             self,
             "CanarySchedulerRole",
             assumed_by=iam.ServicePrincipal("scheduler.amazonaws.com"),
-            description="EventBridge Scheduler → ecs:RunTask on the canary task def.",
+            description="EventBridge Scheduler invokes ecs:RunTask on the canary task def.",
         )
         scheduler_role.add_to_policy(
             iam.PolicyStatement(
