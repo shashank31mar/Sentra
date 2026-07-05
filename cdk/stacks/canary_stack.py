@@ -286,11 +286,25 @@ class CanaryStack(Stack):
             period=Duration.hours(1),
             statistic="Sum",
         )
+        # The failure alarm watches a SHORT 5-min window (not the 1h `checks_failed`
+        # used by the shortfall math below). Rationale: ChecksFailed is emitted once
+        # per hourly run; on a 1h Sum window a single one-off failure (or a stale
+        # datapoint) keeps the alarm lit for a FULL hour, and clearing it needs the
+        # datapoint to age out. On a 5-min window the failing datapoint sits in ONE
+        # bucket → alarms for ~5-10 min → the next empty period (NOT_BREACHING) clears
+        # it; a PERSISTENT failure re-fires every hourly run (correct re-notification).
+        # This is what stops the stale-datapoint / gap false-ALARM the founder saw.
+        checks_failed_alarm_metric = cloudwatch.Metric(
+            namespace=CANARY_NAMESPACE,
+            metric_name="ChecksFailed",
+            period=Duration.minutes(5),
+            statistic="Sum",
+        )
         self.checks_failed_alarm = cloudwatch.Alarm(
             self,
             "CanaryChecksFailedAlarm",
             alarm_name=f"{prefix}-canary-checks-failed",
-            metric=checks_failed,
+            metric=checks_failed_alarm_metric,
             threshold=1,
             evaluation_periods=1,
             comparison_operator=cloudwatch.ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD,

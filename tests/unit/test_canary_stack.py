@@ -146,10 +146,13 @@ def test_canary_alarms():
     posts once/hour, so BREACHING would re-fire on the gap between runs — a false ALARM
     observed in prod 2026-07-05) + overlap alarm exists."""
     t = _canary_template()
+    # The failure alarm watches a SHORT 5-min (300s) window, NOT_BREACHING, so a one-off
+    # failure self-clears in ~5-10 min instead of a stale datapoint locking a 1h window.
     t.has_resource_properties("AWS::CloudWatch::Alarm", {
         "MetricName": "ChecksFailed",
         "Namespace": "Sentra/Canary",
         "TreatMissingData": "notBreaching",
+        "Period": 300,
     })
     t.has_resource_properties("AWS::CloudWatch::Alarm", {
         "MetricName": "CanarySkippedOverlap",
