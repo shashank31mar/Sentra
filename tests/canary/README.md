@@ -14,18 +14,28 @@ runners (lld/38, `tasks/serverless-edition/ws-j-canary-tests.md`):
   live API Gateway with `CANARY_TARGET=live` + the reporting plugin (writes
   `sentra-canary-results`, emits `Sentra/Canary` metrics, SNS→`shshgup@amazon.com`).
 
-## P0-2 coverage gate (Jc.3 — `inprocess` only, `--cov-fail-under=85`)
+## P0-2 coverage gate (Jc.3 — `inprocess` only, floor via `.coveragerc`)
 
-`85%` is a **target-to-tune label**, not a proven floor. The gate is `inprocess`-only
-(the black-box `live` monitor cannot instrument the remote process):
+The gate measures the **request-path modules the black-box canary is responsible for**
+(`app.api.routes`, `app.api.tenancy_routes`, `app.api.models`, `app.combiners`,
+`app.services.validation_service`) — scoped in [`.coveragerc`](.coveragerc), NOT the
+whole `app/api`+`app/services` tree (which holds schedulers/scanners/purge code no HTTP
+request reaches → a meaningless ~37%). Floor = **50%** (measured ~52% as of 2026-07-05),
+a **target-to-tune** raised as WS-M + the console/auth increment unlock more branches.
+`inprocess`-only (the black-box `live` monitor cannot instrument the remote process):
 
 ```
 env -u AWS_PROFILE AWS_ACCESS_KEY_ID=testing AWS_SECRET_ACCESS_KEY=testing \
     AWS_DEFAULT_REGION=us-east-1 PYTHONPATH=src/security-controller \
     src/security-controller/venv/bin/python -m pytest tests/canary/ \
     -m "not requires_live and not pr_gate_only" \
-    --cov=app/api --cov=app/services --cov-fail-under=85 --cov-report=term-missing
+    --cov --cov-config=tests/canary/.coveragerc --cov-report=term-missing
 ```
+
+> **FOOTGUN:** use the pytest **dotted** `--cov=app.api.routes` (module) form — the
+> path form `--cov=app/api` resolves against repo-root cwd, misses the
+> `PYTHONPATH=src/security-controller` import root, and silently reports **0.00%**
+> (a vacuous gate). `.coveragerc` `[run] source` uses the dotted form.
 
 ## Markers
 
