@@ -982,7 +982,7 @@ class StorageStack(Stack):
         ecr_config = config.get("compute", {}).get("ecr", {})
         prefix = naming_config.get("prefix", "sentra-mvp")
 
-        repository_names = ["security-controller", "dashboard", "customer-query-agent", "payment-agent", "demo-orchestrator", "console"]
+        repository_names = ["security-controller", "dashboard", "customer-query-agent", "payment-agent", "demo-orchestrator", "console", "canary"]  # WS-J Ji.2: sentra/canary (8th image, ECS synthetic monitor)
         self.ecr_repositories = {}
 
         for repo_name in repository_names:
