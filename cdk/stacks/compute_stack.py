@@ -1470,9 +1470,17 @@ def handler(event, context):
                     # multi-turn signal, "never a standalone gate" (published solvability
                     # ceiling). FOUNDER OVERRIDE 2026-07-03: enforce D1 (a D1 DENY decides)
                     # despite the ceiling — accepted-risk call. Reversible: set to "false"
-                    # + cdk deploy to return D1 to advisory. D2/D3 stay advisory (their
-                    # enforce flags are absent → config.py default False → FP-budget-gated).
+                    # + cdk deploy to return D1 to advisory.
                     "D1_ENFORCE_ENABLED": "true",
+                    # WS-L D2/D3 live-enforce (LLD 32 §5.2/§5.3, R5-C). FOUNDER OVERRIDE
+                    # 2026-07-05: enforce D2 + D3 (their DENYs decide) despite the measured
+                    # D2 FP-rate 1.25% being just over the 1% R5-C budget (faithful 662-item
+                    # run: D2 P=0.97 R=0.63 FP=0.0125; D3 benign-clean FP=0.0 but recall
+                    # unmeasured on the injection corpus — no memory-poisoning threat class).
+                    # Accepted-risk: ~1.25% false-positive-block on benign content, tolerated
+                    # to turn blocking on now. Reversible: set to "false" + cdk deploy.
+                    "D2_ENFORCE_ENABLED": "true",
+                    "D3_ENFORCE_ENABLED": "true",
                     # Cedar authorization engine (feature: cedar-policy). Config-
                     # driven so flipping shadow→cutover needs only a dev.yaml edit +
                     # cdk deploy (mirrors tenancy_v2). cedar_enabled gates the
