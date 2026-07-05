@@ -23,9 +23,15 @@ RUN pip install --no-cache-dir \
     "pytest>=8" \
     "pytest-cov>=5"
 
-# The scenario library + the controller app (some scenarios import app models /
-# the redactor for the shared contract shape; the live entrypoint hits deployed
-# URLs and does not stand up the app).
+# The scenario library + the controller app. In the LIVE container only the two
+# black-box httpx scenario modules (test_all_routes.py + test_metrics_live.py) are
+# actually collected — conftest.py's CANARY_TARGET-driven collect_ignore excludes
+# every app-standing-up / meta / harness-unit module, so their module-level
+# app.*/aegion_guard/fastapi/pydantic imports never run (the lean image has NO
+# fastapi/pydantic/SDK, so collecting them would ModuleNotFoundError at collection
+# and blank out every alarm's metric). The app/ tree is COPIED anyway for the
+# inprocess/build-time story + so a future non-lean edition can widen the live set;
+# the live entrypoint hits deployed URLs and does not stand up the app.
 COPY tests/canary/ ./tests/canary/
 COPY src/security-controller/app/ ./app/
 COPY scripts/schemas/ ./schemas/

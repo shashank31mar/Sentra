@@ -35,6 +35,50 @@ CANARY_TARGET_ENV = "CANARY_TARGET"
 CANARY_SENTINEL = "CANARY-PII-7F3A"  # Invariant 6 — the only sensitive marker.
 
 
+# ------------------------------------------------------------ live-collection guard
+# The lean LIVE container (docker/canary/Dockerfile) installs ONLY httpx/boto3/pytest/
+# pytest-cov — NO fastapi, NO pydantic, NO aegion_guard SDK, and does NOT COPY the whole
+# controller package as an importable tree the heavy modules need. The hourly monitor
+# runs ONLY the black-box scenarios that hit the deployed API Gateway over httpx
+# (test_all_routes.py's all-route sweep + test_metrics_live.py's requires_live metric
+# checks). Every other module (app-standing-up / meta / harness-unit) does a heavy
+# module-LEVEL import (app.* / aegion_guard / fastapi / pydantic / moto) that the lean
+# container CANNOT satisfy — collecting them would raise ModuleNotFoundError AT
+# COLLECTION, erroring the WHOLE run before any scenario executes → emit_run_metrics
+# never fires → ChecksPassed/Failed=0 → the ChecksFailed alarm (TreatMissingData.
+# BREACHING) fires PERMANENTLY (the false-alarm gap integration-sentinel found).
+#
+# So in live mode we collect EXACTLY the two live-safe scenario modules; the rest are
+# INPROCESS/BUILD-TIME only. In inprocess mode (the 193-pass PR gate) we collect
+# everything — collect_ignore stays empty. test_live_collection_lean.py asserts the
+# live-collected set imports only the lean allowlist, so a future app-importing test
+# added to the live set is caught in the PR gate, not in prod.
+_LIVE_SAFE_MODULES = frozenset({
+    "test_all_routes.py",     # P0-1 all-route positive/negative sweep (pure httpx)
+    "test_metrics_live.py",   # requires_live metric checks (pure httpx)
+})
+
+
+def _live_collect_ignore(canary_dir: "pathlib.Path") -> list:
+    """The set of ``test_*.py`` module names pytest must IGNORE in live mode: every
+    module on disk EXCEPT the live-safe scenario modules. A pure function so the
+    regression guard (test_live_collection_lean.py) can assert the SAME wiring the
+    runtime branch below uses — reverting the branch is caught by that test."""
+    return sorted(
+        p.name
+        for p in canary_dir.glob("test_*.py")
+        if p.name not in _LIVE_SAFE_MODULES
+    )
+
+
+# Only the two live-safe scenario modules are collected against a live target; every
+# other test_*.py is inprocess/build-time and must NOT be collected in the lean
+# container. Populated at import time (module-level, when pytest reads this conftest).
+collect_ignore: list = []
+if os.environ.get(CANARY_TARGET_ENV, "inprocess") == "live":
+    collect_ignore = _live_collect_ignore(pathlib.Path(__file__).resolve().parent)
+
+
 # --------------------------------------------------------------------------- markers
 def pytest_configure(config: "pytest.Config") -> None:
     """Register the WS-J markers so ``-m "not requires_live and not pr_gate_only"``

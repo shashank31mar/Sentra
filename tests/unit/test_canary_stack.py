@@ -29,29 +29,37 @@ def _load_cdk_config():
     return config
 
 
-def _canary_template():
+def _canary_template(*, with_critical_topic: bool = True):
+    """Synthesize the CanaryStack. ``with_critical_topic=False`` exercises the
+    topic-ABSENT instantiation (a CanaryStack stood up without the shared critical
+    topic) — the branch app.py doesn't hit today but the code must stay fail-secure
+    under (FINDING 2)."""
     os.environ["ENV"] = "dev"
     os.environ.setdefault("AWS_ACCOUNT_ID", "123456789012")
     os.environ.setdefault("AWS_REGION", "us-east-1")
     config = _load_cdk_config()
     env = cdk.Environment(account="123456789012", region="us-east-1")
     app = cdk.App()
-    network = NetworkStack(app, "TestNetworkStack", config=config, env=env)
-    storage = StorageStack(app, "TestStorageStack", config=config, env=env)
-    cognito = CognitoStack(app, "TestCognitoStack", config=config, env=env)
+    suffix = "" if with_critical_topic else "NoCrit"
+    network = NetworkStack(app, f"TestNetworkStack{suffix}", config=config, env=env)
+    storage = StorageStack(app, f"TestStorageStack{suffix}", config=config, env=env)
+    cognito = CognitoStack(app, f"TestCognitoStack{suffix}", config=config, env=env)
     compute = ComputeStack(
-        app, "TestComputeStack", config=config, network_stack=network,
+        app, f"TestComputeStack{suffix}", config=config, network_stack=network,
         storage_stack=storage, cognito_stack=cognito, env=env,
     )
     canary = CanaryStack(
-        app, "TestCanaryStack",
+        app, f"TestCanaryStack{suffix}",
         config=config,
         vpc=network.vpc,
         cluster=compute.ecs_cluster,
         # execution_role omitted → canary-local exec role (avoids the cross-stack
         # log-group-grant cyclic reference; see CanaryStack rationale).
         api_gw_url="https://api.example.invalid/prod",
-        critical_alerts_topic_arn="arn:aws:sns:us-east-1:123456789012:sentra-mvp-critical-alerts",
+        critical_alerts_topic_arn=(
+            "arn:aws:sns:us-east-1:123456789012:sentra-mvp-critical-alerts"
+            if with_critical_topic else None
+        ),
         env=env,
     )
     return Template.from_stack(canary)
@@ -168,6 +176,98 @@ def test_alarm_metric_names_are_all_in_the_emitter_contract():
         "ChecksFailed", "ChecksPassed", "InfraErrors", "ChecksExpected",
         "CanarySkippedOverlap", "ProductFivexxFail",
     })
+
+
+def test_product_5xx_alarm_exists_even_without_critical_topic():
+    """FINDING 2 (fail-secure) — entrypoint emits ProductFivexxFail EVERY run, so the
+    alarm must exist REGARDLESS of the critical topic. A CanaryStack stood up WITHOUT
+    the shared critical topic must STILL alarm on product 5xx (routed to the dedicated
+    canary topic as a fallback), never silently drop the escalation. This asserts the
+    topic-ABSENT branch (which app.py doesn't hit today, so had ZERO coverage)."""
+    t = _canary_template(with_critical_topic=False)
+    # The alarm exists in the topic-absent instantiation ...
+    t.has_resource_properties("AWS::CloudWatch::Alarm", {
+        "MetricName": "ProductFivexxFail",
+        "Namespace": "Sentra/Canary",
+    })
+    # ... and its action falls back to the dedicated sentra-canary-alerts topic (a
+    # Ref to the local topic construct, not a missing/empty action).
+    alarms = t.find_resources("AWS::CloudWatch::Alarm")
+    p5xx = [
+        a for a in alarms.values()
+        if a["Properties"].get("MetricName") == "ProductFivexxFail"
+    ]
+    assert len(p5xx) == 1, "exactly one ProductFivexxFail alarm must exist"
+    actions = p5xx[0]["Properties"].get("AlarmActions") or []
+    assert actions, "ProductFivexxFail alarm must have a fallback SNS action, not none"
+    # The fallback is a Ref to the local canary-alerts topic (not the imported crit ARN).
+    assert any(isinstance(a, dict) and "Ref" in a for a in actions), \
+        "topic-absent ProductFivexxFail must action the local sentra-canary-alerts topic"
+
+
+def test_product_5xx_alarm_still_escalates_to_critical_topic_when_present():
+    """FINDING 2 companion — with the critical topic present the ProductFivexxFail
+    alarm escalates THERE (the prod path, SEC-8), keeping the existing behavior green
+    after the unconditional-creation refactor."""
+    t = _canary_template(with_critical_topic=True)
+    alarms = t.find_resources("AWS::CloudWatch::Alarm")
+    p5xx = [
+        a for a in alarms.values()
+        if a["Properties"].get("MetricName") == "ProductFivexxFail"
+    ]
+    assert len(p5xx) == 1
+    actions = p5xx[0]["Properties"].get("AlarmActions") or []
+    assert "arn:aws:sns:us-east-1:123456789012:sentra-mvp-critical-alerts" in actions, \
+        "with the critical topic present, product-5xx must page the critical audience"
+
+
+def test_every_synthesized_alarm_metric_is_in_the_constant_and_emitted():
+    """FINDING 3 — join REAL synthesized alarms ↔ the ALARM_METRIC_NAMES constant ↔ the
+    entrypoint emitter. Every AWS::CloudWatch::Alarm's watched metric name MUST be in
+    ALARM_METRIC_NAMES AND be one entrypoint actually emits (emit_run_metrics +
+    guard_at_most_one). Closes the dead-alarm gap: a new alarm on a metric outside the
+    constant / never emitted would fail HERE, where nothing joined them before."""
+    from stacks.canary_stack import ALARM_METRIC_NAMES
+
+    # The metric names entrypoint.emit_run_metrics emits (derived from its MetricData)
+    # ∪ the CanarySkippedOverlap that guard_at_most_one emits. Kept as an explicit
+    # literal so a change to what the entrypoint emits must be reflected here too.
+    emitted_names = {
+        "ChecksPassed", "ChecksFailed", "InfraErrors", "ChecksExpected",
+        "ProductFivexxFail",         # emit_run_metrics
+        "CanarySkippedOverlap",      # guard_at_most_one
+    }
+
+    t = _canary_template()
+    alarms = t.find_resources("AWS::CloudWatch::Alarm")
+    assert alarms, "the canary stack must synthesize at least one alarm"
+
+    # Alarms carry the watched metric either as a top-level MetricName (simple metric)
+    # or inside Metrics[] (MathExpression alarms — shortfall). Collect BOTH, keeping only
+    # the Sentra/Canary source metrics (math sub-metrics carry their own MetricName).
+    alarmed_metrics: set = set()
+    for a in alarms.values():
+        props = a["Properties"]
+        if "MetricName" in props:
+            alarmed_metrics.add(props["MetricName"])
+        for m in props.get("Metrics", []) or []:
+            stat = m.get("MetricStat")
+            if stat and stat.get("Metric", {}).get("Namespace") == "Sentra/Canary":
+                mn = stat["Metric"].get("MetricName")
+                if mn:
+                    alarmed_metrics.add(mn)
+
+    # Every metric a real alarm watches is declared in the constant ...
+    not_in_constant = alarmed_metrics - ALARM_METRIC_NAMES
+    assert not not_in_constant, (
+        f"alarms watch metric(s) missing from ALARM_METRIC_NAMES: {sorted(not_in_constant)}"
+    )
+    # ... and is one the entrypoint actually emits (no dead alarm on a never-produced metric).
+    not_emitted = alarmed_metrics - emitted_names
+    assert not not_emitted, (
+        f"alarms watch metric(s) the entrypoint never emits (dead alarms): "
+        f"{sorted(not_emitted)}"
+    )
 
 
 def test_canary_ecr_repo_created():

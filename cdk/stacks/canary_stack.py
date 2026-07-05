@@ -358,22 +358,30 @@ class CanaryStack(Stack):
             cw_actions.SnsAction(self.canary_alerts_topic)
         )
 
-        # product-5xx escalation → the CRITICAL topic (SEC-8) when imported.
-        if self.critical_alerts_topic is not None:
-            product_5xx = cloudwatch.Metric(
-                namespace=CANARY_NAMESPACE, metric_name="ProductFivexxFail",
-                period=Duration.hours(1), statistic="Sum",
-            )
-            self.product_5xx_alarm = cloudwatch.Alarm(
-                self,
-                "CanaryProductFivexxAlarm",
-                alarm_name=f"{prefix}-canary-product-5xx",
-                metric=product_5xx,
-                threshold=1,
-                evaluation_periods=1,
-                comparison_operator=cloudwatch.ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD,
-                treat_missing_data=cloudwatch.TreatMissingData.NOT_BREACHING,
-            )
-            self.product_5xx_alarm.add_alarm_action(
-                cw_actions.SnsAction(self.critical_alerts_topic)
-            )
+        # product-5xx escalation. entrypoint.emit_run_metrics emits ProductFivexxFail
+        # EVERY run, so this alarm is created UNCONDITIONALLY (fail-secure): a canary
+        # instantiated WITHOUT the shared critical topic must STILL alarm on product
+        # 5xx — dropping the topic must never silently drop the escalation. When the
+        # critical topic is imported (prod, via app.py) the alarm pages THERE (SEC-8);
+        # otherwise it falls back to the dedicated sentra-canary-alerts topic so the
+        # signal is never missing, only routed to the lower-severity audience.
+        product_5xx = cloudwatch.Metric(
+            namespace=CANARY_NAMESPACE, metric_name="ProductFivexxFail",
+            period=Duration.hours(1), statistic="Sum",
+        )
+        self.product_5xx_alarm = cloudwatch.Alarm(
+            self,
+            "CanaryProductFivexxAlarm",
+            alarm_name=f"{prefix}-canary-product-5xx",
+            metric=product_5xx,
+            threshold=1,
+            evaluation_periods=1,
+            comparison_operator=cloudwatch.ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD,
+            treat_missing_data=cloudwatch.TreatMissingData.NOT_BREACHING,
+        )
+        product_5xx_topic = (
+            self.critical_alerts_topic
+            if self.critical_alerts_topic is not None
+            else self.canary_alerts_topic
+        )
+        self.product_5xx_alarm.add_alarm_action(cw_actions.SnsAction(product_5xx_topic))
