@@ -37,7 +37,12 @@ COPY src/security-controller/app/ ./app/
 COPY scripts/schemas/ ./schemas/
 
 ENV CANARY_TARGET=live \
-    PYTHONPATH=/app:/app/tests
+    PYTHONPATH=/app:/app/tests \
+    PYTHONUNBUFFERED=1
+    # PYTHONUNBUFFERED: without it the pytest/suite stdout is block-buffered and a
+    # short-lived Fargate task can exit before the awslogs driver flushes, leaving the
+    # CloudWatch stream EMPTY — a live monitor with no readable run output. Force line-
+    # buffered so every run's pass/fail summary reaches /ecs/sentra/canary.
 
 # The overlap guard + suite + CloudWatch metric emission all run from the entrypoint
 # wrapper (canary.entrypoint.main) — a BARE ``pytest`` here never calls the overlap

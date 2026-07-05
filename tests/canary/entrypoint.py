@@ -125,6 +125,32 @@ def _run_suite(pytest_args: Optional[List[str]] = None) -> "Any":
     return pytest.main(args, plugins=["canary.reporting_plugin"])
 
 
+def resolve_self_task_arn() -> Optional[str]:
+    """The running task's own ARN, for the overlap guard's self-exclusion. ECS does
+    NOT inject a static ``ECS_TASK_ARN`` env var — it injects ``ECS_CONTAINER_METADATA_URI_V4``,
+    whose ``/task`` document carries ``TaskARN``. Without this the guard sees ITSELF in
+    the RUNNING list, counts itself as a "peer", and EVERY run false-skips with
+    SKIPPED_OVERLAP (the canary never runs a single check). Prefer an explicit
+    ``ECS_TASK_ARN`` if present (tests/local), else read the metadata endpoint; return
+    None only if neither is available (guard then treats any RUNNING task as a peer —
+    fail-safe toward skipping, not toward double-running)."""
+    explicit = os.environ.get("ECS_TASK_ARN")
+    if explicit:
+        return explicit
+    meta_uri = os.environ.get("ECS_CONTAINER_METADATA_URI_V4") or os.environ.get("ECS_CONTAINER_METADATA_URI")
+    if not meta_uri:
+        return None
+    try:
+        import json
+        import urllib.request
+
+        with urllib.request.urlopen(f"{meta_uri}/task", timeout=2) as resp:
+            doc = json.loads(resp.read().decode("utf-8"))
+        return doc.get("TaskARN")
+    except Exception:  # pragma: no cover - metadata endpoint unavailable
+        return None
+
+
 def main(argv: Optional[List[str]] = None) -> int:
     """The ECS container entrypoint (the CMD). Overlap-guard → run suite → emit the
     end-of-run CloudWatch metrics from the plugin's counts → exit non-zero on any FAIL.
@@ -144,7 +170,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         ecs = boto3.client("ecs")
         cw = boto3.client("cloudwatch")
         sink = reporting_plugin.ResultSink(mode="live")
-        self_arn = os.environ.get("ECS_TASK_ARN")
+        self_arn = resolve_self_task_arn()
         if not guard_at_most_one(ecs, cw, sink, exclude_task_arn=self_arn):
             return 0  # a peer is running; the guard emitted overlap metric + row.
 
@@ -165,6 +191,7 @@ def main(argv: Optional[List[str]] = None) -> int:
 
 __all__ = [
     "another_canary_running",
+    "resolve_self_task_arn",
     "guard_at_most_one",
     "emit_run_metrics",
     "expected_check_count",

@@ -11,6 +11,7 @@ from canary.entrypoint import (
     expected_check_count,
     guard_at_most_one,
     main,
+    resolve_self_task_arn,
 )
 from canary.reporting_plugin import ResultSink
 
@@ -182,3 +183,74 @@ def test_main_live_skips_run_and_emit_when_peer_running(monkeypatch):
     assert rc == 0
     assert ran["suite"] is False and ran["emit"] is False
     assert ran.get("overlap_row") == "SKIPPED_OVERLAP"  # the guard did emit its row
+
+
+def test_resolve_self_task_arn_prefers_explicit_env(monkeypatch):
+    monkeypatch.setenv("ECS_TASK_ARN", "arn:aws:ecs:...:task/explicit")
+    assert resolve_self_task_arn() == "arn:aws:ecs:...:task/explicit"
+
+
+def test_resolve_self_task_arn_reads_metadata_endpoint(monkeypatch):
+    """The real prod path: ECS injects ECS_CONTAINER_METADATA_URI_V4, not ECS_TASK_ARN.
+    resolve_self_task_arn must read TaskARN from the metadata /task document."""
+    import json
+    import urllib.request
+
+    monkeypatch.delenv("ECS_TASK_ARN", raising=False)
+    monkeypatch.setenv("ECS_CONTAINER_METADATA_URI_V4", "http://169.254.170.2/v4/abc")
+
+    class _Resp:
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+        def read(self): return json.dumps({"TaskARN": "arn:aws:ecs:...:task/from-metadata"}).encode()
+
+    def _fake_urlopen(url, timeout=None):
+        assert url == "http://169.254.170.2/v4/abc/task"
+        return _Resp()
+
+    monkeypatch.setattr(urllib.request, "urlopen", _fake_urlopen)
+    assert resolve_self_task_arn() == "arn:aws:ecs:...:task/from-metadata"
+
+
+def test_resolve_self_task_arn_none_when_no_source(monkeypatch):
+    monkeypatch.delenv("ECS_TASK_ARN", raising=False)
+    monkeypatch.delenv("ECS_CONTAINER_METADATA_URI_V4", raising=False)
+    monkeypatch.delenv("ECS_CONTAINER_METADATA_URI", raising=False)
+    assert resolve_self_task_arn() is None
+
+
+def test_main_live_lone_task_excludes_self_and_RUNS(monkeypatch):
+    """THE REGRESSION GUARD (the deployed false-SKIP bug): when the ONLY RUNNING task is
+    THIS task, main() must resolve its own ARN, exclude it, see NO peer, and RUN the
+    suite — NOT skip. Before the fix, main() passed exclude_task_arn=None (ECS_TASK_ARN
+    was never injected), so the task saw itself as a peer and every run false-skipped
+    with SKIPPED_OVERLAP, running zero checks."""
+    self_arn = "arn:aws:ecs:...:task/self-123"
+    ran = {"suite": False, "emit": False}
+
+    class _FakeCw:
+        def put_metric_data(self, **kw):
+            pass
+
+    class _FakeEcs:
+        def list_tasks(self, **kw):
+            return {"taskArns": [self_arn]}  # the ONLY running task is ME
+
+    def _fake_boto3_client(name):
+        return {"ecs": _FakeEcs(), "cloudwatch": _FakeCw()}[name]
+
+    import boto3
+
+    monkeypatch.setattr(boto3, "client", _fake_boto3_client)
+    monkeypatch.setattr(reporting_plugin, "ResultSink", lambda *a, **k: type("S", (), {"write": lambda self, r: True})())
+    monkeypatch.setenv("CANARY_TARGET", "live")
+    monkeypatch.setattr(entrypoint, "resolve_self_task_arn", lambda: self_arn)
+    monkeypatch.setattr(entrypoint, "_run_suite",
+                        lambda argv=None: (ran.__setitem__("suite", True), 0)[1])
+    monkeypatch.setattr(entrypoint, "emit_run_metrics",
+                        lambda *a, **k: ran.__setitem__("emit", True))
+    monkeypatch.setattr(reporting_plugin, "run_counts", lambda: {"PASS": 1})
+
+    rc = main([])
+    assert ran["suite"] is True, "lone task must RUN the suite, not false-skip on itself"
+    assert ran["emit"] is True
