@@ -186,6 +186,9 @@ def test_canary_product_5xx_alarm_escalates_to_critical_topic():
     t.has_resource_properties("AWS::CloudWatch::Alarm", {
         "MetricName": "ProductFivexxFail",
         "Namespace": "Sentra/Canary",
+        # 5-min window so a transient/one-off product 5xx self-clears in ~5-10 min
+        # instead of holding the critical alarm for a full hour (prod 2026-07-05).
+        "Period": 300,
     })
 
 

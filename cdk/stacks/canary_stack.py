@@ -384,9 +384,15 @@ class CanaryStack(Stack):
         # critical topic is imported (prod, via app.py) the alarm pages THERE (SEC-8);
         # otherwise it falls back to the dedicated sentra-canary-alerts topic so the
         # signal is never missing, only routed to the lower-severity audience.
+        # 5-min window (not 1h): a product 5xx sits in one bucket and the next clean run
+        # (ProductFivexxFail=0, emitted every run) clears it in ~5-10 min, instead of a
+        # stale/transient 5xx datapoint keeping the CRITICAL-topic alarm lit for a full
+        # hour (observed 2026-07-05 after a transient 502 was miscounted). A SUSTAINED
+        # product 5xx re-fires each run (correct). Same short-window pattern as the
+        # checks-failed alarm; the metric is dense (0 every run) so it self-clears.
         product_5xx = cloudwatch.Metric(
             namespace=CANARY_NAMESPACE, metric_name="ProductFivexxFail",
-            period=Duration.hours(1), statistic="Sum",
+            period=Duration.minutes(5), statistic="Sum",
         )
         self.product_5xx_alarm = cloudwatch.Alarm(
             self,
