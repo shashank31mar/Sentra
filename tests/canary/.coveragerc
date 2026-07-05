@@ -1,0 +1,41 @@
+# WS-J canary — P0-2 code-logic coverage scope (lld/38 §4.3).
+#
+# WHY THIS FILE: the P0-2 "all code logic covered" gate must measure the code the
+# BLACK-BOX canary is genuinely responsible for exercising — the request path an
+# HTTP call reaches — NOT the whole app/api+app/services tree. That tree also holds
+# background schedulers, cloud scanners, tenant-purge, and other code no HTTP request
+# can trigger (correctly 0% from a canary), which would drag the number to a
+# meaningless ~37% and set an unreachable bar. Scoping to the request-path modules
+# makes the % honest and the floor meaningful.
+#
+# FOOTGUN: use pytest's dotted `--cov=app.api.routes` (module) form, NOT `--cov=app/api`
+# (path) — the path form resolves relative to repo-root cwd, does not match the
+# PYTHONPATH=src/security-controller import root, and silently measures 0.00%.
+#
+# Run (inprocess/on-demand ONLY — the live ECS monitor is black-box and cannot
+# instrument the remote process, so --cov-fail-under is NEVER on the live entrypoint):
+#   env -u AWS_PROFILE AWS_ACCESS_KEY_ID=testing AWS_SECRET_ACCESS_KEY=testing \
+#     AWS_DEFAULT_REGION=us-east-1 PYTHONPATH=src/security-controller \
+#     src/security-controller/venv/bin/python -m pytest tests/canary/ \
+#     -m "not requires_live and not pr_gate_only" \
+#     --cov --cov-config=tests/canary/.coveragerc --cov-report=term-missing
+#
+# Floor is set in [report] fail_under below.
+
+[run]
+source =
+    app.api.routes
+    app.api.tenancy_routes
+    app.api.models
+    app.combiners
+    app.services.validation_service
+
+[report]
+# The measured request-path floor as of 2026-07-05 is ~52%. fail_under is set at 50
+# — a HONEST floor at/just-below today's number, labeled TARGET-TO-TUNE: raise it as
+# WS-M (authz) + the console/auth increment land and unlock more request-path branches
+# (today the OIDC-gated tenancy_routes are largely un-exercisable in Increment 1).
+# It is NOT a proven ceiling; it is the "canary really exercises the code" pass line.
+fail_under = 50
+show_missing = True
+skip_covered = False

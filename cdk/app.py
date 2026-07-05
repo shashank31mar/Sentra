@@ -210,6 +210,28 @@ def main():
     for key, value in config.get("tags", {}).items():
         cdk.Tags.of(bedrock_agent_stack).add(key, value)
 
+    # Create Canary Stack (WS-J — hourly ECS synthetic monitor, lld/38).
+    from stacks.canary_stack import CanaryStack
+
+    canary_stack = CanaryStack(
+        app,
+        f"{stack_prefix}-Canary-Stack",
+        config=config,
+        vpc=network_stack.vpc,
+        cluster=compute_stack.ecs_cluster,
+        api_gw_url=api_stack.api.url,
+        critical_alerts_topic_arn=monitoring_stack.critical_alerts_topic.topic_arn,
+        env=env,
+        description=f"Sentra MVP ({environment}) - WS-J synthetic canary (hourly ECS monitor + P0-3 alerts)",
+    )
+    canary_stack.add_dependency(network_stack)   # VPC for the Fargate task
+    canary_stack.add_dependency(compute_stack)   # the sentra-mvp-cluster
+    canary_stack.add_dependency(api_stack)       # the API Gateway URL it probes
+    canary_stack.add_dependency(monitoring_stack)  # the critical-alerts topic
+
+    for key, value in config.get("tags", {}).items():
+        cdk.Tags.of(canary_stack).add(key, value)
+
     # Synthesize CloudFormation templates
     app.synth()
 

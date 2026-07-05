@@ -190,10 +190,10 @@ flowchart TB
   - **Unit test** — `test_transport_purity` in the same file: a synthetic scenario string containing `os.environ["CANARY_TARGET"]` is flagged; a clean one passes. **Integration test** — the real scan over `tests/canary/` scenario modules.
 
 - **Jc.3 — Measurable line/branch coverage gate (`inprocess`, P0-2).**
-  - **Touches:** `tests/canary/README.md` / the on-demand run command; `pyproject.toml`/`setup.cfg` if a `[tool.coverage]` section is needed; no product-code change.
-  - **HOW:** wire the on-demand `inprocess` run to `pytest tests/canary/ -m "not requires_live" --cov=app/api --cov=app/services --cov-fail-under=85 --cov-report=term-missing` (LLD §4.3/§10). `85%` is a **target-to-tune label**, not a proven floor — document it as such. This is `inprocess`-only (the black-box `live` monitor cannot instrument the remote process).
-  - **FOOTGUN:** do NOT put `--cov-fail-under` on the `live` ECS entrypoint (black-box; would false-fail). This gate is orthogonal to Jc.1's behavioral matrix — both are required for P0-2.
-  - **No UT — this is a run-config/wiring task.** Its proof is the on-demand run itself producing a coverage number ≥ the threshold; the acceptance checklist carries the `--cov-fail-under=85` box. **Integration test** — the documented on-demand command runs green at ≥85% over `app/api`+`app/services`.
+  - **Touches:** `tests/canary/.coveragerc` (the coverage scope + floor, dotted-module `[run] source`); `tests/canary/README.md` / the on-demand run command; no product-code change.
+  - **HOW:** wire the on-demand `inprocess` run to `pytest tests/canary/ -m "not requires_live" --cov --cov-config=tests/canary/.coveragerc --cov-report=term-missing` (LLD §4.3/§10). `.coveragerc` scopes coverage to the **request-path modules the black-box canary is responsible for** — `app.api.routes`, `app.api.tenancy_routes`, `app.api.models`, `app.combiners`, `app.services.validation_service` — with floor **`fail_under = 50`** (measured ~52% as of 2026-07-05). `50%` is a **target-to-tune label** raised as WS-M + the console/auth increment unlock more branches; document it as such. This is `inprocess`-only (the black-box `live` monitor cannot instrument the remote process).
+  - **FOOTGUN 1:** use the **dotted** `--cov=app.api.routes` (module) form in `.coveragerc`, NOT the path form `--cov=app/api` — the path form resolves against repo-root cwd, misses `PYTHONPATH=src/security-controller`, and silently reports **0.00%** (a vacuous gate). **FOOTGUN 2:** do NOT scope to the whole `app/api`+`app/services` tree — it holds schedulers/scanners/purge code no HTTP request reaches (→ meaningless ~37%). **FOOTGUN 3:** do NOT put the coverage floor on the `live` ECS entrypoint (black-box; would false-fail). This gate is orthogonal to Jc.1's behavioral matrix — both are required for P0-2.
+  - **No UT — this is a run-config/wiring task.** Its proof is the on-demand run itself producing a coverage number ≥ the floor; the acceptance checklist carries the `fail_under=50` box. **Integration test** — the documented on-demand command runs green at ≥50% over the `.coveragerc` request-path scope.
 
 ### Milestone J-infra — `canary_stack.py` CDK + docker/canary + 8th image + DDB + CW + scheduler (P0-3 wiring)
 
@@ -341,7 +341,7 @@ Every RED/`INFRA` check records its `failure_reason` + `expected`/`actual` + `co
 **P0-2 — measurable code-logic coverage**
 - [ ] `test_coverage_guard.py` route×behavior matrix goes **RED** on `LANDED_ROUTE_UNCOVERED`, `ROUTE_NEGATIVE_AXIS_UNCOVERED` (a positive-only route is a gap), and `UNKNOWN_ROUTE_NOT_IN_MANIFEST`; exempts `landed_flag=False` routes.
 - [ ] The transport-purity lint (`test_no_scenario_reads_CANARY_TARGET`) passes — no scenario reads the transport env var.
-- [ ] **pytest-cov gate:** `CANARY_TARGET=inprocess pytest tests/canary/ -m "not requires_live" --cov=app/api --cov=app/services --cov-fail-under=85` passes (`85%` labeled target-to-tune); the gate is `inprocess`-only (not on the `live` entrypoint).
+- [ ] **pytest-cov gate:** `CANARY_TARGET=inprocess pytest tests/canary/ -m "not requires_live" --cov --cov-config=tests/canary/.coveragerc` passes at ≥ the `.coveragerc` `fail_under=50` floor (measured ~52%; `50%` labeled target-to-tune; scope = request-path modules, dotted-module form not path form); the gate is `inprocess`-only (not on the `live` entrypoint).
 
 **Infra (J-infra) + P0-3**
 - [ ] `docker/canary/Dockerfile` (`python:3.11-slim` + `httpx` + `boto3`, **NO Playwright**) is the 8th image in `build_and_push_images.sh` `SERVICES` with an `ecr.Repository` `sentra/canary` in `storage_stack.py`.
