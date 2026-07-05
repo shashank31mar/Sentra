@@ -33,8 +33,10 @@ COPY scripts/schemas/ ./schemas/
 ENV CANARY_TARGET=live \
     PYTHONPATH=/app:/app/tests
 
-# The overlap guard + suite + metric emission run from the entrypoint; the suite
-# excludes requires_live-inverse markers so only live-safe scenarios run in prod.
-CMD ["pytest", "tests/canary/", "-v", \
-     "-p", "canary.reporting_plugin", \
-     "-m", "not pr_gate_only"]
+# The overlap guard + suite + CloudWatch metric emission all run from the entrypoint
+# wrapper (canary.entrypoint.main) — a BARE ``pytest`` here never calls the overlap
+# guard, never emits ChecksPassed/ChecksFailed/InfraErrors/ChecksExpected/
+# ProductFivexxFail, so every canary_stack alarm would watch a metric that is never
+# produced (the dead-seam bug). main() runs guard_at_most_one → the suite (with the
+# reporting plugin) → emit_run_metrics, and exits non-zero on any FAIL.
+CMD ["python", "-m", "canary.entrypoint"]

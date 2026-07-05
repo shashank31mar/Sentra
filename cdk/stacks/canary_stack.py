@@ -38,6 +38,21 @@ CANARY_NAMESPACE = "Sentra/Canary"
 RESULTS_TABLE_NAME = "sentra-canary-results"
 CANARY_ALERTS_TOPIC = "sentra-canary-alerts"
 
+# The metric names the alarms below WATCH. Every one of these MUST be emitted at
+# runtime by ``canary.entrypoint`` (emit_run_metrics + guard_at_most_one), or the
+# alarm watching it is dead (a never-produced metric never fires a NOT_BREACHING
+# alarm, and sits permanently ALARM under BREACHING). The alarm-to-emitter seam is
+# asserted by tests/canary/test_metric_emission_seam.py, which joins THIS set against
+# the names entrypoint actually emits — reverting either end breaks that test.
+ALARM_METRIC_NAMES = frozenset({
+    "ChecksFailed",          # ChecksFailed alarm (BREACHING monitor-the-monitor)
+    "ChecksPassed",          # shortfall math (p)
+    "InfraErrors",           # shortfall math (i)
+    "ChecksExpected",        # shortfall math (expected) — anti-false-PASS §9.4
+    "CanarySkippedOverlap",  # overlap alarm (Jr.4)
+    "ProductFivexxFail",     # product-5xx critical escalation (§9.1)
+})
+
 
 class CanaryStack(Stack):
     """The WS-J ECS synthetic-monitor stack."""
@@ -279,7 +294,12 @@ class CanaryStack(Stack):
             threshold=1,
             evaluation_periods=1,
             comparison_operator=cloudwatch.ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD,
-            # Monitor-the-monitor: a canary that fails to run at all also alarms.
+            # Monitor-the-monitor: entrypoint.emit_run_metrics emits ChecksFailed EVERY
+            # hourly run (0 on a clean run, ≥1 on a real failure), so BREACHING fires
+            # ONLY when a run produced no datapoint at all — i.e. the hourly canary did
+            # not run / crashed before emit. (Before the emitter was wired this metric
+            # was never produced, so BREACHING meant a permanent false ALARM — the
+            # dead-seam bug this WS closes; the emission is asserted by the seam test.)
             treat_missing_data=cloudwatch.TreatMissingData.BREACHING,
         )
         self.checks_failed_alarm.add_alarm_action(

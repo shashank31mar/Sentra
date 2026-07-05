@@ -77,3 +77,85 @@ def test_canary_operator_live_raises(monkeypatch):
     gen = conftest.canary_operator.__wrapped__(request=None)
     with pytest.raises(NotImplementedError):
         next(gen)
+
+
+# ---- live-mode transport wiring (FIX-B: retry→INFRA + product-5xx recording) ----
+class _Resp:
+    def __init__(self, status_code):
+        self.status_code = status_code
+
+
+class _FlakyInner:
+    """A fake httpx-style transport that raises a no-response error the first N calls
+    then returns a response — mirrors a transient DNS/conn blip that must be retried."""
+
+    def __init__(self, fail_times, then_status=200):
+        self._fail_times = fail_times
+        self._then = then_status
+        self.calls = 0
+
+    def get(self, path, **kw):
+        self.calls += 1
+        if self.calls <= self._fail_times:
+            raise ConnectionError("conn refused")
+        return _Resp(self._then)
+
+
+def test_live_client_transient_error_retries_then_succeeds():
+    """A live transport blip is retried (not FAIL); a subsequent success returns
+    normally (bounded-retry-then-INFRA, §9.1)."""
+    from canary.conftest import CanaryClient
+
+    inner = _FlakyInner(fail_times=1, then_status=200)
+    client = CanaryClient(inner, mode="live")
+    resp = client.get("/v1/health")
+    assert resp.status_code == 200
+    assert inner.calls == 2  # 1 failure + 1 success (retry_transport wrapped it)
+
+
+def test_live_client_persistent_transport_error_raises_infra():
+    """A no-HTTP-response transport error that never recovers → InfraError (recorded
+    INFRA by the plugin, NEVER a hard product FAIL)."""
+    from canary.conftest import CanaryClient
+    from canary.reporting_plugin import InfraError
+
+    inner = _FlakyInner(fail_times=99)  # never recovers within the bounded retries
+    client = CanaryClient(inner, mode="live")
+    with pytest.raises(InfraError):
+        client.get("/v1/health")
+
+
+def test_live_client_records_product_5xx(monkeypatch):
+    """A service-RETURNED 5xx (transport ok, server erred) calls record_service_5xx so
+    the ProductFivexxFail escalation fires — the hardcoded service_5xx=False path is
+    now driven by the client's real observation."""
+    from canary import conftest
+    from canary.conftest import CanaryClient
+
+    recorded = {"n": 0}
+    monkeypatch.setattr(
+        "canary.reporting_plugin.record_service_5xx",
+        lambda: recorded.__setitem__("n", recorded["n"] + 1),
+    )
+    inner = _FlakyInner(fail_times=0, then_status=503)
+    client = CanaryClient(inner, mode="live")
+    resp = client.get("/v1/health")
+    assert resp.status_code == 503
+    assert recorded["n"] == 1
+
+
+def test_inprocess_client_does_not_record_5xx_or_retry(monkeypatch):
+    """inprocess (hermetic) mode never touches the live retry/5xx-record path — a 5xx
+    there is a deterministic FAIL (a real bug), not a transient blip to escalate."""
+    from canary.conftest import CanaryClient
+
+    recorded = {"n": 0}
+    monkeypatch.setattr(
+        "canary.reporting_plugin.record_service_5xx",
+        lambda: recorded.__setitem__("n", recorded["n"] + 1),
+    )
+    inner = _FlakyInner(fail_times=0, then_status=500)
+    client = CanaryClient(inner, mode="inprocess")
+    resp = client.get("/v1/health")
+    assert resp.status_code == 500
+    assert recorded["n"] == 0  # inprocess never records a product-5xx escalation

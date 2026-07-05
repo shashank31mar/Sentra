@@ -78,7 +78,23 @@ class CanaryClient:
         headers = dict(kwargs.pop("headers", {}) or {})
         headers.setdefault("X-Correlation-Id", cid)
         t0 = _time.perf_counter()
-        resp = getattr(self._inner, verb)(path, headers=headers, **kwargs)
+        if self.mode == "live":
+            # A LIVE transport error with NO HTTP response (DNS/conn-reset/timeout) is
+            # a transient blip, NOT a product failure: bounded-retry then raise
+            # InfraError → the reporting plugin classifies INFRA, never FAIL (§9.1).
+            # A deterministic assertion failure is NEVER retried (it is not raised here).
+            from canary.reporting_plugin import record_service_5xx, retry_transport
+
+            resp = retry_transport(
+                lambda: getattr(self._inner, verb)(path, headers=headers, **kwargs)
+            )
+            # A service-RETURNED 5xx (the transport succeeded, the server erred) is a
+            # product FAIL that ALSO pages the critical topic (ProductFivexxFail, §9.1)
+            # — record it before the scenario's status assertion raises.
+            if getattr(resp, "status_code", 0) >= 500:
+                record_service_5xx()
+        else:
+            resp = getattr(self._inner, verb)(path, headers=headers, **kwargs)
         self.latency_ms = (_time.perf_counter() - t0) * 1000.0
         return resp
 
