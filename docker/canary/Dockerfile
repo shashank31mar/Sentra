@@ -33,6 +33,12 @@ RUN pip install --no-cache-dir \
 # inprocess/build-time story + so a future non-lean edition can widen the live set;
 # the live entrypoint hits deployed URLs and does not stand up the app.
 COPY tests/canary/ ./tests/canary/
+# The canary conftest EXTENDS the integration conftest (J1.1 hard rule — re-exports its
+# service_urls/aws_config fixtures by file path, tests/canary/conftest.py:28). Without
+# tests/integration/conftest.py in the image, canary conftest import fails at collection
+# → FileNotFoundError → the whole suite errors (exit 4, zero checks). It is stdlib+pytest
+# only, so it stays lean.
+COPY tests/integration/ ./tests/integration/
 COPY src/security-controller/app/ ./app/
 COPY scripts/schemas/ ./schemas/
 

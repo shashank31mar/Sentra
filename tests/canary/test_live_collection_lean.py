@@ -181,5 +181,34 @@ def test_this_guard_is_itself_lean():
     assert not forbidden, f"this guard imports forbidden heavy roots: {sorted(forbidden)}"
 
 
+def test_dockerfile_copies_the_integration_conftest_the_canary_conftest_loads():
+    """REGRESSION (a real deploy bug): the canary conftest.py loads
+    ../integration/conftest.py by FILE PATH at collection. If the lean Dockerfile does
+    not COPY tests/integration/ into the image, collection dies with FileNotFoundError
+    → the whole suite errors (exit 4, zero checks) in prod, while the hermetic PR-gate
+    passes (it has the file on disk). Assert the Dockerfile COPYs tests/integration/."""
+    dockerfile = (_CANARY_DIR.parents[1] / "docker" / "canary" / "Dockerfile").read_text()
+    copy_lines = [ln.strip() for ln in dockerfile.splitlines() if ln.strip().startswith("COPY ")]
+    # canary conftest loads tests/integration/conftest.py — the image must carry it.
+    assert any("tests/integration/" in ln for ln in copy_lines), (
+        "docker/canary/Dockerfile must COPY tests/integration/ — the canary conftest "
+        "loads tests/integration/conftest.py by file path at collection; without it the "
+        "live container errors at collection (exit 4, zero checks)."
+    )
+    # And the canary suite itself must be copied (sanity).
+    assert any("tests/canary/" in ln for ln in copy_lines)
+
+
+def test_pythonunbuffered_set_so_prod_logs_flush():
+    """REGRESSION: a short-lived Fargate task with block-buffered stdout can exit before
+    the awslogs driver flushes → an EMPTY CloudWatch stream (a live monitor with no
+    readable output). Assert PYTHONUNBUFFERED is set in the canary Dockerfile."""
+    dockerfile = (_CANARY_DIR.parents[1] / "docker" / "canary" / "Dockerfile").read_text()
+    assert "PYTHONUNBUFFERED=1" in dockerfile, (
+        "docker/canary/Dockerfile must set PYTHONUNBUFFERED=1 or prod canary logs may "
+        "never reach CloudWatch (short task exits before the log driver flushes)."
+    )
+
+
 if __name__ == "__main__":  # pragma: no cover
     raise SystemExit(pytest.main([__file__, "-v"]))
