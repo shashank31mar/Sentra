@@ -14,9 +14,10 @@ Routes are kept clean and focused on HTTP handling only.
 import logging
 from typing import Dict, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Header, Request, Response
+from fastapi import APIRouter, Depends, HTTPException, Request, Response
 
 from app.api.deps import OperatorContext, require_role
+from app.api.ownership import ResourceKind, assert_owns
 from app.api.models import (
     ValidationRequest,
     PolicyCreateRequest,
@@ -954,18 +955,24 @@ async def delete_feedback_subject(
 async def attach_agent_policy(
     agent_id: str,
     request: Dict,
-    operator_email: str = Header(None, alias="X-Operator-Email"),
+    ctx: OperatorContext = Depends(require_role("editor")),
 ) -> Dict:
     """Set the agent's policy binding (agent-policy-management §4.2).
 
     Rebind-as-replace: attaching when already bound is an atomic swap (no 409).
+
+    Auth (WS-M M1.1/M1.2): ``require_role("editor")`` + BOTH ownership asserts, in
+    order — the agent first (403 on a foreign tenant-prefixed id) then the policy
+    (404 on a cross-tenant opaque id). Operator attribution = verified ``ctx.sub``.
     """
     policy_id = request.get("policy_id")
     if not policy_id:
         raise HTTPException(status_code=400, detail="policy_id is required")
+    assert_owns(ctx, ResourceKind.AGENT, agent_id)
+    assert_owns(ctx, ResourceKind.POLICY, policy_id)
     from app.services.agent_service import AgentService
     try:
-        return await AgentService().attach_policy(agent_id, policy_id, operator_email)
+        return await AgentService().attach_policy(agent_id, policy_id, ctx.sub)
     except KeyError as exc:
         raise HTTPException(status_code=404, detail=str(exc))
 
@@ -974,12 +981,17 @@ async def attach_agent_policy(
 async def detach_agent_policy(
     agent_id: str,
     policy_id: str,
-    operator_email: str = Header(None, alias="X-Operator-Email"),
+    ctx: OperatorContext = Depends(require_role("editor")),
 ) -> Dict:
-    """Clear the agent's policy binding (agent-policy-management §4.2)."""
+    """Clear the agent's policy binding (agent-policy-management §4.2).
+
+    Auth (WS-M M1.1/M1.2): ``require_role("editor")`` + ``assert_owns(AGENT, id)``.
+    Operator attribution = verified ``ctx.sub``.
+    """
+    assert_owns(ctx, ResourceKind.AGENT, agent_id)
     from app.services.agent_service import AgentService
     try:
-        return await AgentService().detach_policy(agent_id, policy_id, operator_email)
+        return await AgentService().detach_policy(agent_id, policy_id, ctx.sub)
     except KeyError as exc:
         raise HTTPException(status_code=404, detail=str(exc))
 
@@ -1243,17 +1255,20 @@ async def get_policy_by_id(
 @router.post("/policies", status_code=201)
 async def create_policy(
     request: PolicyCreateRequest,
-    operator_email: str = Header(None, alias="X-Operator-Email")
+    ctx: OperatorContext = Depends(require_role("editor")),
 ) -> Dict:
     """
     Create a new agent policy with hybrid storage.
 
+    Auth (WS-M M1.1, closes BUG-1): ``require_role("editor")`` — verified ALB-OIDC
+    operator, tenant resolved server-side. The mutation is scoped to
+    ``ctx.tenant_id`` (a create has no cross-tenant target). Operator attribution
+    is keyed on the verified ``ctx.sub`` — the old ``X-Operator-Email`` header is
+    no longer an authority.
+
     Request Body:
         PolicyCreateRequest with schema_version, agent_id, name, version,
         allowed_tools, policies array
-
-    Headers:
-        X-Operator-Email: Email of operator creating policy (optional)
 
     Returns:
         Created policy metadata with policy_id, version, s3_key
@@ -1263,7 +1278,7 @@ async def create_policy(
         400 Bad Request - Validation failed
         409 Conflict - Policy already exists
 
-    Reference: LLD 11 Section 3.1
+    Reference: LLD 11 Section 3.1 / lld/39 §3.2
     """
     from app.services.policy_service import PolicyService
     from app.exceptions import ValidationException, ConflictException
@@ -1276,7 +1291,7 @@ async def create_policy(
             # max_calls_per_minute) to S3 as explicit nulls. A null
             # max_calls_per_minute crashed the abuse detector (int > None). WS15.
             policy_data=request.dict(exclude_none=True),
-            operator_email=operator_email or "unknown"
+            operator_email=ctx.sub,
         )
     except ValidationException as e:
         raise HTTPException(status_code=e.status_code, detail=e.to_dict())
@@ -1288,19 +1303,20 @@ async def create_policy(
 async def update_policy(
     policy_id: str,
     request: PolicyUpdateRequest,
-    operator_email: str = Header(None, alias="X-Operator-Email")
+    ctx: OperatorContext = Depends(require_role("editor")),
 ) -> Dict:
     """
     Update existing policy (creates new S3 version).
+
+    Auth (WS-M M1.1/M1.2): ``require_role("editor")`` + ``assert_owns(POLICY, id)``
+    — a tenant-B editor cannot update tenant-A's policy (403/404, no mutation).
+    Operator attribution = verified ``ctx.sub``.
 
     Path Parameters:
         policy_id: Policy identifier
 
     Request Body:
         PolicyUpdateRequest (same as create)
-
-    Headers:
-        X-Operator-Email: Email of operator updating policy (optional)
 
     Returns:
         Updated policy metadata with new version
@@ -1309,9 +1325,9 @@ async def update_policy(
         200 OK - Policy updated successfully
         400 Bad Request - Validation failed
         403 Forbidden - Cannot update disabled policy
-        404 Not Found - Policy not found
+        404 Not Found - Policy not found / cross-tenant target
 
-    Reference: LLD 11 Section 3.2
+    Reference: LLD 11 Section 3.2 / lld/39 §3.2-3.3
     """
     from app.services.policy_service import PolicyService
     from app.exceptions import (
@@ -1320,6 +1336,7 @@ async def update_policy(
         ForbiddenException
     )
 
+    assert_owns(ctx, ResourceKind.POLICY, policy_id)
     try:
         policy_service = PolicyService()
         return await policy_service.update_policy(
@@ -1329,7 +1346,7 @@ async def update_policy(
             # max_calls_per_minute) to S3 as explicit nulls. A null
             # max_calls_per_minute crashed the abuse detector (int > None). WS15.
             policy_data=request.dict(exclude_none=True),
-            operator_email=operator_email or "unknown"
+            operator_email=ctx.sub,
         )
     except ValidationException as e:
         raise HTTPException(status_code=e.status_code, detail=e.to_dict())
@@ -1342,38 +1359,39 @@ async def update_policy(
 @router.delete("/policies/{policy_id}")
 async def delete_policy(
     policy_id: str,
-    operator_email: str = Header(None, alias="X-Operator-Email")
+    ctx: OperatorContext = Depends(require_role("admin")),
 ) -> Dict:
     """
     Soft delete policy (set status=disabled).
 
+    Auth (WS-M M1.1/M1.2): ``require_role("admin")`` (delete is admin-only) +
+    ``assert_owns(POLICY, id)``. Operator attribution = verified ``ctx.sub``.
+
     Path Parameters:
         policy_id: Policy identifier
-
-    Headers:
-        X-Operator-Email: Email of operator deleting policy (optional)
 
     Returns:
         Success response with disabled status
 
     HTTP Status Codes:
         200 OK - Policy disabled successfully (idempotent)
-        403 Forbidden - Cannot delete system policies
-        404 Not Found - Policy not found
+        403 Forbidden - Cannot delete system policies / below-role
+        404 Not Found - Policy not found / cross-tenant target
 
     Note: This is a soft delete. The policy is marked as disabled but not removed
     from DynamoDB or S3, preserving the audit trail.
 
-    Reference: LLD 11 Section 3.3
+    Reference: LLD 11 Section 3.3 / lld/39 §3.2-3.3
     """
     from app.services.policy_service import PolicyService
     from app.exceptions import NotFoundException, ForbiddenException
 
+    assert_owns(ctx, ResourceKind.POLICY, policy_id)
     try:
         policy_service = PolicyService()
         return await policy_service.delete_policy(
             policy_id=policy_id,
-            operator_email=operator_email or "unknown"
+            operator_email=ctx.sub,
         )
     except NotFoundException as e:
         raise HTTPException(status_code=e.status_code, detail=e.to_dict())
@@ -1385,12 +1403,15 @@ async def delete_policy(
 async def set_policy_status(
     policy_id: str,
     request: Dict,
-    operator_email: str = Header(None, alias="X-Operator-Email")
+    ctx: OperatorContext = Depends(require_role("editor")),
 ) -> Dict:
     """
     Enable or disable a policy (lifecycle status flip).
 
     agent-policy-management §4.3 / T20. Mirrors PATCH /sigma-rules/{rule_id}.
+
+    Auth (WS-M M1.1/M1.2): ``require_role("editor")`` + ``assert_owns(POLICY, id)``.
+    Operator attribution = verified ``ctx.sub``.
 
     Path Parameters:
         policy_id: Policy identifier
@@ -1398,16 +1419,13 @@ async def set_policy_status(
     Request Body:
         {"status": "active" | "disabled"}   (active = enable, disabled = disable)
 
-    Headers:
-        X-Operator-Email: Email of operator (optional)
-
     Returns:
         {success, policy_id, status, updated_at}
 
     HTTP Status Codes:
         200 OK - Status updated
         400 Bad Request - Invalid status
-        404 Not Found - Policy not found
+        404 Not Found - Policy not found / cross-tenant target
 
     Note (§2.8): Enable/Disable are ALLOWED on system (`created_by='system'`)
     policies — there is intentionally NO 403 here. Only DELETE is protected.
@@ -1415,12 +1433,13 @@ async def set_policy_status(
     from app.services.policy_service import PolicyService
     from app.exceptions import ValidationException, NotFoundException
 
+    assert_owns(ctx, ResourceKind.POLICY, policy_id)
     try:
         policy_service = PolicyService()
         return await policy_service.set_policy_status(
             policy_id=policy_id,
             status=request.get('status'),
-            operator_email=operator_email or "unknown"
+            operator_email=ctx.sub,
         )
     except ValidationException as e:
         raise HTTPException(status_code=e.status_code, detail=e.to_dict())

@@ -160,6 +160,20 @@ class Settings(BaseSettings):
     jwt_clock_skew_seconds: int = Field(
         default=60, validation_alias="JWT_CLOCK_SKEW_SECONDS"
     )
+    # ALB-OIDC signer/issuer PIN (WS-M M1.0 / lld/39 §3.1). Plain ES256 verify
+    # accepts a token signed by ANY in-region ALB and ANY Cognito pool; account
+    # 531109575379 hosts multiple stacks, so an operator-console token forged by a
+    # sibling ALB would otherwise verify. After signature verify we assert the JWT
+    # header `signer` is in this allowlist and `iss` matches the expected pool.
+    # COMMA-separated allowlists. Empty (default) = NO pin (dev / tests / the
+    # transition window) — set the expected ALB ARN + Cognito issuer per env to
+    # enforce. Fail-secure only fires once the pin is populated.
+    alb_oidc_expected_signers: str = Field(
+        default="", validation_alias="ALB_OIDC_EXPECTED_SIGNERS"
+    )
+    alb_oidc_expected_issuer: str = Field(
+        default="", validation_alias="ALB_OIDC_EXPECTED_ISSUER"
+    )
 
     # Residual uncredentialed-agent legacy-fallback window (LLD-26 §7.1.2 / WS-B
     # B1). Enforce flips per-TENANT but credential coverage is per-AGENT, so a
