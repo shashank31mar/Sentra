@@ -20,7 +20,8 @@
 ## 1. Dependencies
 
 - **Depends on:** **LLD-26 §5–6** (the RBAC primitives — `require_role`/`require_platform`/`resolve_operator_tenant`/`role_satisfies`/`_ROLE_ORDER`/`OperatorContext`, all **built + live on dev**; WS-M reuses, does not rebuild) · **LLD-08 §6.5** (`verify_alb_oidc` / ALB-Cognito — built) · **AD-7 / TENANCY_V2** (`resolve_tenant_from_jwt`, enforcing tenant `acme` on dev).
-- **Blocks / clears:** **WS-F** (M3 clears its non-blocking CI WARNING) · **WS-K** (K8 suite consumes the positive-authz assertions on the fixed routes) · **WS-J** (canary pairs-with — positive-authz coverage on the previously-ungated routes).
+- **Implements sibling fixes + closes the loop (founder 2026-07-06):** WS-M **owns the code** for two gaps its siblings surfaced but do not fix themselves — **the WS-F sigma platform-gate (M3)** and **the WS-D `/trail`+`/signals` verified-JWT tenant bind (M5.2, a fix to already-deployed WS-D code)**. Each carries a **loop-closure task**: on landing, WS-M updates the owning sibling doc to mark the gap CLOSED (WS-F CI WARNING → green; WS-D D5.3/T-TRAIL-21 → "bind shipped"). So there is no dangling "someone else will fix it later."
+- **Blocks / clears:** **WS-F** (M3 lands the gate + flips its CI WARNING green) · **WS-D** (M5.2 fixes its deployed `/trail` cross-tenant-read gap) · **WS-K** (K8 suite consumes the positive-authz assertions on the fixed routes) · **WS-J** (canary pairs-with — positive-authz coverage on the previously-ungated routes).
 - **Shared (coordinate edits — these files are touched by other WS):** `deps.py` (auth primitives — LLD-26/WS-D own), `routes.py` (WS-D/WS-G touch), `tenancy_routes.py` (WS-G touches; the `_assert_owns_agent` re-export), the NEW `app/api/ownership.py` (owned here; WS-D/WS-G consume), `policy_service.py`/`cache_manager.py` (WS-D/WS-H own the policy store + caching — the M0 cache-bypass touches these), `audit_logger.py` (the M2 rollback tenant-stamp predecessor).
 - **Consumes (design-only):** the ADR-035 `VerifiedOperator{sub, email, idp_groups[]}` seam WS-G designs (G3.7) — WS-M does **not** swap the IdP.
 
@@ -266,6 +267,8 @@ sequenceDiagram
 - **Unit tests** (`tests/test_sigma_rule_authz.py`): `test_sigma_retire_unroled_403`, **`test_sigma_retire_tenant_admin_403`** (a merely-tenant-scoped `admin`, NOT `_platform`, gets 403 — this is what pins platform-vs-tenant), `test_sigma_retire_platform_operator_200`, `test_bump_enforcement_version_behind_platform_gate`.
 - **Integration test** (the sigma-retire chain is a **shared contract** with WS-F): `test_sigma_retire_platform_gated_end_to_end` — asserts both the un-roled AND the tenant-scoped-admin 403, and a platform operator 200.
 
+**M3.2 — Close the loop with WS-F (doc update on landing).** When M3.1 merges: (a) confirm WS-F's CI check (F6.5) flips WARNING→green against the landed `require_platform` gate; (b) update [ws-f-prompt-signatures.md](ws-f-prompt-signatures.md) — the three §3.3 threat-table rows (currently "OPEN — tracked, non-blocking dep on WS-M") → **CLOSED (WS-M M3, `<commit>`)**, and the sibling-ref line 411; (c) update [lld/35 §3.3](../../lld/35-prompt-signatures.md) acceptance checklist to CLOSED. This is a WS-M deliverable, not a WS-F follow-up — the loop closes here.
+
 ### Milestone M5 — the in-service data-plane auth boundary (ADR-037 — the committed deliverable)
 
 **M5.1 — Deny missing/invalid agent JWT on the data plane INDEPENDENT of `identity_mode` (close the tokenless-fallthrough).**
@@ -274,11 +277,13 @@ sequenceDiagram
 - **Unit tests** (`tests/test_dataplane_jwt_boundary.py`): `test_tokenless_validate_denied_at_shadow`, `test_tokenless_validate_denied_at_off`, `test_forged_jwt_denied_all_modes`, `test_wellformed_unverified_allowed_only_in_soak`.
 - **Integration test** (shared contract with WS-D): `test_dataplane_requires_verified_jwt`.
 
-**M5.2 — Bind the verified tenant on `/trail` + `/signals` (close the §2.2 cross-tenant-read gap).**
+**M5.2 — Bind the verified tenant on `/trail` + `/signals` (fix DEPLOYED WS-D code — close the §2.2 cross-tenant-read gap).**
+> **This fixes already-shipped WS-D code, not just a design gap.** WS-D (decision-trail) is CODE-DONE + deployed, and its `/trail`+`/signals` read handlers ship **without** the tenant bind — so for a non-enforcing tenant the reads hit the co-mingled `default` partition (a live cross-tenant read). WS-M **owns this fix** (the sweep found WS-D's doc overclaimed "structural isolation"; the code never bound the tenant). Prioritize M5.2 accordingly.
 - `get_session_trail` ([routes.py:464](../../src/security-controller/app/api/routes.py)) + `get_session_signals` ([routes.py:448](../../src/security-controller/app/api/routes.py)) take **no** auth dependency and resolve the partition from the ambient `tenancy.current_tenant()` (`"default"`) — so non-enforcing tenants' rows co-mingle in `default#{session_id}` and any caller with a session_id reads them (a real cross-tenant read, NOT "structural isolation").
 - **Fix:** add `resolve_tenant_from_jwt` as a dependency on both handlers, deny (401) on absent/invalid at enforce, and `set_current_tenant(ctx.tenant_id)` around the `DecisionsService` call in a `try/finally` (mirror [routes.py:244-261](../../src/security-controller/app/api/routes.py)). Equivalently, pass the verified tenant explicitly into `get_session_trail`/`get_session_signals`. **Do NOT add `require_role`** (Invariant 6 — these are data-plane reads, not operator mutations).
 - **Unit tests:** `test_trail_read_binds_verified_tenant`, `test_trail_unbound_context_denies_not_default`, `test_signals_read_binds_verified_tenant`.
-- **Integration test:** `test_cross_tenant_trail_read_returns_zero_rows` (tenant-B reading tenant-A's session → zero rows / 404 after the fix — the regression test for the gap).
+- **Integration test:** `test_cross_tenant_trail_read_returns_zero_rows` (tenant-B reading tenant-A's session → zero rows / 404 after the fix — the regression test for the gap; this is the same assertion WS-D's T-TRAIL-21 makes, now run against the *bound* handler).
+- **Close the loop with WS-D (doc update on landing):** when M5.2 merges, update [ws-d-decision-trail.md](ws-d-decision-trail.md) — the corrected D5.3 note + T-TRAIL-21 → **"bind SHIPPED (WS-M M5.2, `<commit>`); `/trail` now tenant-isolated"**. The WS-D deployed code is patched by this task; WS-D's doc reflects it. Loop closes here.
 
 **M5.3 — Same-task ContextVar reset on the operator dependency (defense-in-depth hygiene).**
 - `resolve_operator_tenant` calls `set_current_tenant` on success only ([deps.py:361](../../src/security-controller/app/api/deps.py)) with no matching reset (unlike the data-plane sets at routes.py:244/261). NOT a cross-request leak (asyncio isolates the ContextVar per Task — verified). The real risk: a non-gated handler reading `current_tenant()` with no operator bind acts on `"default"`. Fix: balance the set with `reset_current_tenant(token)` in a `finally`, same-task token pattern (mirror routes.py:244→261), scoped to the operator dependency.
@@ -331,7 +336,9 @@ The retrofit isn't done until, for every gated route, the tests below pass. (Tes
 - [ ] **M2:** rollback 15–16 tenant-scoped (ACTION/CONVERSATION `assert_owns`); the `tenant_id` emit-stamp predecessor landed in `_build_log_event`; the injection-safe exact-match query + regex reject; idempotency ledger (no double-reverse); break-glass (if shipped) is `_platform`+dual-control.
 - [ ] **M2:** discovery import 17 editor-gated + tenant-prefix-stamps imported ids; verdict 18 authenticated + session-owned; route-19 interim fail-closed guard ships; the fake-200 factory hardened + route-9 message sanitized.
 - [ ] **M3:** `update_sigma_rule` + `_bump_enforcement_version` are `require_platform`-gated; a tenant-admin (not `_platform`) gets 403; WS-F's CI WARNING clears.
+- [ ] **M3 loop-closure:** on landing, `ws-f-prompt-signatures.md` (3 threat rows + line 411) and `lld/35 §3.3` are updated to CLOSED (WS-M owns the doc update, not a WS-F follow-up).
 - [ ] **M5:** every data-plane route denies a missing/invalid JWT independent of `identity_mode`; `/trail` + `/signals` bind the verified tenant (cross-tenant read → zero rows); the operator-dependency contextvar reset lands.
+- [ ] **M5.2 loop-closure:** the deployed WS-D `/trail`+`/signals` code is patched (tenant bind shipped); `ws-d-decision-trail.md` D5.3 + T-TRAIL-21 updated to "bind SHIPPED (WS-M M5.2)".
 - [ ] **`GET /trail` + `/signals` do NOT carry `require_role`** — a test proves cross-tenant returns zero rows via the JWT-tenant-bind, not RBAC.
 - [ ] **Edge authorizer + route-19 producer credential + Tier-2 roles are NOT built** (design-only/deferred) — recorded, not tasked.
 - [ ] **unit tests pass** (covering all cases named in §4).
