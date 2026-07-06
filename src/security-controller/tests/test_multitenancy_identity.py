@@ -128,8 +128,26 @@ def test_disabled_when_ceiling_off(mt_env, monkeypatch):
     from app.api.deps import resolve_tenant_from_jwt
 
     monkeypatch.setattr(settings, "tenant_identity_mode", "off")
+    monkeypatch.setattr(settings, "require_dataplane_credential", False)
     ctx = run(resolve_tenant_from_jwt(FakeRequest({"Authorization": "Bearer whatever"})))
     assert ctx.state == "disabled"  # byte-identical-to-pre-26 path
+
+
+def test_latch_forces_verify_even_at_ceiling_off(mt_env, monkeypatch):
+    """WS-M M5.1: with `require_dataplane_credential` ON, the fleet `off` kill-switch no
+    longer short-circuits to `disabled` — the resolver STILL attempts verification so
+    the route can distinguish a valid token from a missing/invalid one independent of
+    `identity_mode`. A missing token at fleet `off` + latch ON → `unverified` (which the
+    route denies), NOT `disabled` (which the route would allow). FAILS against the
+    pre-fix resolver, which returned `disabled` unconditionally at ceiling `off`."""
+    from app.api.deps import resolve_tenant_from_jwt
+
+    monkeypatch.setattr(settings, "tenant_identity_mode", "off")
+    monkeypatch.setattr(settings, "require_dataplane_credential", True)
+    # No token, fleet off, latch on → must NOT be `disabled` (would allow tokenless).
+    ctx = run(resolve_tenant_from_jwt(FakeRequest({})))
+    assert ctx.state == "unverified"
+    assert ctx.credential_present is False
 
 
 def test_unverified_no_token(mt_env, monkeypatch):

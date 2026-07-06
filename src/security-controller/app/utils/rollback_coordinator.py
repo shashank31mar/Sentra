@@ -242,19 +242,36 @@ class RollbackCoordinator:
                     "action_id": action_id,
                 }
 
-            # Execute rollback based on action type
-            if action_type == "process_refund":
-                rollback_result = await self._rollback_refund(original_action)
-            else:
-                return {
-                    "success": False,
-                    "message": f"Rollback handler not implemented for {action_type}",
-                    "action_id": action_id
-                }
-            
+            # WS-M M2.4 (FIX-B): the claim is a *tentative* lock, not proof the reversal
+            # happened. If the reversal below fails (raises) OR the action_type has no
+            # handler, we MUST RELEASE the claim so a legitimate retry of a genuinely-
+            # FAILED reversal can re-attempt. Otherwise the money action was never
+            # reversed yet every retry hits ConditionalCheckFailedException → "already
+            # rolled back" forever (fail-closed in the wrong direction on the money
+            # path). The claim persists ONLY after a reversal that actually completed.
+            try:
+                # Execute rollback based on action type
+                if action_type == "process_refund":
+                    rollback_result = await self._rollback_refund(original_action)
+                else:
+                    # Nothing was reversed — release the claim so it can be retried
+                    # once a handler exists / a different action_type is passed.
+                    self._release_rollback(action_id)
+                    return {
+                        "success": False,
+                        "message": f"Rollback handler not implemented for {action_type}",
+                        "action_id": action_id
+                    }
+            except Exception:
+                # The reversal itself failed — the money action is NOT reversed. Release
+                # the claim (fail-secure toward *allowing a retry* of an un-reversed
+                # money action) then re-raise into the outer handler for the response.
+                self._release_rollback(action_id)
+                raise
+
             # Generate rollback ID
             rollback_id = f"rb-{int(time.time())}"
-            
+
             # Log rollback event
             await self._log_rollback(
                 action_id=action_id,
@@ -263,7 +280,7 @@ class RollbackCoordinator:
                 reason=reason,
                 result=rollback_result
             )
-            
+
             return {
                 "success": True,
                 "message": "Refund reversed successfully",
@@ -282,7 +299,7 @@ class RollbackCoordinator:
                     "timestamp": datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z')
                 }
             }
-            
+
         except Exception as e:
             logger.exception(
                 f"{LOG_PREFIX} Rollback failed for action",
@@ -509,6 +526,26 @@ class RollbackCoordinator:
         except Exception as exc:  # noqa: BLE001 — fail secure on any ledger error.
             logger.error(f"{LOG_PREFIX} rollback ledger unavailable — denying (fail-secure): {exc}")
             return False
+
+    def _release_rollback(self, action_id: str) -> None:
+        """RELEASE a tentative rollback claim (WS-M M2.4 FIX-B). Deletes the ledger row
+        so a genuinely-FAILED reversal can be retried — the claim must NOT outlive a
+        reversal that never completed, or the money action becomes permanently
+        un-reversible (every retry fails ``attribute_not_exists`` → "already rolled
+        back"). Called only when the reversal raised or no handler ran, i.e. when the
+        money action was NOT reversed.
+
+        Unconditional delete (idempotent). A delete FAILURE is logged (never raised) so
+        it cannot mask the original reversal error and the stuck row is visible for
+        manual cleanup — a lingering claim is a *false* "already rolled back" for one
+        action, surfaced in the logs rather than silently swallowed."""
+        try:
+            self._rollback_ledger_table().delete_item(Key={"action_id": action_id})
+        except Exception as exc:  # noqa: BLE001 — never let cleanup mask the real error.
+            logger.error(
+                f"{LOG_PREFIX} rollback ledger release FAILED for {action_id} — a stale "
+                f"claim may block retry of an un-reversed action; manual cleanup needed: {exc}"
+            )
     
     async def _rollback_refund(self, original_action: Dict[str, Any]) -> Dict[str, Any]:
         """

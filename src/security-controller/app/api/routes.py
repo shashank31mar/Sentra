@@ -193,6 +193,7 @@ async def validate_tool_call(
     # resolves to `disabled` and the call runs byte-identically to pre-LLD-26 —
     # so the background AWS/Azure event traffic sees no change.
     from app.api.deps import resolve_tenant_from_jwt
+    from app.config import settings
     from app.utils import tenancy
 
     ctx = await resolve_tenant_from_jwt(http_request)
@@ -207,6 +208,20 @@ async def validate_tool_call(
     # whichever verdict the canary's enforce path returns; a no-op for every real
     # tenant. `ctx.tenant_id` is the verified tenant (never the client-claimed body).
     _maybe_attach_canary_capture(response, request, tenant_id=ctx.tenant_id)
+
+    # WS-M M5.1 / lld/39 §5 (ADR-037): the in-service data-plane auth boundary. When the
+    # `require_dataplane_credential` latch is engaged, a MISSING or INVALID agent JWT is
+    # denied on the data plane INDEPENDENT of `identity_mode` — closing the tokenless
+    # fall-through (previously a tokenless call was only denied at effective `enforce`,
+    # and fell through to the legacy path at `shadow`/`off`, incl. a fresh env defaulting
+    # to identity `off`). `identity_mode` remains only the enforcement-STRICTNESS latch
+    # (shadow→enforce governs whether an unverified-but-well-formed posture is tolerated
+    # during soak); credential PRESENCE is not mode-gated. A forged (bad-signature) token
+    # is `unverified` here too, so it is denied by this same check regardless of mode.
+    # Default-off, so the live env (identity `off`, no agent sends a JWT yet) is unchanged
+    # until an operator flips the latch per the WS-K go-live runbook.
+    if settings.require_dataplane_credential and not ctx.credential_present:
+        return await _identity_deny(request, ctx.reason or "IDENTITY_UNVERIFIED")
 
     if ctx.state == "disabled":
         return await validation_service.validate_tool_call(request)
@@ -469,9 +484,17 @@ async def _dataplane_tenant_bind(http_request: Request):
     operator role (Invariant 6). It is the JWT-tenant-bind, not RBAC.
     """
     from app.api.deps import resolve_tenant_from_jwt
+    from app.config import settings
     from app.utils import tenancy
 
     ctx = await resolve_tenant_from_jwt(http_request)
+    # WS-M M5.1 / lld/39 §5: when the data-plane credential latch is engaged, a
+    # MISSING/INVALID agent JWT is denied here too — independent of `identity_mode` —
+    # so EVERY data-plane route (not just `/validate`) requires a verified caller.
+    # Default-off, so the console keeps working at fleet `off` until the operator
+    # flips the latch (WS-K go-live runbook), same as `/validate`.
+    if settings.require_dataplane_credential and not ctx.credential_present:
+        raise HTTPException(status_code=401, detail="verified agent identity required")
     if ctx.should_deny:
         # ENFORCE + missing/invalid/forged JWT → fail-secure 401 (never read on the
         # ambient `default` partition, which would be a cross-tenant read).

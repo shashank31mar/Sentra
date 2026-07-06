@@ -1,6 +1,11 @@
 """Data-plane JWT boundary + /trail-/signals tenant bind + operator contextvar reset
-(WS-M M5.2 / M5.3, lld/39 §5).
+(WS-M M5.1 / M5.2 / M5.3, lld/39 §5).
 
+M5.1: a MISSING/INVALID agent JWT is denied on the data plane INDEPENDENT of
+``identity_mode`` when the ``require_dataplane_credential`` latch is engaged — closing
+the tokenless fall-through (previously a tokenless ``/validate`` call was only denied at
+effective ``enforce`` and fell through to the legacy path at ``shadow``/``off``). The
+latch decouples data-plane authN from the enforcement-strictness rollout ceiling.
 M5.2: the deployed WS-D ``/trail`` + ``/signals`` read handlers resolved the partition
 from the ambient ``current_tenant()`` (``"default"``) — a live cross-tenant read for a
 non-enforcing tenant. They now bind the VERIFIED agent tenant (NOT ``require_role`` —
@@ -11,15 +16,141 @@ from __future__ import annotations
 
 import pytest
 from fastapi import HTTPException
-from unittest.mock import Mock, patch
+from fastapi.testclient import TestClient
+from unittest.mock import AsyncMock, Mock, patch
 
 from app.api import routes as R
 from app.api.deps import TenantContext
+from app.main import app
 from app.utils import tenancy
 
 
 class _Req:
     headers = {}
+
+
+# --------------------------------------------------------------------------- #
+# M5.1 — deny missing/invalid agent JWT on /validate INDEPENDENT of identity_mode
+# --------------------------------------------------------------------------- #
+_AGENT_ID = "t_a-aws-x-deadbeef"
+
+
+def _validate_payload(**overrides):
+    base = dict(
+        request_id="req-m5", session_id="sess-m5", agent_id=_AGENT_ID,
+        tool_name="query_customers", tool_params={}, user_input="hi",
+        timestamp="2026-07-06T00:00:00Z", operation_type="READ",
+    )
+    base.update(overrides)
+    return base
+
+
+@pytest.fixture
+def validate_client():
+    return TestClient(app)
+
+
+@pytest.fixture
+def spy_validation_service():
+    """Spy the process-wide ValidationService so a DENY-before-routing is provable by
+    asserting the pipeline was never reached (and an ALLOW proves it was)."""
+    svc = Mock()
+    svc.validate_tool_call = AsyncMock(return_value={
+        "decision": "ALLOW", "reason": "ok", "trust_score": 99.0,
+        "session_id": "sess-m5", "latency_ms": 1.0,
+    })
+    prev = getattr(app.state, "validation_service", None)
+    app.state.validation_service = svc
+    try:
+        yield svc
+    finally:
+        app.state.validation_service = prev
+
+
+def _post_validate_with_ctx(client, ctx, *, latch: bool):
+    """Drive POST /v1/validate with a resolved TenantContext + the latch state, without
+    real JWTs/AWS (resolve_tenant_from_jwt is patched to return `ctx`)."""
+    with patch("app.api.deps.resolve_tenant_from_jwt", new=AsyncMock(return_value=ctx)), \
+         patch("app.config.settings.require_dataplane_credential", latch), \
+         patch("app.api.routes._identity_deny", new=AsyncMock(return_value={
+             "decision": "DENY", "reason": ctx.reason or "IDENTITY_UNVERIFIED",
+             "trust_score": 0.0, "session_id": "sess-m5", "latency_ms": 0.0,
+             "violation_type": ctx.reason or "IDENTITY_UNVERIFIED",
+         })) as deny_spy:
+        resp = client.post("/v1/validate", json=_validate_payload())
+    return resp, deny_spy
+
+
+def test_tokenless_validate_denied_at_shadow(validate_client, spy_validation_service):
+    """A missing token resolves to `unverified(effective_mode=shadow)`. With the latch
+    ON it is DENIED (not routed to the legacy path) even though shadow does not enforce.
+    FAILS against the pre-fix code, which fell through to `validate_tool_call` at shadow."""
+    ctx = TenantContext.unverified(effective_mode="shadow")
+    resp, deny_spy = _post_validate_with_ctx(validate_client, ctx, latch=True)
+    assert resp.status_code == 200
+    assert resp.json()["decision"] == "DENY"
+    deny_spy.assert_awaited_once()
+    spy_validation_service.validate_tool_call.assert_not_called()
+
+
+def test_tokenless_validate_denied_at_off(validate_client, spy_validation_service):
+    """A missing token at effective `off` (the byte-identical-to-pre-26 posture). With
+    the latch ON it is DENIED regardless — the tokenless fall-through at `off` was the
+    fresh-env-open bug (§8 residual #1). FAILS against the pre-fix code."""
+    ctx = TenantContext.unverified(effective_mode="off")
+    resp, deny_spy = _post_validate_with_ctx(validate_client, ctx, latch=True)
+    assert resp.json()["decision"] == "DENY"
+    deny_spy.assert_awaited_once()
+    spy_validation_service.validate_tool_call.assert_not_called()
+
+
+def test_forged_jwt_denied_all_modes(validate_client, spy_validation_service):
+    """A forged/bad-signature token resolves to `unverified` (credential_present False)
+    in every mode. With the latch ON it is denied at shadow AND off AND enforce."""
+    for mode in ("off", "shadow", "enforce"):
+        spy_validation_service.validate_tool_call.reset_mock()
+        ctx = TenantContext.unverified(effective_mode=mode)
+        resp, deny_spy = _post_validate_with_ctx(validate_client, ctx, latch=True)
+        assert resp.json()["decision"] == "DENY", f"forged token must deny at {mode}"
+        spy_validation_service.validate_tool_call.assert_not_called()
+
+
+def test_wellformed_unverified_allowed_only_in_soak(validate_client, spy_validation_service):
+    """A well-formed VERIFIED credential during soak (shadow) is allowed onto the legacy
+    path (observed, not routed) — identity_mode still governs the strictness of a
+    *verified-but-not-yet-enforced* posture. The latch keys only on credential PRESENCE:
+    a verified token IS present, so the latch does not deny it; shadow then observes
+    without routing (validate_tool_call runs)."""
+    ctx = TenantContext.verified(tenant_id="t_a", agent_id=_AGENT_ID, effective_mode="shadow")
+    resp, _ = _post_validate_with_ctx(validate_client, ctx, latch=True)
+    assert resp.status_code == 200
+    assert resp.json()["decision"] == "ALLOW"
+    spy_validation_service.validate_tool_call.assert_called_once()
+
+
+def test_latch_off_preserves_tokenless_fallthrough(validate_client, spy_validation_service):
+    """DEFAULT-SAFE: with the latch OFF (the live-env default), a tokenless call at
+    `off`/`disabled` still falls through to the legacy path — byte-identical to pre-M5,
+    so the live env (identity off, no agent sends a JWT) is unchanged. Proves the latch
+    is a real gate and the change is not a silent production-breaking deny."""
+    ctx = TenantContext.disabled()
+    resp, _ = _post_validate_with_ctx(validate_client, ctx, latch=False)
+    assert resp.status_code == 200
+    assert resp.json()["decision"] == "ALLOW"
+    spy_validation_service.validate_tool_call.assert_called_once()
+
+
+def test_credential_present_classification():
+    """Unit: `credential_present` is True only when a usable credential was presented
+    (verified) or a signature verified against a real key but failed a downstream bind
+    (tampered/mismatch). It is False for unverified (missing/bad/expired) and disabled —
+    the states the latch must deny. This pins the exact classification the /validate and
+    /trail latch checks depend on."""
+    assert TenantContext.verified("t_a", "t_a-x", "enforce").credential_present is True
+    assert TenantContext.tampered("t_a", "enforce").credential_present is True
+    assert TenantContext.mismatch("t_a", "enforce").credential_present is True
+    assert TenantContext.unverified(effective_mode="off").credential_present is False
+    assert TenantContext.disabled().credential_present is False
 
 
 # --------------------------------------------------------------------------- #
