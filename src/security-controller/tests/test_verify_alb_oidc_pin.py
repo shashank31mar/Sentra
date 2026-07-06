@@ -284,3 +284,118 @@ def test_lifespan_refuses_boot_when_unpinned_and_enforced(monkeypatch):
 
     with pytest.raises(RuntimeError):
         asyncio.run(_drive())
+
+
+# ---------------------------------------------------------------------------
+# Deploy-brick guard (WS-M M1.0 FIX-B — the coverage gap the green suite hid).
+#
+# Every test above monkeypatches `settings`, so NONE of them exercise the real
+# path a `cdk deploy` takes: cdk/config/<env>.yaml -> compute_stack.py's
+# `config.get(...)` defaults -> the ECS task env -> a real Settings() -> the boot
+# gate. That path is where the outage lives: compute_stack DEFAULTS
+# ALB_OIDC_PIN_ENFORCE_AT_BOOT to `true`, and if a shipped config sets neither
+# alb_oidc_expected_signers nor alb_oidc_expected_issuer, the container RAISES at
+# lifespan startup -> the ECS task never becomes healthy -> control-plane OUTAGE.
+# These tests reconstruct that exact chain from the on-disk yaml and assert the
+# shipped combination cannot brick boot. They FAIL if a config re-introduces the
+# unpinned-but-boot-enforced combination (the regression these tests exist to catch).
+# ---------------------------------------------------------------------------
+
+import pathlib
+
+import yaml
+
+from app.config import Settings
+
+# The three env tokens whose yaml compute_stack.py loads (cdk/app.py: {env}.yaml).
+_CDK_CONFIG_ENVS = ("dev", "prod", "staging")
+
+# The ECS task env keys compute_stack.py emits for the ALB-OIDC pin + boot gate.
+_ALB_PIN_ENV_KEYS = (
+    "ALB_OIDC_EXPECTED_SIGNERS",
+    "ALB_OIDC_EXPECTED_ISSUER",
+    "ALB_OIDC_PIN_ENFORCE_AT_BOOT",
+)
+
+
+def _repo_root() -> pathlib.Path:
+    # tests/ -> security-controller/ -> src/ -> repo root
+    return pathlib.Path(__file__).resolve().parents[3]
+
+
+def _emitted_task_env(cfg: dict) -> dict:
+    """Replicate compute_stack.py's ALB-OIDC env emission verbatim (the three lines
+    at cdk/stacks/compute_stack.py that set the task-definition environment). If
+    compute_stack's defaults change, mirror them here so the test keeps guarding the
+    real deploy path. The `alb_oidc_pin_enforce_at_boot` default of True is the
+    load-bearing bit — it is what bricks an unpinned deploy."""
+    return {
+        "ALB_OIDC_EXPECTED_SIGNERS": str(cfg.get("alb_oidc_expected_signers", "")),
+        "ALB_OIDC_EXPECTED_ISSUER": str(cfg.get("alb_oidc_expected_issuer", "")),
+        "ALB_OIDC_PIN_ENFORCE_AT_BOOT": str(
+            cfg.get("alb_oidc_pin_enforce_at_boot", True)
+        ).lower(),
+    }
+
+
+def _settings_from_task_env(monkeypatch, env: dict) -> Settings:
+    """Build a real Settings from the ECS task env the way the container does —
+    through actual environment variables + pydantic-settings parsing (str->bool for
+    the flag), NOT via monkeypatch.setattr on a live instance. This exercises the
+    same code path a booting container hits."""
+    for k in _ALB_PIN_ENV_KEYS:
+        monkeypatch.setenv(k, env[k])
+    return Settings()
+
+
+@pytest.mark.parametrize("env_token", _CDK_CONFIG_ENVS)
+def test_shipped_cdk_config_does_not_brick_boot(monkeypatch, env_token):
+    """THE arbiter for the deploy-brick gap: for every shipped cdk/config/<env>.yaml,
+    the boot gate the container runs at startup MUST NOT raise. A config that leaves
+    ALB_OIDC_PIN_ENFORCE_AT_BOOT at its compute_stack `true` default while both pins
+    are empty makes assert_alb_oidc_pin_ready_at_boot() raise -> the ECS task never
+    boots -> outage. This reads the real yaml + real compute_stack defaults, builds a
+    real Settings from the emitted env, and fails if the deployable combination cannot
+    boot. It FAILS on the pre-fix config (flag defaults true + empty pins)."""
+    cfg_path = _repo_root() / "cdk" / "config" / f"{env_token}.yaml"
+    cfg = yaml.safe_load(cfg_path.read_text()) or {}
+    env = _emitted_task_env(cfg)
+    settings_at_boot = _settings_from_task_env(monkeypatch, env)
+    # Must not raise — else the next `cdk deploy` of the controller bricks the task.
+    settings_at_boot.assert_alb_oidc_pin_ready_at_boot()
+
+
+@pytest.mark.parametrize("env_token", _CDK_CONFIG_ENVS)
+def test_shipped_cdk_config_boot_enforce_only_when_pinned(monkeypatch, env_token):
+    """The invariant behind the fix, stated positively so it can't be satisfied by an
+    accidental change: a shipped config may enable boot-enforcement (flag true) ONLY
+    if BOTH pins are populated. Enforce-on with an empty pin is the bricking combo and
+    is forbidden. Enforce-off (the transition-window posture) is always allowed."""
+    cfg_path = _repo_root() / "cdk" / "config" / f"{env_token}.yaml"
+    cfg = yaml.safe_load(cfg_path.read_text()) or {}
+    env = _emitted_task_env(cfg)
+    s = _settings_from_task_env(monkeypatch, env)
+    if s.alb_oidc_pin_enforce_at_boot:
+        assert s.alb_oidc_pin_active(), (
+            f"{env_token}.yaml enables ALB_OIDC_PIN_ENFORCE_AT_BOOT but leaves the "
+            f"signer/issuer pin empty — this bricks the ECS task at boot. Populate "
+            f"alb_oidc_expected_signers + alb_oidc_expected_issuer, or hold the flag "
+            f"false during the transition window."
+        )
+
+
+def test_deploy_brick_reproduction_is_real(monkeypatch):
+    """Non-vacuity guard: prove the boot gate WOULD brick the exact bad combination
+    (flag true + empty pins) — the scenario the two guards above certify the shipped
+    configs avoid. If this ever stops raising, the gate itself has been weakened and
+    the guards above have gone vacuous, so they must be re-examined."""
+    bricking = _settings_from_task_env(
+        monkeypatch,
+        {
+            "ALB_OIDC_EXPECTED_SIGNERS": "",
+            "ALB_OIDC_EXPECTED_ISSUER": "",
+            "ALB_OIDC_PIN_ENFORCE_AT_BOOT": "true",
+        },
+    )
+    with pytest.raises(RuntimeError):
+        bricking.assert_alb_oidc_pin_ready_at_boot()

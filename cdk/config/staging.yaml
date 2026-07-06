@@ -30,6 +30,14 @@ tenancy_v2_enabled: false
 cedar_enabled: true
 cedar_shadow_mode: false
 
+# ALB-OIDC signer/issuer PIN (WS-M M1.0 / lld/39 §3.1). See dev.yaml for the full
+# rationale. Populate alb_oidc_expected_signers + alb_oidc_expected_issuer with this
+# stack's ALB ARN + Cognito issuer, then flip alb_oidc_pin_enforce_at_boot -> true.
+# compute_stack.py DEFAULTS ALB_OIDC_PIN_ENFORCE_AT_BOOT true; with empty pins the
+# boot gate raises at lifespan startup → the ECS task never becomes healthy. HOLD
+# false during the transition window; flip to true ONLY after both pins are set.
+alb_oidc_pin_enforce_at_boot: false
+
 # VPC Configuration
 vpc:
   cidr: "10.0.0.0/16"
