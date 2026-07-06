@@ -143,7 +143,7 @@ sequenceDiagram
   RR->>RT: Depends resolve_operator_tenant
   RT->>OI: verify_alb_oidc request
   OI-->>RT: verified claims sub, email (else 401)
-  RT->>RT: membership lookup sub then tenant_id, role; X-Aegion-Tenant re-validated
+  RT->>RT: membership lookup sub gives tenant_id and role, X-Aegion-Tenant re-validated
   RT-->>RR: OperatorContext sub, tenant_id, role, is_platform
   RR->>RR: role_satisfies ctx.role vs editor? (else 403)
   RR-->>H: ctx verified
@@ -416,9 +416,9 @@ sequenceDiagram
   participant GW as API Gateway (REST v1)
   participant AZ as REQUEST Lambda authorizer (ADR-037)
   participant CTRL as controller (require_role / resolve_tenant_from_jwt)
-  C->>GW: request + Authorization: Bearer <ES256 JWT> (+ shared key for metering)
+  C->>GW: request + Authorization Bearer ES256 JWT (+ shared key for metering)
   GW->>AZ: invoke authorizer (headers)
-  AZ->>AZ: verify ES256 signature + exp + issuer; extract {tenant_id, role, sub}
+  AZ->>AZ: verify ES256 signature + exp + issuer, then extract tenant_id, role, sub
   alt valid
     AZ-->>GW: IAM Allow + context{tenant_id, role, sub}
     GW->>CTRL: forward (+ context available to the handler)
