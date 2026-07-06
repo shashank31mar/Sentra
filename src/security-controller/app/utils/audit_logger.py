@@ -632,6 +632,15 @@ class AuditLogger:
             event["action_id"] = action_id
             event["reversible"] = True
             event["rollback_status"] = "NOT_ROLLED_BACK"
+            # WS-M M2.3 Piece 1 (HARD PREDECESSOR): stamp the owning tenant onto the
+            # reversible-action record so rollback ownership (_tenant_of_action) can
+            # resolve + tenant-check it. Before this, NO tenant_id lived on the action
+            # event (the metric-dimension tenant_id elsewhere is NOT persisted here),
+            # so a rollback either 404'd every action or fell back to an id-only IDOR.
+            # The tenant is the SAME contextvar the signal-store partition uses (the
+            # verified agent tenant on the /validate path), never the request body.
+            from app.utils import tenancy
+            event["tenant_id"] = tenancy.current_tenant()
         
         # Add user input (truncated for security)
         user_input = request.get("user_input", "")

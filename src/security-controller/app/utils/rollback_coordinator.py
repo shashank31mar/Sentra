@@ -11,6 +11,7 @@ MVP Features:
 Workstream: 12 - Multi-Agent Workflow (Milestone 5)
 """
 import logging
+import re
 import time
 import json
 from typing import Dict, Optional, Any, List
@@ -27,6 +28,36 @@ logger = logging.getLogger(__name__)
 
 # Structured logging prefix for CloudWatch filtering
 LOG_PREFIX = "[WS12-M5-ROLLBACK]"
+
+# WS-M M2.3 Piece 2 — the action_id grammar (from audit_logger._build_log_event:
+# `act-{tool_name}-{YYYYMMDDHHMMSS}-{6 hex}`). A value that fails this is REJECTED
+# (never escape-interpolated into a Logs-Insights query) so a crafted action_id
+# cannot inject query syntax.
+_ACTION_ID_RE = re.compile(r"^act-[a-z_]+-\d{14}-[0-9a-f]{6}$")
+
+# A distinct, retryable internal status for a resolution-substrate timeout (M2.5) —
+# NOT a cross-tenant "not found". Surfaced so an authorized operator's just-taken
+# reversal isn't mis-reported as a 404 while eventually-consistent Logs catch up.
+RESOLUTION_UNAVAILABLE = "RESOLUTION_UNAVAILABLE"
+
+
+def _tenant_of_action(action_id: str, tenant_id: str):
+    """Resolve the owning tenant of ``action_id`` via the injection-safe, tenant-
+    scoped Logs-Insights exact-match query (WS-M M2.3, consumed by
+    ``ownership._assert_owns_action``). Synchronous — safe to call from the sync
+    ``assert_owns`` dispatch.
+
+    Returns the stamped ``tenant_id`` of the matching record, ``None`` if no such
+    record exists under ``tenant_id``, or :data:`RESOLUTION_UNAVAILABLE` on a
+    substrate timeout/failure. A crafted ``action_id`` (fails the grammar) → ``None``
+    (never interpolated into the query)."""
+    if not _ACTION_ID_RE.match(action_id or ""):
+        return None
+    coordinator = RollbackCoordinator()
+    result = coordinator._query_action_sync(action_id, tenant_id=tenant_id)
+    if result == RESOLUTION_UNAVAILABLE or result is None:
+        return result
+    return result.get("tenant_id")
 
 
 class RollbackCoordinator:
@@ -68,17 +99,21 @@ class RollbackCoordinator:
         action_id: str,
         action_type: str,
         reason: str,
-        operator_id: str
+        operator_id: str,
+        tenant_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
         Rollback a reversible action.
-        
+
         Args:
             action_id: Unique action identifier
             action_type: Type of action (e.g., "process_refund")
             reason: Reason for rollback
             operator_id: Operator performing rollback
-            
+            tenant_id: The VERIFIED operator tenant (WS-M M2.3). The resolved action's
+                stamped ``tenant_id`` MUST equal this — a cross-tenant rollback is
+                blocked here (defence-in-depth on top of the route's ``assert_owns``).
+
         Returns:
             Dict with success status and rollback details
         """
@@ -94,8 +129,18 @@ class RollbackCoordinator:
                 "milestone": "5"
             }
         )
-        
+
         try:
+            # WS-M M2.3 Piece 2: reject a crafted action_id up front (never
+            # escape-interpolate an untrusted string into the Logs-Insights query).
+            if not _ACTION_ID_RE.match(action_id or ""):
+                logger.warning(f"{LOG_PREFIX} action_id failed grammar: rejected")
+                return {
+                    "success": False,
+                    "message": "Action not found or not reversible",
+                    "action_id": action_id,
+                }
+
             # Validate action type is supported
             if action_type not in self.REVERSIBLE_ACTIONS:
                 logger.warning(
@@ -107,17 +152,40 @@ class RollbackCoordinator:
                     "message": f"Action type '{action_type}' is not reversible",
                     "action_id": action_id
                 }
-            
-            # Retrieve original action from CloudWatch Logs
-            original_action = await self._get_action_from_logs(action_id)
-            
+
+            # Retrieve original action from CloudWatch Logs (tenant-filtered).
+            original_action = await self._get_action_from_logs(action_id, tenant_id=tenant_id)
+
+            # A distinct retryable status (M2.5): a resolution-substrate timeout is
+            # NOT a cross-tenant "not found" — never report an authorized operator's
+            # just-taken reversal as a 404 while eventually-consistent Logs catch up.
+            if original_action == RESOLUTION_UNAVAILABLE:
+                return {
+                    "success": False,
+                    "status": RESOLUTION_UNAVAILABLE,
+                    "retryable": True,
+                    "message": "Action resolution temporarily unavailable — retry shortly",
+                    "action_id": action_id,
+                }
+
             if not original_action:
                 return {
                     "success": False,
                     "message": "Action not found or not reversible",
                     "action_id": action_id
                 }
-            
+
+            # WS-M M2.3 Piece 2 (in-code tenant re-verify): even after the
+            # tenant-filtered query, assert the resolved record's stamped tenant
+            # equals the caller's verified tenant — fail-secure on any mismatch.
+            if tenant_id is not None and original_action.get("tenant_id") != tenant_id:
+                logger.warning(f"{LOG_PREFIX} action tenant mismatch — cross-tenant rollback blocked")
+                return {
+                    "success": False,
+                    "message": "Action not found or not reversible",
+                    "action_id": action_id,
+                }
+
             # Check if already rolled back
             if original_action.get("rollback_status") == "ROLLED_BACK":
                 return {
@@ -125,7 +193,18 @@ class RollbackCoordinator:
                     "message": "Action already rolled back",
                     "action_id": action_id
                 }
-            
+
+            # WS-M M2.4: durable idempotency marker — a conditional PutItem into the
+            # rollback ledger BEFORE the reversal. A duplicate/concurrent second caller
+            # fails the condition → "already rolled back" (the prior guard on the
+            # immutable record's rollback_status never trips, so it was provably dead).
+            if not self._claim_rollback(action_id):
+                return {
+                    "success": False,
+                    "message": "Action already rolled back",
+                    "action_id": action_id,
+                }
+
             # Execute rollback based on action type
             if action_type == "process_refund":
                 rollback_result = await self._rollback_refund(original_action)
@@ -178,46 +257,74 @@ class RollbackCoordinator:
                 "action_id": action_id
             }
     
-    async def _get_action_from_logs(self, action_id: str) -> Optional[Dict[str, Any]]:
+    async def _get_action_from_logs(
+        self, action_id: str, tenant_id: Optional[str] = None
+    ):
+        """Async wrapper over :meth:`_query_action_sync` (WS-M M2.3). See that method
+        for the injection-safe, tenant-scoped exact-match contract."""
+        return self._query_action_sync(action_id, tenant_id=tenant_id)
+
+    def _query_action_sync(
+        self, action_id: str, tenant_id: Optional[str] = None
+    ):
         """
-        Retrieve action from CloudWatch Logs by action_id.
-        
+        Retrieve a reversible action from CloudWatch Logs by action_id (WS-M M2.3).
+
+        Injection-safe: the ``action_id`` is asserted against ``_ACTION_ID_RE`` by
+        the caller AND re-checked here, then matched via an EXACT auto-discovered-JSON-
+        field filter (``filter action_id = <val>``) — NOT the old ``@message like``
+        substring match, and the no-op ``parse @message`` is dropped. When a
+        ``tenant_id`` is supplied the query also filters ``tenant_id = <val>`` so a
+        cross-tenant record is never even returned to the in-code re-verify.
+
         Args:
-            action_id: Action identifier
-            
+            action_id: Action identifier (already grammar-checked by the caller).
+            tenant_id: The verified operator tenant to scope the query to.
+
         Returns:
-            Action dict or None if not found
+            The action dict, ``None`` if not found, or the sentinel string
+            :data:`RESOLUTION_UNAVAILABLE` on a query-substrate timeout/failure (M2.5)
+            so the caller can surface a distinct retryable status rather than a 404.
         """
+        # Fail-secure re-check (defence-in-depth on top of the caller's guard).
+        if not _ACTION_ID_RE.match(action_id or ""):
+            return None
         try:
-            # Build query to find action by action_id
-            query = f"""
-            fields @timestamp, @message
-            | parse @message /(?<log_data>.*)/
-            | filter @message like "{action_id}"
-            | limit 1
-            """
-            
+            # Exact-match on the auto-discovered JSON fields. Logs Insights extracts
+            # top-level JSON keys as fields; `filter action_id = "..."` is an exact
+            # equality, not a substring — and the values are grammar-constrained
+            # (regex above), so there is no query-syntax injection surface.
+            clauses = [f'filter action_id = "{action_id}"']
+            if tenant_id is not None:
+                # tenant_id values are internal (never user free-text); still, the
+                # exact-equality form is not a `like` substring, so no injection.
+                clauses.append(f'filter tenant_id = "{tenant_id}"')
+            query = (
+                "fields @timestamp, @message, action_id, tenant_id\n| "
+                + "\n| ".join(clauses)
+                + "\n| limit 1"
+            )
+
             # Query last 7 days
             end_time = int(time.time() * 1000)
             start_time = end_time - (7 * 24 * 60 * 60 * 1000)  # 7 days ago
-            
-            # Start query
+
             response = self.cloudwatch_logs.start_query(
                 logGroupName=self.log_group,
                 startTime=start_time,
                 endTime=end_time,
                 queryString=query
             )
-            
+
             query_id = response['queryId']
-            
+
             # Poll for results (max 5 seconds)
             max_wait = 5
             start = time.time()
-            
+
             while time.time() - start < max_wait:
                 result = self.cloudwatch_logs.get_query_results(queryId=query_id)
-                
+
                 if result['status'] == 'Complete':
                     if result['results']:
                         # Parse first result
@@ -228,19 +335,58 @@ class RollbackCoordinator:
                                 if log_data.get('action_id') == action_id:
                                     return log_data
                     return None
-                
+
                 elif result['status'] == 'Failed':
                     logger.error("CloudWatch query failed")
-                    return None
-                
+                    # A substrate failure is NOT "not found" — retryable (M2.5).
+                    return RESOLUTION_UNAVAILABLE
+
                 time.sleep(0.5)
-            
+
             logger.warning("CloudWatch query timeout")
-            return None
-            
+            # Timeout over eventually-consistent Logs is retryable, not a 404 (M2.5).
+            return RESOLUTION_UNAVAILABLE
+
         except Exception as e:
             logger.exception(f"Failed to retrieve action from logs: {e}")
-            return None
+            # A resolution-substrate error must not masquerade as a cross-tenant 404.
+            return RESOLUTION_UNAVAILABLE
+
+    def _rollback_ledger_table(self):
+        """The small idempotency ledger (WS-M M2.4). One row per rolled-back action;
+        a conditional PutItem is the durable replay guard. Lazily bound so a missing
+        table name is a runtime failure at claim time, not import time."""
+        name = getattr(settings, "rollback_ledger_table", None) or "sentra-rollback-ledger"
+        return self.dynamodb.Table(name)
+
+    def _claim_rollback(self, action_id: str) -> bool:
+        """Atomically CLAIM an action for rollback (WS-M M2.4). A conditional PutItem
+        (``attribute_not_exists(action_id)``) is the durable idempotency marker: the
+        FIRST caller writes the row and returns True; a duplicate/concurrent second
+        caller fails the condition and returns False → "already rolled back". This
+        replaces the provably-dead ``rollback_status == 'ROLLED_BACK'`` guard (that
+        field is written once as ``NOT_ROLLED_BACK`` on the immutable record and never
+        mutated). Copies the credentials_service conditional-write pattern.
+
+        Fail-secure: if the ledger table is unavailable we DENY the rollback (return
+        False) rather than allow an un-guarded double-reverse of a money action."""
+        try:
+            self._rollback_ledger_table().put_item(
+                Item={
+                    "action_id": action_id,
+                    "claimed_at": datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z'),
+                },
+                ConditionExpression="attribute_not_exists(action_id)",
+            )
+            return True
+        except ClientError as exc:
+            if exc.response.get("Error", {}).get("Code") == "ConditionalCheckFailedException":
+                return False  # already claimed → already rolled back
+            logger.error(f"{LOG_PREFIX} rollback ledger claim failed — denying (fail-secure): {exc}")
+            return False
+        except Exception as exc:  # noqa: BLE001 — fail secure on any ledger error.
+            logger.error(f"{LOG_PREFIX} rollback ledger unavailable — denying (fail-secure): {exc}")
+            return False
     
     async def _rollback_refund(self, original_action: Dict[str, Any]) -> Dict[str, Any]:
         """

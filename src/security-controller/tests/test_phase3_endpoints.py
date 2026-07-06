@@ -61,19 +61,20 @@ def test_discovery_summary_and_platforms(client, mock_discovery):
     assert client.get("/v1/discovery/platforms").status_code == 200
 
 
-def test_discovery_import_ok(client, mock_discovery):
+def test_discovery_import_ok(client, mock_discovery, as_editor):
+    # WS-M M2.6: now editor-gated; the raw id is prefix-stamped to ctx.tenant_id.
     r = client.post("/v1/discovery/import", json={"agent_ids": ["a"]})
     assert r.status_code == 201
     assert r.json()["imported"] == 1
 
 
-def test_discovery_import_empty_400(client, mock_discovery):
+def test_discovery_import_empty_400(client, mock_discovery, as_editor):
     mock_discovery.import_agents.side_effect = ValueError("required")
     r = client.post("/v1/discovery/import", json={"agent_ids": []})
     assert r.status_code == 400
 
 
-def test_discovery_import_all_unknown_422(client, mock_discovery):
+def test_discovery_import_all_unknown_422(client, mock_discovery, as_editor):
     mock_discovery.import_agents.side_effect = LookupError("none in policy")
     r = client.post("/v1/discovery/import", json={"agent_ids": ["x"]})
     assert r.status_code == 422
@@ -141,32 +142,38 @@ def mock_verdict():
         yield svc
 
 
-def test_verdict_ok(client, mock_verdict):
+def test_verdict_ok(client, mock_verdict, as_editor):
+    # WS-M M2.7: now editor-gated + session-owned; operator derives from ctx.sub, so
+    # a body operator_id is ignored (still accepted in the payload, just not used).
     r = client.post("/v1/decisions/s:r/verdict",
                     json={"verdict": "false_positive", "reason": "benign", "operator_id": "op1"})
     assert r.status_code == 200
     assert r.json()["verdict"] == "false_positive"
+    # attribution is the verified ctx.sub ("op-ph"), never the body operator_id.
+    assert mock_verdict.record_verdict.call_args.args[3] == "op-ph"
 
 
-def test_verdict_bad_value_400(client, mock_verdict):
+def test_verdict_bad_value_400(client, mock_verdict, as_editor):
     r = client.post("/v1/decisions/s:r/verdict",
                     json={"verdict": "nonsense", "reason": "x", "operator_id": "o"})
     assert r.status_code == 400
 
 
-def test_verdict_missing_fields_400(client, mock_verdict):
+def test_verdict_missing_fields_400(client, mock_verdict, as_editor):
+    # reason is still required (operator_id is no longer a required body field — it
+    # is derived from the verified identity).
     r = client.post("/v1/decisions/s:r/verdict", json={"verdict": "false_positive"})
     assert r.status_code == 400
 
 
-def test_verdict_not_found_404(client, mock_verdict):
+def test_verdict_not_found_404(client, mock_verdict, as_editor):
     mock_verdict.record_verdict.side_effect = LookupError("no decision")
     r = client.post("/v1/decisions/s:r/verdict",
                     json={"verdict": "false_positive", "reason": "x", "operator_id": "o"})
     assert r.status_code == 404
 
 
-def test_verdict_already_verdicted_409(client, mock_verdict):
+def test_verdict_already_verdicted_409(client, mock_verdict, as_editor):
     mock_verdict.record_verdict.side_effect = RuntimeError("already verdicted")
     r = client.post("/v1/decisions/s:r/verdict",
                     json={"verdict": "false_positive", "reason": "x", "operator_id": "o"})

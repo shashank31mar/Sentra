@@ -183,11 +183,28 @@ def _assert_owns_session(ctx: OperatorContext, session_id: str) -> None:
 # never be authorized against an unresolved action.
 # --------------------------------------------------------------------------- #
 def _assert_owns_action(ctx: OperatorContext, action_id: str) -> None:
-    # M2.3 wires the injection-safe Logs-Insights exact-match resolution here;
-    # deferred to a later round (rollback_action/rollback_conversation are still on
-    # the pending _AUTHZ_ALLOWLIST for M2.3). Fail secure until then — a rollback can
-    # never be authorized against an action whose owning tenant we cannot resolve.
-    raise HTTPException(status_code=404, detail="action ownership resolution unavailable")
+    """Resolve the owning tenant of ``action_id`` via the injection-safe Logs-Insights
+    exact-match path (WS-M M2.3) and assert it equals ``ctx.tenant_id``.
+
+    Fail-secure: an unresolvable tenant → 404; a resolution-substrate timeout/failure
+    → a distinct retryable 503 (NOT a cross-tenant 404 — M2.5); absent / foreign
+    tenant → 404. The route ALSO passes ``tenant_id`` into ``RollbackCoordinator``
+    which re-verifies — two independent tenant checks on the money-movement path.
+    """
+    if not _tenancy_resolvable(ctx):
+        raise HTTPException(status_code=404, detail="action not found")
+    from app.utils.rollback_coordinator import RESOLUTION_UNAVAILABLE, _tenant_of_action
+    try:
+        owner = _tenant_of_action(action_id, ctx.tenant_id)
+    except Exception as exc:  # noqa: BLE001 — fail secure on any lookup error.
+        logger.warning("action ownership lookup failed for %s: %s", action_id, exc)
+        raise HTTPException(status_code=404, detail="action not found") from exc
+    if owner == RESOLUTION_UNAVAILABLE:
+        # Distinct retryable status — do NOT report an authorized reversal as a 404
+        # while eventually-consistent Logs catch up (M2.5).
+        raise HTTPException(status_code=503, detail="action resolution unavailable — retry")
+    if owner is None or owner != ctx.tenant_id:
+        raise HTTPException(status_code=404, detail="action not found")
 
 
 def _tenancy_resolvable(ctx: OperatorContext) -> bool:
