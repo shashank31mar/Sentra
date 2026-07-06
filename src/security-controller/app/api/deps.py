@@ -356,7 +356,30 @@ async def resolve_operator_tenant(request: Request) -> OperatorContext:
     operator's memberships, honors an optional ``X-Aegion-Tenant`` switch header
     (asserted against membership), and binds the request tenant via
     ``set_current_tenant``. Returns ``(tenant_id, role)`` + the membership set.
+
+    Same-task ContextVar hygiene (WS-M M5.3 / lld/39 §5): on a *raising* resolve
+    (401/403, incl. the below-role/non-platform rejections in ``require_role`` /
+    ``require_platform``) the tenant is forced back to the ``default`` sentinel — a
+    failed auth must never leave a stale same-context bind that a later
+    ``current_tenant()`` read (e.g. a non-gated handler on the same asyncio Task)
+    could act on. On a *successful* resolve the resolved tenant stays bound (the
+    downstream handler needs it). This is defence-in-depth — asyncio isolates the
+    ContextVar per Task so a bind never leaks across requests — the reset guards the
+    *same-context* re-read path (Invariant 5, lld/39 §2.2). We do NOT remove the
+    module-level ``default=DEFAULT_TENANT`` (tenancy.py) — ~49 sites + the disabled
+    ``/validate`` path rely on it as the baseline.
     """
+    try:
+        return await _resolve_operator_tenant_inner(request)
+    except BaseException:
+        # A raising resolve must not leave any same-context bind in place. Force the
+        # DEFAULT sentinel (fail-secure — no ambient tenant survives a failed
+        # operator auth), regardless of what a prior same-context resolve bound.
+        tenancy.set_current_tenant(tenancy.DEFAULT_TENANT)
+        raise
+
+
+async def _resolve_operator_tenant_inner(request: Request) -> OperatorContext:
     claims = verify_alb_oidc(request)
     sub = claims["sub"]
     email = claims.get("email", "")
@@ -411,9 +434,14 @@ async def require_platform(request: Request) -> OperatorContext:
     Authority is the reserved ``_platform`` membership, NOT a tenant role — only
     Sentra staff hold it. Cross-tenant reads behind this gate are audited under
     both ``_platform`` and the target tenant (caller's responsibility per route).
+
+    On a non-platform operator we raise 403 AND reset the tenant bind that
+    :func:`resolve_operator_tenant` just set — the request is rejected, so no
+    ambient tenant should survive it (WS-M M5.3 fail-secure hygiene).
     """
     ctx = await resolve_operator_tenant(request)
     if not ctx.is_platform:
+        tenancy.set_current_tenant(tenancy.DEFAULT_TENANT)
         raise HTTPException(status_code=403, detail="platform access required")
     return ctx
 
@@ -421,11 +449,16 @@ async def require_platform(request: Request) -> OperatorContext:
 def require_role(min_role: str):
     """Dependency factory: layered after :func:`resolve_operator_tenant`, gates a
     control-plane mutation by RBAC role. Client-side gating is UX only — this is
-    the boundary (§5.4)."""
+    the boundary (§5.4).
+
+    On a below-role operator we raise 403 AND reset the tenant bind that
+    :func:`resolve_operator_tenant` just set — a rejected request leaves no ambient
+    tenant (WS-M M5.3 fail-secure hygiene)."""
     from fastapi import Depends
 
     async def _dep(ctx: OperatorContext = Depends(resolve_operator_tenant)) -> OperatorContext:
         if not role_satisfies(ctx.role, min_role):
+            tenancy.set_current_tenant(tenancy.DEFAULT_TENANT)
             raise HTTPException(status_code=403, detail=f"requires role >= {min_role}")
         return ctx
 

@@ -11,12 +11,13 @@ Implements all REST endpoints:
 All business logic is delegated to service classes in app/services/.
 Routes are kept clean and focused on HTTP handling only.
 """
+import contextlib
 import logging
-from typing import Dict, Optional
+from typing import Dict, NoReturn, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 
-from app.api.deps import OperatorContext, require_role
+from app.api.deps import OperatorContext, require_platform, require_role
 from app.api.ownership import ResourceKind, assert_owns
 from app.api.models import (
     ValidationRequest,
@@ -446,26 +447,78 @@ async def get_session_decisions(
     )
 
 
+@contextlib.asynccontextmanager
+async def _dataplane_tenant_bind(http_request: Request):
+    """Bind a data-plane READ (``/trail`` + ``/signals``) to the VERIFIED agent
+    tenant for the duration of the store read (WS-M M5.2 / lld/39 §5).
+
+    Verifies the agent JWT via ``resolve_tenant_from_jwt`` and:
+      * ``should_deny`` (ENFORCE + not cleanly verified) → **401**. A tenant that
+        is flipped to enforce must not have its trail read cross-tenant.
+      * verified → ``set_current_tenant(ctx.tenant_id)`` for the read, reset in a
+        ``finally`` (same-task token; mirrors the ``/validate`` bind at the enforce
+        branch above).
+      * disabled / shadow (identity not enforcing yet) → no bind change. Identity
+        is OFF fleet-wide by default; keeping the ambient tenant here is
+        byte-identical to pre-M5.2 for those tenants (the enforce flip is what
+        activates the isolation, gated by WS-K's two-latch). We do NOT hard-deny a
+        tokenless read at shadow/off (that would break the console before identity
+        rolls out); the isolation is effective exactly when the tenant enforces.
+
+    NOTE: this is deliberately NOT ``require_role`` — a data-plane read carries no
+    operator role (Invariant 6). It is the JWT-tenant-bind, not RBAC.
+    """
+    from app.api.deps import resolve_tenant_from_jwt
+    from app.utils import tenancy
+
+    ctx = await resolve_tenant_from_jwt(http_request)
+    if ctx.should_deny:
+        # ENFORCE + missing/invalid/forged JWT → fail-secure 401 (never read on the
+        # ambient `default` partition, which would be a cross-tenant read).
+        raise HTTPException(status_code=401, detail="verified agent identity required")
+    if ctx.should_route:
+        token = tenancy.set_current_tenant(ctx.tenant_id)
+        try:
+            yield
+        finally:
+            tenancy.reset_current_tenant(token)
+    else:
+        # disabled / shadow: identity not enforcing for this tenant yet — behave as
+        # before (no bind change). The read stays on the ambient tenant.
+        yield
+
+
 @router.get("/sessions/{session_id}/signals")
 async def get_session_signals(
     session_id: str,
+    http_request: Request,
     request_id: Optional[str] = None,
     source: Optional[str] = None,
     agent_id: Optional[str] = None,
     limit: int = 100,
 ) -> Dict:
     """LLD 17 §8.3 — raw signal list, no combiner applied. For debugging /
-    advanced UI drill-down."""
-    return _decisions_service().get_session_signals(
-        session_id=session_id, request_id=request_id, source=source,
-        agent_id=agent_id, limit=limit,
-    )
+    advanced UI drill-down.
+
+    Auth (WS-M M5.2 / lld/39 §5): a data-plane READ — bound to the VERIFIED agent
+    tenant via ``resolve_tenant_from_jwt``, NOT ``require_role`` (Invariant 6 — it
+    carries no operator role). Before this fix the read resolved the partition from
+    the ambient ``current_tenant()`` (``"default"``), co-mingling non-enforcing
+    tenants' rows in ``default#{session_id}`` — any caller with a session_id could
+    read them (a real cross-tenant read, NOT "structural isolation").
+    """
+    async with _dataplane_tenant_bind(http_request):
+        return _decisions_service().get_session_signals(
+            session_id=session_id, request_id=request_id, source=source,
+            agent_id=agent_id, limit=limit,
+        )
 
 
 @router.get("/sessions/{session_id}/trail")
 async def get_session_trail(
     session_id: str,
     request_id: str,
+    http_request: Request,
 ) -> Dict:
     """WS-D / LLD 33 §9A — the full decision trail for one request (FR-6.8 / NFR-10).
 
@@ -478,16 +531,20 @@ async def get_session_trail(
       * `request_id` is REQUIRED — the primary form is session-scoped because the
         DDB PK is session-scoped (`tenant_session_id`); a request_id alone is not a
         partition key (§9A.1 FOOTGUN). No new query, no new index.
-      * Tenant-scoped STRUCTURALLY by the tenant-composite PK (§9A.3): a Query
-        against the wrong tenant's partition returns zero rows. NO `require_role()`
+      * Tenant-scoped by BINDING the VERIFIED agent tenant (WS-M M5.2 / lld/39 §5):
+        the read runs inside ``set_current_tenant(ctx.tenant_id)`` so the
+        DDB Query hits the operator's own composite partition. NO `require_role()`
         — a data-plane read matching `GET /v1/sessions/{id}/signals`, NOT a
         control-plane mutation (this path does NOT share the X-Operator-Email
-        policy-CRUD IDOR).
+        policy-CRUD IDOR). The prior code resolved the partition from the ambient
+        ``current_tenant()`` (``"default"``) — a live cross-tenant read for
+        non-enforcing tenants; this bind closes that gap.
       * `next_token: null` — a single trail (~7 rows) fits one un-paged Query.
     """
-    return _decisions_service().get_session_trail(
-        session_id=session_id, request_id=request_id,
-    )
+    async with _dataplane_tenant_bind(http_request):
+        return _decisions_service().get_session_trail(
+            session_id=session_id, request_id=request_id,
+        )
 
 
 @router.get("/decisions")
@@ -526,10 +583,22 @@ async def scan_decisions(
 async def post_session_signal(session_id: str, signal: Dict) -> Dict:
     """LLD 17 §8.1 — external producer signal write (Bedrock/Azure connectors).
 
-    Validates source against taxonomy (lenient — unknown sources are
-    stored with priority=0 plus a warning). Returns 400 on malformed
-    payload, 201 on success.
+    Auth (WS-M M2.8 / lld/39 §4.M2.8): INTERIM FAIL-CLOSED. This is an external
+    producer write feeding the deny-overrides combiner + FP/FN training; the full
+    producer credential + ``threat_type`` enum + bounded-``priority`` validation is
+    design-only/deferred (D4). Until it lands, external writes are REJECTED (403) —
+    the prior lenient-accept path (unknown source stored with priority=0) is removed.
+    No first-party signal is lost: agents post via ``/validate``, not this route.
+    The flag ``external_signal_write_enabled`` (default False) flips the route back on
+    once the producer credential ships. Fail-secure: an unset/typo'd env stays closed.
     """
+    from app.config import settings
+    if not settings.external_signal_write_enabled:
+        # Fail-closed: no verified external-producer credential yet.
+        raise HTTPException(
+            status_code=403,
+            detail="external signal writes are disabled (producer credential not yet available)",
+        )
     try:
         return _decisions_service().post_signal(
             session_id=session_id, signal_data=signal
@@ -767,14 +836,27 @@ async def discovery_platforms() -> Dict:
 
 
 @router.post("/discovery/import", status_code=201)
-async def discovery_import(request: Dict) -> Dict:
-    """WS-21 T32: promote discovered agents to managed (D2 contract)."""
+async def discovery_import(
+    request: Dict,
+    ctx: OperatorContext = Depends(require_role("editor")),
+) -> Dict:
+    """WS-21 T32: promote discovered agents to managed (D2 contract).
+
+    Auth (WS-M M2.6 / lld/39 §2.3 row 17): ``require_role("editor")`` + every
+    imported/promoted ``agent_id`` is PREFIX-STAMPED to ``ctx.tenant_id``
+    (``{tenant}-{raw_id}``, delimiter-safe) BEFORE the write — so an import can never
+    land a record under another tenant (the agent-id prefix IS the tenant ownership
+    key that ``assert_owns(AGENT, id)`` later checks). An already-correctly-prefixed
+    id is left unchanged (idempotent).
+    """
     from app.services.discovery_service import DiscoveryService
-    agent_ids = request.get("agent_ids")
+    raw_ids = request.get("agent_ids") or []
     enforcement_mode = request.get("enforcement_mode", "monitor")
+    prefix = f"{ctx.tenant_id}-"
+    agent_ids = [aid if aid.startswith(prefix) else f"{prefix}{aid}" for aid in raw_ids]
     from app.services.quota_service import QuotaExceeded
     try:
-        return await DiscoveryService().import_agents(agent_ids or [], enforcement_mode)
+        return await DiscoveryService().import_agents(agent_ids, enforcement_mode)
     except QuotaExceeded as exc:
         # Per-tenant agent cap hit (LLD-26 WS-E E2a).
         raise HTTPException(status_code=429, detail=f"QUOTA_EXCEEDED: {exc}")
@@ -788,59 +870,108 @@ async def discovery_import(request: Dict) -> Dict:
 # Cloud Connections (Connect-Account wizard — connections-api-spec.md)
 # ============================================================
 
-def _connection_http(exc: Exception):
-    """Map connections-domain exceptions to HTTP (status code is the contract)."""
+def _raise_connection_http(exc: Exception) -> NoReturn:
+    """Map a connections-domain exception to the HONEST HTTP status and RAISE it
+    (WS-M M2.9 / lld/39 §3.7).
+
+    The factory raises rather than returns so a caller cannot accidentally
+    ``_raise_connection_http(exc)`` without ``raise`` and silently swallow the
+    failure into a fake ``200`` (the anti-pattern this hardens against). The
+    ``detail`` messages here are domain classifications (``PROVIDER_NOT_AVAILABLE``
+    etc.), not raw provider/STS internals — those never cross the boundary.
+    """
     from app.services.connections_service import (
         ConnectionNotFound, InvalidRoleArn, NotConnected, ProviderNotAvailable,
     )
     if isinstance(exc, ConnectionNotFound):
-        return HTTPException(status_code=404, detail=str(exc))
+        raise HTTPException(status_code=404, detail=str(exc))
     if isinstance(exc, ProviderNotAvailable):
-        return HTTPException(status_code=409, detail=f"PROVIDER_NOT_AVAILABLE: {exc}")
+        raise HTTPException(status_code=409, detail=f"PROVIDER_NOT_AVAILABLE: {exc}")
     if isinstance(exc, NotConnected):
-        return HTTPException(status_code=409, detail=f"NOT_CONNECTED: {exc}")
+        raise HTTPException(status_code=409, detail=f"NOT_CONNECTED: {exc}")
     if isinstance(exc, InvalidRoleArn):
-        return HTTPException(status_code=400, detail=f"VALIDATION_ERROR: {exc}")
-    return HTTPException(status_code=500, detail=str(exc))
+        raise HTTPException(status_code=400, detail=f"VALIDATION_ERROR: {exc}")
+    raise HTTPException(status_code=500, detail="connection operation failed")
+
+
+# Whitelisted, customer-safe probe outcomes (WS-M M2.9). The raw provider message
+# from `_probe` can carry the caller principal ARN / role ARN / account id / STS
+# detail — never leak that to the client. We log the raw detail server-side and
+# return a bounded, classification-only message keyed on the outcome.
+def _sanitize_probe_message(connection_id: str, raw_message: str) -> str:
+    """Return a customer-safe summary of a rejected-credential probe, logging the
+    raw provider detail server-side (with a correlation id = connection_id)."""
+    logger.info("connection probe rejected: conn=%s detail=%s", connection_id, raw_message)
+    text = (raw_message or "").lower()
+    if "accessdenied" in text or "not authorized" in text or "insufficient" in text or "probe failed" in text:
+        return "Credential assumed but lacks the required read permissions (bedrock:ListAgents / equivalent)."
+    if "assumerole" in text or "role" in text:
+        return "Could not assume the provided role — check the role ARN, trust policy, and external id."
+    if "no aws role" in text or "no azure" in text or "not set" in text:
+        return raw_message  # the "missing credentials" guidance is already safe
+    return "Credential probe failed — verify the connection's credentials and try again."
 
 
 @router.get("/connections")
 async def list_connections() -> Dict:
-    """List the tenant's cloud connections (spec §4.1)."""
+    """List the tenant's cloud connections (spec §4.1). Read; tenant-scoped by the
+    ambient tenant (out of WS-M's mutation scope — routes 7-11 are the credential
+    writes)."""
     from app.services.connections_service import ConnectionsService
     return ConnectionsService().list_connections()
 
 
 @router.post("/connections", status_code=201)
-async def create_connection(request: Dict) -> Dict:
-    """Create a connection + mint external_id (spec §4.2). 409 for gcp/azure (v1)."""
+async def create_connection(
+    request: Dict,
+    ctx: OperatorContext = Depends(require_role("admin")),
+) -> Dict:
+    """Create a connection + mint external_id (spec §4.2). 409 for gcp/azure (v1).
+
+    Auth (WS-M M2.1): ``require_role("admin")`` — creating a cloud-credential
+    connection is an admin action. Born tenant-scoped (PK = tenant_id), so a create
+    has no cross-tenant target to own.
+    """
     from app.services.connections_service import ConnectionsService, ConnectionError
     try:
         return ConnectionsService().create_connection(request.get("cloud_provider"))
     except ConnectionError as exc:
-        raise _connection_http(exc)
+        _raise_connection_http(exc)
 
 
 @router.get("/connections/{connection_id}")
 async def get_connection(connection_id: str) -> Dict:
-    """Get one connection (spec §4.3)."""
+    """Get one connection (spec §4.3). Read; tenant-scoped by the ambient tenant
+    (out of WS-M's mutation scope — routes 7-11 are the credential writes)."""
     from app.services.connections_service import ConnectionsService, ConnectionError
     try:
         return ConnectionsService().get_connection(connection_id)
     except ConnectionError as exc:
-        raise _connection_http(exc)
+        _raise_connection_http(exc)
 
 
 @router.put("/connections/{connection_id}")
-async def update_connection(connection_id: str, request: Dict) -> Dict:
+async def update_connection(
+    connection_id: str,
+    request: Dict,
+    ctx: OperatorContext = Depends(require_role("admin")),
+) -> Dict:
     """Attach/replace the connection's credential reference after the operator
     sets it up (spec §4.4).
 
     AWS body: `{ "role_arn": "arn:aws:iam::...:role/..." }`.
     Azure body: `{ "azure": { "subscription_id", "tenant_id", "client_id",
     "secret_ref" } }` — the SP ids + a vault reference to the client-secret.
+
+    Auth (WS-M M2.1): ``require_role("admin")`` + ``assert_owns(CONNECTION, id)``.
+    FOOTGUN this closes — this route writes an IAM ``role_arn`` / Azure SP
+    ``secret_ref``; an ungated caller (or a mere ``viewer``) could set credentials
+    that ``test``/``scan`` then drive into a live ``sts:AssumeRole`` (a
+    role/privilege gap). Cross-*tenant* is already blocked (born tenant-scoped PK);
+    the assert_owns is defence-in-depth + 404-existence-masking.
     """
     from app.services.connections_service import ConnectionsService, ConnectionError
+    assert_owns(ctx, ResourceKind.CONNECTION, connection_id)
     svc = ConnectionsService()
     azure = request.get("azure")
     try:
@@ -854,51 +985,81 @@ async def update_connection(connection_id: str, request: Dict) -> Dict:
             )
         return svc.set_role_arn(connection_id, request.get("role_arn"))
     except ConnectionError as exc:
-        raise _connection_http(exc)
+        _raise_connection_http(exc)
 
 
 @router.post("/connections/{connection_id}/test")
-async def test_connection(connection_id: str, request: Dict = None) -> Dict:
+async def test_connection(
+    connection_id: str,
+    request: Dict = None,
+    ctx: OperatorContext = Depends(require_role("editor")),
+) -> Dict:
     """Live read-only probe (spec §4.5) — AWS sts:AssumeRole / Azure SP token. A
     rejected credential returns 200 {ok:false, message}; only an unknown
     connection is an HTTP error.
 
     The probe does blocking, network-bound SDK calls (AssumeRole / Secrets
     Manager / Azure list), so it runs in a threadpool to keep the event loop free.
+
+    Auth (WS-M M2.1): ``require_role("editor")`` + ``assert_owns(CONNECTION, id)`` —
+    this drives a live cross-account ``sts:AssumeRole``, so a ``viewer`` must not
+    reach it.
+
+    Error contract (WS-M M2.9): the ``200 {ok:false, message}`` envelope is the
+    documented partial-success carve-out for a *rejected credential* (a normal probe
+    outcome, not a whole-request failure). But the ``message`` is SANITIZED — the raw
+    provider/STS detail (principal ARN, account id) is logged server-side and NEVER
+    returned to the client. An *unknown connection* is still an honest HTTP error.
     """
     from fastapi.concurrency import run_in_threadpool
     from app.services.connections_service import ConnectionsService, ConnectionError
+    assert_owns(ctx, ResourceKind.CONNECTION, connection_id)
     try:
         role_arn = (request or {}).get("role_arn")
-        return await run_in_threadpool(
+        result = await run_in_threadpool(
             ConnectionsService().test_connection, connection_id, role_arn
         )
     except ConnectionError as exc:
-        raise _connection_http(exc)
+        _raise_connection_http(exc)
+    if not result.get("ok"):
+        result["message"] = _sanitize_probe_message(connection_id, result.get("message", ""))
+    return result
 
 
 @router.post("/connections/{connection_id}/scan", status_code=202)
-async def scan_connection(connection_id: str) -> Dict:
+async def scan_connection(
+    connection_id: str,
+    ctx: OperatorContext = Depends(require_role("editor")),
+) -> Dict:
     """Trigger discovery for this connection (spec §4.6). 409 if not connected.
 
     Re-runs the blocking provider probe + persists the inventory, so it's
-    offloaded to a threadpool (same rationale as /test)."""
+    offloaded to a threadpool (same rationale as /test).
+
+    Auth (WS-M M2.1): ``require_role("editor")`` + ``assert_owns(CONNECTION, id)``."""
     from fastapi.concurrency import run_in_threadpool
     from app.services.connections_service import ConnectionsService, ConnectionError
+    assert_owns(ctx, ResourceKind.CONNECTION, connection_id)
     try:
         return await run_in_threadpool(ConnectionsService().scan_connection, connection_id)
     except ConnectionError as exc:
-        raise _connection_http(exc)
+        _raise_connection_http(exc)
 
 
 @router.delete("/connections/{connection_id}", status_code=204)
-async def delete_connection(connection_id: str) -> None:
-    """Disconnect — drop the reference; imported agents are retained (spec §4.7)."""
+async def delete_connection(
+    connection_id: str,
+    ctx: OperatorContext = Depends(require_role("admin")),
+) -> None:
+    """Disconnect — drop the reference; imported agents are retained (spec §4.7).
+
+    Auth (WS-M M2.1): ``require_role("admin")`` + ``assert_owns(CONNECTION, id)``."""
     from app.services.connections_service import ConnectionsService, ConnectionError
+    assert_owns(ctx, ResourceKind.CONNECTION, connection_id)
     try:
         ConnectionsService().delete_connection(connection_id)
     except ConnectionError as exc:
-        raise _connection_http(exc)
+        _raise_connection_http(exc)
 
 
 @router.delete("/feedback/subjects/{subject_locator}")
@@ -997,17 +1158,30 @@ async def detach_agent_policy(
 
 
 @router.post("/decisions/{decision_id}/verdict")
-async def post_decision_verdict(decision_id: str, request: Dict) -> Dict:
+async def post_decision_verdict(
+    decision_id: str,
+    request: Dict,
+    ctx: OperatorContext = Depends(require_role("editor")),
+) -> Dict:
     """WS-21 T34: capture an operator FP/FN verdict (silent in P0). decision_id
-    = '<session_id>:<request_id>'."""
+    = '<session_id>:<request_id>'.
+
+    Auth (WS-M M2.7 / lld/39 §2.3 row 18): authenticate + derive the operator from
+    the VERIFIED ``ctx.sub`` (NOT a spoofable body ``operator_id``) +
+    ``assert_owns(SESSION, session_id)`` on the session component of the decision id.
+    """
     valid = {"false_positive", "confirmed_threat", "false_negative", "confirmed_safe"}
     verdict = request.get("verdict")
     reason = request.get("reason")
-    operator_id = request.get("operator_id")
     if verdict not in valid:
         raise HTTPException(status_code=400, detail=f"verdict must be one of {sorted(valid)}")
-    if not reason or not operator_id:
-        raise HTTPException(status_code=400, detail="reason and operator_id are required")
+    if not reason:
+        raise HTTPException(status_code=400, detail="reason is required")
+    # decision_id = '<session_id>:<request_id>'; own the session, not the whole id.
+    session_id = decision_id.split(":", 1)[0]
+    assert_owns(ctx, ResourceKind.SESSION, session_id)
+    # Operator attribution is the verified identity, never the client body.
+    operator_id = ctx.sub
     try:
         return _decisions_service().record_verdict(decision_id, verdict, reason, operator_id)
     except ValueError as exc:
@@ -1534,7 +1708,11 @@ async def get_sigma_rules(
 
 
 @router.patch("/sigma-rules/{rule_id}")
-async def update_sigma_rule(rule_id: str, request: Dict) -> Dict:
+async def update_sigma_rule(
+    rule_id: str,
+    request: Dict,
+    ctx: OperatorContext = Depends(require_platform),
+) -> Dict:
     """
     Update Sigma rule (enable/disable).
 
@@ -1544,6 +1722,17 @@ async def update_sigma_rule(rule_id: str, request: Dict) -> Dict:
 
     Returns:
         Success response or error
+
+    Auth (WS-M M3.1 / lld/39 §3.5): ``require_platform`` — NOT ``require_role``. The
+    sigma store (``sentra-sigma-rules-metadata`` + S3 ``sigma_rules/llm/``) is
+    fleet-global, NOT tenant-partitioned (lld/35 §13): flipping a rule to
+    ``deprecated`` stops ``load_rules_metadata_from_dynamodb`` from loading it for
+    EVERY tenant. A tenant-scoped role here would let any tenant-admin disable a
+    detection rule fleet-wide — the disable-switch ADR-034 forbids (via the CRUD
+    door). The gate covers both this PATCH handler AND the ``_bump_enforcement_version``
+    epoch write it triggers (one call chain behind one door). Copying the
+    tenant-scoped ``delete_feedback_subject`` pattern here would be the wrong-scope
+    trap — that route is correctly tenant-scoped; this one must be platform.
     """
     from app.services.sigma_rules_service import SigmaRulesService, _enabled_to_ddb_status
 
@@ -1689,52 +1878,69 @@ async def get_conversation_timeline(conversation_id: str) -> Dict:
 # ============================================================
 
 @router.post("/rollback")
-async def rollback_action(request: Dict) -> Dict:
+async def rollback_action(
+    request: Dict,
+    ctx: OperatorContext = Depends(require_role("admin")),
+) -> Dict:
     """
     Manually rollback a reversible action.
-    
+
     Request Body:
         action_id: Unique action identifier
         action_type: Type of action (e.g., "process_refund")
         reason: Reason for rollback
-        operator_id: Operator performing rollback
-    
+
     Returns:
         Success response with rollback details or error response
-    
+
     HTTP Status Codes:
         200 OK - Rollback successful
-        404 Not Found - Action doesn't exist
+        404 Not Found - Action doesn't exist / not owned by tenant
         400 Bad Request - Action not reversible or already rolled back
         500 Internal Server Error - Rollback failed
+        503 Service Unavailable - Action resolution temporarily unavailable (retry)
+
+    Auth (WS-M M2.3 / lld/39 §2.3 row 15): ``require_role("admin")`` +
+    ``assert_owns(ACTION, action_id)`` (tenant resolved via the injection-safe
+    Logs-Insights path) + a SECOND in-coordinator tenant re-verify (``tenant_id`` is
+    passed through). Operator attribution = verified ``ctx.sub``, never a body field.
+    A crafted ``action_id`` is rejected by the grammar regex. Idempotency: a durable
+    conditional-PutItem ledger (M2.4) prevents a double-reverse.
     """
     from app.utils.rollback_coordinator import RollbackCoordinator
-    
+
     # Validate request
     action_id = request.get("action_id")
     action_type = request.get("action_type")
     reason = request.get("reason")
-    operator_id = request.get("operator_id")
-    
-    if not all([action_id, action_type, reason, operator_id]):
+
+    if not all([action_id, action_type, reason]):
         raise HTTPException(
             status_code=400,
-            detail="Missing required fields: action_id, action_type, reason, operator_id"
+            detail="Missing required fields: action_id, action_type, reason"
         )
-    
-    # Execute rollback
+
+    # Anti-IDOR: assert the caller's tenant owns this action before doing anything.
+    assert_owns(ctx, ResourceKind.ACTION, action_id)
+
+    # Execute rollback — operator is the verified identity; tenant is re-verified
+    # inside the coordinator (defence-in-depth on the money-movement path).
     rollback_coordinator = RollbackCoordinator()
     result = await rollback_coordinator.rollback_action(
         action_id=action_id,
         action_type=action_type,
         reason=reason,
-        operator_id=operator_id
+        operator_id=ctx.sub,
+        tenant_id=ctx.tenant_id,
     )
-    
+
     # Handle result
     if not result.get("success"):
+        # M2.5: a retryable resolution-substrate failure is a distinct 503, not a 404.
+        if result.get("status") == "RESOLUTION_UNAVAILABLE":
+            raise HTTPException(status_code=503, detail=result.get("message", "resolution unavailable"))
         message = result.get("message", "Rollback failed")
-        
+
         if "not found" in message.lower():
             raise HTTPException(status_code=404, detail=message)
         elif "already rolled back" in message.lower():
@@ -1743,12 +1949,16 @@ async def rollback_action(request: Dict) -> Dict:
             raise HTTPException(status_code=400, detail=message)
         else:
             raise HTTPException(status_code=500, detail=message)
-    
+
     return result
 
 
 @router.post("/rollback/conversation/{conversation_id}")
-async def rollback_conversation(conversation_id: str, request: Dict) -> Dict:
+async def rollback_conversation(
+    conversation_id: str,
+    request: Dict,
+    ctx: OperatorContext = Depends(require_role("admin")),
+) -> Dict:
     """
     Roll back ALL WRITE operations in a conversation.
     
@@ -1791,7 +2001,7 @@ async def rollback_conversation(conversation_id: str, request: Dict) -> Dict:
         500 Internal Server Error - Rollback failed completely
     """
     from app.utils.rollback_coordinator import RollbackCoordinator
-    
+
     # Validate request
     reason = request.get("reason")
     if not reason:
@@ -1799,17 +2009,20 @@ async def rollback_conversation(conversation_id: str, request: Dict) -> Dict:
             status_code=400,
             detail="Missing required field: reason"
         )
-    
-    operator_id = request.get("operator_id", "system")
-    
+
+    # Anti-IDOR (WS-M M2.3 / lld/39 §2.3 row 16): the conversation is a
+    # session-scoped resource — own it before reversing any action in it. Operator
+    # attribution = verified ctx.sub, never a body default of "system".
+    assert_owns(ctx, ResourceKind.CONVERSATION, conversation_id)
+
     # Execute conversation rollback
     rollback_coordinator = RollbackCoordinator()
     result = await rollback_coordinator.rollback_conversation(
         conversation_id=conversation_id,
         reason=reason,
-        operator_id=operator_id
+        operator_id=ctx.sub
     )
-    
+
     return result
 
 
@@ -1818,38 +2031,46 @@ async def rollback_conversation(conversation_id: str, request: Dict) -> Dict:
 # ============================================================
 
 @router.post("/quarantine/{session_id}")
-async def quarantine_session(session_id: str, request: Dict) -> Dict:
+async def quarantine_session(
+    session_id: str,
+    request: Dict,
+    ctx: OperatorContext = Depends(require_role("admin")),
+) -> Dict:
     """
     Manually quarantine a session (operator override).
-    
+
     Path Parameters:
         session_id: Session identifier
-    
+
     Request Body:
         reason: Reason for quarantine
-        operator_id: Operator performing quarantine
-    
+
     Returns:
         Success response with updated session or error response
-    
+
     HTTP Status Codes:
         200 OK - Session quarantined
         404 Not Found - Session doesn't exist
         400 Bad Request - Session already quarantined/suspended
         500 Internal Server Error - Update failed
+
+    Auth (WS-M M2.2 / lld/39 §2.3 row 14): ``require_role("admin")`` +
+    ``assert_owns(SESSION, session_id)``; operator attribution derives from the
+    VERIFIED ``ctx.sub`` (NOT a spoofable body ``operator_id``).
     """
     from app.utils.session_manager import SessionManager
-    
+
     # Validate request
     reason = request.get("reason")
-    operator_id = request.get("operator_id")
-    
-    if not all([reason, operator_id]):
+    if not reason:
         raise HTTPException(
             status_code=400,
-            detail="Missing required fields: reason, operator_id"
+            detail="Missing required field: reason"
         )
-    
+    # Operator is the verified identity, never the client body.
+    operator_id = ctx.sub
+    assert_owns(ctx, ResourceKind.SESSION, session_id)
+
     # Execute quarantine
     session_manager = SessionManager()
     
@@ -1904,14 +2125,25 @@ async def quarantine_session(session_id: str, request: Dict) -> Dict:
 
 
 @router.delete("/quarantine/{session_id}")
-async def release_session(session_id: str, operator_id: str = "operator") -> Dict:
+async def release_session(
+    session_id: str,
+    ctx: OperatorContext = Depends(require_role("admin")),
+) -> Dict:
     """Release a session from quarantine ('un-quarantine'; operator override). Idempotent.
 
     Sets quarantine_status back to 'active' and restores trust above the quarantine threshold so the
     session isn't immediately re-quarantined. Releasing an already-active session is a no-op success.
+
+    Auth (WS-M M2.2 / lld/39 §2.3 row 13): ``require_role("admin")`` +
+    ``assert_owns(SESSION, session_id)``. FOOTGUN this closes — the prior handler took
+    an ``operator_id`` query default (``"operator"``) with NO auth, so a *contained
+    agent could lift its own quarantine*. De-containment is now authenticated + admin;
+    the operator is the verified ``ctx.sub``, never a query param.
     """
     from app.utils.session_manager import SessionManager
 
+    operator_id = ctx.sub
+    assert_owns(ctx, ResourceKind.SESSION, session_id)
     session_manager = SessionManager()
     try:
         session = await session_manager.get_session(session_id)

@@ -273,6 +273,22 @@ class Settings(BaseSettings):
         default=False, validation_alias="CANARY_CAPTURE_ENABLED"
     )
 
+    # WS-M M2.4 (lld/39 §4.M2.4): the durable rollback idempotency ledger table.
+    # One row per rolled-back action_id; a conditional PutItem is the replay guard.
+    rollback_ledger_table: str = Field(
+        default="sentra-rollback-ledger", validation_alias="ROLLBACK_LEDGER_TABLE"
+    )
+
+    # WS-M M2.8 (lld/39 §4.M2.8): the external-producer signal-write route
+    # (POST /v1/sessions/{id}/signals) is INTERIM FAIL-CLOSED until the full
+    # producer credential + shape validation lands (D4, deferred). Default False →
+    # the route rejects external writes; no first-party signal is lost (agents post
+    # via /validate, not this route). Flip True only once the producer credential
+    # ships. Fail-secure: an unset/typo'd env leaves it closed.
+    external_signal_write_enabled: bool = Field(
+        default=False, validation_alias="EXTERNAL_SIGNAL_WRITE_ENABLED"
+    )
+
     # Validation Configuration
     validation_timeout_seconds: int = 5
     max_validation_latency_ms: int = 100

@@ -9,6 +9,11 @@ from unittest.mock import Mock, patch, AsyncMock, MagicMock
 
 from app.utils.rollback_coordinator import RollbackCoordinator
 
+# WS-M M2.3: a grammar-conforming action_id (`act-{tool}-{14-digit ts}-{6 hex}`).
+# The injection-safe query rejects any action_id that fails this grammar, so the
+# rollback tests use a real-shaped id (the old `act-refund-123` no longer matches).
+_VALID_ACTION_ID = "act-process_refund-20260706120000-a1b2c3"
+
 
 @pytest.fixture
 def rollback_coordinator():
@@ -77,11 +82,11 @@ async def test_rollback_already_rolled_back(rollback_coordinator):
     """Test rollback when action already rolled back"""
     # Mock CloudWatch query returning already rolled back action
     log_data = {
-        "action_id": "act-refund-123",
+        "action_id": _VALID_ACTION_ID,
         "tool_name": "process_refund",
         "rollback_status": "ROLLED_BACK"
     }
-    
+
     rollback_coordinator.cloudwatch_logs.start_query.return_value = {'queryId': 'query-123'}
     rollback_coordinator.cloudwatch_logs.get_query_results.return_value = {
         'status': 'Complete',
@@ -89,14 +94,14 @@ async def test_rollback_already_rolled_back(rollback_coordinator):
             {'field': '@message', 'value': json.dumps(log_data)}
         ]]
     }
-    
+
     result = await rollback_coordinator.rollback_action(
-        action_id="act-refund-123",
+        action_id=_VALID_ACTION_ID,
         action_type="process_refund",
         reason="Test",
         operator_id="admin@sentra.com"
     )
-    
+
     assert result['success'] is False
     assert 'already rolled back' in result['message'].lower()
 
@@ -106,14 +111,14 @@ async def test_rollback_refund_success(rollback_coordinator):
     """Test successful refund rollback"""
     # Mock CloudWatch query returning valid action
     log_data = {
-        "action_id": "act-refund-123",
+        "action_id": _VALID_ACTION_ID,
         "tool_name": "process_refund",
         "tool_params": {"order_id": "ORD-123", "amount": 5000},
         "reversible": True,
         "rollback_status": "NOT_ROLLED_BACK",
         "timestamp": "2025-11-19T10:00:00Z"
     }
-    
+
     rollback_coordinator.cloudwatch_logs.start_query.return_value = {'queryId': 'query-123'}
     rollback_coordinator.cloudwatch_logs.get_query_results.return_value = {
         'status': 'Complete',
@@ -121,23 +126,23 @@ async def test_rollback_refund_success(rollback_coordinator):
             {'field': '@message', 'value': json.dumps(log_data)}
         ]]
     }
-    
+
     # Mock DynamoDB update
     rollback_coordinator.orders_table.update_item.return_value = {}
-    
+
     # Mock CloudWatch put_log_events for rollback logging
     rollback_coordinator.cloudwatch_logs.put_log_events.return_value = {}
-    
+
     result = await rollback_coordinator.rollback_action(
-        action_id="act-refund-123",
+        action_id=_VALID_ACTION_ID,
         action_type="process_refund",
         reason="Suspicious activity",
         operator_id="admin@sentra.com"
     )
-    
+
     assert result['success'] is True
     assert 'rollback_id' in result
-    assert result['action_id'] == "act-refund-123"
+    assert result['action_id'] == _VALID_ACTION_ID
     assert rollback_coordinator.orders_table.update_item.called
 
 
@@ -145,14 +150,14 @@ async def test_rollback_refund_success(rollback_coordinator):
 async def test_rollback_dynamodb_error_handling(rollback_coordinator):
     """Test error handling when DynamoDB update fails"""
     log_data = {
-        "action_id": "act-refund-123",
+        "action_id": _VALID_ACTION_ID,
         "tool_name": "process_refund",
         "tool_params": {"order_id": "ORD-123", "amount": 5000},
         "reversible": True,
         "rollback_status": "NOT_ROLLED_BACK",
         "timestamp": "2025-11-19T10:00:00Z"
     }
-    
+
     rollback_coordinator.cloudwatch_logs.start_query.return_value = {'queryId': 'query-123'}
     rollback_coordinator.cloudwatch_logs.get_query_results.return_value = {
         'status': 'Complete',
@@ -160,17 +165,17 @@ async def test_rollback_dynamodb_error_handling(rollback_coordinator):
             {'field': '@message', 'value': json.dumps(log_data)}
         ]]
     }
-    
+
     # Mock DynamoDB error
     rollback_coordinator.orders_table.update_item.side_effect = Exception("DynamoDB error")
-    
+
     result = await rollback_coordinator.rollback_action(
-        action_id="act-refund-123",
+        action_id=_VALID_ACTION_ID,
         action_type="process_refund",
         reason="Test",
         operator_id="admin@sentra.com"
     )
-    
+
     assert result['success'] is False
     assert 'failed' in result['message'].lower()
 

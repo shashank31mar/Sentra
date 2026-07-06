@@ -43,20 +43,11 @@ _AUTHZ_ALLOWLIST = {
     # resolve_operator_tenant — they verify ALB-OIDC in-body instead.
     "create_tenant": "first-tenant creator has no membership; verifies OIDC in-body",
     "redeem_invite": "pre-membership redemption; verifies OIDC in-body",
-    # --- PENDING WS-M milestones (tracked; gate lands with the named milestone) --
-    "discovery_import": "PENDING WS-M M2.6: require_role(editor) + tenant-prefix stamp",
-    "create_connection": "PENDING WS-M M2.1: require_role(admin)",
-    "update_connection": "PENDING WS-M M2.1: require_role(admin) + assert_owns(CONNECTION)",
-    "test_connection": "PENDING WS-M M2.1: require_role(editor) + assert_owns(CONNECTION)",
-    "scan_connection": "PENDING WS-M M2.1: require_role(editor) + assert_owns(CONNECTION)",
-    "delete_connection": "PENDING WS-M M2.1: require_role(admin) + assert_owns(CONNECTION)",
-    "post_decision_verdict": "PENDING WS-M M2.7: authenticate + assert_owns(SESSION)",
-    "update_sigma_rule": "PENDING WS-M M3.1: require_platform (fleet-global)",
-    "rollback_action": "PENDING WS-M M2.3: require_role(admin) + assert_owns(ACTION)",
-    "rollback_conversation": "PENDING WS-M M2.3: require_role(admin) + assert_owns(CONVERSATION)",
-    "quarantine_session": "PENDING WS-M M2.2: require_role(admin) + assert_owns(SESSION)",
-    "release_session": "PENDING WS-M M2.2: require_role(admin) + assert_owns(SESSION)",
-    "post_session_signal": "PENDING WS-M M2.8: interim fail-closed external-producer guard",
+    # Route 19 (WS-M M2.8): the external-producer signal write is INTERIM FAIL-CLOSED
+    # (403 unless the producer credential ships) — a config fail-closed, not an
+    # operator-RBAC surface. It carries no require_role Depends by design; the full
+    # producer credential is design-only/deferred (D4).
+    "post_session_signal": "external producer write; interim fail-closed (M2.8), no operator-RBAC surface",
 }
 
 # Routes that take a resource-id path param but are legitimately ownership-exempt
