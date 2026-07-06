@@ -174,6 +174,20 @@ class Settings(BaseSettings):
     alb_oidc_expected_issuer: str = Field(
         default="", validation_alias="ALB_OIDC_EXPECTED_ISSUER"
     )
+    # Boot-time enforcement of the ALB-OIDC pin-readiness gate (WS-M M1.0 gap-fix,
+    # FIX-B). The gate `assert_alb_oidc_pin_ready_for_prod` was correct + tested but
+    # had NO production caller — nothing ran it, so an unpinned prod shipped the
+    # multi-stack forgery the pin exists to stop (lld/39 §3.1). This flag wires a
+    # live caller into the app lifespan (main.py): when True a genuinely-unpinned
+    # prod deployment FAILS to boot (ECS never routes to the unhealthy task) instead
+    # of silently coming up unpinned — the deploy-wired backstop, not a runbook step
+    # someone must remember. Default False so local dev + the hermetic pytest suite
+    # (which boot the app on the code-default env with empty pins) are not bricked.
+    # The CDK controller task sets this True for every real deployment
+    # (compute_stack.py), independent of the `environment` token vocabulary.
+    alb_oidc_pin_enforce_at_boot: bool = Field(
+        default=False, validation_alias="ALB_OIDC_PIN_ENFORCE_AT_BOOT"
+    )
 
     # Residual uncredentialed-agent legacy-fallback window (LLD-26 §7.1.2 / WS-B
     # B1). Enforce flips per-TENANT but credential coverage is per-AGENT, so a
@@ -440,19 +454,63 @@ class Settings(BaseSettings):
             self.alb_oidc_expected_issuer.strip()
         )
 
+    # Deploy-config `environment` vocabulary: the CDK config yamls use `prod`
+    # (prod.yaml), `dev` (dev.yaml — the live dev-is-prod stack, acct 531109575379),
+    # `staging`. The service code-default here is the *string* "production". The
+    # prod-readiness gate must recognize whichever token the deploy actually sets —
+    # keying on the single literal "production" (the earlier bug) silently no-ops the
+    # gate the moment a deploy sets the yaml token "prod". This set is the one
+    # authority for "is this a production-grade deployment".
+    _PRODUCTION_ENV_TOKENS = frozenset({"production", "prod"})
+
+    def is_production_env(self) -> bool:
+        """True when the resolved ``environment`` names a production deployment,
+        matching either the service code-default (``production``) OR the CDK yaml
+        token (``prod``), case-insensitively. Fixes the vocabulary drift where the
+        gate keyed only on the literal ``production`` and went inert under ``prod``."""
+        return self.environment.strip().lower() in self._PRODUCTION_ENV_TOKENS
+
     def assert_alb_oidc_pin_ready_for_prod(self) -> None:
-        """Deploy/CI gate: in a production environment the ALB-OIDC signer+issuer
-        pin MUST be populated, else any in-region ALB / any Cognito pool token in
-        account 531109575379 verifies — the exact multi-stack forgery the pin was
-        added to stop (lld/39 §3.1). Empty pins are correct for dev/test/transition
-        (``environment != 'production'``), so this only trips a genuinely-unpinned
-        prod. Call this from the deploy runbook / CI before flipping a money-movement
-        tenant to ``enforce``. Fail-secure: raises rather than shipping unpinned."""
-        if self.environment == "production" and not self.alb_oidc_pin_active():
+        """Deploy/CI + boot gate: in a production deployment the ALB-OIDC signer+
+        issuer pin MUST be populated, else any in-region ALB / any Cognito pool
+        token in account 531109575379 verifies — the exact multi-stack forgery the
+        pin was added to stop (lld/39 §3.1). Empty pins are correct for dev/test/
+        transition (non-prod ``environment``), so this only trips a genuinely-
+        unpinned prod. Called from the app lifespan startup (main.py) when
+        ``alb_oidc_pin_enforce_at_boot`` is set (every real deploy), AND callable
+        standalone from the deploy runbook / CI before flipping a money-movement
+        tenant to ``enforce``. Fail-secure: raises rather than shipping unpinned.
+        Recognizes both env-token vocabularies via ``is_production_env`` — no longer
+        silently no-ops under the yaml ``prod`` token."""
+        if self.is_production_env() and not self.alb_oidc_pin_active():
             raise RuntimeError(
                 "ALB_OIDC_EXPECTED_SIGNERS / ALB_OIDC_EXPECTED_ISSUER must be set in "
                 "a production environment — an unpinned control plane accepts a token "
                 "from ANY in-region ALB / Cognito pool (lld/39 §3.1 forgery)."
+            )
+
+    def assert_alb_oidc_pin_ready_at_boot(self) -> None:
+        """The boot-time caller (main.py lifespan) — the live backstop the gap
+        flagged as missing. Enforces ONLY when the deploy explicitly opts in via
+        ``alb_oidc_pin_enforce_at_boot`` (set True by the CDK controller task) — so
+        local dev / the hermetic pytest suite (which boot the app with the flag off +
+        empty pins) are never bricked. When opted in, the pin is required
+        UNCONDITIONALLY of the ``environment`` token: the flag itself IS the
+        'this is a real deployment that must be pinned' signal, so the check does not
+        re-depend on the fragile env-token vocabulary (dev.yaml reports ``dev`` yet
+        acct 531109575379 is prod per [[dev-stack-is-prod]]; the code-default is
+        ``production`` and ``environment`` is not even wired into the container).
+        Decoupling here means the backstop cannot silently no-op on a token mismatch —
+        the exact drift the FIX-B gap called out. Fail-secure: raises → the ECS task
+        never becomes healthy → an unpinned control plane never serves traffic."""
+        if not self.alb_oidc_pin_enforce_at_boot:
+            return
+        if not self.alb_oidc_pin_active():
+            raise RuntimeError(
+                "ALB_OIDC_EXPECTED_SIGNERS / ALB_OIDC_EXPECTED_ISSUER must be set on a "
+                "boot-enforced deployment (ALB_OIDC_PIN_ENFORCE_AT_BOOT=true) — an "
+                "unpinned control plane accepts a token from ANY in-region ALB / "
+                "Cognito pool (lld/39 §3.1 forgery). Refusing to start unpinned."
             )
 
     class Config:

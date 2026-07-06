@@ -160,3 +160,127 @@ def test_prod_gate_inert_for_non_prod_env(monkeypatch):
     monkeypatch.setattr(settings, "alb_oidc_expected_signers", "")
     monkeypatch.setattr(settings, "alb_oidc_expected_issuer", "")
     settings.assert_alb_oidc_pin_ready_for_prod()  # no raise
+
+
+# --------------------------------------------------------------------------- #
+# FIX-B (green≠correct gaps): (1) env-token vocabulary drift — the gate keyed on
+# the literal "production" but the CDK config yamls set "prod"/"dev"/"staging", so
+# the gate silently no-op'd on any real deploy; (2) the gate had NO production
+# caller — nothing invoked it, so the pin could ship empty in prod with no backstop.
+# These tests pin BOTH: the token-vocabulary match, and the live boot-time caller.
+# --------------------------------------------------------------------------- #
+def test_is_production_env_recognizes_cdk_prod_token(monkeypatch):
+    """The prod.yaml token is "prod", NOT "production" — the drift the gap flagged.
+    `is_production_env` MUST recognize it (this test FAILS against the old
+    `== "production"` literal gate — that is the point)."""
+    monkeypatch.setattr(settings, "environment", "prod")
+    assert settings.is_production_env() is True
+    monkeypatch.setattr(settings, "environment", "PROD")  # case-insensitive
+    assert settings.is_production_env() is True
+    monkeypatch.setattr(settings, "environment", "production")  # code default
+    assert settings.is_production_env() is True
+
+
+def test_is_production_env_false_for_dev_and_staging(monkeypatch):
+    """Genuine non-prod tokens must NOT be treated as prod (else a local dev box or
+    the staging stack would be bricked by the boot gate)."""
+    for tok in ("dev", "staging", "development", "test", ""):
+        monkeypatch.setattr(settings, "environment", tok)
+        assert settings.is_production_env() is False, tok
+
+
+def test_prod_gate_raises_under_cdk_prod_token(monkeypatch):
+    """The drift-fix, end-to-end at the gate: `environment="prod"` (the yaml token)
+    + empty pins MUST raise. Against the old literal-"production" gate this silently
+    passed — the exact multi-stack forgery no-op the gap called out."""
+    monkeypatch.setattr(settings, "environment", "prod")
+    monkeypatch.setattr(settings, "alb_oidc_expected_signers", "")
+    monkeypatch.setattr(settings, "alb_oidc_expected_issuer", "")
+    with pytest.raises(RuntimeError):
+        settings.assert_alb_oidc_pin_ready_for_prod()
+
+
+def test_boot_gate_inert_when_flag_off(monkeypatch):
+    """Default posture (flag off) — local dev / the hermetic pytest suite boot the
+    app unpinned and MUST NOT be bricked, even on the `production` code-default."""
+    monkeypatch.setattr(settings, "alb_oidc_pin_enforce_at_boot", False)
+    monkeypatch.setattr(settings, "environment", "production")
+    monkeypatch.setattr(settings, "alb_oidc_expected_signers", "")
+    monkeypatch.setattr(settings, "alb_oidc_expected_issuer", "")
+    settings.assert_alb_oidc_pin_ready_at_boot()  # no raise
+
+
+def test_boot_gate_raises_when_flag_on_and_unpinned(monkeypatch):
+    """A real deployment (flag True via compute_stack.py) with empty pins MUST fail
+    to boot — the live backstop. Decoupled from the env token: this holds even on
+    the live dev-is-prod stack (`environment="dev"`) where a token-only gate would
+    wrongly no-op."""
+    monkeypatch.setattr(settings, "alb_oidc_pin_enforce_at_boot", True)
+    monkeypatch.setattr(settings, "environment", "dev")  # live dev-is-prod stack
+    monkeypatch.setattr(settings, "alb_oidc_expected_signers", "")
+    monkeypatch.setattr(settings, "alb_oidc_expected_issuer", "")
+    with pytest.raises(RuntimeError) as ei:
+        settings.assert_alb_oidc_pin_ready_at_boot()
+    assert "ALB_OIDC_EXPECTED_SIGNERS" in str(ei.value)
+
+
+def test_boot_gate_passes_when_flag_on_and_pinned(monkeypatch):
+    """A boot-enforced deployment with both pins populated boots normally."""
+    monkeypatch.setattr(settings, "alb_oidc_pin_enforce_at_boot", True)
+    monkeypatch.setattr(settings, "environment", "prod")
+    monkeypatch.setattr(settings, "alb_oidc_expected_signers", EXPECTED_SIGNER)
+    monkeypatch.setattr(settings, "alb_oidc_expected_issuer", EXPECTED_ISS)
+    settings.assert_alb_oidc_pin_ready_at_boot()  # no raise
+
+
+def test_lifespan_calls_boot_pin_gate(monkeypatch):
+    """The Gap-2 arbiter: prove main.py's lifespan ACTUALLY invokes the boot gate
+    (the gap was 'no caller anywhere'). We spy on the settings method and drive the
+    lifespan startup; the spy MUST have been called. A regression that drops the
+    call from lifespan makes this test fail."""
+    import asyncio
+    import app.main as main_mod
+
+    called = {"n": 0}
+
+    def _spy(self):
+        called["n"] += 1
+
+    # Patch on the Settings CLASS — pydantic BaseSettings guards instance-attribute
+    # assignment (methods are not model fields), so `setattr(settings, method, ...)`
+    # raises; the class dict is not guarded.
+    monkeypatch.setattr(type(main_mod.settings), "assert_alb_oidc_pin_ready_at_boot", _spy)
+    # Don't do the real (network-touching) service build — stub the two other
+    # startup steps so we isolate the pin-gate call.
+    import app.services as services_mod
+    monkeypatch.setattr(services_mod, "ValidationService", lambda: object())
+    import app.services.scheduler as sched_mod
+    monkeypatch.setattr(sched_mod, "assert_registration_complete", lambda svc: None)
+
+    async def _drive():
+        app_stub = main_mod.app
+        async with main_mod.lifespan(app_stub):
+            pass
+
+    asyncio.run(_drive())
+    assert called["n"] == 1, "lifespan did not call assert_alb_oidc_pin_ready_at_boot"
+
+
+def test_lifespan_refuses_boot_when_unpinned_and_enforced(monkeypatch):
+    """End-to-end fail-secure: an unpinned + boot-enforced app RAISES out of the
+    lifespan startup (the ECS task would never become healthy). This is the live
+    behaviour the missing-caller gap left absent."""
+    import asyncio
+    import app.main as main_mod
+
+    monkeypatch.setattr(main_mod.settings, "alb_oidc_pin_enforce_at_boot", True)
+    monkeypatch.setattr(main_mod.settings, "environment", "prod")
+    monkeypatch.setattr(main_mod.settings, "alb_oidc_expected_signers", "")
+    monkeypatch.setattr(main_mod.settings, "alb_oidc_expected_issuer", "")
+
+    async def _drive():
+        async with main_mod.lifespan(main_mod.app):
+            pass
+
+    with pytest.raises(RuntimeError):
+        asyncio.run(_drive())
