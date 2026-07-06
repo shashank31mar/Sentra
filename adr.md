@@ -1518,6 +1518,53 @@ The code defaults stay `False` (safe default); prod overrides via env var in `cd
 
 ---
 
+## ADR-037: The Service (ECS) Is the Data-Plane Auth Boundary; the API-Gateway Edge Authorizer Is Optional Defense-in-Depth
+
+**Status**: Accepted (founder) 2026-07-06
+**Supersedes framing of**: the earlier "commit a Lambda edge authorizer" direction. The mechanism *choice* (a JWT-verifying REQUEST Lambda authorizer, not Cognito-authorizer / IAM-SigV4) still stands **if/when** an edge authorizer is built; what changed is that it is **no longer a committed P0 deliverable** — the authoritative boundary is in-service.
+
+### Context
+
+The hosted PDP is fronted by `API Gateway (REST/v1) → VpcLink → NLB → private ALB → ECS controller`. Today the gateway method is `authorizationType=NONE` + a single shared API key ([api_stack.py:373](../src/security-controller/cdk/stacks/api_stack.py), usage plans at :176/:229), and AWS's own guidance is that an API key is **metering, not authentication**. The original WS-M/lld/39 direction was to add a Lambda edge authorizer that verifies the ES256 JWT at the gateway.
+
+But the ECS controller **already verifies the same agent JWT in-app**: `/v1/validate` calls `resolve_tenant_from_jwt` ([deps.py:111](../src/security-controller/app/api/deps.py#L111), [routes.py:196](../src/security-controller/app/api/routes.py#L196)) — ES256 signature verified, `algorithms=["ES256"]` (no `none` downgrade), `(tenant_id, agent_id)` resolved from the verified claim. So the edge authorizer would **re-do the check the service already does**, adding a per-request hop on the **latency-critical `/validate` path** (NFR-1 ≤500 ms p99 deterministic) for **no new authority**.
+
+### Decision
+
+**Make the in-service (ECS) JWT verification the single authoritative, complete, fail-secure data-plane boundary. The API-Gateway edge authorizer is downgraded to *optional, deferred defense-in-depth* — not a committed build.**
+
+1. **In-app verification is the boundary** — every data-plane route cryptographically verifies the agent JWT at the controller and denies on missing/invalid, **independent of `tenant_identity_mode`**. This closes the two verified gaps: (a) tokenless `/validate` currently only denies at `identity_mode=enforce` and falls through at `shadow`/`off` ([deps.py:119-129](../src/security-controller/app/api/deps.py#L119)); (b) `/v1/sessions/{id}/trail` + `/signals` carry **no** in-app auth today and read the ambient `current_tenant()` (`"default"`) ([routes.py:448/465](../src/security-controller/app/api/routes.py#L448)) — a real cross-tenant read. Both are fixed at the service, where the authority already lives.
+2. **The API key stays metering-only** — `authorizationType=NONE` at the gateway is acceptable *because the service authenticates every request*; the key drives usage plans/quota, not auth.
+3. **DoS is handled at the gateway by throttling + WAF**, not a per-request JWT Lambda — API-Gateway usage-plan throttling sheds volume without an authorizer; a JWT authorizer would only add marginal shielding against *well-formed-but-forged* floods.
+4. **The edge authorizer is optional/deferred** — addable later with **zero redesign** (the JWT contract is unchanged), *if* a zero-trust-perimeter / "nothing unauthenticated touches compute" compliance requirement demands it. If built, it is a REQUEST Lambda verifying the ES256 JWT (the portable RFC-7519 choice — ports to Envoy/Kong/NGINX for Azure/GCP; **not** the AWS-proprietary Cognito-authorizer or IAM-SigV4).
+
+### Rationale
+
+- **No new authority at the edge** — the service is already the boundary; a second identical check earlier is defense-in-depth, not the wall. Removing it from the committed path erases a per-request hop on the one path with a hard p99 budget (the founder's latency concern).
+- **Fail-secure completeness is the real work either way** — the tokenless-fallthrough + `/trail`//`signals` gaps must be closed at the service *regardless* of whether an edge authorizer exists; doing them makes the in-app boundary complete, which is exactly what makes the edge optional.
+- **Cross-vendor** — an in-service JWT check is trivially portable; it carries no AWS-edge dependency at all.
+
+### Consequences
+
+- ✅ No added `/validate` hot-path latency; NFR-1 budget untouched by auth.
+- ✅ The data-plane boundary is one place (the service), verified fail-secure on every request, not split across an edge Lambda + the app.
+- ⚠️ **Perimeter-auth optics** — a regulated buyer's pen-test sometimes expects auth *at the edge* as a checkbox. Defensible answer: "every request is cryptographically verified fail-secure at the service; the gateway meters + throttles." If a specific customer contract requires edge auth, the deferred authorizer ships (point 4) with no redesign.
+- ⚠️ **Load-bearing precondition** — this only holds once the two in-app gaps (tokenless fallthrough, `/trail`//`signals`) are closed. Until then the in-app boundary is incomplete; those fixes are committed WS-M work (lld/39 §4/§5).
+
+### Alternatives Considered
+
+1. **Commit the Lambda edge authorizer on `/validate`** — Rejected: re-does the in-app check for no new authority, adds hot-path latency (mitigable by result-caching + provisioned concurrency, but a cost for a redundant check). Kept as the *deferred* option.
+2. **Edge authorizer on the console edge only (not `/validate`)** — Viable middle option (console is low-QPS, no latency budget); folded into "optional/deferred" — build it there first if perimeter auth is ever required, since it costs nothing on the hot path.
+3. **Leave the shared API key as the only edge gate** — Rejected: an API key is not auth (AWS); the *service* must authenticate, which this decision requires.
+
+### References
+
+- **LLD**: [lld/39-authz-rbac-edge-authorizer.md](lld/39-authz-rbac-edge-authorizer.md) §4 (edge), §5 (data-plane identity), §2.2 (the `/trail`//`signals` gap correction)
+- **Code**: `src/security-controller/app/api/deps.py:111` (`resolve_tenant_from_jwt`), `routes.py:196` (in-app verify), `routes.py:448/465` (the ungated reads), `cdk/stacks/api_stack.py:373` (`api_key_required`, `authorizationType` unset)
+- **Consumes** ADR-035 (federation seam — console identity) and AD-7 (verified per-agent identity). **Builds on** the NFR-1 latency budget.
+
+---
+
 ## Future ADRs to Consider (Post-MVP)
 
 - **ADR-023**: Migration from ECS Fargate to EKS
