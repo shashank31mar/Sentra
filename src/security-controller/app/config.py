@@ -428,7 +428,33 @@ class Settings(BaseSettings):
     policy_cache_ttl_seconds: int = Field(default=300, validation_alias="POLICY_CACHE_TTL_SECONDS")
     sigma_rules_metadata_cache_ttl_seconds: int = Field(default=600, validation_alias="SIGMA_RULES_METADATA_CACHE_TTL_SECONDS")
     max_cache_size: int = Field(default=1000, validation_alias="MAX_CACHE_SIZE")
-    
+
+    # --- ALB-OIDC pin readiness (WS-M M1.0 / lld/39 §3.1) -------------------- #
+    def alb_oidc_pin_active(self) -> bool:
+        """True only when BOTH the signer allowlist AND the issuer pin are set —
+        i.e. the pin actually fires. An empty either half = inert (dev/test/
+        transition window). This is the single authority both ``verify_alb_oidc``
+        and the prod-readiness gate key on (no drift between 'is it configured'
+        and 'does it enforce')."""
+        return bool(self.alb_oidc_expected_signers.strip()) and bool(
+            self.alb_oidc_expected_issuer.strip()
+        )
+
+    def assert_alb_oidc_pin_ready_for_prod(self) -> None:
+        """Deploy/CI gate: in a production environment the ALB-OIDC signer+issuer
+        pin MUST be populated, else any in-region ALB / any Cognito pool token in
+        account 531109575379 verifies — the exact multi-stack forgery the pin was
+        added to stop (lld/39 §3.1). Empty pins are correct for dev/test/transition
+        (``environment != 'production'``), so this only trips a genuinely-unpinned
+        prod. Call this from the deploy runbook / CI before flipping a money-movement
+        tenant to ``enforce``. Fail-secure: raises rather than shipping unpinned."""
+        if self.environment == "production" and not self.alb_oidc_pin_active():
+            raise RuntimeError(
+                "ALB_OIDC_EXPECTED_SIGNERS / ALB_OIDC_EXPECTED_ISSUER must be set in "
+                "a production environment — an unpinned control plane accepts a token "
+                "from ANY in-region ALB / Cognito pool (lld/39 §3.1 forgery)."
+            )
+
     class Config:
         env_file = ".env"
         case_sensitive = False

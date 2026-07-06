@@ -1424,6 +1424,19 @@ def handler(event, context):
                     "TENANT_MEMBERS_TABLE": storage_stack.tenant_members_table.table_name,
                     "AGENT_CREDENTIALS_TABLE": storage_stack.agent_credentials_table.table_name,
                     "TENANT_IDENTITY_MODE": str(config.get("tenant_identity_mode", "off")).lower(),
+                    # ALB-OIDC signer + issuer PIN (WS-M M1.0 / lld/39 §3.1). Plain
+                    # ES256 verify accepts a token from ANY in-region ALB / ANY
+                    # Cognito pool — account 531109575379 hosts multiple stacks, so a
+                    # sibling ALB's signature-valid token would otherwise reach the
+                    # control plane. Wire these from config (comma-separated ARNs /
+                    # the Cognito issuer) so the pin can be populated per-env WITHOUT
+                    # a code change. Empty default = inert (dev/test/transition). The
+                    # deploy runbook MUST populate both before flipping a money-
+                    # movement tenant to `enforce` (config.assert_alb_oidc_pin_ready_
+                    # for_prod is the gate). Without wiring here there was no way to
+                    # set them at all → prod stayed unpinned (the gap this closes).
+                    "ALB_OIDC_EXPECTED_SIGNERS": str(config.get("alb_oidc_expected_signers", "")),
+                    "ALB_OIDC_EXPECTED_ISSUER": str(config.get("alb_oidc_expected_issuer", "")),
                     "QUOTA_COUNTERS_TABLE": storage_stack.quota_counters_table.table_name,
                     # Hot-path RPS quota enforcement (WS-E E2b) — founder-gated, off.
                     "QUOTA_ENFORCEMENT_ENABLED": str(config.get("quota_enforcement_enabled", False)).lower(),

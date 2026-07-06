@@ -112,3 +112,51 @@ def test_no_pin_when_allowlists_empty(monkeypatch):
     tok = _sign(priv, signer=FOREIGN_SIGNER, iss="whatever")
     claims = deps.verify_alb_oidc(_Req({"x-amzn-oidc-data": tok}))
     assert claims["sub"] == "op-1"
+
+
+# --------------------------------------------------------------------------- #
+# Prod-readiness config gate (WS-M M1.0 gap-fix / lld/39 §3.1).
+# The pin is correct + tested for both populated and empty, but nothing asserted
+# that a PRODUCTION deployment actually sets the two env vars — so prod stayed
+# unpinned until an operator remembered. `assert_alb_oidc_pin_ready_for_prod`
+# codifies that requirement so the deploy runbook / CI can trip on a genuinely
+# unpinned prod (rather than shipping the multi-stack forgery the pin exists to
+# stop). These tests are the arbiter of that gate.
+# --------------------------------------------------------------------------- #
+def test_pin_active_requires_both_halves(monkeypatch):
+    """The pin only fires when BOTH signer allowlist AND issuer are set — either
+    half empty = inert (matches the per-half verify_alb_oidc behaviour)."""
+    monkeypatch.setattr(settings, "alb_oidc_expected_signers", EXPECTED_SIGNER)
+    monkeypatch.setattr(settings, "alb_oidc_expected_issuer", "")
+    assert settings.alb_oidc_pin_active() is False
+    monkeypatch.setattr(settings, "alb_oidc_expected_issuer", EXPECTED_ISS)
+    assert settings.alb_oidc_pin_active() is True
+
+
+def test_prod_gate_raises_when_pin_unset(monkeypatch):
+    """A production environment with an unset pin MUST fail the readiness gate —
+    this is the check the deploy runbook runs before a money-movement enforce flip.
+    (Reverting the pin to empty in prod would trip this — non-vacuous.)"""
+    monkeypatch.setattr(settings, "environment", "production")
+    monkeypatch.setattr(settings, "alb_oidc_expected_signers", "")
+    monkeypatch.setattr(settings, "alb_oidc_expected_issuer", "")
+    with pytest.raises(RuntimeError) as ei:
+        settings.assert_alb_oidc_pin_ready_for_prod()
+    assert "ALB_OIDC_EXPECTED_SIGNERS" in str(ei.value)
+
+
+def test_prod_gate_passes_when_pin_set(monkeypatch):
+    """A production environment with both pins populated passes the gate."""
+    monkeypatch.setattr(settings, "environment", "production")
+    monkeypatch.setattr(settings, "alb_oidc_expected_signers", EXPECTED_SIGNER)
+    monkeypatch.setattr(settings, "alb_oidc_expected_issuer", EXPECTED_ISS)
+    settings.assert_alb_oidc_pin_ready_for_prod()  # no raise
+
+
+def test_prod_gate_inert_for_non_prod_env(monkeypatch):
+    """Dev/test/transition (environment != 'production') is allowed to run unpinned
+    — the gate must NOT trip there (empty pins are correct outside prod)."""
+    monkeypatch.setattr(settings, "environment", "development")
+    monkeypatch.setattr(settings, "alb_oidc_expected_signers", "")
+    monkeypatch.setattr(settings, "alb_oidc_expected_issuer", "")
+    settings.assert_alb_oidc_pin_ready_for_prod()  # no raise
