@@ -300,7 +300,8 @@ def verify_alb_oidc(request: Request) -> Dict:
     if not data:
         raise HTTPException(status_code=401, detail="missing ALB identity")
     try:
-        kid = jwt.get_unverified_header(data).get("kid")
+        header = jwt.get_unverified_header(data)
+        kid = header.get("kid")
         if not kid:
             raise ValueError("no kid")
         public_key = _alb_keys.get(kid, settings.aws_region)
@@ -308,6 +309,12 @@ def verify_alb_oidc(request: Request) -> Dict:
         # a stable `aud`, so we don't assert one here.
         claims = jwt.decode(data, public_key, algorithms=["ES256"],
                             options={"verify_aud": False})
+        # WS-M M1.0 / lld/39 §3.1 — signer + issuer PIN. Signature-valid is not
+        # enough: any in-region ALB / any Cognito pool would otherwise pass, and
+        # account 531109575379 runs multiple stacks. Enforced HERE (after the
+        # signature check) so it applies to WHICHEVER header we read — the
+        # `x-sentra-oidc-data` fallback cannot bypass it. Empty allowlists = no pin.
+        _assert_signer_issuer_pinned(header, claims)
     except HTTPException:
         raise
     except Exception as exc:  # noqa: BLE001
@@ -317,6 +324,28 @@ def verify_alb_oidc(request: Request) -> Dict:
     if not claims.get("sub"):
         raise HTTPException(status_code=401, detail="ALB identity missing sub")
     return claims
+
+
+def _csv_allowlist(raw: str) -> frozenset:
+    return frozenset(p.strip() for p in (raw or "").split(",") if p.strip())
+
+
+def _assert_signer_issuer_pinned(header: Dict, claims: Dict) -> None:
+    """Reject a signature-valid token whose ALB `signer` (JWT header) is not in the
+    expected-signer allowlist, or whose `iss` is not the expected Cognito issuer
+    (WS-M M1.0). Empty allowlists disable the corresponding check (dev/test/
+    transition). Any mismatch raises 401 (caught + normalized by the caller)."""
+    signers = _csv_allowlist(settings.alb_oidc_expected_signers)
+    if signers:
+        signer = header.get("signer")
+        if signer not in signers:
+            logger.warning("ALB OIDC signer pin rejected signer=%r", signer)
+            raise HTTPException(status_code=401, detail="untrusted ALB signer")
+    expected_iss = (settings.alb_oidc_expected_issuer or "").strip()
+    if expected_iss:
+        if claims.get("iss") != expected_iss:
+            logger.warning("ALB OIDC issuer pin rejected iss=%r", claims.get("iss"))
+            raise HTTPException(status_code=401, detail="untrusted OIDC issuer")
 
 
 # ---- D3b: operator → tenant resolution + RBAC ----------------------------- #

@@ -1,15 +1,35 @@
-"""Route-level tests for WS-21 Phase 3: discovery, attach/detach, verdict (T32-T34)."""
+"""Route-level tests for WS-21 Phase 3: discovery, attach/detach, verdict (T32-T34).
+
+WS-M M1.1 note: ``POST/DELETE /v1/agents/{id}/policies`` are now RBAC-gated
+(``require_role("editor")``) + anti-IDOR (``assert_owns``). These route-behaviour
+tests inject a verified operator via a FastAPI dependency override on
+``resolve_operator_tenant`` and neutralize the ownership point-read (its own
+coverage lives in ``test_ownership.py`` / ``test_policy_routes_authz.py``), so they
+keep exercising the handler's business logic — attach/detach mapping — under auth.
+"""
 from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
 from fastapi.testclient import TestClient
 
+from app.api.deps import OperatorContext, resolve_operator_tenant
 from app.main import app
 
 
 @pytest.fixture
 def client():
     return TestClient(app)
+
+
+@pytest.fixture
+def as_editor():
+    """Inject a verified editor operator (tenant ``t_ph``) and make ``assert_owns``
+    a no-op for these business-logic tests (ownership is covered elsewhere)."""
+    app.dependency_overrides[resolve_operator_tenant] = lambda: OperatorContext(
+        sub="op-ph", tenant_id="t_ph", role="editor", email="ph@x")
+    with patch("app.api.routes.assert_owns", return_value=None):
+        yield
+    app.dependency_overrides.pop(resolve_operator_tenant, None)
 
 
 # --------------------------------------------------------------------- discovery
@@ -73,23 +93,23 @@ def mock_agent_attach():
         yield svc
 
 
-def test_attach_ok(client, mock_agent_attach):
+def test_attach_ok(client, mock_agent_attach, as_editor):
     r = client.post("/v1/agents/a/policies", json={"policy_id": "p"})
     assert r.status_code == 200
     assert r.json()["status"] == "attached"
 
 
-def test_attach_missing_policy_id_400(client, mock_agent_attach):
+def test_attach_missing_policy_id_400(client, mock_agent_attach, as_editor):
     assert client.post("/v1/agents/a/policies", json={}).status_code == 400
 
 
-def test_attach_unknown_404(client, mock_agent_attach):
+def test_attach_unknown_404(client, mock_agent_attach, as_editor):
     mock_agent_attach.attach_policy.side_effect = KeyError("agent a not found")
     r = client.post("/v1/agents/a/policies", json={"policy_id": "p"})
     assert r.status_code == 404
 
 
-def test_attach_when_bound_replaces_no_409(client, mock_agent_attach):
+def test_attach_when_bound_replaces_no_409(client, mock_agent_attach, as_editor):
     """agent-policy-management T21: rebind-as-replace. Attaching to an
     already-bound agent is an atomic swap → 200, NOT a 409. The service no longer
     raises ValueError on rebind, and the route no longer maps one to 409."""
@@ -98,13 +118,13 @@ def test_attach_when_bound_replaces_no_409(client, mock_agent_attach):
     assert r.json()["status"] == "attached"
 
 
-def test_detach_ok(client, mock_agent_attach):
+def test_detach_ok(client, mock_agent_attach, as_editor):
     r = client.delete("/v1/agents/a/policies/p")
     assert r.status_code == 200
     assert r.json()["status"] == "detached"
 
 
-def test_detach_not_attached_404(client, mock_agent_attach):
+def test_detach_not_attached_404(client, mock_agent_attach, as_editor):
     mock_agent_attach.detach_policy.side_effect = KeyError("not attached")
     assert client.delete("/v1/agents/a/policies/p").status_code == 404
 

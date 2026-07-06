@@ -27,6 +27,10 @@ from app.api.deps import (
     role_satisfies,
     verify_alb_oidc,
 )
+# `_assert_owns_agent` is now the single ownership authority in app.api.ownership
+# (WS-M M0.1). Re-exported here under the same name so the existing gate call
+# sites repoint with no behaviour change (delimited-prefix, 403 on mismatch).
+from app.api.ownership import _assert_owns_agent_compat as _assert_owns_agent
 from app.config import settings
 from app.services.credentials_service import (
     CredentialValidationError,
@@ -43,13 +47,6 @@ from app.utils import tenancy
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/v1")
-
-
-def _assert_owns_agent(ctx: OperatorContext, agent_id: str) -> None:
-    """The operator's tenant must own ``agent_id``. Delimited prefix — never a
-    bare ``startswith`` (delimiter-unsafe). Mismatch → 403."""
-    if not agent_id.startswith(ctx.tenant_id + "-"):
-        raise HTTPException(status_code=403, detail="agent not owned by tenant")
 
 
 # =========================================================================== #
