@@ -1,196 +1,349 @@
-# WS-M — Authentication & Authorization (control-plane RBAC + anti-IDOR + edge authorizer)
+# WS-M — Authentication & Authorization (control-plane RBAC coverage + anti-IDOR + in-service data-plane boundary)
 
-> **Doc role:** This is the **workstream SCOPE** — boundary, dependencies, real `file:line` anchors, footguns, and acceptance criteria. It is an **INPUT to this workstream's implementation-grade LLD**, *not* the granular task breakdown. The granular, buildable tasks are generated **from the approved LLD** (canonical order: HLD → LLD → tasks). See [00-index.md](00-index.md) for the doc-role map.
+> **Doc role:** This is the **Phase-2 build-task doc** (granular, zero-ambiguity tasks generated from the approved LLD). It supersedes the earlier scope-only version. The §2 "read before coding" model is the scope context an implementer must hold; the milestones (§4) are the buildable tasks. Canonical order: HLD → **LLD ([lld/39](../../lld/39-authz-rbac-edge-authorizer.md))** → these tasks.
 
-**Parent HLD:** [hld/serverless-edition.md](../../hld/serverless-edition.md) — §6.2(f) (*Console sign-in & who-sees-what*), §6.3 (*Security & networking* — the AuthN/Z plane split), §6.6 recommendation table row (f).
-**Status:** Not started (scope-stage — LLD not yet authored → **lld/39**)
-**Owner:** TBD
-**Implements:** FR-10.1 (multi-tenant isolation) · FR-13.3 (console auth & tenancy model + RBAC role model) · FR-13.1 (multi-tenant console, no cross-tenant leak). Touches FR-10.3/FR-10.5 (verified agent identity / prod activation) and FR-6.8 (the decision-trail read is the authz *contrast* pattern, not an item to change).
-**New decision:** **ADR-037** (edge/gateway authorizer + shared-API-key replacement — a *new* decision, distinct from ADR-035 console federation). **Consumes** ADR-035 (federation seam) and **ADR-034** (non-disableable floor → why the sigma retire path is platform-scoped).
-
-> **Next step: an implementation-grade LLD (→ lld/39).** This WS doc scopes the build (which routes, which invariants, which footguns). It does **not** replace the LLD: exact `Depends(...)` signatures, the ownership-assertion helper, the per-route role map, the edge-authorizer design, and the test matrix are the LLD's job. **The LLD extends [LLD 26 §5–6](../../lld/26-multi-tenancy.md)** (the RBAC authority already built there) and **LLD 08** (ALB/Cognito auth) — it does **not** start fresh and does **not** re-litigate the §6.2(f) Cognito-now decision. Build from *this* doc; the LLD details it.
+**Parent LLD:** [lld/39-authz-rbac-edge-authorizer.md](../../lld/39-authz-rbac-edge-authorizer.md) (approved, grill-hardened 2026-07-06). **Parent HLD:** [hld/serverless-edition.md](../../hld/serverless-edition.md) §6.2(f) / §6.3 / §6.6 row (f) / §8 residual #1.
+**Status:** TASKS-DONE (build-ready) · **Owner:** TBD · **Last updated:** 2026-07-06
+**Implements:** FR-10.1 (multi-tenant isolation) · FR-10.3/10.5 (verified agent identity / prod activation) · FR-13.1 (multi-tenant console, no cross-tenant leak) · FR-13.3 (console auth & tenancy + RBAC role model) · FR-6.8 (trail-read authz *contrast*, unchanged) · NFR-10.
+**Decisions:** **ADR-037** (in-service JWT check IS the data-plane auth boundary; edge authorizer deferred/optional — reframed 2026-07-06) · **consumes** ADR-035 (federation seam), ADR-034 (non-disableable floor → sigma retire is platform-scoped), ADR-019/AD-8 (Cognito+RBAC), AD-7 (verified per-agent identity). *(ADR-036 is TAKEN = Detection-Depth Enforce Overrides — do NOT conflate.)*
 
 ---
 
 ## 0. Gating — NOT spike-gated; start now (P0-security)
 
-**This workstream is NOT gated by WS-0.** It touches neither the local-floor synchronous-deep thesis nor the redaction recall question the spike measures. It is **start-now**, and it is **P0-security**: the anchor deliverable closes **BUG-1**, a *live* production IDOR (per [[dev-stack-is-prod]] the `Sentra-DEV-*` stacks ARE prod, account `531109575379`) — any holder of the shared API key can CRUD **any** tenant's policies today. See [99-go-live-runbook.md:57](99-go-live-runbook.md#L57).
+**NOT gated by WS-0.** Touches neither the local-floor synchronous-deep thesis nor the redaction-recall question the spike measures. **Start-now, P0-security:** the M1 anchor closes **BUG-1**, a *live production* IDOR (per [[dev-stack-is-prod]] the `Sentra-DEV-*` stacks ARE prod, account `531109575379`) — any holder of the shared API key can CRUD **any** tenant's policies today.
 
-**It owns the platform-operator gate that closes a live WS-F threat — tracked, non-blocking (founder 2026-07-05).** The `PATCH /sigma-rules/{rule_id}` retire path + its `__sigma_version__` version-epoch write must go behind a platform-operator gate (§4 M-M3) — this closes 3 of WS-F's open threats (the fleet-global detection kill-switch that defeats ADR-034; see [ws-f-prompt-signatures.md](ws-f-prompt-signatures.md) "Open threats → owning workstream"). **Framing decision (founder 2026-07-05): this is a TRACKED dependency, NOT a hard merge-gate on WS-F.** WS-F ships ahead with its CI check emitting a **non-blocking WARNING** while this gate is unbuilt; **WS-M's job is to land M-M3 so that warning clears.** So M-M3 is a known, owned WS-M build item (not a surprise) — but WS-F is not blocked waiting on it. (The earlier "WS-F does not merge until…" hard-gate framing is superseded by this founder call.)
-
----
-
-## 1. Why this workstream exists (the consolidation)
-
-"Auth" was **scattered across five docs with no single owner**, and the two real holes were filed as footnotes inside unrelated workstreams. WS-M pulls the *server-side authorization boundary* into one owned place. The split is deliberate:
-
-| Concern | Owner | Rationale |
-|---|---|---|
-| **Server-side `require_role` coverage on mutating routes** (the boundary) | **WS-M** | The authz boundary is server-side; a render gate without a server gate is the bug, not the fix. |
-| **Client render-gating** (`useCan()` / `rbac.ts`), tenant-switcher UI | **WS-G** | UX only — a `viewer` shouldn't *see* a control they can't use. Never the boundary. |
-| **`require_role`/`require_platform`/`verify_alb_oidc` primitives** | **LLD-26 §5–6 / LLD-08** (shared library) | Already built + live on dev; WS-M is the *coverage* owner, not the primitive owner. |
-| **ADR-035 federation seam** (SAML/OIDC/SCIM behind the IdP-neutral seam) | **WS-G** (design-only) / deferred | WS-M *consumes* the seam; it does **not** swap the IdP. |
-| **WS-F sigma-retire CI assertion** | **WS-F** | WS-F owns the build check; WS-M *lands the gate* it checks for. |
-| **Leaked-signing-key response** (A5.4) | **WS-A** | Crypto/key-compromise is WS-A's; WS-M is the *upstream authoring control* (defense-in-depth). |
-| **Data-plane read RBAC** (`GET /trail`, `/signals`) | **out of scope — do NOT touch** | Deliberately no RBAC: tenant-scoped by verified-JWT contextvar + composite PK (WS-D §D5.3). |
-
-**Ownership was duplicated:** BUG-1 was assigned to "multi-tenancy / LLD-26" in the runbook *and* to WS-G M-G2.1 as an M-G2 item — two docs claiming the same fix under different owners. WS-M becomes the single owner so it isn't dropped between workstreams. ([[policy-crud-routes-no-authz]] ≡ BUG-1.)
+**WS-F relationship (founder 2026-07-05): TRACKED, non-blocking — NOT a hard merge-gate.** WS-F ships ahead; its CI check emits a **non-blocking WARNING** until WS-M lands M3 (the platform-operator gate on the sigma-retire path), which clears it. The earlier "WS-F does not merge until…" hard-gate framing is **superseded**. Land M3 as a known WS-M item; WS-F is not blocked waiting.
 
 ---
 
-## 2. Model — the three auth planes (read before coding)
+## 1. Dependencies
 
-Auth in Sentra is **three distinct planes**. Conflating them is the trap — the founder brief risks pointing this WS at the console (already built) instead of the two real gaps.
+- **Depends on:** **LLD-26 §5–6** (the RBAC primitives — `require_role`/`require_platform`/`resolve_operator_tenant`/`role_satisfies`/`_ROLE_ORDER`/`OperatorContext`, all **built + live on dev**; WS-M reuses, does not rebuild) · **LLD-08 §6.5** (`verify_alb_oidc` / ALB-Cognito — built) · **AD-7 / TENANCY_V2** (`resolve_tenant_from_jwt`, enforcing tenant `acme` on dev).
+- **Blocks / clears:** **WS-F** (M3 clears its non-blocking CI WARNING) · **WS-K** (K8 suite consumes the positive-authz assertions on the fixed routes) · **WS-J** (canary pairs-with — positive-authz coverage on the previously-ungated routes).
+- **Shared (coordinate edits — these files are touched by other WS):** `deps.py` (auth primitives — LLD-26/WS-D own), `routes.py` (WS-D/WS-G touch), `tenancy_routes.py` (WS-G touches; the `_assert_owns_agent` re-export), the NEW `app/api/ownership.py` (owned here; WS-D/WS-G consume), `policy_service.py`/`cache_manager.py` (WS-D/WS-H own the policy store + caching — the M0 cache-bypass touches these), `audit_logger.py` (the M2 rollback tenant-stamp predecessor).
+- **Consumes (design-only):** the ADR-035 `VerifiedOperator{sub, email, idp_groups[]}` seam WS-G designs (G3.7) — WS-M does **not** swap the IdP.
+
+---
+
+## 2. Model — read before coding
+
+### 2.1 The three auth planes (do not conflate)
 
 ```mermaid
 flowchart TD
-  subgraph P1["Plane 1 — Operator → console (CONTROL PLANE)"]
-    OP(["operator"]) --> ALB["ALB Cognito OIDC (ES256)<br/>verify_alb_oidc deps.py:282"]
-    ALB --> RT["resolve_operator_tenant deps.py:323<br/>server-derived membership (NOT email domain)"]
+  subgraph P1["Plane 1 — Operator to console (CONTROL PLANE) — the coverage gap"]
+    OP(["operator"]) --> ALB["ALB Cognito OIDC ES256<br/>verify_alb_oidc deps.py:282"]
+    ALB --> RT["resolve_operator_tenant deps.py:323<br/>server-derived membership; set_current_tenant deps.py:361"]
     RT --> RR["require_role / require_platform<br/>deps.py:392 / :379"]
+    RR --> OWN["assert_owns ctx,kind,id<br/>ownership.py (NEW)"]
   end
-  subgraph P2["Plane 2 — Agent → PDP (DATA PLANE)"]
-    AGT(["agent"]) --> JWT["per-agent signed JWT (AD-7)<br/>resolve_tenant_from_jwt deps.py:111<br/>(tenant_id,agent_id) from VERIFIED claims"]
+  subgraph P2["Plane 2 — Agent to PDP (DATA PLANE)"]
+    AGT(["agent"]) --> JWT["per-agent ES256 JWT (AD-7)<br/>resolve_tenant_from_jwt deps.py:111<br/>IN-SERVICE verify = the boundary (ADR-037)"]
   end
-  subgraph P3["Plane 3 — the API-Gateway EDGE itself"]
-    EDGE["API Gateway authorizationType=NONE<br/>+ single SHARED API KEY = the only edge gate"]
+  subgraph P3["Plane 3 — API-Gateway edge"]
+    EDGE["authorizationType=NONE + shared API key = metering only<br/>edge authorizer DEFERRED (ADR-037)"]
   end
-  RR --> MUT["mutating routes.py handlers"]
-  JWT --> VAL["POST /v1/validate + data-plane reads"]
-  EDGE --> RR
-  EDGE --> JWT
-  style P3 fill:#fee,stroke:#c00
+  OWN --> MUT["mutating routes.py handlers"]
+  JWT --> VAL["POST /v1/validate + /trail + /signals"]
+  EDGE -. metering/throttle .-> MUT
+  EDGE -. metering/throttle .-> VAL
+  style P3 fill:#eeeeee,stroke:#999999
 ```
 
-**Plane 1 — operator → console. Mostly BUILT + LIVE (dev).** Cognito OIDC verified at the ALB ([deps.py:282](../../src/security-controller/app/api/deps.py#L282), ES256, `kid`-keyed LRU). Tenant is **server-derived from membership, never the email domain** ([deps.py:323](../../src/security-controller/app/api/deps.py#L323) `resolve_operator_tenant` → `sentra-tenant-members`, PK `operator_sub`/SK `tenant_id`); the `X-Aegion-Tenant` switcher is a client preference **re-validated server-side against the membership set** (deny non-member, [deps.py:340](../../src/security-controller/app/api/deps.py#L340)). RBAC is server-authoritative: `require_role` ([deps.py:392](../../src/security-controller/app/api/deps.py#L392)), `require_platform` ([deps.py:379](../../src/security-controller/app/api/deps.py#L379)), roles **`viewer`(0) < `editor`(1) < `admin`(2) < `owner`(3)`** + reserved **`_platform`** (`_ROLE_ORDER` [deps.py:39](../../src/security-controller/app/api/deps.py#L39), `role_satisfies` [deps.py:372](../../src/security-controller/app/api/deps.py#L372) — unknown role → False, fail-secure). Built at the LLD-26 go-live (2026-06-24). **WS-M does not rebuild this.**
+- **Plane 1 — operator to console (control plane).** RBAC **built + live on dev** (LLD-26 go-live 2026-06-24). The gap is *coverage*: `tenancy_routes.py` is fully gated (10 gates); `routes.py` gates exactly **one** route (`delete_feedback_subject`, the positive template). WS-M is the retrofit.
+- **Plane 2 — agent to PDP (data plane).** The **in-service** `resolve_tenant_from_jwt` check ([routes.py:196](../../src/security-controller/app/api/routes.py) for `/validate`) is the **authoritative boundary** (ADR-037). The committed M5 work makes that check *complete + fail-secure* on every data-plane route. **The edge authorizer is DEFERRED** — optional defense-in-depth, not built here.
+- **Plane 3 — API-Gateway edge.** `authorizationType=NONE` + single shared API key = **metering only** (AWS: keys are not auth). Demoted; DoS handled by gateway throttling/WAF. Edge authorizer addable later with zero redesign (§4.M4).
 
-**Plane 2 — agent → PDP data plane.** Per-agent signed-JWT identity (**AD-7** / FR-10.3, TENANCY_V2): the controller resolves authoritative `(tenant_id, agent_id)` from the **verified** credential, never a body field ([deps.py:111](../../src/security-controller/app/api/deps.py#L111) `resolve_tenant_from_jwt`). Enforcing for tenant `acme` on dev. **Interim residual:** a **shared/tenant-scoped API key** path still exists where per-agent JWT isn't yet enforced — HLD §6.3 leaves *"is verified identity a hard GA gate or interim-mitigated?"* open (sub-PRD §11.4). WS-M owns adjudicating that gate + the AD-7 prod-rollout coordination (with the WS-K enforce flip).
+### 2.2 Invariants (load-bearing)
 
-**Plane 3 — the API-Gateway edge itself (the open architectural gap).** The hosted PDP is fronted by API Gateway + ALB; the **API-Gateway method is `authorizationType=NONE` and a single SHARED API KEY is the only edge gate** ([99-go-live-runbook.md:57](99-go-live-runbook.md#L57)). The shared key is injected server-side (nginx/dev-proxy); the console never sets `x-api-key`. So the key protects the **programmatic/agent surface**, and Plane-1's `require_role` layer does **not** cover the raw `routes.py` policy-CRUD handlers — only `tenancy_routes.py`. **The authz coverage is asymmetric between the two route modules, and that asymmetry is the vulnerability.**
+1. **Server-side is the boundary; the client render-gate is UX.** Every gated mutation has a matching `Depends(require_role(...))`.
+2. **Authenticate *and* authorize the specific resource (no IDOR).** Being logged in is not enough — `assert_owns(ctx, kind, id)` before mutating. This is OWASP API1:2023 BOLA.
+3. **Derive the operator from verified identity, never a spoofable header.** Drop `X-Operator-Email` as an *authority*; key attribution on `ctx.sub` (guaranteed non-empty; `ctx.email` may be `""`).
+4. **Fleet-global mutations require *platform* scope, not tenant scope.** The sigma-rule store is not tenant-partitioned (M3).
+5. **Fail-secure default.** Missing/invalid OIDC → 401; below-role → 403; cross-tenant target → 403/404; unknown role → deny. `assert_owns` denies on mismatch **or lookup failure** — never "allow because we couldn't check".
+6. **Do NOT `require_role` the data-plane reads.** `/trail` + `/signals` carry no operator role — their fix is the M5 verified-JWT *tenant bind*, not an RBAC gate. (They are cross-tenant-readable today — a real gap, NOT "structural isolation".)
+7. **TENANCY_V2 is ON in the live env** (`dev.yaml:25 tenancy_v2_enabled:true`, dev=prod, enforcing since 2026-06-24) → POLICY + SESSION tenant-scoping are effective now; **no flag-flip predecessor** for this WS. `assert_owns` keeps a deny-on-unresolvable-tenant guard for a future flag-off env.
 
-### 2.1 Invariants (load-bearing)
+### 2.3 The route inventory (verified — resolve by handler NAME, not line; the file drifts)
 
-1. **Server-side is the boundary; the client render-gate is UX.** A tampered client must gain nothing. Every gated *mutation* must have a matching server-side `Depends(require_role(...))`.
-2. **Authenticate *and* authorize the specific resource (no IDOR).** It is not enough that the caller is logged in — assert the caller **owns the target** `agent_id`/policy/connection/session before mutating. Mirror `tenancy_routes._assert_owns_agent` ([tenancy_routes.py:48](../../src/security-controller/app/api/tenancy_routes.py#L48)).
-3. **Derive the operator from the verified identity, never a spoofable header.** Drop `X-Operator-Email` (default `"unknown"`, [deps.py:8-9](../../src/security-controller/app/api/deps.py#L8)) as an *authority*; keep it at most as a legacy audit-label alias fed from verified `ctx.email`. The verified header family is `x-amzn-oidc-data`/`x-sentra-oidc-data` (ES256-verified) — do not conflate the two.
-4. **Fleet-global mutations require *platform* scope, not tenant scope.** The sigma-rule store is **not** tenant-partitioned; a tenant-scoped role on a fleet-global mutation is a cross-tenant coverage event (see M-M3).
-5. **Fail-secure default.** Missing/invalid OIDC → 401; below-role → 403; unknown role → deny. Never fail open.
-6. **Do NOT over-gate data-plane reads.** `GET /v1/sessions/{id}/trail` and `/signals` deliberately carry **no** `require_role` — isolation is structural (verified-JWT contextvar + tenant-composite PK, [routes.py:381](../../src/security-controller/app/api/routes.py#L381), WS-D §D5.3). A naive "add `require_role` everywhere" sweep would wrongly break these. The distinguishing signal: `X-Operator-Email` (spoofable, control-plane *mutation*) = **fix**; verified-JWT contextvar (data-plane *read*) = **leave alone**.
+`routes.py` imports `require_role`/`OperatorContext` ([routes.py:19](../../src/security-controller/app/api/routes.py)) and applies it to exactly **one** route — `delete_feedback_subject` (the positive template). Every route below is otherwise **ungated**. Line numbers are the 2026-07-06 `main` refresh; **the coder confirms by symbol name**.
 
-### 2.2 The positive template (already correct — copy it)
-
-`tenancy_routes.py` is the clean reference: **13 `require_role`/`require_platform` gates** (grep), every mutation carrying a gate **and** an ownership assertion. And `routes.py` itself proves the same file *can* be gated correctly — **`delete_feedback_subject`** ([routes.py:821](../../src/security-controller/app/api/routes.py#L821), gate at [:823](../../src/security-controller/app/api/routes.py#L823) `require_role("admin")`) is the **one** gated mutating route in `routes.py`, and it is tenant-scoped via `ctx.tenant_id` (not a header). The rest of `routes.py` simply predates that discipline and was never retrofitted. WS-M is that retrofit.
-
----
-
-## 3. The authz surface — what is ungated today (the inventory)
-
-`routes.py` imports `require_role` ([routes.py:19](../../src/security-controller/app/api/routes.py#L19)) but applies it to exactly **one** route. Every other mutating route below has **no `Depends` authz gate**. Line numbers verified against the current file (the [99-go-live-runbook.md:57](99-go-live-runbook.md#L57) BUG-1 numbers are stale — the file has grown).
-
-| # | Route | Handler | `routes.py:line` | Gate today | Severity | Target gate |
+| # | Route | Handler | ~line | Identity today | Target gate | Ownership |
 |---|---|---|---|---|---|---|
-| **BUG-1 — policy CRUD (the known hole)** ||||||
-| 1 | `POST /v1/policies` | `create_policy` | [1172](../../src/security-controller/app/api/routes.py#L1172) | `X-Operator-Email` only | **CRITICAL** | `require_role("editor")` + tenant-own |
-| 2 | `PUT /v1/policies/{id}` | `update_policy` | [1216](../../src/security-controller/app/api/routes.py#L1216) | `X-Operator-Email` only | **CRITICAL** | `require_role("editor")` + tenant-own |
-| 3 | `DELETE /v1/policies/{id}` | `delete_policy` | [1271](../../src/security-controller/app/api/routes.py#L1271) | `X-Operator-Email` only | **CRITICAL** | `require_role("admin")` + tenant-own |
-| 4 | `PATCH /v1/policies/{id}/status` | `set_policy_status` | [1313](../../src/security-controller/app/api/routes.py#L1313) | `X-Operator-Email` only | **CRITICAL** | `require_role("editor")` + tenant-own |
-| 5 | `POST /v1/agents/{id}/policies` | `attach_agent_policy` | [882](../../src/security-controller/app/api/routes.py#L882) | `X-Operator-Email`, no ownership | **CRITICAL** | `require_role("editor")` + **assert owns `agent_id` + policy tenant** |
-| 6 | `DELETE /v1/agents/{id}/policies/{pid}` | `detach_agent_policy` | [902](../../src/security-controller/app/api/routes.py#L902) | `X-Operator-Email`, no ownership | **CRITICAL** | `require_role("editor")` + assert owns `agent_id` |
-| **Beyond BUG-1 — surfaced by this inventory** ||||||
-| 7 | `PUT /v1/connections/{id}` | `update_connection` | [751](../../src/security-controller/app/api/routes.py#L751) | **none** — writes `role_arn`/Azure SP `client_id`+`secret_ref` | **CRITICAL** | `require_role("admin")` + tenant-own |
-| 8 | `POST /v1/connections/{id}/test` | `test_connection` | [777](../../src/security-controller/app/api/routes.py#L777) | **none** — live `sts:AssumeRole`/Azure probe | **CRITICAL** | `require_role("editor")` + tenant-own |
-| 9 | `POST /v1/connections` | `create_connection` | [731](../../src/security-controller/app/api/routes.py#L731) | **none** | **HIGH** | `require_role("admin")` + tenant-own |
-| 10 | `POST /v1/connections/{id}/scan` | `scan_connection` | [797](../../src/security-controller/app/api/routes.py#L797) | **none** | **HIGH** | `require_role("editor")` + tenant-own |
-| 11 | `DELETE /v1/connections/{id}` | `delete_connection` | [811](../../src/security-controller/app/api/routes.py#L811) | **none** | **HIGH** | `require_role("admin")` + tenant-own |
-| 12 | `PATCH /v1/sigma-rules/{id}` | `update_sigma_rule` | [1446](../../src/security-controller/app/api/routes.py#L1518) | **none** — fleet-global detection kill-switch | **HIGH** | **`require_platform`** (see M-M3) |
-| 13 | `DELETE /v1/quarantine/{id}` | `release_session` | [1816](../../src/security-controller/app/api/routes.py#L1816) | **none** — `operator_id` query param | **HIGH** | `require_role("admin")` + tenant-own |
-| 14 | `POST /v1/quarantine/{id}` | `quarantine_session` | [1730](../../src/security-controller/app/api/routes.py#L1730) | **none** — `operator_id` in body | **HIGH** | `require_role("admin")` + tenant-own |
-| 15 | `POST /v1/rollback` | `rollback_action` | [1601](../../src/security-controller/app/api/routes.py#L1601) | **none** — `operator_id` in body | **HIGH** | `require_role("admin")` + tenant-own |
-| 16 | `POST /v1/rollback/conversation/{id}` | `rollback_conversation` | [1660](../../src/security-controller/app/api/routes.py#L1660) | **none** — `operator_id` default `"system"` | **HIGH** | `require_role("admin")` + tenant-own |
-| 17 | `POST /v1/discovery/import` | `discovery_import` | [697](../../src/security-controller/app/api/routes.py#L697) | **none** | **HIGH** | `require_role("editor")` + tenant-scope imported ids |
-| 18 | `POST /v1/decisions/{id}/verdict` | `post_decision_verdict` | [905](../../src/security-controller/app/api/routes.py#L905) | **none** — `operator_id` in body; feeds FP/FN training | **MEDIUM** | authenticate + tenant-own |
-| 19 | `POST /v1/sessions/{id}/signals` | `post_session_signal` | [442](../../src/security-controller/app/api/routes.py#L442) | **none** — external producer write | **MEDIUM** | dedicated data-plane credential + tenant-scope |
-| — | `GET /v1/sessions/{id}/trail` | `get_session_trail` | [381](../../src/security-controller/app/api/routes.py#L381) | **none — CORRECT** (data-plane read) | — | **do NOT change** (Invariant 6) |
+| 1 | `POST /v1/policies` | `create_policy` | 1243 | `X-Operator-Email` | `require_role("editor")` | scope body to `ctx.tenant_id` (no cross-tenant target on create) |
+| 2 | `PUT /v1/policies/{id}` | `update_policy` | 1287 | `X-Operator-Email` | `require_role("editor")` | `assert_owns(POLICY, id)` |
+| 3 | `DELETE /v1/policies/{id}` | `delete_policy` | 1342 | `X-Operator-Email` | `require_role("admin")` | `assert_owns(POLICY, id)` |
+| 4 | `PATCH /v1/policies/{id}/status` | `set_policy_status` | 1384 | `X-Operator-Email` | `require_role("editor")` | `assert_owns(POLICY, id)` |
+| 5 | `POST /v1/agents/{id}/policies` | `attach_agent_policy` | 953 | `X-Operator-Email` | `require_role("editor")` | `assert_owns(AGENT, agent_id)` **then** `assert_owns(POLICY, policy_id)` (order matters) |
+| 6 | `DELETE /v1/agents/{id}/policies/{pid}` | `detach_agent_policy` | 973 | `X-Operator-Email` | `require_role("editor")` | `assert_owns(AGENT, agent_id)` |
+| 7 | `POST /v1/connections` | `create_connection` | 813 | none | `require_role("admin")` | born tenant-scoped (create N/A) |
+| 8 | `PUT /v1/connections/{id}` | `update_connection` | 833 | none — writes `role_arn`/Azure `secret_ref` | `require_role("admin")` | `assert_owns(CONNECTION, id)` |
+| 9 | `POST /v1/connections/{id}/test` | `test_connection` | 859 | none — live `sts:AssumeRole` | `require_role("editor")` | `assert_owns(CONNECTION, id)` |
+| 10 | `POST /v1/connections/{id}/scan` | `scan_connection` | 879 | none | `require_role("editor")` | `assert_owns(CONNECTION, id)` |
+| 11 | `DELETE /v1/connections/{id}` | `delete_connection` | 893 | none | `require_role("admin")` | `assert_owns(CONNECTION, id)` |
+| 12 | `PATCH /v1/sigma-rules/{id}` | `update_sigma_rule` | 1517 | none — fleet-global kill-switch | **`require_platform`** (M3) | — (fleet-global, not tenant) |
+| 13 | `DELETE /v1/quarantine/{id}` | `release_session` | 1887 | `operator_id` query (default `"operator"`) | `require_role("admin")` | `assert_owns(SESSION, id)` |
+| 14 | `POST /v1/quarantine/{id}` | `quarantine_session` | 1801 | `operator_id` in body | `require_role("admin")` | `assert_owns(SESSION, id)` |
+| 15 | `POST /v1/rollback` | `rollback_action` | 1672 | `operator_id` in body | `require_role("admin")` | `assert_owns(ACTION, action_id)` (§4.M2 net-new) |
+| 16 | `POST /v1/rollback/conversation/{id}` | `rollback_conversation` | 1731 | `operator_id` in body (default `"system"`) | `require_role("admin")` | `assert_owns(CONVERSATION, id)` |
+| 17 | `POST /v1/discovery/import` | `discovery_import` | 768 | none | `require_role("editor")` | prefix-stamp imported `agent_id`s to `ctx.tenant_id` |
+| 18 | `POST /v1/decisions/{id}/verdict` | `post_decision_verdict` | 987 | `operator_id` in body | authenticate + derive from `ctx` | `assert_owns(SESSION, id)` (session-scoped) |
+| 19 | `POST /v1/sessions/{id}/signals` | `post_session_signal` | 524 | none — external producer write | **interim fail-closed** (M2); full producer credential DESIGN-ONLY (deferred) | — |
+| — | `GET /v1/sessions/{id}/trail` | `get_session_trail` | 464 | **no auth** | **M5 JWT-tenant-bind** (NOT `require_role`) | — |
+| — | `GET /v1/sessions/{id}/signals` | `get_session_signals` | 448 | **no auth** | **M5 JWT-tenant-bind** (NOT `require_role`) | — |
+| — | `DELETE /v1/feedback/subjects/{id}` | `delete_feedback_subject` | 903 | `require_role("admin")` (done) | **DONE — positive template** | tenant-scoped via `ctx` |
 
-**Two surprises worth the founder's attention** (both worse or more subtle than the tracked policy hole):
-- **The connection routes (7–11) are credential-bearing and entirely ungated** — `update_connection` writes an IAM `role_arn` / Azure SP secret ref, and `test`/`scan` drive **live cross-account STS calls**. Cross-tenant cloud-credential read/replace + live AssumeRole is arguably worse than the policy IDOR and is **not** in the BUG-1 write-up.
-- **`operator_id` is self-asserted in the body** for quarantine/rollback/verdict (14/15/16/18) — so even the *audit attribution* is spoofable, not just the authz. Deriving it from verified `ctx` fixes both.
+### 2.4 The operator-mutation auth flow (sequence)
 
----
+```mermaid
+sequenceDiagram
+  autonumber
+  participant B as Browser console
+  participant GW as API Gateway edge
+  participant H as create_policy handler
+  participant OI as verify_alb_oidc
+  participant RT as resolve_operator_tenant
+  participant RR as require_role editor
+  participant OWN as assert_owns
+  B->>GW: PUT/POST /v1/policies with Cognito session
+  GW->>H: forward + x-sentra-oidc-data ES256 claims (key = metering only)
+  Note over H: FastAPI resolves Depends require_role editor BEFORE the body runs
+  RR->>RT: Depends resolve_operator_tenant
+  RT->>OI: verify_alb_oidc request
+  OI-->>RT: verified claims sub, email (else 401)
+  RT->>RT: membership lookup sub gives tenant_id and role
+  RT-->>RR: OperatorContext sub, tenant_id, role, is_platform
+  RR->>RR: role_satisfies ctx.role vs editor? (else 403)
+  RR-->>H: ctx verified
+  H->>OWN: assert_owns ctx, POLICY, policy_id (update/delete/status)
+  OWN-->>H: ok (else 403/404 cross-tenant IDOR blocked)
+  H->>H: mutate + audit operator = ctx.sub (never X-Operator-Email)
+  H-->>B: 200/201 tenant-scoped
+```
 
-## 4. Milestones → tasks (scope-level; LLD refines)
+### 2.5 What is DONE (do NOT re-task — from lld/39 §14)
 
-### Milestone M-M1 — close BUG-1 (policy CRUD + agent-policy bind)
-- **Implements:** FR-10.1 · closes BUG-1 / [[policy-crud-routes-no-authz]] | routes 1–6.
-- **M1.1** — Add `ctx: OperatorContext = Depends(require_role("editor"))` to create/update/status/attach; `require_role("admin")` to delete. Derive the operator from verified `ctx.email`/`ctx.sub`; **drop `X-Operator-Email` as an authority** (feed the existing `operator_email=` audit param from `ctx.email`).
-- **M1.2** — **Anti-IDOR ownership assert.** Before `validate_policy`/rebind: assert the target policy's tenant `== ctx.tenant_id`, and for attach/detach call the delimited ownership check on `agent_id` (reuse `_assert_owns_agent`, [tenancy_routes.py:48](../../src/security-controller/app/api/tenancy_routes.py#L48)). Validate `policy_id` belongs to `ctx.tenant_id`.
-- **M1.3 — FOOTGUN (shared file, API-GW flush).** `deps.py`/`routes.py` are shared with LLD-26/WS-D/WS-G — coordinate edits. A newly-gated/edited route must also be re-flushed at the gateway or it 403s at the edge for the wrong reason ([[apigw-per-resource-no-proxy]], [[sentra-prod-deploy-mechanism]] — `create-deployment` to flush the stale prod-stage snapshot).
-
-### Milestone M-M2 — gate the credential-bearing + containment + rollback routes
-- **Implements:** FR-10.1 | routes 7–17.
-- **M2.1 — Connections (7–11).** `require_role("admin")` on create/update/delete, `require_role("editor")` on read-probe test/scan; tenant-scope every connection to `ctx.tenant_id`. **FOOTGUN:** `update_connection` is credential-bearing and `test`/`scan` drive live STS — an ungated caller can trigger cross-account calls against a connection they don't own.
-- **M2.2 — Quarantine/release (13–14) + rollback (15–16).** `require_role("admin")`; derive `operator_id` from verified `ctx` (not body/query); assert the session/action tenant `== ctx.tenant_id`. **FOOTGUN:** `release_session` lets a contained agent lift its *own* quarantine today — de-containment must be authenticated.
-- **M2.3 — Discovery import (17).** `require_role("editor")`; tenant-scope promoted `agent_id`s to `ctx.tenant_id`.
-
-### Milestone M-M3 — platform-operator gate on the sigma retire path (closes a WS-F threat; tracked, non-blocking)
-- **Implements:** ADR-034 | route 12; **owns the gate that closes 3 WS-F open threats** (the sigma-retire fleet-global kill-switch). **Tracked dependency, NOT a hard merge-gate on WS-F** (founder 2026-07-05): WS-F ships ahead; WS-F's CI check emits a non-blocking WARNING until this milestone lands and clears it. Build M-M3 as a known WS-M item, not a WS-F blocker.
-- **M3.1 — Gate `update_sigma_rule` at PLATFORM scope.** `ctx = Depends(require_platform)` (or an explicit platform-scope `require_role` checking `is_platform`) on `PATCH /sigma-rules/{rule_id}` ([routes.py:1518](../../src/security-controller/app/api/routes.py#L1518)) **and** the `__sigma_version__` version-epoch write it triggers (`SigmaRulesService._bump_enforcement_version`, [sigma_rules_service.py:402](../../src/security-controller/app/services/sigma_rules_service.py#L402)) — they are **one call chain** behind one missing door.
-- **M3.2 — WHY platform, not tenant (the load-bearing subtlety).** The sigma store (`sentra-sigma-rules-metadata` + S3 `sigma_rules/llm/`) is **not** tenant-partitioned ([lld/35 §13](../../lld/35-prompt-signatures.md)); one retire flips a rule to `deprecated`, which `load_rules_metadata_from_dynamodb` ([sigma_engine.py:100](../../src/security-controller/app/validators/sigma_engine.py#L100)) then stops loading — stripping it from the enforced set **for every tenant**. A tenant-scoped role wired to a fleet-global mutation lets any tenant-admin retire a rule fleet-wide, and an ungated path is the disable-switch **ADR-034 forbids**, reached through the CRUD door. **FOOTGUN:** copying the tenant-scoped `delete_feedback_subject` pattern here is the wrong-scope trap.
-- **M3.3 — Failing-then-passing 403 test.** Assert **both** an un-roled caller **and** a merely-tenant-scoped caller (a tenant admin who is *not* `_platform`) get 403; a genuine platform operator gets 200. The tenant-scoped-still-403 assertion is what pins the platform-vs-tenant decision. (WS-F owns the **CI assertion** that fails the build if any sigma-mutating route lacks a platform gate — WS-M lands the gate it checks for.)
-
-### Milestone M-M4 — edge authorizer + shared-API-key replacement (ADR-037)
-- **Implements:** FR-10.5 · **new decision ADR-037** | Plane 3.
-- **M4.1 — Decide the replacement** for `authorizationType=NONE` + single shared API key: a Lambda/JWT API-Gateway authorizer, IAM auth, or per-tenant scoped keys bound to the `require_role` layer. This is architecturally distinct from ADR-035 (console federation) and AD-7 (per-agent JWT) — it is *what authenticates a request at the gateway*. **Record as ADR-037.** (LLD-level; the WS commits the decision, not necessarily the full rollout.)
-- **M4.2 — Coordinate with WS-K.** The activation K8 suite ([ws-k-production-activation.md:311](ws-k-production-activation.md#L311)) already asserts `require_role` + `X-Aegion-Tenant` membership; extend it with a **positive authz assertion** on the newly-gated policy-CRUD routes.
-
-### Milestone M-M5 — verified-identity (AD-7) GA-gate adjudication
-- **Implements:** FR-10.3/FR-10.5 | Plane 2 residual.
-- **M5.1 — Adjudicate** whether verified per-agent identity is a **hard GA gate** or interim-mitigated by tenant-scoped API keys (HLD §6.3 / sub-PRD §11.4 open). Own the AD-7 prod-rollout coordination (credential issuance/rotation, coverage drive) with the WS-K two-latch enforce flip (`effective = min(env ceiling, tenant.identity_mode)`). *(May be the one genuinely spike-adjacent item — sequence after the WS-0-informed money-movement routing is settled; not a blocker for M1–M3.)*
-
-### Milestone M-M6 — federation seam (design-only; DEFER the provider switch)
-- **Implements:** ADR-035 (consume, don't own the switch) | Plane 1.
-- **M6.1** — Consume the IdP-neutral `VerifiedOperator{sub, email, idp_groups[]}` seam that WS-G designs (G3.7) so federation later is a config change. **FOOTGUN:** do **not** swap Cognito out now (explicit, [ws-g-console.md:144](ws-g-console.md#L144)); do **not** rebuild the live membership/RBAC layer. SCIM deprovisioning + the actual SAML/OIDC switch stay **deferred / done-last**.
-
-### Milestone M-M7 — authz tests as the arbiter
-- **Implements:** the engineering "tests are the arbiter" standard.
-- **M7.1** — For every gated route: (a) missing/invalid OIDC → 401; (b) below-role → 403; (c) valid operator of tenant B targeting tenant A's policy/agent/connection/session → 403 (anti-IDOR). Mirror the `tenancy_routes` authz test pattern. The fix isn't done until these pass. Add WS-M as a **pairs-with** in WS-J so the canary harness carries positive-authz coverage on the previously-ungated routes.
-
----
-
-## 5. Error model
-
-| Condition | Response |
+| Already built (dev) | Evidence |
 |---|---|
-| Missing / invalid ALB-OIDC on a control-plane mutation | **401** (`verify_alb_oidc`) |
-| Authenticated but role `< min_role` | **403** (`require_role`) |
-| Authenticated, right role, but target belongs to another tenant (IDOR) | **403** (ownership assert) — never mutate |
-| Tenant-scoped caller (not `_platform`) on `PATCH /sigma-rules` | **403** (platform-scope required) |
-| Unknown role string | deny (`role_satisfies` → False) |
-| `X-Operator-Email` present but no verified identity | **rejected** — header is not an authority |
-| Data-plane read (`/trail`, `/signals`) | **no `require_role`** — tenant-scoped by verified-JWT + composite PK (unchanged) |
+| `require_role`/`require_platform`/`role_satisfies`/`_ROLE_ORDER`/`OperatorContext` | deps.py:392/379/372/39/240 |
+| `verify_alb_oidc` (ES256 + `kid` LRU) | deps.py:282, `_ALBKeyCache` :250 |
+| `resolve_operator_tenant` (server-derived membership + `set_current_tenant`) | deps.py:323 / :361 |
+| `resolve_tenant_from_jwt` (per-agent JWT, enforcing tenant `acme`) | deps.py:111 |
+| `_assert_owns_agent` (delimited-prefix) | tenancy_routes.py:48 |
+| `tenancy_routes.py` fully gated (10 gates — the regression-guard set) | require_role 86/138/151/234/267/290/309/349, require_platform 437/454 |
+| `delete_feedback_subject` gated (positive template) | routes.py:903 |
+| TENANCY_V2 ON in live env → POLICY+SESSION isolation effective | dev.yaml:25 |
+
+### 2.6 DEFERRED / design-only (do NOT build here)
+
+- **Edge authorizer (ADR-037 §4)** — deferred; optional defense-in-depth. See §4.M4 for the design-of-record only.
+- **Route-19 full producer credential + shape validation (§5.3 D4)** — design-only; the *interim fail-closed guard* ships with M1–M3 (§4.M2.8).
+- **Tier-2 customer custom roles / M6 federation provider switch** — roadmap; WS-M consumes the seam design-only, no IdP swap.
 
 ---
 
-## 6. Acceptance criteria
+## 3. Error model
 
-- [ ] **BUG-1 closed:** the 6 policy-CRUD/bind routes (1–6) carry `require_role` + an anti-IDOR ownership assert; `X-Operator-Email` is no longer an authority (operator derived from verified `ctx.email`). A cross-tenant call returns 403 (test).
-- [ ] The credential-bearing connection routes (7–11) are gated + tenant-scoped; a caller cannot read/replace another tenant's cloud-account binding or trigger AssumeRole against a connection they don't own (test).
-- [ ] Quarantine/release + rollback (13–16) are `admin`-gated with `operator_id` derived from verified `ctx`; a contained session cannot self-release (test).
-- [ ] **`PATCH /sigma-rules/{id}` + the `__sigma_version__` write are `require_platform`-gated;** a tenant-scoped admin gets 403 (not just an un-roled caller) — the failing-then-passing 403 test asserts both. Once landed, **WS-F's CI check flips from WARNING to green** (WS-F was never blocked — non-blocking tracked dependency, founder 2026-07-05).
-- [ ] `GET /v1/sessions/{id}/trail` and `/signals` are **unchanged** — still no `require_role` (a test proves cross-tenant returns zero rows via composite PK, not via RBAC).
-- [ ] ADR-037 (edge authorizer / shared-key replacement) is written; the WS-K K8 suite carries a positive authz assertion on the fixed routes.
-- [ ] The verified-identity (AD-7) GA-gate question is adjudicated in the LLD (hard-gate vs interim), coordinated with the WS-K enforce flip.
-- [ ] The federation seam is consumed design-only; **no** IdP swap, **no** rebuild of the live membership/RBAC layer, SCIM/provider-switch explicitly deferred.
-- [ ] Every gated route has a 401 / 403 / cross-tenant-403 test (M7); no route regresses the `tenancy_routes` positive template.
-- [ ] **LLD deliverables flagged (not built here):** exact `Depends` signatures + per-route role map, the ownership-assertion helper's reuse-vs-generalize call, the ADR-037 authorizer mechanism pick, and the AD-7 GA-gate adjudication are named as LLD work.
+| Condition | Response | Where |
+|---|---|---|
+| Missing/invalid ALB-OIDC on a control-plane mutation | **401** | `verify_alb_oidc` (deps.py:282) |
+| Authenticated but role `< min_role` | **403** | `require_role` (deps.py:392) |
+| Right role, target belongs to another tenant (IDOR) | **403** (tenant-prefixed/obviously-foreign id) / **404** (opaque existence-sensitive id) — never mutate | `assert_owns` (§4.M1.2) |
+| Tenant-scoped caller (not `_platform`) on `PATCH /sigma-rules` | **403** | `require_platform` (deps.py:379) |
+| Unknown role string | deny | `role_satisfies`→False (deps.py:372) |
+| `X-Operator-Email` present but no verified identity | **rejected** — header is not authority | §4.M1.3 |
+| Ownership lookup fails (store error / unresolvable tenant) | **deny** (403/404), never allow | `assert_owns` fail-secure |
+| Data-plane read (`/trail`,`/signals`) reached without a verified JWT tenant bind | **deny** (M5) — NOT ungated-ambient-`default` | §4.M5 |
+| Rollback of an action that can't be tenant-resolved (Logs Insights timeout) | **retryable** distinct status (`RESOLUTION_UNAVAILABLE`), NOT a cross-tenant 404 | §4.M2.5 |
+
+**403-vs-404 masking rule:** default **403** ("not allowed"), **except** where mere existence is sensitive — policy/connection/session lookups by opaque id → cross-tenant target masked as **404** (a 403 would confirm the id is a live record in another tenant). Agent ids are tenant-prefixed → **403**.
 
 ---
 
-## 7. Cross-references
-- **Implements:** FR-10.1 (tenant isolation) · FR-13.3 (console auth & tenancy + RBAC role model) · FR-13.1 (multi-tenant console, no cross-tenant leak) · FR-6.8 (trail-read authz *contrast*, unchanged) · NFR-10.
-- **Decisions:** **ADR-037** (NEW — edge authorizer + shared-API-key replacement) · ADR-035 (federation seam — WS-M *consumes*, does not swap the IdP) · ADR-034 (non-disableable floor → sigma retire path must be platform-scoped) · ADR-019 / AD-8 (Cognito + RBAC console layer) · AD-7 (verified per-agent identity / TENANCY_V2).
-- **Shared contracts:** `require_role(role)` / `require_platform` / `verify_alb_oidc` / `resolve_operator_tenant` ([deps.py:392/379/282/323](../../src/security-controller/app/api/deps.py#L392)) · `OperatorContext` + verified `ctx.email` (replaces spoofable `X-Operator-Email`) · `_assert_owns_agent` ([tenancy_routes.py:48](../../src/security-controller/app/api/tenancy_routes.py#L48)) · the policy-CRUD routes ([routes.py:1172/1216/1271/1313/882/902](../../src/security-controller/app/api/routes.py#L1172)) · the sigma retire chain ([routes.py:1518](../../src/security-controller/app/api/routes.py#L1518) → `_bump_enforcement_version` [sigma_rules_service.py:402](../../src/security-controller/app/services/sigma_rules_service.py#L402)).
-- **Upstream (LLDs to extend):** [lld/26-multi-tenancy.md](../../lld/26-multi-tenancy.md) §5–6 (RBAC authority — the primitives already built) · LLD 08 (ALB/Cognito auth) · [lld/35-prompt-signatures.md](../../lld/35-prompt-signatures.md) §3.3 (sigma retire authz). WS-M's own LLD → **lld/39**.
-- **Sibling refs:** **WS-G** (owns client render-gating + the ADR-035 seam; WS-M lands the *server* gate) · **WS-A** ([A5.4](ws-a-local-floor-bundle.md) leaked-signing-key path — WS-M is the *upstream authoring control*, defense-in-depth) · **WS-D** (verified-JWT data-plane read — deliberately no RBAC; do **not** re-home) · **WS-F** (owns the sigma-retire CI assertion; WS-M is its merge-gate predecessor) · **WS-J** (canary authz assertions — add WS-M as pairs-with) · **WS-K** (prod authz verification / K8 suite).
-- **Code touch-points:** [routes.py](../../src/security-controller/app/api/routes.py) (the 18 mutating routes + the 1 correct read), [deps.py](../../src/security-controller/app/api/deps.py) (auth primitives — coverage owner, not primitive owner), [tenancy_routes.py](../../src/security-controller/app/api/tenancy_routes.py) (the positive template).
-- **Memory:** [[policy-crud-routes-no-authz]] ≡ BUG-1 · [[dev-stack-is-prod]] (this IDOR is live in prod) · [[apigw-per-resource-no-proxy]] + [[sentra-prod-deploy-mechanism]] (re-flush the gateway after gating a route).
+## 4. Milestones → tasks
+
+> **Test-env note (all tasks):** run the security-controller suite hermetically — `env -u AWS_PROFILE AWS_ACCESS_KEY_ID=test AWS_SECRET_ACCESS_KEY=test <pkg>/venv/bin/python -m pytest …` (a leaked real `AWS_PROFILE` fakes ~37 failures — [[controller-tests-moto-safe-env]]).
+> **Deploy-flush footgun (every route/gate change):** after gating a route you MUST re-flush the gateway or it 403s for the wrong reason. App-layer route change → immutable-image build → `ecs update-service --force-new-deployment`; then `apigateway create-deployment` to flush the stale prod-stage snapshot ([[apigw-per-resource-no-proxy]], [[sentra-prod-deploy-mechanism]]).
+
+### Milestone M0 — the ownership helper + the systemic gate (land FIRST, before route fixes)
+
+**M0.1 — Create `app/api/ownership.py` with the generalized `assert_owns`.**
+- New module (NOT in `deps.py` — deps.py holds only auth primitives; adding store point-reads there pulls service imports into the auth module). Signature: `def assert_owns(ctx: OperatorContext, kind: ResourceKind, resource_id: str) -> None`.
+- `ResourceKind(str, Enum)`: `AGENT="agent"`, `POLICY="policy"`, `CONNECTION="connection"`, `SESSION="session"`, `ACTION="action"`, `CONVERSATION="conversation"`.
+- Dispatch (fail-secure — denies on mismatch OR lookup failure; reads resolve tenant from `ctx`, never the ambient contextvar):
+  - **AGENT** — delimited-prefix, no read: `if not resource_id.startswith(ctx.tenant_id + "-"): raise HTTPException(403, "agent not owned by tenant")`. (Delimiter-safe — never bare `startswith`.)
+  - **CONNECTION** — flag-independent structural (born tenant-scoped, PK *is* `tenant_id`, [connections_service.py:167-174](../../src/security-controller/app/services/connections_service.py)): tenant-scoped point-read `(ctx.tenant_id, connection_id)`; present ⇒ owned, absent ⇒ **404**.
+  - **SESSION** — structural but v2-gated (effective because TENANCY_V2 on): tenant-scoped read via `SessionManager` keyed on `tenancy.item_key('session_id', id)` ([session_manager.py:94](../../src/security-controller/app/utils/session_manager.py)); absent ⇒ 404; if the record can't be tenant-resolved (flag-off / stray) → **DENY**, never fall through to a bare-key read. **Store = `SessionManager`, NOT `decisions_service.signal_pk_value`** (that governs the `/trail` signals store — do not conflate).
+  - **POLICY** — stored-attribute compare via `_tenant_of_policy(resource_id, ctx.tenant_id)` = **DIRECT tenant-scoped DDB point-read that BYPASSES `PolicyService.get_policy`** (see footgun); `None` ⇒ 404; `owner != ctx.tenant_id` ⇒ 403.
+  - **CONVERSATION** — same tenant-scoped SESSION read.
+  - **ACTION** — `_tenant_of_action` (the net-new Logs Insights path, M2.3).
+- **`_assert_owns_agent` alias + repoint:** re-export `_assert_owns_agent` from `ownership.py` (thin alias `assert_owns(ctx, AGENT, agent_id)`), import it into `tenancy_routes.py`, and repoint its existing call sites **without behavior change**.
+- **FOOTGUN (POLICY cache):** `_tenant_of_policy` MUST NOT call `PolicyService.get_policy` — that caches by a **tenant-blind key** `f"policy:{policy_id}"` ([policy_service.py:196](../../src/security-controller/app/services/policy_service.py)) in a process-wide singleton ([cache_manager.py:271](../../src/security-controller/app/utils/cache_manager.py)); a warm cache serves tenant A's row to tenant B → re-opens the IDOR. Use a direct tenant-scoped point-read on `(ctx.tenant_id, policy_id)`. (Coordinate with WS-D/WS-H who own `policy_service.py`/`cache_manager.py`.)
+- **Unit tests** (`tests/test_ownership.py`): `test_assert_owns_agent_prefix_match_ok`, `test_assert_owns_agent_foreign_prefix_403`, `test_assert_owns_agent_short_prefix_no_false_match` (t_01 vs t_01hxyz-…), `test_assert_owns_connection_present_ok` / `_absent_404`, `test_assert_owns_session_present_ok` / `_absent_404`, `test_assert_owns_session_unresolvable_denies` (flag-off fixture → deny not fall-through), `test_assert_owns_policy_owner_match_ok` / `_foreign_owner_403` / `_missing_404`, `test_assert_owns_policy_bypasses_cache` (warm-cache tenant-A then tenant-B still denies — see M7), `test_assert_owns_lookup_error_denies`.
+- **Integration tests** (`tests/test_ownership_integ.py` — `assert_owns` is a **shared contract** owned by WS-M): `test_ownership_helper_reused_by_tenancy_routes` — drive an existing gated `tenancy_routes` mutation through the re-exported alias, assert the 10 gates still behave (regression guard for the move).
+
+**M0.2 — Systemic ungated-route CI enumerator (lands BEFORE/WITH the first route fix).**
+- A build-failing test that enumerates every `@router.post/put/patch/delete` handler in `routes.py` + `tenancy_routes.py` and **fails if any lacks an authz `Depends`** (`require_role` / `require_platform`), with an **explicit allowlist** (with a reason each) for the deliberate data-plane exceptions: `get_session_trail`, `get_session_signals` (reads, gated by M5 JWT-bind not `require_role`), and `post_session_signal` (route 19, while interim-fail-closed). **The grep MUST accept `Depends(require_platform)` as a gate**, not only `require_role` (else it false-fails once M3 lands route 12).
+- Also assert (ownership-coverage half — not just presence-of-Depends): every route taking a path-param resource id has a corresponding `assert_owns` call OR is on an explicit ownership-exempt allowlist with a reason.
+- **Unit tests** (`tests/test_authz_coverage_gate.py`): `test_all_mutating_routes_have_authz_depends`, `test_gate_accepts_require_platform` (a route gated with `require_platform` passes), `test_role_gated_but_ownership_missing_route_fails` (proves it catches the subtler half of the bug — a route with `require_role` but no `assert_owns`), `test_allowlist_requires_reason`.
+- **Integration test:** N/A (pure static-analysis test — no cross-component boundary). *Stated opt-out: this task is a self-contained CI check.*
+- **M1 acceptance also includes an exploitation-review task:** grep the audit log for historical policy/connection mutations whose `X-Operator-Email`/`operator_id` tenant ≠ the target's tenant; **record the result** (an unrun check is not a clean bill; do not assert "no exploitation occurred").
+
+### Milestone M1 — close BUG-1 (policy CRUD + agent-policy bind, routes 1–6) + the signer-pin predecessor
+
+**M1.0 — HARD PREDECESSOR: signer-ARN + Cognito-issuer pin in `verify_alb_oidc` (lands unconditionally at M1).**
+- Plain ES256 verification accepts a token signed by **any** in-region ALB / **any** Cognito pool. BUG-1's closure rests on `verify_alb_oidc` rejecting a forged token, so the pin is load-bearing, not deferrable.
+- In `verify_alb_oidc` ([deps.py:282-319](../../src/security-controller/app/api/deps.py)): after signature verify, assert the JWT header `signer` == the expected ALB ARN **and** `iss`/`token_use` match the expected Cognito pool. Must apply to **whichever header is read** (`x-sentra-oidc-data` first, then native `x-amzn-oidc-data`).
+- **AS-1 build-time check:** run `aws elbv2 describe-load-balancers` + count in-region `authenticate-cognito` ALBs and Cognito pools; if >1, escalate as a SEC defect (account `531109575379` hosts multiple stacks → non-trivial odds). Record the expected signer-ARN/issuer set.
+- **Unit tests** (`tests/test_verify_alb_oidc_pin.py`): `test_pin_rejects_foreign_alb_signer` (a token from a second in-region ALB → 401), `test_pin_rejects_wrong_issuer`, `test_pin_enforced_on_x_sentra_oidc_data_path`, `test_pin_enforced_on_x_amzn_oidc_data_path` (both header paths — fallback can't bypass).
+- **Integration test** (`verify_alb_oidc` is a shared contract with LLD-08/26): `test_pin_end_to_end_control_plane_mutation` — a forged-signer token → 401 before any handler body runs.
+- **Coordinate:** shared primitive owned by LLD-08 §6.5 / LLD-26 — get owner sign-off on the edit.
+
+**M1.1 — Gate the 6 policy-CRUD/bind routes + drop `X-Operator-Email` as authority.**
+- Add exactly one param per route: `ctx: OperatorContext = Depends(require_role("editor"))` (create/update/status/attach/detach) or `Depends(require_role("admin"))` (delete) — see §2.3 table. FastAPI resolves it BEFORE the body runs.
+- **Drop `X-Operator-Email` as an authority.** Feed the existing `operator_email=` audit param from **verified `ctx`**. **Attribution key is `ctx.sub`** (guaranteed non-empty; `verify_alb_oidc` 401s on missing `sub`), NOT `ctx.email` (may be `""` if the pool omits email — `email = claims.get("email","")`). A request presenting `X-Operator-Email` with no verified identity is **rejected** (header is not an authority).
+- **Unit tests** (`tests/test_policy_routes_authz.py`): per route — `test_<handler>_missing_oidc_401`, `test_<handler>_below_role_403`, `test_<handler>_operator_derived_from_ctx_sub`, `test_<handler>_x_operator_email_ignored_as_authority`.
+- **Integration tests** (`tests/integration/test_policy_crud_authz.py` — the policy-CRUD routes are a **shared contract**): `test_policy_crud_end_to_end_editor_ok`, `test_policy_delete_requires_admin`.
+
+**M1.2 — Anti-IDOR ownership assert on routes 2–6.**
+- `update_policy`/`delete_policy`/`set_policy_status`: `assert_owns(ctx, POLICY, policy_id)` before the mutation. `attach_agent_policy`: `assert_owns(AGENT, agent_id)` **then** `assert_owns(POLICY, policy_id)` (both, in order). `detach_agent_policy`: `assert_owns(AGENT, agent_id)`. `create_policy`: no target to own — scope the new record to `ctx.tenant_id`.
+- **Unit tests:** `test_update_policy_cross_tenant_404`, `test_attach_foreign_agent_403`, `test_attach_own_agent_foreign_policy_404`, `test_create_policy_scoped_to_ctx_tenant`.
+- **Integration test:** `test_cross_tenant_policy_mutation_blocked` — tenant-B operator targeting tenant-A's policy → 403/404, no mutation.
+
+**M1.3 — Attribution non-spoofable (defense-in-depth on M1.1).**
+- Ensure the supplied body/header `operator_email` value **never reaches any downstream consumer** — assert the field is dropped, not merely that the audit label is `ctx.sub` (a handler that audits `ctx` but forwards `body.operator_email` downstream still leaks).
+- **Unit test:** `test_conflicting_operator_email_dropped_not_forwarded`. **Integration:** covered by M1.1's end-to-end.
+
+### Milestone M2 — credential-bearing connections (7–11) + containment (13–14) + rollback (15–16) + import (17) + fake-200 fix
+
+**M2.1 — Connections (7–11).** `require_role("admin")` on create/update/delete, `require_role("editor")` on test/scan; `assert_owns(CONNECTION, id)` on 8–11. **FOOTGUN:** `update_connection` writes an IAM `role_arn`/Azure SP `secret_ref` and `test`/`scan` drive live `sts:AssumeRole` — an ungated caller triggers cross-account calls. The cross-*tenant* dimension is already blocked (born tenant-scoped PK); the real gap is a **role/privilege gap** (a `viewer` doing credential writes) — gate it.
+- **Unit tests** (`tests/test_connection_routes_authz.py`): per route 401/below-role-403; `test_update_connection_requires_admin`, `test_test_connection_requires_editor`, `test_connection_cross_tenant_404`.
+- **Integration test:** `test_connection_credential_write_gated` — a `viewer` cannot reach `update_connection`/`test_connection`.
+
+**M2.2 — Quarantine/release (13–14).** `require_role("admin")`; **derive `operator_id` from verified `ctx.sub`, not body/query**; `assert_owns(SESSION, session_id)`. **FOOTGUN:** today `release_session` lets a contained agent lift its own quarantine — de-containment must be authenticated + admin.
+- **Unit tests:** `test_release_session_requires_admin`, `test_quarantine_operator_from_ctx_not_body`, `test_release_cross_tenant_session_404`.
+- **Integration test:** `test_contained_session_cannot_self_release`.
+
+**M2.3 — Rollback ACTION/CONVERSATION ownership (15–16) — the ONE net-new resolution path.** `require_role("admin")` + the 3-piece ownership + piece-4 idempotency:
+- **Piece 1 (HARD PREDECESSOR — the tenant field does NOT exist today):** stamp `event["tenant_id"] = tenancy.current_tenant()` in `_build_log_event`'s reversible-action branch ([audit_logger.py:625-634](../../src/security-controller/app/utils/audit_logger.py)). Today NO `tenant_id` is on the action record (audit_logger.py:146 is a metric dimension, NOT the persisted event) — so `_tenant_of_action` + the tenant re-check are **non-functional until this stamp lands** (would 404 every rollback, or fall back to id-only IDOR). This predecessor must merge before M2.3's gate.
+- **Piece 2 (injection-safe exact match):** replace `| filter @message like "{action_id}"` ([rollback_coordinator.py:196](../../src/security-controller/app/utils/rollback_coordinator.py)) with an exact match on the auto-discovered JSON field `filter action_id = <val> and tenant_id = <ctx.tenant_id>` (drop the `like` **and** the no-op `parse @message /(?<log_data>.*)/` at :195). Reject (never escape-interpolate) any `action_id` failing the allowlist regex `^act-[a-z_]+-\d{14}-[0-9a-f]{6}$` (grammar from audit_logger.py:631) → 400/404. Extend the in-code re-verify ([rollback_coordinator.py:228](../../src/security-controller/app/utils/rollback_coordinator.py)) to also assert `log_data['tenant_id'] == ctx.tenant_id`.
+- **Piece 3 (legacy + money-movement tradeoff):** the whole current 7-day log is un-stamped. (a) quantify the un-stamped set at M-time; (b) **prefer a one-time offline backfill** of `tenant_id` over a standing break-glass; (c) if break-glass is needed, it is **`_platform`-only (insider path, out of the tenant-B-vs-A thesis)** + **dual-control / two-person or explicit target-tenant authorization** (dual-audit is detection, NOT prevention — a lone `_platform` credential must NOT reverse a money action), scoped to one specific `action_id`. Do NOT cite the §2 viewer-only break-glass model as authority (it requires "a separate audited elevation", deps.py:348).
+- **`assert_owns(CONVERSATION, id)`** (route 16): same tenant-scoped SESSION read.
+- **Unit tests** (`tests/test_rollback_ownership.py`): `test_rollback_cross_tenant_action_404`, `test_rollback_action_id_regex_rejects_crafted`, `test_rollback_prestamp_action_denies_or_breakglass` (never silent unscoped), `test_rollback_freshly_stamped_action_ok` (proves stamp→query→re-check wired), `test_build_log_event_stamps_tenant_id` (piece 1).
+- **Integration test:** `test_rollback_tenant_scoped_end_to_end`.
+
+**M2.4 — Rollback idempotency (piece 4 — the replay guard is provably dead).** The only guard reads `original_action['rollback_status']=='ROLLED_BACK'` ([rollback_coordinator.py:122](../../src/security-controller/app/utils/rollback_coordinator.py)) but that field is written once as `'NOT_ROLLED_BACK'` on the immutable record and `_log_rollback` writes a separate event ([:298-360](../../src/security-controller/app/utils/rollback_coordinator.py)) never mutating the original → the guard never trips; `_rollback_refund` ([:271](../../src/security-controller/app/utils/rollback_coordinator.py)) is an unconditional `update_item`.
+- **Fix:** a durable idempotency marker keyed on `action_id` — a conditional `PutItem` into a small rollback-ledger (`ConditionExpression='attribute_not_exists(action_id)'`) **before** the reversal; a duplicate/concurrent second caller fails the condition → returns "already rolled back". (Copy the conditional-write pattern at [credentials_service.py:179-191](../../src/security-controller/app/services/credentials_service.py).)
+- **Unit tests** (`tests/test_rollback_idempotency.py`): `test_serial_second_rollback_returns_already_done`, `test_rollback_ledger_conditional_put`.
+- **Integration test:** `test_two_concurrent_rollbacks_one_reversed_write`.
+
+**M2.5 — Rollback resolution-substrate freshness (design note + test).** `_get_action_from_logs` is a best-effort poll-with-timeout (max 5s, [:215/:236](../../src/security-controller/app/utils/rollback_coordinator.py)) over eventually-consistent 7-day Logs Insights. On query-timeout or non-`Complete` status, return a **distinct retryable status** (log internal `RESOLUTION_UNAVAILABLE`) — do NOT report an authorized operator's just-taken reversal as a cross-tenant "not found". (Long-term: a durable tenant-keyed point-read should be the ownership authority; note as a follow-up.)
+- **Unit test:** `test_rollback_logs_timeout_returns_retryable_not_404`.
+- **Integration test:** N/A (covered by M2.3 integ). *Opt-out: internal-status refinement.*
+
+**M2.6 — Discovery import (17).** `require_role("editor")` + **prefix-stamp every imported/promoted `agent_id` to `ctx.tenant_id`** (`id = f"{ctx.tenant_id}-{raw_id}"`) before write, so no imported record lands under another tenant.
+- **Unit tests:** `test_discovery_import_requires_editor`, `test_imported_agent_ids_prefixed_to_ctx_tenant`.
+- **Integration test:** `test_discovery_import_tenant_scoped`.
+
+**M2.7 — Verdict route (18).** authenticate + derive `operator_id` from `ctx.sub` (not body) + `assert_owns(SESSION, session_id)`.
+- **Unit tests:** `test_verdict_operator_from_ctx`, `test_verdict_cross_tenant_session_404`. **Integration:** covered by M2.2's session suite.
+
+**M2.8 — Route-19 interim fail-closed guard (SHIPS WITH M1–M3, not deferred).** `post_session_signal` is an external-producer write feeding the deny-overrides combiner + FP/FN training. Default: **reject external `POST /v1/sessions/{id}/signals` (403/404)** until the full producer credential lands (removes the current lenient-accept path). The combiner loses no *first-party* signal (agents post via `/validate`, not this route). The full producer credential + `threat_type` 8-value-enum + bounded-`priority` validation is **design-only/deferred (D4)** — an unknown `threat_type` from an external producer is a HARD reject (400/drop), explicitly NOT a detector ABSTAIN→ALLOW.
+- **Unit tests** (`tests/test_post_session_signal_guard.py`): `test_external_signal_rejected_failclosed`, `test_lenient_accept_path_removed`.
+- **Integration test:** `test_external_producer_write_blocked_during_window`.
+
+**M2.9 — Fake-200 factory hardening (D3).** `_connection_http(exc)` ([routes.py:790-803](../../src/security-controller/app/api/routes.py)) is a mapper factory that *returns* `HTTPException`; all six callers correctly `raise` it (no currently-firing fake-200). Harden against reintroduction: make the factory itself raise — `_raise_connection_http(exc) -> NoReturn` (ConnectionNotFound→404, ProviderNotAvailable→409, NotConnected→409, InvalidRoleArn→400, else→500), callers become `_raise_connection_http(exc)`. **AND** the one live 200-on-failure — `test_connection` (route 9) returns `200 {ok:false, message}` on a *rejected* credential (a legitimate probe-result envelope per the partial-success carve-out): keep the 200 envelope but ensure `message` is **customer-safe** (no raw provider AssumeRole/principal-ARN/STS detail — log internal detail server-side).
+- **Unit tests** (`tests/test_connection_error_contract.py`): `test_connection_error_maps_to_real_status_not_200` (transport/unknown → 404/409/400/500), `test_test_connection_rejected_credential_message_sanitized`.
+- **Integration test:** `test_connection_failure_returns_honest_status`.
+
+### Milestone M3 — platform-scope gate on the fleet-global sigma-retire chain (clears WS-F's CI WARNING)
+
+**M3.1 — Gate `update_sigma_rule` (route 12) at PLATFORM scope.** `ctx: OperatorContext = Depends(require_platform)` on `PATCH /sigma-rules/{rule_id}` ([routes.py:1517](../../src/security-controller/app/api/routes.py)) — **NOT `require_role`**. The gate covers both the PATCH handler **and** the `_bump_enforcement_version` epoch write ([sigma_rules_service.py:402](../../src/security-controller/app/services/sigma_rules_service.py)) it triggers — they are one call chain behind one door.
+- **WHY platform, not tenant:** the sigma store (`sentra-sigma-rules-metadata` + S3 `sigma_rules/llm/`) is **NOT tenant-partitioned** ([lld/35 §13](../../lld/35-prompt-signatures.md)); one retire flips a rule to `deprecated`, which `load_rules_metadata_from_dynamodb` ([sigma_engine.py:100](../../src/security-controller/app/validators/sigma_engine.py)) then stops loading — stripping it for **every** tenant. A tenant-scoped role here lets any tenant-admin disable a detection rule fleet-wide (the disable-switch ADR-034 forbids, via the CRUD door).
+- **FOOTGUN:** copying the tenant-scoped `delete_feedback_subject` pattern here is the **wrong-scope trap** — that route is correctly tenant-scoped; this one must be platform.
+- **WS-F CI coordination (already reconciled):** WS-F's CI grep accepts `Depends(require_platform)` (lld/35 §3.3 lines 106/172/631/708) — no further propagation owed. Landing M3 clears WS-F's non-blocking WARNING (tracked dependency, founder 2026-07-05).
+- **Unit tests** (`tests/test_sigma_rule_authz.py`): `test_sigma_retire_unroled_403`, **`test_sigma_retire_tenant_admin_403`** (a merely-tenant-scoped `admin`, NOT `_platform`, gets 403 — this is what pins platform-vs-tenant), `test_sigma_retire_platform_operator_200`, `test_bump_enforcement_version_behind_platform_gate`.
+- **Integration test** (the sigma-retire chain is a **shared contract** with WS-F): `test_sigma_retire_platform_gated_end_to_end` — asserts both the un-roled AND the tenant-scoped-admin 403, and a platform operator 200.
+
+### Milestone M5 — the in-service data-plane auth boundary (ADR-037 — the committed deliverable)
+
+**M5.1 — Deny missing/invalid agent JWT on the data plane INDEPENDENT of `identity_mode` (close the tokenless-fallthrough).**
+- Today `resolve_tenant_from_jwt` returns `unverified(effective_mode=ceiling)` on a missing token ([deps.py:119-129](../../src/security-controller/app/api/deps.py)) and `routes.py` denies only at `enforce` (`should_deny`, deps.py:100-102); at `shadow`/`off` a tokenless call falls through to the legacy path ([routes.py:263-270](../../src/security-controller/app/api/routes.py)) — validated, unverified, on the `default` context.
+- **Fix:** a **missing/invalid** agent JWT is denied on the data plane regardless of `identity_mode`. (A *forged* bad-signature token already always fails.) Sequencing nuance: `identity_mode` stays the *enforcement-strictness* rollout latch (shadow→enforce governs whether an *unverified-but-well-formed* posture is allowed during soak); **missing/invalid-token rejection is NOT `identity_mode`-gated**.
+- **Unit tests** (`tests/test_dataplane_jwt_boundary.py`): `test_tokenless_validate_denied_at_shadow`, `test_tokenless_validate_denied_at_off`, `test_forged_jwt_denied_all_modes`, `test_wellformed_unverified_allowed_only_in_soak`.
+- **Integration test** (shared contract with WS-D): `test_dataplane_requires_verified_jwt`.
+
+**M5.2 — Bind the verified tenant on `/trail` + `/signals` (close the §2.2 cross-tenant-read gap).**
+- `get_session_trail` ([routes.py:464](../../src/security-controller/app/api/routes.py)) + `get_session_signals` ([routes.py:448](../../src/security-controller/app/api/routes.py)) take **no** auth dependency and resolve the partition from the ambient `tenancy.current_tenant()` (`"default"`) — so non-enforcing tenants' rows co-mingle in `default#{session_id}` and any caller with a session_id reads them (a real cross-tenant read, NOT "structural isolation").
+- **Fix:** add `resolve_tenant_from_jwt` as a dependency on both handlers, deny (401) on absent/invalid at enforce, and `set_current_tenant(ctx.tenant_id)` around the `DecisionsService` call in a `try/finally` (mirror [routes.py:244-261](../../src/security-controller/app/api/routes.py)). Equivalently, pass the verified tenant explicitly into `get_session_trail`/`get_session_signals`. **Do NOT add `require_role`** (Invariant 6 — these are data-plane reads, not operator mutations).
+- **Unit tests:** `test_trail_read_binds_verified_tenant`, `test_trail_unbound_context_denies_not_default`, `test_signals_read_binds_verified_tenant`.
+- **Integration test:** `test_cross_tenant_trail_read_returns_zero_rows` (tenant-B reading tenant-A's session → zero rows / 404 after the fix — the regression test for the gap).
+
+**M5.3 — Same-task ContextVar reset on the operator dependency (defense-in-depth hygiene).**
+- `resolve_operator_tenant` calls `set_current_tenant` on success only ([deps.py:361](../../src/security-controller/app/api/deps.py)) with no matching reset (unlike the data-plane sets at routes.py:244/261). NOT a cross-request leak (asyncio isolates the ContextVar per Task — verified). The real risk: a non-gated handler reading `current_tenant()` with no operator bind acts on `"default"`. Fix: balance the set with `reset_current_tenant(token)` in a `finally`, same-task token pattern (mirror routes.py:244→261), scoped to the operator dependency.
+- **FOOTGUN:** do **NOT** reset via a Starlette `BaseHTTPMiddleware` — verified no-op (`ValueError: Token created in a different Context`); and do **NOT** remove the module-level `default=DEFAULT_TENANT` (tenancy.py:40-42; ~49 sites + the disabled `/validate` path rely on it).
+- **Unit test (non-vacuous — single shared context, NOT two TestClient requests):** `test_operator_dependency_resets_contextvar` — drive `resolve_operator_tenant` twice inside one manually-created `contextvars.Context` (set tenant-A, then a raising resolve on the SAME context), assert the `finally` reset left the sentinel/unbound, not tenant-A. (A two-request TestClient test is vacuously green — Starlette copies context per request — and MUST NOT be used.)
+- **Integration test:** N/A (in-process contextvar behavior). *Opt-out: no cross-component boundary.*
+
+### Milestone M4 — Edge authorizer (DEFERRED — design-of-record only, NOT built)
+
+**Not a build task.** Per ADR-037 the in-service check (M5) is the boundary; the edge authorizer is optional defense-in-depth, addable later with zero redesign. Design of record if ever built: a REQUEST-type Lambda authorizer verifying the same ES256 JWT, returning IAM allow/deny + context `{tenant_id, role, sub}`, shared key demoted to metering-only. **Handlers MUST NOT read the authorizer-injected context as an authz input** (zero-trust of edge context — closes the confused-deputy path; the app-layer checks stay the only authz inputs). No task, no test — recorded so a future build has the contract.
+
+### Milestone M6 — Federation seam (DEFER the provider switch — consume design-only)
+
+**Not a build task.** Consume the IdP-neutral `VerifiedOperator{sub, email, idp_groups[]}` seam WS-G designs (G3.7) so federation later is a config change. Ensure no new call site reads the raw Cognito `sub` directly (keep the one claim-extraction seam). **Do NOT** swap Cognito out; **do NOT** rebuild the live membership/RBAC layer; **no** Tier-3 customer-authored permissions. SCIM deprovisioning + the actual SAML/OIDC switch stay deferred.
+
+### Milestone M7 — authz tests as the arbiter (the definition-of-done)
+
+The retrofit isn't done until, for every gated route, the tests below pass. (Tests are distributed into the per-milestone test files above; M7 is the consolidated matrix + the special-case tests.)
+
+| Test class | Assertion | Applies to | Test file |
+|---|---|---|---|
+| (a) authn | missing/invalid OIDC → 401 | all 18 gated routes | per-route authz files |
+| (b) authz | authenticated but role `< min_role` → 403 | all `require_role` routes | per-route authz files |
+| (c) anti-IDOR | tenant-B targeting tenant-A's policy/agent/connection/session → 403 (or 404 opaque) | routes 2–16, 18 | per-route authz files |
+| (c-warm) warm-cache POLICY | tenant A reads `p1` first (warm cache), tenant B `assert_owns(POLICY,"p1")` still denies | routes 2–4 | `test_ownership.py::test_assert_owns_policy_bypasses_cache` |
+| (c-nonvacuous) POLICY+SESSION | cross-tenant test passes flag-on; with flag forced off the helper still denies | routes 2–4, 13–14 | `test_ownership.py` |
+| (M3 both-403) | un-roled AND tenant-admin (not `_platform`) → 403; platform → 200 | route 12 | `test_sigma_rule_authz.py` |
+| (data-plane read gap) | tenant-B reading tenant-A's `/trail` → zero rows/404 after M5 fix | `/trail`,`/signals` | `test_dataplane_jwt_boundary.py` |
+| (D3 fake-200) | transport/unknown failure → real 4xx/5xx not 200; route-9 rejected-cred message sanitized | routes 7–11 | `test_connection_error_contract.py` |
+| (attribution) | conflicting body `operator_id`/`operator_email` → audit records `ctx.sub` AND body value not forwarded | routes 1–6,13–16,18 | `test_policy_routes_authz.py` |
+| (empty-email attribution) | claims with no `email` still yield a non-empty verified identity (`ctx.sub`) | routes 1–6,13–16,18 | `test_policy_routes_authz.py` |
+| rollback idempotency | serial 2nd → already-done; two concurrent → one REVERSED write | routes 15/16 | `test_rollback_idempotency.py` |
+| rollback anti-IDOR/injection | cross-tenant→404; crafted action_id→400/404; pre-stamp→deny/break-glass; fresh→ok | routes 15/16 | `test_rollback_ownership.py` |
+| break-glass | `_platform` viewer (non-member tenant) at each admin/editor route 1–18 → 403 by ladder | routes 1–18 | `test_breakglass_denied.py` |
+| contextvar reset (non-vacuous) | shared-context raise-after-bind leaves sentinel not tenant-A | operator dep | `test_dataplane_jwt_boundary.py` |
+| signer/issuer pin | both header paths enforce the pin | `verify_alb_oidc` | `test_verify_alb_oidc_pin.py` |
+
+**Sibling test hooks:** WS-F CI check flips WARNING→green when M3 lands; **WS-J** canary carries positive-authz coverage on the previously-ungated routes (pairs-with); **WS-K** K8 suite extended with a positive authz assertion on the fixed policy-CRUD routes + a money-movement-`enforce`-gate assertion (a money-movement tenant is not flipped to `enforce` until the M5 in-service fail-secure completeness is verified live).
+
+---
+
+## 5. Acceptance criteria (one checklist for the whole workstream)
+
+- [ ] **M0:** `app/api/ownership.py` exists with `assert_owns` over AGENT/POLICY/CONNECTION/SESSION/ACTION/CONVERSATION; `_assert_owns_agent` re-exported and `tenancy_routes.py`'s existing gates repointed with no behavior change (the 10-gate regression suite still green).
+- [ ] **M0:** the systemic CI enumerator fails the build on any ungated `post/put/patch/delete` (accepts `require_platform`; catches role-gated-but-ownership-missing); allowlist entries each carry a reason.
+- [ ] **M0:** the audit-trail exploitation review is **run and its result recorded**.
+- [ ] **M1:** the signer-ARN + Cognito-issuer pin lands in `verify_alb_oidc` on both header paths; AS-1 ALB/pool count run + recorded.
+- [ ] **M1 (BUG-1 closed):** routes 1–6 carry `require_role` + anti-IDOR ownership; `X-Operator-Email` is no longer an authority (operator = `ctx.sub`); a cross-tenant policy call → 403/404.
+- [ ] **M2:** connection routes 7–11 gated (viewer cannot write credentials/trigger AssumeRole); quarantine/release 13–14 admin-gated with `operator_id` from `ctx` (contained session cannot self-release).
+- [ ] **M2:** rollback 15–16 tenant-scoped (ACTION/CONVERSATION `assert_owns`); the `tenant_id` emit-stamp predecessor landed in `_build_log_event`; the injection-safe exact-match query + regex reject; idempotency ledger (no double-reverse); break-glass (if shipped) is `_platform`+dual-control.
+- [ ] **M2:** discovery import 17 editor-gated + tenant-prefix-stamps imported ids; verdict 18 authenticated + session-owned; route-19 interim fail-closed guard ships; the fake-200 factory hardened + route-9 message sanitized.
+- [ ] **M3:** `update_sigma_rule` + `_bump_enforcement_version` are `require_platform`-gated; a tenant-admin (not `_platform`) gets 403; WS-F's CI WARNING clears.
+- [ ] **M5:** every data-plane route denies a missing/invalid JWT independent of `identity_mode`; `/trail` + `/signals` bind the verified tenant (cross-tenant read → zero rows); the operator-dependency contextvar reset lands.
+- [ ] **`GET /trail` + `/signals` do NOT carry `require_role`** — a test proves cross-tenant returns zero rows via the JWT-tenant-bind, not RBAC.
+- [ ] **Edge authorizer + route-19 producer credential + Tier-2 roles are NOT built** (design-only/deferred) — recorded, not tasked.
+- [ ] **unit tests pass** (covering all cases named in §4).
+- [ ] **integration tests pass** (covering the shared-contract seams: `assert_owns`, the policy-CRUD routes, the sigma-retire chain, the data-plane JWT boundary).
+
+---
+
+## 6. Cross-references
+
+- **LLD:** [lld/39-authz-rbac-edge-authorizer.md](../../lld/39-authz-rbac-edge-authorizer.md) — §2 (planes), §3.1 (signer-pin/M1.0), §3.2 (role map/M1.1), §3.3 (ownership helper + rollback/M0,M2), §3.5 (sigma/M3), §3.6 (error model), §3.7 (fake-200/M2.9), §4 (edge authorizer/M4 deferred), §5 (in-service boundary/M5), §13 (test matrix/M7), §14 (status ledger).
+- **Decisions:** ADR-037 (in-service boundary) · ADR-035 (federation seam, consume) · ADR-034 (sigma platform scope) · ADR-019/AD-8 (Cognito+RBAC) · AD-7 (verified identity). *(ADR-036 = detection-depth, NOT this.)*
+- **Shared contracts (Phase-3 sweep join keys):** `require_role`/`require_platform`/`verify_alb_oidc`/`resolve_operator_tenant`/`resolve_tenant_from_jwt`/`role_satisfies`/`_ROLE_ORDER`/`OperatorContext` (deps.py — LLD-26/08 own) · **`assert_owns(ctx, ResourceKind, resource_id)`** (NEW, `ownership.py` — WS-M owns, supersedes/wraps `_assert_owns_agent`) · the 18 mutating routes + route 19 · the sigma retire chain (`update_sigma_rule` → `_bump_enforcement_version`) · the `VerifiedOperator{sub,email,idp_groups[]}` seam (WS-G owns).
+- **Upstream (LLDs to extend, not rebuild):** LLD-26 §5–6 (RBAC primitives + `sentra-tenant-members`) · LLD-08 §6.5 (`verify_alb_oidc`) · lld/35 §3.3 (sigma authz + WS-F CI WARNING, already reconciled).
+- **Sibling refs (the sweep verifies consistency):** **WS-G** ([ws-g-console.md](ws-g-console.md) — client render-gate + ADR-035 seam; shares `ownership.py`/`tenancy_routes.py`) · **WS-D** ([ws-d-decision-trail.md](ws-d-decision-trail.md) — data-plane read; co-owns the `/trail`-`/signals` bind + policy-cache touch; do NOT re-home) · **WS-F** ([ws-f-prompt-signatures.md](ws-f-prompt-signatures.md) — sigma CI WARNING; M3 clears it) · **WS-K** ([ws-k-production-activation.md](ws-k-production-activation.md) — K8 suite + two-latch enforce flip + go-live gate) · **WS-J** ([ws-j-canary-tests.md](ws-j-canary-tests.md) — positive-authz canary coverage) · **WS-A** (A5.4 leaked-signing-key — WS-M is the upstream authoring control).
+- **Memory:** [[policy-crud-routes-no-authz]] ≡ BUG-1 · [[dev-stack-is-prod]] · [[apigw-per-resource-no-proxy]] + [[sentra-prod-deploy-mechanism]] · [[identity-deny-not-metered]] · [[controller-tests-moto-safe-env]] · [[authz-identity-model-reframe-2026-07-06]].

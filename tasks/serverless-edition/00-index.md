@@ -37,7 +37,7 @@
 | **J** | [ws-j-canary-tests.md](ws-j-canary-tests.md) | Scheduled hourly ECS synthetic canary: all-API pos+neg coverage + measurable code-logic coverage + SNS email alert (Increment 1); metering/authz/console deferred. | **DEPLOYED** (`360a268`→origin; Canary stack CREATE_COMPLETE, image milestone-3, hourly schedule ENABLED; LIVE run 117/117 PASS in prod 2026-07-05) | ✅ [lld/38](../../lld/38-canary-synthetic-monitoring.md) (approved+PDF 2026-07-05) | no — spans all |
 | **K** | [ws-k-production-activation.md](ws-k-production-activation.md) | FR-10.5 production activation: Cedar-authoritative + TENANCY_V2 enforcing in prod; the first go-live predecessor. | **✅ [lld/27](../../lld/27-serverless-production-activation.md)** | ✅ **done (verification-only, 2026-06-30, live)** — K6 purge deferred per founder; K2.5/K5 N-A | no — start now; **first go-live gate** |
 | **L** | [ws-l-detection-depth.md](ws-l-detection-depth.md) | **Detection depth — SCOPED to D1+D2+D3 as P0 (+ distilled = LIVE front-runner M6: node+chain+short-circuit ON, only real §8 artifact deferred)** per founder 2026-07-03. D2 (indirect-injection/content), D3 (memory-integrity/memory), D1 (trajectory/request LLM-judge v1); shared scaffold for all 8 layers (Source constants + priorities + per-phase node-set builder + metrics). **D4/D5/D6/D7/D8 explicitly NOT built** (each blocked — see ws doc §8). Consolidates LLD 19+20 as build-of-record; layers register as nodes into WS-C's DAG. | **CODE-DONE → main @ 7927e9b** (2026-07-03) | ✅ | promoted; 806 pass; NOT deployed (Gate-5 owed, batch w/ WS-B); D2/D3 advisory |
-| **M** | [ws-m-authz.md](ws-m-authz.md) | **Auth & authz (control-plane RBAC + anti-IDOR + edge authorizer):** close BUG-1 (policy-CRUD + agent-policy-bind + credential/connection CRUD get `require_role` + anti-IDOR tenant-ownership assert; drop spoofable `X-Operator-Email`) + **platform-operator gate on the `PATCH /sigma-rules` retire path (WS-F merge-gate)**; own `require_role` coverage across all mutating `routes.py` routes; ADR-036 edge authorizer / shared-key replacement; AD-7 GA-gate adjudication. Consumes the ADR-035 seam (does **not** swap the IdP). | ✍️ scope (→ lld/36) | ⬜ | **no — start now (NOT spike-gated); P0-security (BUG-1 live prod IDOR); merge-gate predecessor of WS-F** |
+| **M** | [ws-m-authz.md](ws-m-authz.md) | **Auth & authz (control-plane RBAC coverage + anti-IDOR + in-service data-plane boundary):** close BUG-1 (policy-CRUD + agent-policy-bind + credential/connection CRUD get `require_role` + generalized `assert_owns` anti-IDOR; drop spoofable `X-Operator-Email` → `ctx.sub`) + **platform-operator gate on the `PATCH /sigma-rules` retire path (clears WS-F's non-blocking CI WARNING — tracked, founder 2026-07-05)**; `require_role` coverage across all mutating `routes.py` routes + systemic CI enumerator; **ADR-037: in-SERVICE JWT check is the data-plane boundary (edge authorizer DEFERRED/optional)**; AD-7 GA-gate adjudication. Consumes the ADR-035 seam (does **not** swap the IdP). | **✅ [lld/39](../../lld/39-authz-rbac-edge-authorizer.md)** (approved+grill-hardened 2026-07-06) · **TASKS-DONE** (M0–M7 granular, 2026-07-06) | ⬜ | **no — start now (NOT spike-gated); P0-security (BUG-1 live prod IDOR); tracked (non-blocking) dependency of WS-F** |
 
 ## Dependency graph
 
@@ -67,7 +67,7 @@ flowchart TD
   C --> D
   A -.pairs with.- I
   B -->|feeds| E
-  M -->|merge-gate: sigma platform-authz| F
+  M -.tracked dep: sigma platform-authz.-> F
   M -.pairs with.- G
   J -.spans all.- WS0
   J -.spans all.- now
@@ -75,7 +75,7 @@ flowchart TD
   J -.spans all.- M
 ```
 
-Edges: WS-0 **gates** A, E, D · WS-C → WS-D (WS-D rides on WS-C's scheduler) · **WS-C's WS-0 gate is overridden (founder 2026-07-01); it builds now** · WS-A **pairs with** WS-I (bundle-emit ↔ interpreter, shared differential corpus) · WS-B **feeds** WS-E (the `phase` contract carries the content/output phases redaction acts on) · **WS-M is the merge-gate predecessor of WS-F** (it lands the platform-operator gate on the `PATCH /sigma-rules` retire path that WS-F's CI assertion requires) and **pairs with WS-G** (WS-M owns the server-side `require_role` boundary; WS-G owns the client render-gate + the ADR-035 federation seam) · WS-J **spans all** · WS-K is the **prod-activation predecessor** (first go-live gate).
+Edges: WS-0 **gates** A, E, D · WS-C → WS-D (WS-D rides on WS-C's scheduler) · **WS-C's WS-0 gate is overridden (founder 2026-07-01); it builds now** · WS-A **pairs with** WS-I (bundle-emit ↔ interpreter, shared differential corpus) · WS-B **feeds** WS-E (the `phase` contract carries the content/output phases redaction acts on) · **WS-M is a tracked, non-blocking dependency of WS-F** (founder 2026-07-05 — it lands the platform-operator gate on the `PATCH /sigma-rules` retire path; WS-F ships ahead with a non-blocking CI WARNING that M3 clears) and **pairs with WS-G** (WS-M owns the server-side `require_role` boundary; WS-G owns the client render-gate + the ADR-035 federation seam) · WS-J **spans all** · WS-K is the **prod-activation predecessor** (first go-live gate).
 
 ## THE ONE GATING RULE — the measure-first gate (HLD §8)
 
@@ -91,7 +91,7 @@ The gate date is filled → **WS-A and WS-E decomposition-to-build are now UNBLO
 
 ## Build order
 
-1. **Now (parallel):** WS-0 spike **+** WS-B, WS-F, WS-G, WS-H, WS-I, WS-K, **WS-M** (none spike-gated; WS-M is P0-security and the WS-F merge-gate predecessor — land its sigma platform-gate before WS-F merges) **+ WS-C** (its WS-0 code-merge gate is OVERRIDDEN per the founder 2026-07-01, mirroring WS-E — buildable/mergeable now).
+1. **Now (parallel):** WS-0 spike **+** WS-B, WS-F, WS-G, WS-H, WS-I, WS-K, **WS-M** (none spike-gated; WS-M is P0-security and a tracked, non-blocking dependency of WS-F — land its M3 sigma platform-gate to clear WS-F's CI WARNING; WS-F is not blocked waiting) **+ WS-C** (its WS-0 code-merge gate is OVERRIDDEN per the founder 2026-07-01, mirroring WS-E — buildable/mergeable now).
 2. **✅ Spike packet SIGNED 2026-07-02 (gate date filled) → WS-A and WS-E are now OPEN for decomposition-to-build.** (WS-C/WS-D never waited on this — overridden.)
 3. **After WS-C:** WS-D (decision-trail rides the scheduler; WS-D itself stays WS-0-gated).
 4. **Throughout:** WS-J (canary/e2e) runs continuously across every workstream.
@@ -109,5 +109,5 @@ The gate date is filled → **WS-A and WS-E decomposition-to-build are now UNBLO
 ## Cross-references
 - Implements: FR-1.7, FR-2.8, FR-3.4, FR-3.13, FR-6.4, FR-6.8, FR-10.1, FR-10.5, FR-13.1, FR-13.3, NFR-10 (sub-PRD)
 - Upstream: [hld/serverless-edition.md](../../hld/serverless-edition.md) §6 (the four benders + redaction + console + metering + Cedar mode + §6.2(f)/§6.3 auth), §8 (LLD hand-off), §6.4 (the measure-first / combined GA-gate)
-- Decisions: ADR-029 (local-floor bundle), ADR-030 (DAG scheduler), ADR-031 (record-what-ran decision-trail), ADR-032 (two-tier redactor), ADR-034 (non-disableable floor → sigma retire = platform-authz), ADR-035 (console federation seam), **ADR-036 (WS-M — edge authorizer / shared-key replacement)**, AD-2 (Cedar), AD-3 (phase contract), AD-6 (editions/data-boundary), AD-7 (verified identity / TENANCY_V2), AD-8 / ADR-019 (console RBAC)
+- Decisions: ADR-029 (local-floor bundle), ADR-030 (DAG scheduler), ADR-031 (record-what-ran decision-trail), ADR-032 (two-tier redactor), ADR-034 (non-disableable floor → sigma retire = platform-authz), ADR-035 (console federation seam), **ADR-037 (WS-M — in-service data-plane auth boundary; edge authorizer deferred)**, AD-2 (Cedar), AD-3 (phase contract), AD-6 (editions/data-boundary), AD-7 (verified identity / TENANCY_V2), AD-8 / ADR-019 (console RBAC)
 - Shared contracts: `POST /v1/validate`, signed policy bundle + stdlib interpreter subset, deny-overrides combiner; **decision-trail (WS-D, [lld/33](../../lld/33-decision-trail.md)):** `GET /v1/sessions/{session_id}/trail?request_id=…` read endpoint · `NotRunMarker` record type (`record_type ∈ {not_run,abstain,error}`, no `decision`) · `SignalStoreWriter.write_not_run_markers`/`_build_marker_item` · `phase` shared attribute on ran+marker rows · `_fail_secure_deny` `source=Source.SENTRA_POLICY` stamp + frozen `winning_source=sentra.policy` `POLICY_NOT_MIGRATED` baseline (shared w/ WS-C) · `STEP_LABEL_TO_SOURCE` + `STATIC_FALLBACK_ORDER` + `SOURCE_DISPLAY_NAMES` + `STATE_DISPLAY_NAMES` (in `combiners/sources.py`) · `TrailPersistFailures` metric. **WS-C→WS-D seams owed in lld/31:** pure `coverage_sources(phase)` accessor + per-request `mode` seam.
