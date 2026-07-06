@@ -2063,6 +2063,23 @@ async def rollback_conversation(
         tenant_id=ctx.tenant_id,
     )
 
+    # Honest error contract (engineering rule: never wrap a whole-request failure in
+    # 200). A TOTAL failure — the coordinator's outer-except path — is a batch that
+    # never ran: it carries success=False, a top-level "message", and zero processed
+    # actions. That must surface as a real 5XX so callers/monitors/retries see it,
+    # mirroring the single-action route. A PARTIAL result (some actions reversed, some
+    # failed) is a legitimate batch response (per-item statuses in failed_actions[]) —
+    # it keeps 200 with success reflecting whether any action failed. The customer-safe
+    # message is already sanitized coordinator-side; a correlation id ties it to logs.
+    if result.get("success") is False and "message" in result and not (
+        result.get("rolled_back_actions") or result.get("failed_actions")
+        or result.get("skipped_actions")
+    ):
+        raise HTTPException(
+            status_code=500,
+            detail=result.get("message", "Conversation rollback failed"),
+        )
+
     return result
 
 

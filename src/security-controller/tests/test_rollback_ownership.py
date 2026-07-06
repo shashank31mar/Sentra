@@ -330,6 +330,92 @@ async def test_rollback_conversation_route_threads_tenant_id_into_coordinator():
     assert captured.get("conversation_id") == _CONV
 
 
+@pytest.mark.asyncio
+async def test_rollback_conversation_total_failure_maps_to_500_not_fake_200():
+    """Honest error contract: a TOTAL conversation-rollback failure (coordinator
+    outer-except shape — success=False, a top-level message, zero processed actions)
+    MUST surface as HTTP 500, NOT a fake-200 wrapping an error body. FAILS if the
+    route returns the failure dict as a 200."""
+    from fastapi import HTTPException
+    from app.api import routes as R
+    from app.api.deps import OperatorContext
+
+    total_failure = {
+        "success": False,
+        "conversation_id": _CONV,
+        "rolled_back_count": 0,
+        "failed_count": 0,
+        "message": "Conversation rollback failed due to an internal error (correlation_id=deadbeef)",
+        "correlation_id": "deadbeef",
+        "rolled_back_actions": [],
+        "failed_actions": [],
+        "reason": "r",
+    }
+    with patch("app.api.routes.assert_owns"), \
+         patch("app.utils.rollback_coordinator.RollbackCoordinator") as RC:
+        RC.return_value.rollback_conversation = _AsyncReturn(total_failure)
+        with pytest.raises(HTTPException) as ei:
+            await R.rollback_conversation(
+                _CONV, {"reason": "r"},
+                ctx=OperatorContext(sub="op", tenant_id="t_a", role="admin", email="op@x"),
+            )
+    assert ei.value.status_code == 500
+    # customer-safe: correlation id present, no raw exception/ARN/query leaked
+    assert "correlation_id" in str(ei.value.detail)
+
+
+@pytest.mark.asyncio
+async def test_rollback_conversation_partial_result_stays_200_batch_semantics():
+    """A PARTIAL result (some actions reversed, some failed) is a legitimate batch
+    response with per-item statuses — it MUST stay 200 (the route returns the dict),
+    NOT be coerced to 5XX. FAILS if the honest-status guard over-fires on partials."""
+    from app.api import routes as R
+    from app.api.deps import OperatorContext
+
+    partial = {
+        "success": False,               # a per-action failure occurred
+        "conversation_id": _CONV,
+        "rolled_back_count": 1,
+        "failed_count": 1,
+        "skipped_count": 0,
+        "rolled_back_actions": [{"action_id": "act-1", "tool_name": "process_refund"}],
+        "failed_actions": [{"action_id": "act-2", "tool_name": "create_order", "error": "boom"}],
+        "skipped_actions": [],
+        "reason": "r",
+    }
+    with patch("app.api.routes.assert_owns"), \
+         patch("app.utils.rollback_coordinator.RollbackCoordinator") as RC:
+        RC.return_value.rollback_conversation = _AsyncReturn(partial)
+        result = await R.rollback_conversation(
+            _CONV, {"reason": "r"},
+            ctx=OperatorContext(sub="op", tenant_id="t_a", role="admin", email="op@x"),
+        )
+    # No raise → 200; the batch body carries the per-item failure.
+    assert result["failed_count"] == 1
+    assert result["rolled_back_count"] == 1
+
+
+@pytest.mark.asyncio
+async def test_rollback_conversation_outer_except_message_is_sanitized():
+    """The coordinator's total-failure message MUST NOT leak the raw exception string
+    (which can carry ARNs/host/query text) across the API boundary — it returns a
+    customer-safe message + correlation id and logs the internal detail server-side.
+    FAILS if the raw str(e) is interpolated back into the returned message."""
+    coord = RollbackCoordinator()
+    secret = "AssumeRole arn:aws:iam::531109575379:role/secret-internal FAILED"
+
+    async def _boom(*a, **k):
+        raise RuntimeError(secret)
+
+    # Force the outer-except path: the enumeration itself raises.
+    coord.audit_logger.query_logs_by_conversation = _boom
+    out = await coord.rollback_conversation(_CONV, reason="r", tenant_id="t_a")
+    assert out["success"] is False
+    assert secret not in out["message"]
+    assert "arn:aws" not in out["message"].lower()
+    assert out.get("correlation_id")
+
+
 class _AsyncReturn:
     def __init__(self, val):
         self.val = val

@@ -14,6 +14,7 @@ import logging
 import re
 import time
 import json
+import uuid
 from typing import Dict, Optional, Any, List
 from datetime import datetime, timezone
 
@@ -877,13 +878,27 @@ class RollbackCoordinator:
             }
 
         except Exception as e:
-            logger.exception(f"Conversation rollback failed: {e}")
+            # Customer-safe error contract (engineering rule): log the internal
+            # exception detail server-side, return a sanitized message + a correlation
+            # id — never leak the raw str(e) (which can carry ARNs/host/query text)
+            # across the API boundary. The route maps this total-failure shape to 5XX.
+            correlation_id = uuid.uuid4().hex
+            logger.exception(
+                f"{LOG_PREFIX} Conversation rollback failed "
+                f"[correlation_id={correlation_id}]: {e}",
+                extra={"conversation_id": conversation_id,
+                       "correlation_id": correlation_id}
+            )
             return {
                 "success": False,
                 "conversation_id": conversation_id,
                 "rolled_back_count": 0,
                 "failed_count": 0,
-                "message": f"Rollback failed: {str(e)}",
+                "message": (
+                    "Conversation rollback failed due to an internal error "
+                    f"(correlation_id={correlation_id})"
+                ),
+                "correlation_id": correlation_id,
                 "rolled_back_actions": [],
                 "failed_actions": [],
                 "reason": reason
