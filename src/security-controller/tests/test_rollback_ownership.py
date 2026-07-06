@@ -17,7 +17,9 @@ from app.utils.rollback_coordinator import (
     RESOLUTION_UNAVAILABLE,
     RollbackCoordinator,
     _ACTION_ID_RE,
+    _CONVERSATION_ID_RE,
     _tenant_of_action,
+    _tenant_of_conversation,
 )
 
 _VALID = "act-process_refund-20260706120000-a1b2c3"
@@ -192,6 +194,113 @@ async def test_rollback_action_route_asserts_action_ownership():
             ctx=OperatorContext(sub="op", tenant_id="t_a", role="admin", email="op@x"),
         )
     assert ResourceKind.ACTION in calls
+
+
+# --------------------------------------------------------------------------- #
+# WS-M FIX-B — CONVERSATION resolves via CloudWatch Logs, NOT the session table.
+# The prior dispatch pointed CONVERSATION at the session_context store; a
+# conversation_id is never a key there, so every legitimate rollback 404'd. These
+# tests pin the corrected Logs-Insights resolution (mocked substrate, like ACTION).
+# --------------------------------------------------------------------------- #
+_CONV = "conv-abc123"
+
+
+def test_conversation_id_regex_shape():
+    """Grammar accepts real ids, rejects Logs-Insights query metacharacters."""
+    for ok in (_CONV, "conv_1", "a1b2c3", "550e8400-e29b-41d4-a716-446655440000"):
+        assert _CONVERSATION_ID_RE.match(ok), ok
+    for bad in ['conv" | filter tenant_id="t_b', "conv-1'; drop", "conv 1", "", "a" * 129]:
+        assert not _CONVERSATION_ID_RE.match(bad), bad
+
+
+def test_tenant_of_conversation_rejects_crafted_id_without_query():
+    """A crafted conversation_id is rejected up front — never interpolated."""
+    with patch("app.utils.rollback_coordinator.RollbackCoordinator") as RC:
+        assert _tenant_of_conversation('conv" | filter x', "t_a") is None
+        RC.assert_not_called()
+
+
+def test_query_conversation_tenant_sync_returns_stamped_owner(coordinator):
+    """A matching reversible-action event's stamped tenant_id is returned as owner."""
+    coordinator.cloudwatch_logs.start_query.return_value = {"queryId": "q1"}
+    coordinator.cloudwatch_logs.get_query_results.return_value = {
+        "status": "Complete",
+        "results": [[{"field": "@message", "value": json.dumps({
+            "tenant_id": "t_a",
+            "multi_agent_context": {"conversation_id": _CONV},
+        })}]],
+    }
+    out = coordinator._query_conversation_tenant_sync(_CONV, tenant_id="t_a")
+    assert out == {"tenant_id": "t_a"}
+
+
+def test_query_conversation_tenant_sync_no_match_returns_none(coordinator):
+    coordinator.cloudwatch_logs.start_query.return_value = {"queryId": "q1"}
+    coordinator.cloudwatch_logs.get_query_results.return_value = {
+        "status": "Complete", "results": [],
+    }
+    assert coordinator._query_conversation_tenant_sync(_CONV, tenant_id="t_a") is None
+
+
+def test_query_conversation_tenant_sync_timeout_is_retryable(coordinator):
+    coordinator.cloudwatch_logs.start_query.return_value = {"queryId": "q1"}
+    coordinator.cloudwatch_logs.get_query_results.return_value = {"status": "Running"}
+    assert coordinator._query_conversation_tenant_sync(_CONV, tenant_id="t_a") == RESOLUTION_UNAVAILABLE
+
+
+def test_query_conversation_tenant_sync_query_failed_is_retryable(coordinator):
+    coordinator.cloudwatch_logs.start_query.return_value = {"queryId": "q1"}
+    coordinator.cloudwatch_logs.get_query_results.return_value = {"status": "Failed"}
+    assert coordinator._query_conversation_tenant_sync(_CONV, tenant_id="t_a") == RESOLUTION_UNAVAILABLE
+
+
+def test_query_conversation_tenant_sync_filters_by_tenant(coordinator):
+    """The resolution query MUST carry an exact tenant_id filter (cross-tenant record
+    never returned) and NOT a substring `like`."""
+    coordinator.cloudwatch_logs.start_query.return_value = {"queryId": "q1"}
+    coordinator.cloudwatch_logs.get_query_results.return_value = {
+        "status": "Complete", "results": [],
+    }
+    coordinator._query_conversation_tenant_sync(_CONV, tenant_id="t_a")
+    q = coordinator.cloudwatch_logs.start_query.call_args.kwargs["queryString"]
+    assert f'filter multi_agent_context.conversation_id = "{_CONV}"' in q
+    assert 'filter tenant_id = "t_a"' in q
+    assert " like " not in q
+
+
+def test_tenant_of_conversation_maps_result(coordinator):
+    """End-to-end module-fn: a stamped event resolves to its owner tenant."""
+    with patch("app.utils.rollback_coordinator.RollbackCoordinator", return_value=coordinator):
+        coordinator.cloudwatch_logs.start_query.return_value = {"queryId": "q1"}
+        coordinator.cloudwatch_logs.get_query_results.return_value = {
+            "status": "Complete",
+            "results": [[{"field": "@message", "value": json.dumps({
+                "tenant_id": "t_a",
+                "multi_agent_context": {"conversation_id": _CONV},
+            })}]],
+        }
+        assert _tenant_of_conversation(_CONV, "t_a") == "t_a"
+
+
+@pytest.mark.asyncio
+async def test_rollback_conversation_route_asserts_conversation_ownership():
+    """The route MUST assert_owns(CONVERSATION, id) before reversing anything."""
+    from app.api import routes as R
+    from app.api.deps import OperatorContext
+    from app.api.ownership import ResourceKind
+
+    calls = []
+    with patch("app.api.routes.assert_owns", side_effect=lambda c, k, i: calls.append(k)), \
+         patch("app.utils.rollback_coordinator.RollbackCoordinator") as RC:
+        RC.return_value.rollback_conversation = _AsyncReturn(
+            {"success": True, "conversation_id": _CONV, "rolled_back_count": 1}
+        )
+        await R.rollback_conversation(
+            _CONV,
+            {"reason": "r"},
+            ctx=OperatorContext(sub="op", tenant_id="t_a", role="admin", email="op@x"),
+        )
+    assert ResourceKind.CONVERSATION in calls
 
 
 class _AsyncReturn:

@@ -11,6 +11,8 @@ tenant-blind ``PolicyService.get_policy`` cache.
 """
 from __future__ import annotations
 
+from unittest.mock import patch
+
 import boto3
 import pytest
 from fastapi import HTTPException
@@ -20,6 +22,7 @@ from app.api.deps import OperatorContext
 from app.api.ownership import ResourceKind, assert_owns, _tenant_of_policy
 from app.config import settings
 from app.utils import tenancy
+from app.utils.rollback_coordinator import RESOLUTION_UNAVAILABLE
 
 
 def _ctx(tenant_id: str = "t_a", role: str = "editor") -> OperatorContext:
@@ -213,30 +216,93 @@ def test_assert_owns_action_fails_secure_deny():
 
 
 # --------------------------------------------------------------------------- #
-# CONVERSATION — shares the tenant-scoped SESSION read path (assert_owns dispatches
-# CONVERSATION → _assert_owns_session). Previously the CONVERSATION branch of the
-# dispatch was exercised by NO test; these pin present-ok / absent-404 /
-# unresolvable-deny through the CONVERSATION kind specifically.
+# CONVERSATION — the Logs-Insights resolution path (WS-M FIX-B correction).
+#
+# A conversation is NOT a session: it lives ONLY in CloudWatch Logs under
+# multi_agent_context.conversation_id — there is NO session_context row keyed by a
+# conversation_id. The prior dispatch (CONVERSATION → _assert_owns_session) missed
+# on EVERY real conversation → a fail-closed 404 that bricked every legitimate
+# rollback. These tests pin the corrected Logs-based resolution (mocked, like the
+# ACTION path) AND the regression guard: a session_context row keyed on the
+# conversation_id must NOT satisfy ownership (that was the whole bug).
 # --------------------------------------------------------------------------- #
-def test_assert_owns_conversation_present_ok(own_env):
-    own_env.Table(settings.dynamodb_session_table_v2).put_item(
-        Item={"tenant_id": "t_a", "session_id": "conv-1", "trust_score": 50})
+def test_assert_owns_conversation_owner_match_ok(own_env, monkeypatch):
+    """A tenant-owned conversation (its stamped tenant resolves to ctx.tenant_id) →
+    no raise. Under the old session-store dispatch this 404'd every time."""
+    monkeypatch.setattr(
+        "app.utils.rollback_coordinator._tenant_of_conversation",
+        lambda cid, tid: "t_a",
+    )
     assert_owns(_ctx("t_a"), ResourceKind.CONVERSATION, "conv-1")
 
 
-def test_assert_owns_conversation_absent_404(own_env):
-    # tenant B owns it; tenant A's scoped read misses → 404 (existence-masked)
-    own_env.Table(settings.dynamodb_session_table_v2).put_item(
-        Item={"tenant_id": "t_b", "session_id": "conv-1", "trust_score": 50})
+def test_assert_owns_conversation_foreign_owner_404(own_env, monkeypatch):
+    """Resolved to another tenant → existence-masked 404 (never mutate cross-tenant)."""
+    monkeypatch.setattr(
+        "app.utils.rollback_coordinator._tenant_of_conversation",
+        lambda cid, tid: "t_b",
+    )
+    with pytest.raises(HTTPException) as ei:
+        assert_owns(_ctx("t_a"), ResourceKind.CONVERSATION, "conv-1")
+    assert ei.value.status_code == 404
+
+
+def test_assert_owns_conversation_absent_404(own_env, monkeypatch):
+    """No matching stamped event (None) → 404."""
+    monkeypatch.setattr(
+        "app.utils.rollback_coordinator._tenant_of_conversation",
+        lambda cid, tid: None,
+    )
+    with pytest.raises(HTTPException) as ei:
+        assert_owns(_ctx("t_a"), ResourceKind.CONVERSATION, "conv-1")
+    assert ei.value.status_code == 404
+
+
+def test_assert_owns_conversation_resolution_unavailable_503(own_env, monkeypatch):
+    """A Logs-substrate timeout is a distinct RETRYABLE 503 — NOT a cross-tenant 404
+    (M2.5): an authorized operator's just-taken reversal must not be denied as absent
+    while eventually-consistent Logs catch up."""
+    monkeypatch.setattr(
+        "app.utils.rollback_coordinator._tenant_of_conversation",
+        lambda cid, tid: RESOLUTION_UNAVAILABLE,
+    )
+    with pytest.raises(HTTPException) as ei:
+        assert_owns(_ctx("t_a"), ResourceKind.CONVERSATION, "conv-1")
+    assert ei.value.status_code == 503
+
+
+def test_assert_owns_conversation_lookup_error_denies(own_env, monkeypatch):
+    """Any resolution error → deny (404), never allow (fail-secure)."""
+    def _boom(cid, tid):
+        raise RuntimeError("logs unreachable")
+    monkeypatch.setattr(
+        "app.utils.rollback_coordinator._tenant_of_conversation", _boom
+    )
     with pytest.raises(HTTPException) as ei:
         assert_owns(_ctx("t_a"), ResourceKind.CONVERSATION, "conv-1")
     assert ei.value.status_code == 404
 
 
 def test_assert_owns_conversation_unresolvable_denies(own_env, monkeypatch):
-    """Flag-off fixture: the CONVERSATION path (like SESSION) must DENY rather than
-    fall through to a bare-key read that would be cross-tenant-readable."""
+    """Flag-off fixture: an unbindable tenant must DENY (404) before any query."""
     monkeypatch.setattr(settings, "tenancy_v2_enabled", False)
     with pytest.raises(HTTPException) as ei:
         assert_owns(_ctx("t_a"), ResourceKind.CONVERSATION, "conv-1")
     assert ei.value.status_code == 404
+
+
+def test_assert_owns_conversation_ignores_session_store(own_env):
+    """REGRESSION GUARD for the FIX-B bug: a session_context row keyed on the
+    conversation_id must NOT satisfy conversation ownership. Conversations resolve
+    via CloudWatch Logs, not the session table — so with NO Logs match (the mocked
+    coordinator returns nothing), ownership must FAIL even though a same-name session
+    row exists. Under the old dispatch this wrongly PASSED (the bug)."""
+    own_env.Table(settings.dynamodb_session_table_v2).put_item(
+        Item={"tenant_id": "t_a", "session_id": "conv-1", "trust_score": 50})
+    # No monkeypatch of the Logs resolver → the real RollbackCoordinator runs with a
+    # mocked-out boto3 client returning no results, so _tenant_of_conversation → None.
+    with patch("app.utils.rollback_coordinator.boto3"), \
+         patch("app.utils.rollback_coordinator.AuditLogger"):
+        with pytest.raises(HTTPException) as ei:
+            assert_owns(_ctx("t_a"), ResourceKind.CONVERSATION, "conv-1")
+    assert ei.value.status_code in (404, 503)

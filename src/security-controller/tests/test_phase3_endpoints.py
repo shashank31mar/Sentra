@@ -80,6 +80,36 @@ def test_discovery_import_all_unknown_422(client, mock_discovery, as_editor):
     assert r.status_code == 422
 
 
+def test_discovery_import_prefix_stamps_ctx_tenant(client, mock_discovery, as_editor):
+    """M2.6: an unprefixed id is stamped to ctx.tenant_id before the write."""
+    client.post("/v1/discovery/import", json={"agent_ids": ["a", "t_ph-b"]})
+    stamped = mock_discovery.import_agents.call_args.args[0]
+    # "a" gets the tenant prefix; an already-correct prefix is left unchanged.
+    assert stamped == ["t_ph-a", "t_ph-b"]
+
+
+# WS-M FIX-B: edge-validation of agent_ids — a malformed element must be an honest
+# 400, NOT a bare 500 (a non-string element would raise AttributeError on
+# .startswith and leak a non-customer-safe failure mode).
+def test_discovery_import_non_string_element_400(client, mock_discovery, as_editor):
+    r = client.post("/v1/discovery/import", json={"agent_ids": [123]})
+    assert r.status_code == 400
+    assert "non-empty strings" in r.json()["detail"]
+    mock_discovery.import_agents.assert_not_called()
+
+
+def test_discovery_import_empty_string_element_400(client, mock_discovery, as_editor):
+    r = client.post("/v1/discovery/import", json={"agent_ids": ["ok", ""]})
+    assert r.status_code == 400
+    mock_discovery.import_agents.assert_not_called()
+
+
+def test_discovery_import_non_list_agent_ids_400(client, mock_discovery, as_editor):
+    r = client.post("/v1/discovery/import", json={"agent_ids": {"a": 1}})
+    assert r.status_code == 400
+    mock_discovery.import_agents.assert_not_called()
+
+
 # ----------------------------------------------------------------- attach/detach
 
 @pytest.fixture

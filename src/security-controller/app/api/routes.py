@@ -848,10 +848,23 @@ async def discovery_import(
     land a record under another tenant (the agent-id prefix IS the tenant ownership
     key that ``assert_owns(AGENT, id)`` later checks). An already-correctly-prefixed
     id is left unchanged (idempotent).
+
+    Edge validation (WS-M FIX-B / backend.md): ``agent_ids`` MUST be a list of
+    non-empty strings. A non-list body, or any non-string/empty element, is a
+    caller fault → an honest **400** with a customer-safe message — NOT a bare 500
+    (a non-string element would otherwise raise ``AttributeError`` on ``.startswith``
+    and leak an internal failure). Input is narrowed here before the prefix-stamp.
     """
     from app.services.discovery_service import DiscoveryService
     raw_ids = request.get("agent_ids") or []
     enforcement_mode = request.get("enforcement_mode", "monitor")
+    if not isinstance(raw_ids, list):
+        raise HTTPException(status_code=400, detail="agent_ids must be a list of strings")
+    for aid in raw_ids:
+        if not isinstance(aid, str) or not aid:
+            raise HTTPException(
+                status_code=400, detail="agent_ids must contain only non-empty strings"
+            )
     prefix = f"{ctx.tenant_id}-"
     agent_ids = [aid if aid.startswith(prefix) else f"{prefix}{aid}" for aid in raw_ids]
     from app.services.quota_service import QuotaExceeded
