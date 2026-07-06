@@ -1439,6 +1439,12 @@ Write the **SAML + OIDC + SCIM federation** design **now**, but **defer the actu
 
 **Server-derived `sentra-tenant-members` membership is the tenant authority — NEVER the email domain.** IdP group claims map to roles (**owner | admin | editor | viewer** + reserved `_platform`). A multi-tenant operator gets a tenant switcher: the API accepts an **`X-Aegion-Tenant`** header **validated server-side against the membership set** (deny if not a member) before honoring it; default = the operator's sole/primary tenant. `require_role` (LLD 26 §6.3) is the server-side authority; UI role-gating is UX only, never the boundary. This blends into the already-designed LLD 26 §5–6 — not reinvented.
 
+**Amendment (2026-07-06 — founder brainstorm during WS-M/[lld/39](lld/39-authz-rbac-edge-authorizer.md) authoring; grounded in OWASP Multi-Tenant + Authorization cheat sheets, Azure multitenant control-planes guide, and Wiz/CrowdStrike/Zenity onboarding practice). The seam is unchanged; four things sharpen:**
+1. **Sequencing:** federation is **no longer "done last / indefinitely deferred."** It is the committed end-state, sequenced **right after** the server-side RBAC coverage retrofit lands (WS-M M1–M5). The standard B2B division holds: **AuthN federates to the customer's IdP** (Okta/Entra/Google Workspace) via **SAML/OIDC + SCIM 2.0** — the customer's admin owns *who* their operators are and SCIM auto-**deprovisions** a departed employee — **AuthZ stays uniform in our app**.
+2. **Two credential lanes, never conflated:** *operator identity* = the customer's **IdP** (cloud-agnostic, **not** their cloud IAM); *workload/cloud access* (scanning the customer's cloud) = **cross-account assume-role + external-id** / workload-identity-federation, already built ([connections_service.py:14-18](connections_service.py) — `role_arn` + minted `external_id`, STS temp creds, Azure SP secret held as a vault reference). Console login goes through the IdP; cloud IAM is only the separate scanning job.
+3. **Tiered role model:** **Tier 1** (now) fixed ladder + IdP-group→role mapping (customer maps *who*, we define *what*); **Tier 2** (roadmap, enterprise upsell) customer-composed custom roles from *our* permission primitives (the Wiz/CrowdStrike model); **Tier 3** customer-authored arbitrary permission logic — **rejected** (breaks uniform-authz + SOC 2 auditability; no comparable vendor does it).
+4. **Org-first console:** the console opens with an "enter your organization (= tenant)" page that routes login to that org's IdP and sets the session tenant; the typed org is a **client preference, never proof** — the server validates the verified `sub` against `sentra-tenant-members` and 403s a non-member.
+
 ### Rationale
 
 - **Tenet 7** (multi-tenant from the foundation, not retrofitted) and the reuse discipline (matches the Splunk/Datadog/Auth0/Okta org→membership→role pattern, IdP pluggable beneath a stable membership/role layer).
@@ -1451,7 +1457,8 @@ Write the **SAML + OIDC + SCIM federation** design **now**, but **defer the actu
 - ✅ When federation lands, only the claim-extraction seam changes, not every call site.
 - ✅ RBAC + server-validated tenant switcher ship now on the hardened Cognito substrate.
 - ⚠️ SAML-now vs OIDC-now is an open sequencing sub-question (non-blocking residual).
-- ⚠️ SCIM deprovisioning + the full provider switch are **deferred** — scoped here, done last; until then Cognito is the substrate.
+- ✅ (2026-07-06 amendment) Federation is sequenced **next after** WS-M's RBAC coverage (M1–M5), not indefinitely deferred — SSO/SCIM is a known enterprise procurement gate and the AI point-tool competitors are weak on it (Zenity outsources to Auth0; HiddenLayer has no SCIM; CalypsoAI has no documented console SSO), so shipping it early is a differentiation opening. Cognito remains the *substrate/broker* (SAML/OIDC upstream IdPs brokered through the Cognito user pool) — additive, no app rebuild; the provider *swap* (Cognito → WorkOS/Auth0/self-host) is what stays "last," only if Cognito's federation limits are outgrown.
+- ✅ (2026-07-06 amendment) Tier-2 customer custom roles + Tier-3-rejected are recorded; the org-first console + the two-credential-lane split are documented in HLD §6.2(f) and consumed by lld/39 §6.
 
 ### Alternatives Considered
 

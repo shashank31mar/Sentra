@@ -329,9 +329,9 @@ Status reflects the shipping codebase. *(See [ARCHITECTURE.md](lld/ARCHITECTURE.
 
 | ID | Requirement | Pri | Status |
 |---|---|---|---|
-| FR-13.1 | Multi-tenant console — every console view scoped to the operator's tenant; no cross-tenant leakage; tenant context resolved from login | P0/P1 | Roadmap (UI layer; backend tenant-resolution built) |
+| FR-13.1 | Multi-tenant console — every console view scoped to the operator's tenant; no cross-tenant leakage; tenant context resolved from login | P0/P1 | Backend tenant-resolution + RBAC **built + live on dev** (server-derived `sentra-tenant-members`, `require_role`); UI render-gating roadmap (WS-G). Org-first console (select org → sets session tenant, server-validated) added per HLD §6.2(f) 2026-07-06 amendment |
 | FR-13.2 | Exhaustive dashboard set — Overview, Agent inventory, Activity / live feed, Violations & threats (per detector), Decision detail (the FR-6.8 trail), Session forensics (FR-6.9), Policies, Connectors & import (FR-7.11), Audit & compliance (FR-6.5), Usage & billing (FR-12.x) | P1 | Partial |
-| FR-13.3 | Console authentication & tenancy model — define login method, tenant-membership model, and RBAC roles; revisit against comparable security consoles (SSO/SAML, org→tenant mapping) | P0/P1 | Partial (Cognito OIDC; no tenant mapping/RBAC) |
+| FR-13.3 | Console authentication & tenancy model — login method, tenant-membership model, RBAC roles; **federate AuthN to the customer's IdP (SAML/OIDC SSO + SCIM), keep AuthZ (role ladder) uniform in-app; org-first login; Tier-1 IdP-group→role now, Tier-2 custom-roles roadmap** | P0/P1 | Backend RBAC + server-derived tenant mapping **built + live on dev** (roles owner/admin/editor/viewer + `_platform`; NOT email-domain). Per HLD §6.2(f)/ADR-035 2026-07-06 amendment: IdP federation (SSO/SCIM) sequenced **next after** WS-M RBAC coverage — see [lld/39](lld/39-authz-rbac-edge-authorizer.md) |
 
 ---
 

@@ -126,32 +126,32 @@ The load-bearing path this LLD wires. Shown for `create_policy` (route 1); every
 ```mermaid
 sequenceDiagram
   autonumber
-  participant B as Browser (console)
-  participant GW as API Gateway (edge)
-  participant NG as nginx (re-emits x-sentra-oidc-data)
-  participant H as create_policy handler (routes.py:1172)
-  participant OI as verify_alb_oidc (deps.py:282)
-  participant RT as resolve_operator_tenant (deps.py:323)
-  participant RR as require_role("editor") (deps.py:392)
-  participant OWN as object-ownership helper (§3.3)
+  participant B as Browser console
+  participant GW as API Gateway edge
+  participant NG as nginx re-emits x-sentra-oidc-data
+  participant H as create_policy handler routes.py 1172
+  participant OI as verify_alb_oidc deps.py 282
+  participant RT as resolve_operator_tenant deps.py 323
+  participant RR as require_role editor deps.py 392
+  participant OWN as object-ownership helper 3.3
   participant SVC as PolicyService
 
-  B->>GW: PUT/POST /v1/policies (Cognito session)
-  GW->>NG: forward (edge authorizer per ADR-037; §4)
-  NG->>H: + x-sentra-oidc-data (signed ES256 claims)
-  Note over H: FastAPI resolves Depends(require_role("editor")) BEFORE the body runs
-  RR->>RT: Depends(resolve_operator_tenant)
-  RT->>OI: verify_alb_oidc(request)
-  OI-->>RT: verified claims {sub, email} (else 401)
-  RT->>RT: membership lookup(sub) → (tenant_id, role); X-Aegion-Tenant re-validated
-  RT-->>RR: OperatorContext(sub, tenant_id, role, is_platform)
-  RR->>RR: role_satisfies(ctx.role, "editor")? (else 403)
-  RR-->>H: ctx (verified)
-  H->>OWN: assert_owns(ctx, "policy", policy_id) [update/delete/status]
-  OWN-->>H: ok (else 403 — cross-tenant IDOR blocked)
-  H->>SVC: create_policy(..., operator_email=ctx.email)
+  B->>GW: PUT/POST /v1/policies with Cognito session
+  GW->>NG: forward (edge authorizer per ADR-037, sec 4)
+  NG->>H: add x-sentra-oidc-data signed ES256 claims
+  Note over H: FastAPI resolves Depends require_role editor BEFORE the body runs
+  RR->>RT: Depends resolve_operator_tenant
+  RT->>OI: verify_alb_oidc request
+  OI-->>RT: verified claims sub, email (else 401)
+  RT->>RT: membership lookup sub then tenant_id, role; X-Aegion-Tenant re-validated
+  RT-->>RR: OperatorContext sub, tenant_id, role, is_platform
+  RR->>RR: role_satisfies ctx.role vs editor? (else 403)
+  RR-->>H: ctx verified
+  H->>OWN: assert_owns ctx, policy, policy_id [update/delete/status]
+  OWN-->>H: ok (else 403 cross-tenant IDOR blocked)
+  H->>SVC: create_policy with operator_email = ctx.email
   Note over H,SVC: operator derived from VERIFIED ctx, never X-Operator-Email
-  SVC-->>B: 201 Created (tenant-scoped)
+  SVC-->>B: 201 Created tenant-scoped
 ```
 
 **The retrofit boundary in one line:** every arrow in that diagram except `H→OWN` is *already built and running on dev*; WS-M adds the `Depends(require_role(...))` on the handler, the `H→OWN` ownership assert, and the `operator_email=ctx.email` derivation. Nothing in the ladder is invented.
@@ -443,11 +443,11 @@ The edge authorizer is **defense-in-depth in front of**, not a replacement for, 
 
 ## 5. Verified-agent-identity (AD-7) GA-gate timing adjudication
 
-**In plain terms.** Plane 2 (agent → PDP) has one open residual: is verified per-agent JWT identity a hard requirement before we go live, or can tenant-scoped API keys stand in for now? The HLD already answered the *substance* — it's a hard gate for money-movement / sensitive-data / PHI customers, and tenant-scoped API keys are an interim only for non-money-movement design partners under a DPA. What this LLD adjudicates is the *timing*: when prod activation flips, and how it coordinates with the WS-K enforce flip.
+**In plain terms.** Plane 2 (agent → PDP) is the *data plane* (agent → PDP → `/v1/validate`) — the same thing this doc elsewhere calls the data plane; do not read "Plane 2" as a second, separate plane. Its one open question: how strongly do we verify the agent's identity before a customer goes to prod-enforce? **Decided (2026-07-06 founder brainstorm): M5 is IN scope and the strong per-agent signed-JWT identity is a HARD, mandatory GA gate — the shared/tenant-scoped API key is NOT an acceptable standing posture for a prod-enforce customer.** This sharpens the earlier "interim key OK for non-money-movement design partners" reading: the interim key is now only a *pre-enforce dev/soak* bridge, never the posture a customer runs enforcement on. What this LLD adjudicates is the *timing* of the prod flip and its coordination with the WS-K enforce flip.
 
 ### 5.1 What the HLD already resolved (do not re-litigate)
 
-[FACT — HLD §8 residual #1] Verified per-agent JWT identity is a **hard GA gate for money-movement / sensitive-data / PHI customers** — the §6.5 spoof-DoS defense (dual-tag split, quota off the claimed tenant) and tenet D (an unattributable verdict is a metering + isolation defect) both *assume* a verified credential. Tenant-scoped API keys remain acceptable as an **interim only for non-money-movement design partners under a DPA**. The mechanism is DONE on dev (per-agent ES256 JWT, LLD 26 §3, enforcing for tenant `acme`). **What stays open for the LLD/go-live is the *timing*, not *whether* it gates money-movement GA.**
+[FACT — HLD §8 residual #1, sharpened by the 2026-07-06 amendment to HLD §6.2(f) / ADR-035] Verified per-agent JWT identity is a **hard, mandatory GA gate** — the §6.5 spoof-DoS defense (dual-tag split, quota off the claimed tenant) and tenet D (an unattributable verdict is a metering + isolation defect) both *assume* a verified credential. **The shared/tenant-scoped API key is not an acceptable standing enforcement posture** — it is only a pre-enforce dev/soak bridge, retired before a tenant's prod `TENANT_IDENTITY_MODE=enforce` flip. The mechanism is DONE on dev (per-agent ES256 JWT, LLD 26 §3, enforcing for tenant `acme`). **What stays open for the LLD/go-live is the *timing* of the prod flip, not *whether* it gates GA — and M5 is IN scope for this workstream (not deferred).**
 
 ### 5.2 What this LLD adjudicates — the timing + coordination protocol
 
@@ -478,11 +478,20 @@ The **build** of the full producer credential is staged (like the §4 edge-autho
 
 ## 6. Federation-seam consumption (ADR-035, design-only)
 
-**In plain terms.** Later, customers will want to log in with their own corporate SSO (SAML/OIDC) instead of Cognito. WS-G is designing an IdP-neutral seam so that switch is a config change, not a rewrite. WS-M's job here is only to *consume* that seam — read the verified operator from it — not to swap the identity provider or rebuild the membership/RBAC layer. The provider switch stays deferred (done last).
+**In plain terms.** Customers will log in with their own corporate SSO (their Okta/Entra/Google Workspace) instead of us managing their users in Cognito. Per the 2026-07-06 HLD §6.2(f) amendment, this is **sequenced right after the RBAC coverage (M1–M5) — no longer "done last."** The division is the enterprise standard: **the customer's IdP owns *who* their operators are** (federated via SAML/OIDC, lifecycle synced via SCIM so a departed employee auto-loses access), **we keep *what* each role can do uniform in-app**. WS-M *consumes* the IdP-neutral seam WS-G designs; it does not swap the provider or rebuild the membership/RBAC layer. Cognito stays as the *broker* (it brokers SAML/OIDC upstream IdPs into the user pool), so this is additive — no app rewrite.
 
-WS-M consumes the IdP-neutral **verified operator subject** seam that ADR-035 defines and WS-G designs (G3.7): a `VerifiedOperator{sub, email, idp_groups[]}` claim-extraction shape behind ONE seam, so that when federation lands only that seam changes, not every call site. Concretely, `resolve_operator_tenant` already reads the verified `sub`/`email` from `verify_alb_oidc`'s claims — that read *is* the seam consumption point; WS-M ensures no new call site reads the raw Cognito `sub` directly, so the seam stays the single extraction point.
+WS-M consumes the IdP-neutral **verified operator subject** seam that ADR-035 defines and WS-G designs (G3.7): a `VerifiedOperator{sub, email, idp_groups[]}` claim-extraction shape behind ONE seam, so that when federation lands only that seam changes, not every call site. Concretely, `resolve_operator_tenant` already reads the verified `sub`/`email` from `verify_alb_oidc`'s claims — that read *is* the seam consumption point; WS-M ensures no new call site reads the raw Cognito `sub` directly, so the seam stays the single extraction point. The `idp_groups[]` claim is the input to **Tier-1 role mapping** (below).
 
-**Anti-goals (explicit, tenet 7 / ADR-035):** NO IdP swap (Cognito stays the substrate now); NO rebuild of the live membership/RBAC layer; SCIM deprovisioning + the actual SAML/OIDC provider switch stay **deferred / done-last**. WS-M does not own the seam design (WS-G does) nor the switch — it is a *consumer*.
+**Role model — tiered (2026-07-06 amendment; the customer controls *who*, we guarantee *what*).**
+- **Tier 1 — fixed ladder + IdP-group→role mapping (NOW, live on dev):** the customer maps their IdP groups (e.g. an Okta group `Bank-Admins`) onto our four fixed roles; `admin` means the same for every tenant. No per-tenant role redefinition — this is exactly the current `_ROLE_ORDER` + membership `role` ([deps.py:39](../src/security-controller/app/api/deps.py#L39), [tenant_service.py:34/134](../src/security-controller/app/services/tenant_service.py#L34)).
+- **Tier 2 — customer-composed custom roles from *our* permission primitives (roadmap, enterprise upsell):** e.g. a read-only "Compliance-Auditor". Additive — the primitives already exist implicitly in the `require_role` gates; making the role→permission map data-driven is the future work (the Wiz/CrowdStrike model). Flagged as an LLD-for-later, not built here.
+- **Tier 3 — customer authors arbitrary permission logic: REJECTED** (breaks uniform-authz + SOC 2 auditability; no comparable vendor does it).
+
+**Org-first console (2026-07-06 amendment; consumes this seam).** The console opens with an "enter your organization (= tenant)" page: the org selection routes login to that org's IdP (Tier-1 federation) and sets the session tenant. **Load-bearing invariant (OWASP Multi-Tenant §1): the typed org name is a client preference, never proof** — after IdP authentication the server validates the verified `sub` against `sentra-tenant-members` and 403s a non-member. This is the existing `X-Aegion-Tenant` server-side re-validation ([deps.py:340-353](../src/security-controller/app/api/deps.py#L340)) promoted to a first-class landing page — the *binding + membership check* is already built; the new build is the org-first UI + per-org IdP routing (WS-G owns the UI, this seam feeds it). A non-member org selection → **403** (§3.3 error model). Pre-login "org exists?" is a mild enumeration leak, accepted with a generic message (as Zenity does).
+
+**Two credential lanes, never conflated (2026-07-06 amendment).** *Operator identity* (console login) = the customer's **IdP** — cloud-agnostic, **not** their cloud IAM. *Workload/cloud access* (the control plane reaching into the customer's cloud to scan/govern) = **cross-account assume-role + external-id**, already built ([connections_service.py:14-18, 438-488](../src/security-controller/app/services/connections_service.py#L14): `role_arn` + minted `external_id`, 900 s STS temp creds; Azure SP secret held as a *vault reference*, never the raw secret). Console login goes through the IdP; cloud IAM is only the separate scanning job — conflating them would break the cross-vendor neutrality (an IdP seam is neutral; an IAM-login seam would be AWS-specific).
+
+**Anti-goals (explicit, tenet 7 / ADR-035):** NO IdP *swap* (Cognito stays the substrate/broker; the swap to WorkOS/Auth0/self-host is what stays "last", only if Cognito's federation limits are outgrown); NO rebuild of the live membership/RBAC layer; NO Tier-3 customer-authored permissions. WS-M does not own the seam UI (WS-G does) — it is a *consumer*.
 
 ---
 
