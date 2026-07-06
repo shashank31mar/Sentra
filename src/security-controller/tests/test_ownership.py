@@ -196,3 +196,47 @@ def test_assert_owns_lookup_error_denies(own_env, monkeypatch):
     with pytest.raises(HTTPException) as ei:
         assert_owns(_ctx("t_a"), ResourceKind.POLICY, "p1")
     assert ei.value.status_code == 404
+
+
+# --------------------------------------------------------------------------- #
+# ACTION — the net-new Logs-Insights resolution path is deferred to M2.3 (the
+# rollback routes 15/16 are still on the pending authz allowlist). Until then the
+# dispatch MUST fail secure so a rollback can never be authorized against an
+# action whose owning tenant we cannot resolve. (Closes the gap: the stub was
+# `# pragma: no cover` — its fail-secure behaviour had NO test.)
+# --------------------------------------------------------------------------- #
+def test_assert_owns_action_fails_secure_deny():
+    """ACTION dispatch has no resolution path yet → hard deny (404), never allow."""
+    with pytest.raises(HTTPException) as ei:
+        assert_owns(_ctx("t_a"), ResourceKind.ACTION, "act-refund_charge-20260706120000-abc123")
+    assert ei.value.status_code == 404
+
+
+# --------------------------------------------------------------------------- #
+# CONVERSATION — shares the tenant-scoped SESSION read path (assert_owns dispatches
+# CONVERSATION → _assert_owns_session). Previously the CONVERSATION branch of the
+# dispatch was exercised by NO test; these pin present-ok / absent-404 /
+# unresolvable-deny through the CONVERSATION kind specifically.
+# --------------------------------------------------------------------------- #
+def test_assert_owns_conversation_present_ok(own_env):
+    own_env.Table(settings.dynamodb_session_table_v2).put_item(
+        Item={"tenant_id": "t_a", "session_id": "conv-1", "trust_score": 50})
+    assert_owns(_ctx("t_a"), ResourceKind.CONVERSATION, "conv-1")
+
+
+def test_assert_owns_conversation_absent_404(own_env):
+    # tenant B owns it; tenant A's scoped read misses → 404 (existence-masked)
+    own_env.Table(settings.dynamodb_session_table_v2).put_item(
+        Item={"tenant_id": "t_b", "session_id": "conv-1", "trust_score": 50})
+    with pytest.raises(HTTPException) as ei:
+        assert_owns(_ctx("t_a"), ResourceKind.CONVERSATION, "conv-1")
+    assert ei.value.status_code == 404
+
+
+def test_assert_owns_conversation_unresolvable_denies(own_env, monkeypatch):
+    """Flag-off fixture: the CONVERSATION path (like SESSION) must DENY rather than
+    fall through to a bare-key read that would be cross-tenant-readable."""
+    monkeypatch.setattr(settings, "tenancy_v2_enabled", False)
+    with pytest.raises(HTTPException) as ei:
+        assert_owns(_ctx("t_a"), ResourceKind.CONVERSATION, "conv-1")
+    assert ei.value.status_code == 404

@@ -182,9 +182,11 @@ def _assert_owns_session(ctx: OperatorContext, session_id: str) -> None:
 # Until the M2.3 query path lands here, this fails secure (deny) so a rollback can
 # never be authorized against an unresolved action.
 # --------------------------------------------------------------------------- #
-def _assert_owns_action(ctx: OperatorContext, action_id: str) -> None:  # pragma: no cover
+def _assert_owns_action(ctx: OperatorContext, action_id: str) -> None:
     # M2.3 wires the injection-safe Logs-Insights exact-match resolution here;
-    # deferred to a later round. Fail secure until then.
+    # deferred to a later round (rollback_action/rollback_conversation are still on
+    # the pending _AUTHZ_ALLOWLIST for M2.3). Fail secure until then — a rollback can
+    # never be authorized against an action whose owning tenant we cannot resolve.
     raise HTTPException(status_code=404, detail="action ownership resolution unavailable")
 
 
