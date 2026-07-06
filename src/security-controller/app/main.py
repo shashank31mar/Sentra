@@ -45,6 +45,19 @@ async def lifespan(app: FastAPI):
         "aws_region": settings.aws_region
     })
 
+    # WS-M M1.0 (FIX-B) — fail-secure boot backstop for the ALB-OIDC signer/issuer
+    # pin. The pin defends the ADR-037 in-service control-plane auth boundary against
+    # a multi-stack ES256 forgery (any in-region ALB / any Cognito pool token in acct
+    # 531109575379 would otherwise verify — lld/39 §3.1). The gate existed + was
+    # tested but had NO production caller, and empty pins ship in every CDK config,
+    # so prod stayed inert. This wires the ONLY live caller: on a real deployment
+    # (`alb_oidc_pin_enforce_at_boot` set by compute_stack.py) a genuinely-unpinned
+    # prod RAISES here → the ECS task never becomes healthy → an unpinned control
+    # plane never takes traffic. Inert for local dev / the hermetic test suite (flag
+    # default off). Better a loud boot failure than a silent forgery window.
+    settings.assert_alb_oidc_pin_ready_at_boot()
+    logger.info("ALB-OIDC pin readiness verified (WS-M M1.0)")
+
     # Build the ValidationService once and reuse it for every request
     # (LLD 24 / WS24 M2). Per-request construction rebuilt ~10 boto3 clients and
     # discarded the Sigma rule cache, adding hundreds of ms per call. __init__ does

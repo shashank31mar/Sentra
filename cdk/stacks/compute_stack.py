@@ -1437,6 +1437,17 @@ def handler(event, context):
                     # set them at all → prod stayed unpinned (the gap this closes).
                     "ALB_OIDC_EXPECTED_SIGNERS": str(config.get("alb_oidc_expected_signers", "")),
                     "ALB_OIDC_EXPECTED_ISSUER": str(config.get("alb_oidc_expected_issuer", "")),
+                    # WS-M M1.0 (FIX-B) — turn the pin-readiness gate into a LIVE boot
+                    # backstop, not just a runbook step. With this True the container
+                    # RAISES at lifespan startup if it is a production env
+                    # (config.is_production_env: `prod`/`production`) with empty pins
+                    # → the ECS task never becomes healthy → an unpinned control plane
+                    # never serves. Default True for every real deployment (the gate
+                    # had NO caller before → prod shipped unpinned); a config can set
+                    # it False for a deliberate transition window. Independent of the
+                    # `environment` token vocabulary — the gate matches both `prod`
+                    # and the code-default `production`.
+                    "ALB_OIDC_PIN_ENFORCE_AT_BOOT": str(config.get("alb_oidc_pin_enforce_at_boot", True)).lower(),
                     "QUOTA_COUNTERS_TABLE": storage_stack.quota_counters_table.table_name,
                     # Hot-path RPS quota enforcement (WS-E E2b) — founder-gated, off.
                     "QUOTA_ENFORCEMENT_ENABLED": str(config.get("quota_enforcement_enabled", False)).lower(),
