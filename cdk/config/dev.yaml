@@ -90,6 +90,31 @@ local_floor_enabled: true
 # named safeguard before real traffic (LLD 31 §14.2).
 ml_classifier_enabled: true
 
+# ALB-OIDC signer/issuer PIN (WS-M M1.0 / lld/39 §3.1). The in-service control-plane
+# auth boundary (ADR-037) verifies operator-console tokens with plain ES256, which
+# accepts a token signed by ANY in-region ALB / ANY Cognito pool — acct 531109575379
+# hosts multiple stacks, so a sibling ALB's token would otherwise verify. Populate
+# both with THIS stack's ALB ARN + Cognito issuer to enforce the pin, then flip
+# alb_oidc_pin_enforce_at_boot -> true so an unpinned deploy fails to boot.
+#   alb_oidc_expected_signers: "arn:aws:elasticloadbalancing:us-east-1:531109575379:loadbalancer/app/sentra-private-alb/xxxx"
+#   alb_oidc_expected_issuer:  "https://cognito-idp.us-east-1.amazonaws.com/us-east-1_xxxxxxxxx"
+# Empty (current transition window) => NO pin; the runtime pin check is inert and
+# verify_alb_oidc accepts any signature-valid ALB token (the AS-1 build-time check
+# to discover the real ARN + issuer is still pending — lld/39 §3.1 M1.0).
+#
+# Boot-time enforcement (WS-M M1.0 FIX-B): compute_stack.py DEFAULTS
+# ALB_OIDC_PIN_ENFORCE_AT_BOOT to true, and assert_alb_oidc_pin_ready_at_boot()
+# raises at FastAPI lifespan startup when the flag is on with empty pins → the ECS
+# task never becomes healthy → control-plane OUTAGE. This stack is live-prod
+# (dev IS prod, acct 531109575379) with tenant_identity_mode:enforce, so leaving
+# the flag at its true default while the pins are empty would BRICK the very next
+# `cdk deploy` of the controller. HOLD it false for the transition window; flip to
+# true ONLY once BOTH pins above are populated with the real values (the deploy
+# runbook / CI still calls assert_alb_oidc_pin_ready_for_prod before flipping a
+# money-movement tenant to enforce). Fail-secure intent is preserved: an unpinned
+# boot-enforced deploy still refuses to start once the flag is raised.
+alb_oidc_pin_enforce_at_boot: false
+
 # VPC Configuration
 vpc:
   cidr: "10.0.0.0/16"

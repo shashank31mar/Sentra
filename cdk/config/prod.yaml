@@ -51,6 +51,20 @@ local_floor_enabled: true
 # named safeguard before real traffic (LLD 31 §14.2).
 ml_classifier_enabled: true
 
+# ALB-OIDC signer/issuer PIN (WS-M M1.0 / lld/39 §3.1). See dev.yaml for the full
+# rationale. The in-service control-plane auth boundary (ADR-037) verifies operator
+# tokens with plain ES256 → without a pin any in-region ALB / Cognito pool token
+# verifies. Populate both with THIS prod stack's ALB ARN + Cognito issuer, then flip
+# alb_oidc_pin_enforce_at_boot -> true to make an unpinned deploy fail to boot.
+#   alb_oidc_expected_signers: "arn:aws:elasticloadbalancing:us-east-1:<acct>:loadbalancer/app/<alb>/xxxx"
+#   alb_oidc_expected_issuer:  "https://cognito-idp.us-east-1.amazonaws.com/us-east-1_xxxxxxxxx"
+# compute_stack.py DEFAULTS ALB_OIDC_PIN_ENFORCE_AT_BOOT true, and
+# assert_alb_oidc_pin_ready_at_boot() raises at lifespan startup when the flag is on
+# with empty pins → the ECS task never becomes healthy → control-plane OUTAGE on the
+# next deploy. HOLD false for the transition window; flip to true ONLY after BOTH
+# pins above are populated. Fail-secure intent is preserved once the flag is raised.
+alb_oidc_pin_enforce_at_boot: false
+
 # VPC Configuration
 vpc:
   cidr: "10.0.0.0/16"
