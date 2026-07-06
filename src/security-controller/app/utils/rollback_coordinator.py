@@ -35,6 +35,14 @@ LOG_PREFIX = "[WS12-M5-ROLLBACK]"
 # cannot inject query syntax.
 _ACTION_ID_RE = re.compile(r"^act-[a-z_]+-\d{14}-[0-9a-f]{6}$")
 
+# WS-M FIX-B — the conversation_id grammar. Unlike action_id, a conversation_id is
+# caller-supplied (the agent sets ``context.conversation_id``) so there is no fixed
+# server-side format; we constrain it to a safe id charset (alphanumerics + dash +
+# underscore, bounded length) and REJECT anything else (never escape-interpolate a
+# value carrying Logs-Insights query metacharacters — quote/backslash/pipe — into
+# the resolution query). Covers ``conv-abc123`` and UUID-style ids; blocks injection.
+_CONVERSATION_ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,128}$")
+
 # A distinct, retryable internal status for a resolution-substrate timeout (M2.5) —
 # NOT a cross-tenant "not found". Surfaced so an authorized operator's just-taken
 # reversal isn't mis-reported as a 404 while eventually-consistent Logs catch up.
@@ -55,6 +63,35 @@ def _tenant_of_action(action_id: str, tenant_id: str):
         return None
     coordinator = RollbackCoordinator()
     result = coordinator._query_action_sync(action_id, tenant_id=tenant_id)
+    if result == RESOLUTION_UNAVAILABLE or result is None:
+        return result
+    return result.get("tenant_id")
+
+
+def _tenant_of_conversation(conversation_id: str, tenant_id: str):
+    """Resolve the owning tenant of ``conversation_id`` via the injection-safe,
+    tenant-scoped Logs-Insights exact-match query (WS-M FIX-B, consumed by
+    ``ownership._assert_owns_conversation``). Synchronous — safe to call from the
+    sync ``assert_owns`` dispatch.
+
+    WHY a Logs path, not the session-context table (the FIX-B correction): a
+    conversation lives ONLY in CloudWatch Logs under
+    ``multi_agent_context.conversation_id`` (``audit_logger.query_logs_by_conversation``);
+    there is NO row in the ``session_context`` table keyed by a conversation_id, so the
+    prior SESSION-store dispatch missed on EVERY real conversation → a fail-closed 404
+    that bricked every legitimate rollback. The reversible-action events inside a
+    conversation carry the stamped ``tenant_id`` (``_build_log_event`` M2.3 Piece 1),
+    so we resolve the tenant the SAME way the ACTION path does — an exact-match query
+    scoped to ``tenant_id``, reading the stamped owner off a matching event.
+
+    Returns the stamped ``tenant_id`` of a matching reversible-action event, ``None``
+    if no such event exists under ``tenant_id``, or :data:`RESOLUTION_UNAVAILABLE` on a
+    substrate timeout/failure. A crafted ``conversation_id`` (fails the grammar) →
+    ``None`` (never interpolated into the query)."""
+    if not _CONVERSATION_ID_RE.match(conversation_id or ""):
+        return None
+    coordinator = RollbackCoordinator()
+    result = coordinator._query_conversation_tenant_sync(conversation_id, tenant_id=tenant_id)
     if result == RESOLUTION_UNAVAILABLE or result is None:
         return result
     return result.get("tenant_id")
@@ -349,6 +386,91 @@ class RollbackCoordinator:
 
         except Exception as e:
             logger.exception(f"Failed to retrieve action from logs: {e}")
+            # A resolution-substrate error must not masquerade as a cross-tenant 404.
+            return RESOLUTION_UNAVAILABLE
+
+    def _query_conversation_tenant_sync(
+        self, conversation_id: str, tenant_id: Optional[str] = None
+    ):
+        """Resolve the owning tenant of ``conversation_id`` from CloudWatch Logs
+        (WS-M FIX-B — the conversation analogue of :meth:`_query_action_sync`).
+
+        Injection-safe: the ``conversation_id`` is asserted against
+        ``_CONVERSATION_ID_RE`` by the caller AND re-checked here, then matched via an
+        EXACT auto-discovered-JSON-field filter
+        (``filter multi_agent_context.conversation_id = <val>``) — never a ``@message
+        like`` substring. When a ``tenant_id`` is supplied the query also filters
+        ``tenant_id = <val>`` so a cross-tenant record is never returned.
+
+        Args:
+            conversation_id: Conversation identifier (already grammar-checked by the caller).
+            tenant_id: The verified operator tenant to scope the query to.
+
+        Returns:
+            A dict ``{"tenant_id": <stamped owner>}`` for a matching reversible-action
+            event, ``None`` if no such event exists under ``tenant_id``, or the sentinel
+            :data:`RESOLUTION_UNAVAILABLE` on a query-substrate timeout/failure (M2.5) so
+            the caller can surface a distinct retryable status rather than a 404.
+        """
+        # Fail-secure re-check (defence-in-depth on top of the caller's guard).
+        if not _CONVERSATION_ID_RE.match(conversation_id or ""):
+            return None
+        try:
+            # Exact-match on auto-discovered JSON fields. The reversible-action events
+            # inside a conversation carry both multi_agent_context.conversation_id AND
+            # the stamped tenant_id (M2.3 Piece 1); we require a stamped tenant_id so an
+            # un-stamped legacy/non-reversible event never resolves ownership.
+            clauses = [
+                f'filter multi_agent_context.conversation_id = "{conversation_id}"',
+                "filter ispresent(tenant_id)",
+            ]
+            if tenant_id is not None:
+                clauses.append(f'filter tenant_id = "{tenant_id}"')
+            query = (
+                "fields @timestamp, @message, tenant_id\n| "
+                + "\n| ".join(clauses)
+                + "\n| limit 1"
+            )
+
+            # Query last 7 days (match the action path window).
+            end_time = int(time.time() * 1000)
+            start_time = end_time - (7 * 24 * 60 * 60 * 1000)
+
+            response = self.cloudwatch_logs.start_query(
+                logGroupName=self.log_group,
+                startTime=start_time,
+                endTime=end_time,
+                queryString=query,
+            )
+            query_id = response["queryId"]
+
+            max_wait = 5
+            start = time.time()
+            while time.time() - start < max_wait:
+                result = self.cloudwatch_logs.get_query_results(queryId=query_id)
+                if result["status"] == "Complete":
+                    if result["results"]:
+                        for field in result["results"][0]:
+                            if field["field"] == "@message":
+                                log_data = json.loads(field["value"])
+                                owner = log_data.get("tenant_id")
+                                # Re-verify the conversation id on the parsed event
+                                # (defence-in-depth beyond the query filter).
+                                mac = log_data.get("multi_agent_context") or {}
+                                if owner and mac.get("conversation_id") == conversation_id:
+                                    return {"tenant_id": owner}
+                    return None
+                elif result["status"] == "Failed":
+                    logger.error("CloudWatch conversation-tenant query failed")
+                    # A substrate failure is NOT "not found" — retryable (M2.5).
+                    return RESOLUTION_UNAVAILABLE
+                time.sleep(0.5)
+
+            logger.warning("CloudWatch conversation-tenant query timeout")
+            return RESOLUTION_UNAVAILABLE
+
+        except Exception as e:
+            logger.exception(f"Failed to resolve conversation tenant from logs: {e}")
             # A resolution-substrate error must not masquerade as a cross-tenant 404.
             return RESOLUTION_UNAVAILABLE
 

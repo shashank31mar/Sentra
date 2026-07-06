@@ -63,8 +63,10 @@ def assert_owns(ctx: OperatorContext, kind: ResourceKind, resource_id: str) -> N
         _assert_owns_policy(ctx, resource_id)
     elif kind == ResourceKind.CONNECTION:
         _assert_owns_connection(ctx, resource_id)
-    elif kind in (ResourceKind.SESSION, ResourceKind.CONVERSATION):
+    elif kind == ResourceKind.SESSION:
         _assert_owns_session(ctx, resource_id)
+    elif kind == ResourceKind.CONVERSATION:
+        _assert_owns_conversation(ctx, resource_id)
     elif kind == ResourceKind.ACTION:
         _assert_owns_action(ctx, resource_id)
     else:  # pragma: no cover — Enum is exhaustive; defensive fail-secure.
@@ -146,13 +148,15 @@ def _assert_owns_connection(ctx: OperatorContext, connection_id: str) -> None:
 
 
 # --------------------------------------------------------------------------- #
-# SESSION / CONVERSATION — structural but v2-gated (effective because
-# TENANCY_V2 is on). Tenant-scoped read via the session-context table keyed on
+# SESSION — structural but v2-gated (effective because TENANCY_V2 is on).
+# Tenant-scoped read via the session-context table keyed on
 # tenancy.item_key('session_id', id, tenant=ctx.tenant_id). If the record can't
 # be tenant-resolved (flag-off / stray), DENY — never fall through to a bare-key
 # read that would leak another tenant's session.
 # NOTE: the store is the SESSION-CONTEXT table (SessionManager), NOT the
 # validation-signals store (that governs /trail; do not conflate — lld/39 §M0).
+# CONVERSATION is a DISTINCT resource — it is NOT keyed in this table (see
+# _assert_owns_conversation below and the FIX-B propagation note).
 # --------------------------------------------------------------------------- #
 def _assert_owns_session(ctx: OperatorContext, session_id: str) -> None:
     if not _tenancy_resolvable(ctx):
@@ -205,6 +209,47 @@ def _assert_owns_action(ctx: OperatorContext, action_id: str) -> None:
         raise HTTPException(status_code=503, detail="action resolution unavailable — retry")
     if owner is None or owner != ctx.tenant_id:
         raise HTTPException(status_code=404, detail="action not found")
+
+
+# --------------------------------------------------------------------------- #
+# CONVERSATION — the Logs-Insights resolution path (WS-M FIX-B correction).
+#
+# A conversation is NOT a session: it lives ONLY in CloudWatch Logs under
+# multi_agent_context.conversation_id (audit_logger.query_logs_by_conversation) —
+# there is NO row in the session_context table keyed by a conversation_id. The
+# original design (task doc M0.1/M2.3 "same tenant-scoped SESSION read") dispatched
+# CONVERSATION → _assert_owns_session, so the scoped get_item missed on EVERY real
+# conversation → a fail-closed 404 that bricked every legitimate rollback of a
+# tenant-owned conversation (POST /v1/rollback/conversation/{id} was functionally
+# dead). FIX: resolve the owning tenant the SAME way ACTION does — an injection-safe,
+# tenant-scoped Logs-Insights exact-match on the stamped tenant_id of a reversible-
+# action event inside the conversation (_build_log_event M2.3 Piece 1 stamps it).
+# Design premise divergence flagged to propagate to lld/39 / the task doc.
+# --------------------------------------------------------------------------- #
+def _assert_owns_conversation(ctx: OperatorContext, conversation_id: str) -> None:
+    """Resolve the owning tenant of ``conversation_id`` via the injection-safe
+    Logs-Insights exact-match path (WS-M FIX-B) and assert it equals ``ctx.tenant_id``.
+
+    Fail-secure: an unresolvable tenant → 404; a resolution-substrate timeout/failure
+    → a distinct retryable 503 (NOT a cross-tenant 404 — M2.5); absent / foreign
+    tenant → 404. A crafted ``conversation_id`` (fails the grammar) → 404 (never
+    interpolated into the query)."""
+    if not _tenancy_resolvable(ctx):
+        raise HTTPException(status_code=404, detail="conversation not found")
+    from app.utils.rollback_coordinator import (
+        RESOLUTION_UNAVAILABLE, _tenant_of_conversation,
+    )
+    try:
+        owner = _tenant_of_conversation(conversation_id, ctx.tenant_id)
+    except Exception as exc:  # noqa: BLE001 — fail secure on any lookup error.
+        logger.warning("conversation ownership lookup failed for %s: %s", conversation_id, exc)
+        raise HTTPException(status_code=404, detail="conversation not found") from exc
+    if owner == RESOLUTION_UNAVAILABLE:
+        # Distinct retryable status — do NOT report an authorized reversal as a 404
+        # while eventually-consistent Logs catch up (M2.5).
+        raise HTTPException(status_code=503, detail="conversation resolution unavailable — retry")
+    if owner is None or owner != ctx.tenant_id:
+        raise HTTPException(status_code=404, detail="conversation not found")
 
 
 def _tenancy_resolvable(ctx: OperatorContext) -> bool:
