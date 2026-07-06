@@ -2051,12 +2051,16 @@ async def rollback_conversation(
     # attribution = verified ctx.sub, never a body default of "system".
     assert_owns(ctx, ResourceKind.CONVERSATION, conversation_id)
 
-    # Execute conversation rollback
+    # Execute conversation rollback. Thread ctx.tenant_id (WS-M M2.3 conversation-path
+    # fix): the coordinator tenant-scopes the enumeration, per-action re-verifies, and
+    # claims the idempotency ledger — two independent tenant checks on this money path
+    # (the assert_owns above + the coordinator's re-verify), mirroring rollback_action.
     rollback_coordinator = RollbackCoordinator()
     result = await rollback_coordinator.rollback_conversation(
         conversation_id=conversation_id,
         reason=reason,
-        operator_id=ctx.sub
+        operator_id=ctx.sub,
+        tenant_id=ctx.tenant_id,
     )
 
     return result

@@ -674,19 +674,29 @@ class RollbackCoordinator:
         self,
         conversation_id: str,
         reason: str,
-        operator_id: str = "system"
+        operator_id: str = "system",
+        tenant_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
         Roll back ALL WRITE operations in a conversation.
-        
+
         Fetches all audit logs for the conversation, filters for reversible
         WRITE operations, and executes rollback in LIFO order (last action first).
-        
+
         Args:
             conversation_id: Conversation identifier
             reason: Reason for rollback
             operator_id: Operator performing rollback (default: "system")
-            
+            tenant_id: The VERIFIED operator tenant (WS-M M2.3 conversation-path fix).
+                Threaded THREE ways to mirror the single-action gold standard
+                (:meth:`rollback_action`): (1) the enumeration
+                ``query_logs_by_conversation`` is scoped to it so a shared/colliding
+                ``conversation_id`` never lists another tenant's reversible money
+                actions; (2) every candidate action is re-verified against it in
+                :meth:`_rollback_single_action` before reversal (defence-in-depth);
+                (3) each reversal claims the durable idempotency ledger. Default
+                ``None`` keeps legacy callers working (no tenant scope / no re-verify).
+
         Returns:
             Dict with rollback summary
         """
@@ -703,8 +713,14 @@ class RollbackCoordinator:
         )
         
         try:
-            # Step 1: Fetch all audit logs for conversation
-            logs = await self.audit_logger.query_logs_by_conversation(conversation_id)
+            # Step 1: Fetch all audit logs for conversation — TENANT-SCOPED (M2.3
+            # conversation-path fix). Passing tenant_id filters the Logs-Insights
+            # enumeration so a cross-tenant event is never even returned to the
+            # LIFO reversal loop below; the per-action re-verify in
+            # _rollback_single_action is the defence-in-depth backstop.
+            logs = await self.audit_logger.query_logs_by_conversation(
+                conversation_id, tenant_id=tenant_id
+            )
             
             if not logs:
                 logger.info(
@@ -770,14 +786,17 @@ class RollbackCoordinator:
             # Step 4: Execute rollback for each action
             rolled_back = []
             failed = []
-            
+            skipped = []
+
             for log in reversible_actions:
                 action_id = log.get('action_id')
                 tool_name = log.get('tool_name')
-                
+
                 try:
-                    result = await self._rollback_single_action(log, reason, operator_id)
-                    
+                    result = await self._rollback_single_action(
+                        log, reason, operator_id, tenant_id=tenant_id
+                    )
+
                     if result.get('success'):
                         rolled_back.append({
                             "action_id": action_id,
@@ -793,6 +812,14 @@ class RollbackCoordinator:
                                 "conversation_id": conversation_id
                             }
                         )
+                    elif result.get('skipped'):
+                        # A foreign-tenant re-verify miss OR an already-claimed
+                        # (idempotent) action — a legitimate no-op, NOT a failure.
+                        # Never reverses; must not flip conversation success to False.
+                        skipped.append({
+                            "action_id": action_id,
+                            "tool_name": tool_name,
+                        })
                     else:
                         failed.append({
                             "action_id": action_id,
@@ -821,8 +848,9 @@ class RollbackCoordinator:
                             "conversation_id": conversation_id
                         }
                     )
-            
-            # Step 5: Return summary
+
+            # Step 5: Return summary. Skipped actions (foreign-tenant / already-done)
+            # are a legitimate no-op and do NOT count against success.
             success = len(failed) == 0
             
             logger.info(
@@ -841,11 +869,13 @@ class RollbackCoordinator:
                 "conversation_id": conversation_id,
                 "rolled_back_count": len(rolled_back),
                 "failed_count": len(failed),
+                "skipped_count": len(skipped),
                 "rolled_back_actions": rolled_back,
                 "failed_actions": failed,
+                "skipped_actions": skipped,
                 "reason": reason
             }
-            
+
         except Exception as e:
             logger.exception(f"Conversation rollback failed: {e}")
             return {
@@ -863,55 +893,105 @@ class RollbackCoordinator:
         self,
         log: Dict[str, Any],
         reason: str,
-        operator_id: str
+        operator_id: str,
+        tenant_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
         Execute rollback for a single action from audit log.
-        
+
         Args:
             log: Audit log entry for the action
             reason: Rollback reason
             operator_id: Operator performing rollback
-            
+            tenant_id: The VERIFIED operator tenant (WS-M M2.3 conversation-path fix).
+                Mirrors the single-action gold standard (:meth:`rollback_action`):
+                (a) DEFENCE-IN-DEPTH re-verify — even if a cross-tenant event slipped
+                past the tenant-scoped enumeration, its stamped ``tenant_id`` must
+                equal this or the action is SKIPPED fail-secure (never reversed,
+                never a 500, never leaking which tenant owns it); (b) IDEMPOTENCY —
+                claim the durable ledger via :meth:`_claim_rollback` BEFORE reversing
+                so a second/concurrent conversation rollback cannot double-reverse.
+                ``None`` (legacy callers) skips the re-verify but still claims.
+
         Returns:
-            Dict with success status and rollback details
+            Dict with ``success`` (reversal ran) OR ``skipped`` (foreign-tenant /
+            already-rolled-back — a legitimate no-op, NOT a failure) OR a failure.
         """
         tool_name = log.get('tool_name')
         action_id = log.get('action_id')
         agent_id = log.get('agent_id')
         tool_params = log.get('tool_params', {})
-        
+
+        # WS-M M2.3 conversation-path fix — DEFENCE-IN-DEPTH tenant re-verify. Even
+        # after the tenant-scoped enumeration, assert the stamped tenant equals the
+        # caller's verified tenant. On mismatch, SKIP fail-secure: never reverse it,
+        # never 500, never leak the owning tenant (mirror rollback_action :218).
+        if tenant_id is not None and log.get('tenant_id') != tenant_id:
+            logger.warning(
+                f"{LOG_PREFIX} conversation action tenant mismatch — skipped fail-secure",
+                extra={"action_id": action_id, "tool_name": tool_name}
+            )
+            return {
+                "success": False,
+                "skipped": True,
+                "action_id": action_id,
+                "message": "Action not owned by tenant — skipped",
+            }
+
         # Get rollback tool name
         rollback_tool = self.REVERSIBLE_ACTIONS.get(tool_name)
-        
+
         if not rollback_tool:
             return {
                 "success": False,
                 "message": f"No rollback tool defined for {tool_name}"
             }
-        
+
+        # WS-M M2.3/M2.4 conversation-path fix — durable IDEMPOTENCY claim BEFORE the
+        # reversal (mirror rollback_action :238). A second/concurrent conversation
+        # rollback of the same action fails the conditional PutItem → skip as
+        # already-done (the in-log rollback_status filter was provably dead — that
+        # field is written once and never mutated). A claim failure is NOT a reversal
+        # failure, so it must not fail the whole conversation → mark it skipped.
+        if not self._claim_rollback(action_id):
+            logger.info(
+                f"{LOG_PREFIX} conversation action already claimed — skipped (idempotent)",
+                extra={"action_id": action_id, "tool_name": tool_name}
+            )
+            return {
+                "success": False,
+                "skipped": True,
+                "action_id": action_id,
+                "message": "Action already rolled back",
+            }
+
         # Build rollback parameters based on tool type
         rollback_params = self._build_rollback_params(tool_name, tool_params, log)
-        
+
         # Generate rollback ID
         rollback_id = f"rb-conv-{int(time.time())}-{action_id[-6:]}"
-        
-        # Execute rollback based on tool type
+
+        # Execute rollback based on tool type. The claim above is a TENTATIVE lock —
+        # if the reversal fails (raises) we RELEASE it so a legitimate retry can
+        # re-attempt an un-reversed money action (mirror rollback_action :252-270).
         try:
             if tool_name == "process_refund":
                 # Use existing _rollback_refund method
                 result = await self._rollback_refund(log)
-                
+
             elif tool_name == "create_order":
                 # Delete the order
                 result = await self._rollback_create_order(log)
-                
+
             else:
+                # Nothing was reversed — release the claim so it isn't permanently
+                # locked out of a future valid rollback.
+                self._release_rollback(action_id)
                 return {
                     "success": False,
                     "message": f"Rollback handler not implemented for {tool_name}"
                 }
-            
+
             # Log rollback event
             await self._log_rollback(
                 action_id=action_id,
@@ -920,16 +1000,19 @@ class RollbackCoordinator:
                 reason=reason,
                 result=result
             )
-            
+
             return {
                 "success": True,
                 "rollback_id": rollback_id,
                 "action_id": action_id,
                 "tool_name": tool_name
             }
-            
+
         except Exception as e:
             logger.exception(f"Rollback execution failed for {action_id}")
+            # The reversal did NOT complete — release the claim so a retry can
+            # re-attempt an un-reversed money action (fail-secure toward retry).
+            self._release_rollback(action_id)
             return {
                 "success": False,
                 "message": str(e)

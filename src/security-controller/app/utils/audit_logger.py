@@ -739,26 +739,42 @@ class AuditLogger:
     async def query_logs_by_conversation(
         self,
         conversation_id: str,
-        start_time_hours_ago: int = 24
+        start_time_hours_ago: int = 24,
+        tenant_id: Optional[str] = None,
     ) -> list:
         """
         Query all audit logs for a conversation using CloudWatch Logs Insights.
-        
+
         Args:
             conversation_id: Conversation identifier
             start_time_hours_ago: How far back to search (default 24 hours)
-            
+            tenant_id: The VERIFIED operator tenant to scope the enumeration to
+                (WS-M M2.3 conversation-path fix). When provided, an exact-equality
+                ``filter tenant_id = "<val>"`` clause is appended so a cross-tenant
+                event is NEVER returned — a colliding/shared ``conversation_id``
+                cannot enumerate another tenant's reversible money actions. Default
+                ``None`` keeps existing callers backward-compatible.
+
         Returns:
             List of log entries sorted by timestamp
         """
         try:
-            # Build CloudWatch Logs Insights query
-            query = f"""
-            fields @timestamp, @message
-            | filter multi_agent_context.conversation_id = "{conversation_id}"
-            | sort @timestamp asc
-            | limit 1000
-            """
+            # Build CloudWatch Logs Insights query. Exact-equality filters on the
+            # auto-discovered JSON fields (never a `@message like` substring). The
+            # conversation_id is caller-supplied and grammar-checked upstream by the
+            # ownership/coordinator path (_CONVERSATION_ID_RE); tenant_id is internal
+            # (the verified operator tenant, never user free-text) — same injection-
+            # safe discipline as _query_conversation_tenant_sync / _query_action_sync.
+            clauses = [
+                f'filter multi_agent_context.conversation_id = "{conversation_id}"'
+            ]
+            if tenant_id is not None:
+                clauses.append(f'filter tenant_id = "{tenant_id}"')
+            query = (
+                "fields @timestamp, @message\n            | "
+                + "\n            | ".join(clauses)
+                + "\n            | sort @timestamp asc\n            | limit 1000\n            "
+            )
             
             # Calculate time range
             end_time = int(time.time())

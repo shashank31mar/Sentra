@@ -303,6 +303,33 @@ async def test_rollback_conversation_route_asserts_conversation_ownership():
     assert ResourceKind.CONVERSATION in calls
 
 
+@pytest.mark.asyncio
+async def test_rollback_conversation_route_threads_tenant_id_into_coordinator():
+    """WS-M M2.3 conversation-path fix: the route MUST pass ctx.tenant_id (NOT a body
+    value) into RollbackCoordinator.rollback_conversation, alongside operator_id=ctx.sub.
+    FAILS if the route stops threading the verified tenant into the coordinator."""
+    from app.api import routes as R
+    from app.api.deps import OperatorContext
+
+    captured = {}
+
+    async def _capture(**kwargs):
+        captured.update(kwargs)
+        return {"success": True, "conversation_id": _CONV, "rolled_back_count": 0}
+
+    with patch("app.api.routes.assert_owns"), \
+         patch("app.utils.rollback_coordinator.RollbackCoordinator") as RC:
+        RC.return_value.rollback_conversation = _capture
+        await R.rollback_conversation(
+            _CONV,
+            {"reason": "r"},
+            ctx=OperatorContext(sub="op", tenant_id="t_a", role="admin", email="op@x"),
+        )
+    assert captured.get("tenant_id") == "t_a"
+    assert captured.get("operator_id") == "op"
+    assert captured.get("conversation_id") == _CONV
+
+
 class _AsyncReturn:
     def __init__(self, val):
         self.val = val
