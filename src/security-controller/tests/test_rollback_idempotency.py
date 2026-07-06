@@ -100,3 +100,67 @@ async def test_ledger_unavailable_fails_secure_denies(coordinator):
                                             reason="r", operator_id="op", tenant_id="t_a")
     assert out["success"] is False
     coordinator._orders.update_item.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_failed_reversal_releases_claim_so_retry_can_reverse(coordinator):
+    """WS-M M2.4 FIX-B (CRITICAL): the ledger claim is a TENTATIVE lock, not proof the
+    reversal happened. When the reversal itself fails, the claim MUST be released so a
+    legitimate retry can re-attempt — otherwise a money action that was NEVER reversed
+    becomes permanently un-reversible (every retry hits ConditionalCheckFailedException
+    → 'already rolled back'). This test FAILS against the pre-fix code (which left the
+    claim on failure)."""
+    _mk_action(coordinator)
+    # First attempt: claim succeeds, then the reversal (orders update_item) BLOWS UP.
+    coordinator._orders.update_item.side_effect = RuntimeError("orders table down")
+
+    first = await coordinator.rollback_action(action_id=_VALID, action_type="process_refund",
+                                              reason="r", operator_id="op", tenant_id="t_a")
+    assert first["success"] is False, "a failed reversal must not report success"
+    # The claim was RELEASED (delete_item on the ledger) so the row does not persist.
+    coordinator._ledger.delete_item.assert_called_once()
+    assert coordinator._ledger.delete_item.call_args.kwargs["Key"]["action_id"] == _VALID
+
+    # Second attempt: the substrate is healthy now. The claim must be re-obtainable
+    # (attribute_not_exists holds again because we released) and the reversal succeeds.
+    coordinator._orders.update_item.side_effect = None
+    coordinator._orders.update_item.reset_mock()
+    second = await coordinator.rollback_action(action_id=_VALID, action_type="process_refund",
+                                               reason="r", operator_id="op", tenant_id="t_a")
+    assert second["success"] is True, "a genuinely-failed reversal MUST be retryable"
+    coordinator._orders.update_item.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_unimplemented_handler_releases_claim(coordinator):
+    """A claimed action whose action_type has no reversal handler reverses NOTHING —
+    so the claim must be released (nothing to be idempotent about) rather than
+    permanently locking the action_id out of a future valid rollback."""
+    # create_order is a REVERSIBLE_ACTIONS key but has no handler branch in
+    # rollback_action → the 'handler not implemented' path.
+    coordinator.cloudwatch_logs.start_query.return_value = {"queryId": "q1"}
+    coordinator.cloudwatch_logs.get_query_results.return_value = {
+        "status": "Complete",
+        "results": [[{"field": "@message", "value": json.dumps({
+            "action_id": _VALID, "tool_name": "create_order", "tenant_id": "t_a",
+            "rollback_status": "NOT_ROLLED_BACK"})}]],
+    }
+    out = await coordinator.rollback_action(action_id=_VALID, action_type="create_order",
+                                            reason="r", operator_id="op", tenant_id="t_a")
+    assert out["success"] is False
+    assert "not implemented" in out["message"].lower()
+    coordinator._ledger.delete_item.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_release_delete_failure_does_not_mask_reversal_error(coordinator):
+    """If releasing the claim (ledger delete) itself fails, the ORIGINAL reversal error
+    is still surfaced (delete failure is logged, never raised) — the response reflects
+    the real failure, not a swallowed cleanup error."""
+    _mk_action(coordinator)
+    coordinator._orders.update_item.side_effect = RuntimeError("orders table down")
+    coordinator._ledger.delete_item.side_effect = RuntimeError("ledger delete failed too")
+    out = await coordinator.rollback_action(action_id=_VALID, action_type="process_refund",
+                                            reason="r", operator_id="op", tenant_id="t_a")
+    assert out["success"] is False
+    assert "rollback failed" in out["message"].lower()

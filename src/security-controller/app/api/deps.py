@@ -101,6 +101,22 @@ class TenantContext:
         """Fail-secure: in ENFORCE, anything not cleanly verified is denied."""
         return self.effective_mode == "enforce" and not self.is_verified
 
+    @property
+    def credential_present(self) -> bool:
+        """True iff the caller presented a *usable* agent credential — i.e. a token
+        that cleanly verified (``verified``) OR one whose signature verified against a
+        real tenant key but failed a downstream tenant/subject binding
+        (``tampered``/``mismatch``). It is False for ``unverified`` (missing token, bad
+        signature, expired, unknown kid) and ``disabled`` (no token looked at).
+
+        WS-M M5.1: the data-plane credential latch (``require_dataplane_credential``)
+        keys on *absence/invalidity* of a credential, INDEPENDENT of ``identity_mode``.
+        A ``tampered``/``mismatch`` token DID present a valid signature (so it is not
+        "missing/invalid" for the latch) — those are already hard-denied by
+        ``should_deny`` at enforce and by their own audit path; the latch's job is to
+        close the *tokenless / bad-token* fall-through, not to relax the tamper deny."""
+        return self.state in ("verified", "tampered", "mismatch")
+
     def audit_tenant(self) -> str:
         """Where this request's audit row belongs. Unverified/tampered/mismatch
         never leak into a real tenant's (or ``default``'s) trail — they go to
@@ -117,8 +133,14 @@ async def resolve_tenant_from_jwt(request: Request) -> TenantContext:
     ``kid-index`` GSI per request.
     """
     ceiling = (settings.tenant_identity_mode or "off").lower()
-    if ceiling == "off":
+    if ceiling == "off" and not settings.require_dataplane_credential:
         # Fleet kill-switch: don't even look at the token. Byte-identical to pre-26.
+        # BUT if the data-plane credential latch (WS-M M5.1) is engaged we must still
+        # attempt verification even at fleet `off`, so the route can distinguish a
+        # valid token from a missing/invalid one INDEPENDENT of `identity_mode`. In
+        # that case we fall through with the ceiling treated as `off` — the resolved
+        # TenantContext carries effective_mode=`off` (so `should_route`/`should_deny`
+        # stay off), and the route applies the latch on `credential_present`.
         return TenantContext.disabled()
 
     # For requests where no tenant can be established (no/invalid token, kid miss)

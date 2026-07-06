@@ -137,6 +137,21 @@ class Settings(BaseSettings):
     tenant_identity_mode: str = Field(
         default="off", validation_alias="TENANT_IDENTITY_MODE"
     )
+    # WS-M M5.1 / lld/39 §5 (ADR-037): the in-service data-plane auth boundary. This
+    # latch DECOUPLES "a data-plane caller MUST present a valid agent JWT" from the
+    # `tenant_identity_mode` rollout ceiling (which is only the enforcement-STRICTNESS
+    # latch: shadow→enforce governs whether an unverified-but-well-formed posture is
+    # tolerated during soak). When `True`, a MISSING or INVALID agent JWT on /v1/validate
+    # is DENIED regardless of `tenant_identity_mode` — closing the tokenless-fallthrough
+    # (a fresh env defaulting to identity `off` was tokenless-open from day one, §8
+    # residual #1). Default `False` so the live env (identity `off`, no agent sends a
+    # JWT yet) is byte-identical to pre-M5 until an operator flips it as part of the
+    # WS-K go-live runbook (a money-movement tenant is not moved to prod-enforce until
+    # this fail-secure completeness is verified live). A *forged* (bad-signature) token
+    # is rejected regardless of this latch AND the mode — that path never fell through.
+    require_dataplane_credential: bool = Field(
+        default=False, validation_alias="REQUIRE_DATAPLANE_CREDENTIAL"
+    )
     # Dedicated / Self-Managed single-tenant pin (LLD-26 §3.6). When set, the
     # verified token is still checked but set_current_tenant() always gets this
     # value, and a tid-mismatch is a hard error. Empty = multi-tenant (default).
