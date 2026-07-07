@@ -68,7 +68,9 @@ Others *can* build pieces of this — but the most capable builders are structur
 
 **Shashank Gupta — Founder & CEO.** IIT graduate; at Amazon, drove a cross-org observability initiative spanning ~100 engineers across two orgs for a **$4B-revenue** service — the same problem one layer up: intercepting and governing actions at fleet scale. Filed a provisional patent and built the working two-cloud prototype.
 
-**Next hire.** The known gap for a bank-grade security product is a **security co-founder** — we are actively recruiting one, and **this round funds that hire as the first priority.** We own the gap rather than hide it; banks buy from credentialed security leadership, and that's the first dollar we spend.
+**Shikhar Jain — Security Advisor.** Engineering Lead at LinkedIn; led the security posture for **$6B-revenue** AWS services (OpenSearch, CloudWatch) — the same domain the founder built in. Advising on detection strategy, threat modeling, and enterprise/bank security requirements.
+
+**Next hire.** A full-time **security co-founder** remains the round's first-priority hire — we are recruiting one as we speak, with our advisor helping shape the profile. **This round funds that hire first.** We own the gap rather than hide it; banks buy from credentialed security leadership, and that's the first dollar we spend.
 
 ## The Ask
 

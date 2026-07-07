@@ -79,6 +79,8 @@ State legend: `Sourced → Verified → Contacted → Replied → Call done → 
 
 **Vetting gate before you spend a conversation:** credential verified at primary source; scores on the [rubric](../../cofounder-search.md#4-credential-validation-rubric); no anti-signals (leads with "we block inline" = pass). **Trial before equity, always.**
 
+**Security ADVISOR on board (2026-07-07):** **Shikhar Jain** — Engineering Lead @ LinkedIn; led security posture for $6B-revenue AWS services (OpenSearch, CloudWatch). Consent given to be named in investor materials (asked him to update LinkedIn to match). **Advisor only at this stage** — comp in discussion, kept OUT of investor docs. Does NOT replace the co-founder search; keep distinct from Randy (investor/connector). Founder's private aim = convert to co-founder over time, but never framed that way externally.
+
 ---
 
 ## 4. Where everything lives (so you stop hunting)
