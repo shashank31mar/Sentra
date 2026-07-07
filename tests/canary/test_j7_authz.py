@@ -101,13 +101,17 @@ _J72_ROUTES = [s for s in _GAP_ROUTES if _ROLE_MAP.get((s.method, s.path), (None
 _J72_IDS = [f"{s.method} {s.path}" for s in _J72_ROUTES]
 
 
+@pytest.mark.pr_gate_only
 @pytest.mark.parametrize("spec", _J72_ROUTES, ids=_J72_IDS)
 def test_j7_2_authorized_role_succeeds(canary_client, canary_operator, canary_tenant, spec):
     """J7.2 — a sufficient role in the owning tenant reaches the handler (not 401/403).
     The handler may still return a 4xx (400 body-shape / 404 id-not-found on the empty
-    hermetic store) — those are honest documented outcomes, not authz failures."""
-    if canary_client.mode != "inprocess":
-        pytest.skip("J7.2 authorized-positive is inprocess-only (ALB-OIDC seam)")
+    hermetic store) — those are honest documented outcomes, not authz failures.
+
+    ``pr_gate_only`` (deselected by the live entrypoint's ``-m "not pr_gate_only"``):
+    the ALB-OIDC ``_alb_claims_override`` mint seam is inprocess-only — ``canary_operator``
+    RAISES ``NotImplementedError`` in live mode at fixture setup, so this MUST NOT be
+    collected against the deployed target (live authz-positive = J8)."""
     role, _owns = _ROLE_MAP[(spec.method, spec.path)]
     canary_operator.mint(canary_tenant, role)
     url = _fill_path(spec.path, canary_tenant)
@@ -128,11 +132,12 @@ _J73_ROUTES = [
 _J73_IDS = [f"{s.method} {s.path}" for s in _J73_ROUTES]
 
 
+@pytest.mark.pr_gate_only
 @pytest.mark.parametrize("spec", _J73_ROUTES, ids=_J73_IDS)
 def test_j7_3_underprivileged_403(canary_client, canary_operator, canary_tenant, spec):
-    """J7.3 — one tier below the required role → 403 (the RBAC ladder proof)."""
-    if canary_client.mode != "inprocess":
-        pytest.skip("J7.3 under-privileged is inprocess-only (ALB-OIDC seam)")
+    """J7.3 — one tier below the required role → 403 (the RBAC ladder proof).
+
+    ``pr_gate_only``: uses the inprocess-only ``canary_operator`` mint seam."""
     role, _owns = _ROLE_MAP[(spec.method, spec.path)]
     under_role = _below(role)
     canary_operator.mint(canary_tenant, under_role)
@@ -156,14 +161,15 @@ _J74_AGENT_ROUTES = [
 _J74_IDS = [f"{s.method} {s.path}" for s in _J74_AGENT_ROUTES]
 
 
+@pytest.mark.pr_gate_only
 @pytest.mark.parametrize("spec", _J74_AGENT_ROUTES, ids=_J74_IDS)
 def test_j7_4_cross_tenant_agent_403(canary_client, canary_operator, canary_tenant, spec):
     """J7.4 (AGENT) — an operator with a sufficient role in their OWN tenant attempts a
     mutation on an agent belonging to ANOTHER tenant → 403 (the agent id is tenant-
     prefixed, so a foreign agent is an obvious IDOR). This is the BUG-1 regression
-    guard for the prefix-ownership family."""
-    if canary_client.mode != "inprocess":
-        pytest.skip("J7.4 IDOR is inprocess-only (ALB-OIDC seam)")
+    guard for the prefix-ownership family.
+
+    ``pr_gate_only``: uses the inprocess-only ``canary_operator`` mint seam."""
     role, _owns = _ROLE_MAP[(spec.method, spec.path)]
     # Operator in canary-tenant, but the URL names a FOREIGN agent (tenantB prefix).
     canary_operator.mint(canary_tenant, role)
@@ -179,12 +185,15 @@ def test_j7_4_cross_tenant_agent_403(canary_client, canary_operator, canary_tena
 
 
 # --------------------------------------------------------------------------- J7.5
+@pytest.mark.pr_gate_only
 def test_j7_5_signals_failclosed(canary_client, canary_operator, canary_tenant):
     """J7.5 — POST /v1/sessions/{id}/signals is INTERIM FAIL-CLOSED (403) with the
     default ``external_signal_write_enabled=False``. Proves the external-producer
-    injection surface stays closed."""
-    if canary_client.mode != "inprocess":
-        pytest.skip("J7.5 signals fail-closed is inprocess-only (config seam)")
+    injection surface stays closed.
+
+    ``pr_gate_only``: uses the inprocess-only ``canary_operator`` mint seam. (The
+    no-identity POST /signals → 401 leg IS covered live by test_all_routes.py's
+    negative-axis probe.)"""
     # Operator with editor role (would be sufficient for most routes).
     canary_operator.mint(canary_tenant, "editor")
     resp = canary_client.post(
