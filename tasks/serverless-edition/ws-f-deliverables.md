@@ -85,7 +85,7 @@ STAYS until the covering policy is green.
 |---|---|---|---|---|
 | `suspicious_parameter_manipulation` (sigma-llm-011, *experimental* — not even loaded) | `parameters.amount|lt: 0`, `parameters.limit|gte: 1000` | Cedar param-bounds | P0 money (`amount>=0`), **before any YAML removal** | ❌ — WS-I TODO |
 | `excessive_refund_attempts` (sigma-llm-006) | `process_refund` + `parameters.amount|gte: 5000`, `session.refund_count|gte: 3` | Cedar amount-cap + sequence | **P0** money, before removal | ❌ — WS-I TODO |
-| `data_exfiltration` (sigma-llm-003) — SPLIT | keep `prompt|contains` (DATA_THEFT); move `parameters.limit|gte: 500` | Cedar limit-cap | P1 | ❌ — WS-I TODO (prompt half stays live in signatures) |
+| `data_exfiltration` (sigma-llm-003) — SPLIT | keep `prompt|contains` (DATA_THEFT); relocate `parameters.limit|gte: 500` (selection stays INERT in YAML until Cedar limit-cap is green — no zero-coverage window) | Cedar limit-cap | P1 | ❌ — WS-I TODO (prompt half stays live in signatures) |
 | `rate_limit_abuse` (sigma-llm-009) | `session.query_count|gte: 50`, `session.calls_per_minute|gte: 20` | **abuse-detector surface** (`abuse_detector.check_rate_limit`, [registry.py:139](../../src/security-controller/app/services/scheduler/registry.py#L139)) — NOT Cedar (WS-I has zero rate_limit scope) | P1 | ❌ — **NO clear A-L owner** (founder to assign) |
 
 **Deny-on-missing (WS-I correctness half):** the relocated money-movement Cedar rule
