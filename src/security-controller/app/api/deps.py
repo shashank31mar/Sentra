@@ -407,9 +407,22 @@ async def _resolve_operator_tenant_inner(request: Request) -> OperatorContext:
     email = claims.get("email", "")
 
     members = get_member_store().by_operator(sub)
-    # `_platform` is a reserved membership granting cross-tenant support access.
+    # `_platform` is AegionAI's reserved cross-tenant OPERATIONAL-fleet grant
+    # (metrics/metadata across tenants — NOT customer content).
     is_platform = any(m.tenant_id == tenancy.PLATFORM_TENANT for m in members)
     customer_members = [m for m in members if m.tenant_id != tenancy.PLATFORM_TENANT]
+
+    # WS-N N0.3 — alarm (do NOT block) on the mis-provisioning fingerprint: an
+    # account holding BOTH `_platform` AND ≥1 customer membership. The grant is
+    # server-derived (unspoofable), so this is a config anomaly to page-and-fix,
+    # not an attack — the guard is fire-and-forget and never breaks auth.
+    from app.api.platform_guard import check_platform_membership_anomaly
+
+    check_platform_membership_anomaly(
+        operator_sub=sub,
+        is_platform=is_platform,
+        customer_tenant_ids=[m.tenant_id for m in customer_members],
+    )
 
     requested = request.headers.get("x-aegion-tenant") or request.headers.get("X-Aegion-Tenant")
     chosen = None
