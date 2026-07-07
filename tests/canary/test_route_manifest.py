@@ -18,14 +18,17 @@ def test_manifest_row_count():
 
 
 def test_manifest_auth_class_split():
-    """(b) exactly 1 public, 16 oidc, 4 demo_proxy, rest key/key_gated."""
+    """(b) exactly 1 public, 37 oidc, 4 demo_proxy, rest key/key_gated.
+
+    WS-N N8 reclassified the 21 read routes key->oidc (16 original oidc + 21 = 37),
+    in lockstep with the in-app resolve_operator_tenant gate. Total rows unchanged (65)."""
     from collections import Counter
 
     c = Counter(s.auth_class for s in ROUTE_MANIFEST)
     assert c["public"] == 1
-    assert c["oidc"] == 16
+    assert c["oidc"] == 37
     assert c["demo_proxy"] == 4
-    assert c["key"] + c["key_gated"] == 65 - 1 - 16 - 4
+    assert c["key"] + c["key_gated"] == 65 - 1 - 37 - 4
 
 
 def test_authz_gap_rows_are_mutations():
