@@ -876,19 +876,25 @@ def test_trail_shed_marker_source_is_not_run_and_reconciles():
 
 def test_trail_route_wired():
     """Route wiring: GET /v1/sessions/{sid}/trail?request_id=R delegates to
-    DecisionsService.get_session_trail (data-plane read, no require_role)."""
-    from fastapi.testclient import TestClient
-    from app.main import app
+    DecisionsService.get_session_trail. WS-N D10 (ADR-038): this is now an OPERATOR
+    control-plane read (Depends(resolve_operator_tenant)) — drive the handler with an
+    OperatorContext directly (the dep already binds current_tenant); the TestClient
+    path would 401 without the full ALB-OIDC + membership setup."""
+    import asyncio
+    from app.api import routes
+    from app.api.deps import OperatorContext
 
     fake = Mock()
     fake.get_session_trail = Mock(return_value={
         "session_id": "s1", "request_id": "r1", "decision": "ALLOW",
         "coverage": [], "coverage_total": 0, "next_token": None,
     })
+    ctx = OperatorContext(sub="op1", tenant_id="t_a", role="viewer")
     with patch("app.api.routes._decisions_service", return_value=fake):
-        client = TestClient(app)
-        resp = client.get("/v1/sessions/s1/trail", params={"request_id": "r1"})
-    assert resp.status_code == 200
+        resp = asyncio.new_event_loop().run_until_complete(
+            routes.get_session_trail("s1", "r1", ctx=ctx)
+        )
+    assert resp["session_id"] == "s1"
     fake.get_session_trail.assert_called_once_with(session_id="s1", request_id="r1")
 
 

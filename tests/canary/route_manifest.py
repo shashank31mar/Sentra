@@ -96,8 +96,11 @@ ROUTE_MANIFEST: List[RouteSpec] = [
     _oidc("/v1/logs/conversation/{conversation_id}", "GET", "WS-N", ("401",)),
     _oidc("/v1/sessions", "GET", "WS-N", ("401",)),
     _oidc("/v1/sessions/{session_id}/decisions", "GET", "WS-N", ("401",)),
-    _key("/v1/sessions/{session_id}/trail", "GET", "WS-D", ("401",), dp_bind=True),
-    _key("/v1/sessions/{session_id}/signals", "GET", "WS-D", ("401",), dp_bind=True),
+    # WS-N D10 (ADR-038): the two GET reads reclassified from the agent-JWT data-plane
+    # lane (key/dp_bind) to the OPERATOR lane — the console is the sole consumer, now
+    # resolve_operator_tenant. The POST /signals WRITE stays agent-lane (key) — untouched.
+    _oidc("/v1/sessions/{session_id}/trail", "GET", "WS-N", ("401",)),
+    _oidc("/v1/sessions/{session_id}/signals", "GET", "WS-N", ("401",)),
     _key("/v1/sessions/{session_id}/signals", "POST", "WS-D", ("401", "422"), gap=True),
     _oidc("/v1/decisions", "GET", "WS-N", ("401",)),
     _key("/v1/decisions/{decision_id}/verdict", "POST", "WS-D", ("401", "422"), gap=True),

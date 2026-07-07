@@ -223,24 +223,28 @@ class TestDualModeSessions:
 # N2/N4 — metrics/overview: customer gets null CW fields + scoped DDB counts
 # ============================================================
 
-class TestOverviewCustomerNullsCW:
-    """Customer operator on /metrics/overview: CloudWatch fields (fleet-shared, not
-    tenant-partitioned) are nulled; only DDB-scoped counts (quarantined,
-    agents_below_threshold, active_agents) are returned."""
+class TestOverviewCustomerD11Scoped:
+    """WS-N D11 (primary rescope): a customer operator on /metrics/overview now gets
+    PER-TENANT CloudWatch counts/latency — overview() is called with the tenant scope
+    and reads the tenant-dimensioned Decisions{tenant_id,verdict}+ValidateLatency{tenant_id}
+    streams. Only trust_score + attack_categories stay null (no per-tenant CW stream —
+    an honest gap). Replaces the former null-everything fallback."""
 
     @pytest.mark.asyncio
     @patch("app.utils.metrics_publisher.MetricsPublisher")
     @patch("app.utils.session_manager.SessionManager")
     @patch("app.services.agent_service.AgentService")
     @patch("app.services.metrics_query_service.MetricsQueryService")
-    async def test_customer_overview_nulls_cw_fields(
+    async def test_customer_overview_scoped_cw_fields(
         self, MockMQ, MockAgent, MockSM, MockPub
     ):
-        """Customer ctx -> CW fields null, DDB fields present."""
+        """Customer ctx -> per-tenant CW counts present; trust/attack null; overview
+        called with tenant_id=ctx.tenant_id (the D11 scope)."""
         mq = MockMQ.return_value
+        # overview() now returns the PER-TENANT numbers (handler passes scope=tenant_id).
         mq.overview.return_value = {
             "threats_blocked": 99, "requests_total": 500,
-            "avg_latency_ms": 12, "trust_score": 87,
+            "avg_latency_ms": 12, "trust_score": None,  # no per-tenant trust stream
         }
         mq.attack_category_count.return_value = 4
         agent_svc = MockAgent.return_value
@@ -257,18 +261,52 @@ class TestOverviewCustomerNullsCW:
         ctx = _ctx(tenant_id="t_a", is_platform=False)
         result = await R.get_metrics_overview(range="24h", ctx=ctx)
 
-        # CW fields must be null for customer (fleet-shared, not tenant-partitioned)
-        assert result["threats_blocked"] is None
-        assert result["requests_total"] is None
-        assert result["avg_latency_ms"] is None
+        # D11: overview() was scoped to the customer's tenant (not fleet None).
+        mq.overview.assert_called_once_with("24h", "t_a")
+
+        # Per-tenant CW counts/latency are now REAL (no longer nulled).
+        assert result["threats_blocked"] == 99
+        assert result["requests_total"] == 500
+        assert result["avg_latency_ms"] == 12
+        # trust_score + attack_categories stay null (no per-tenant CW stream — honest gap).
         assert result["trust_score"] is None
         assert result["attack_categories"] is None
         assert result["trust_status"] == "unknown"
 
-        # DDB-scoped counts must be present
+        # DDB-scoped counts still present.
         assert result["quarantined"] == 2
         assert result["agents_below_threshold"] == 1
         assert result["active_agents"] == 3
+
+    @pytest.mark.asyncio
+    @patch("app.api.tenancy_routes._audit_platform_read")
+    @patch("app.utils.metrics_publisher.MetricsPublisher")
+    @patch("app.utils.session_manager.SessionManager")
+    @patch("app.services.agent_service.AgentService")
+    @patch("app.services.metrics_query_service.MetricsQueryService")
+    async def test_platform_overview_fleet_scope(
+        self, MockMQ, MockAgent, MockSM, MockPub, MockAudit
+    ):
+        """Platform ctx -> overview() called with tenant_id=None (fleet) + full CW fields."""
+        mq = MockMQ.return_value
+        mq.overview.return_value = {
+            "threats_blocked": 42, "requests_total": 1000, "avg_latency_ms": 15, "trust_score": 88,
+        }
+        mq.attack_category_count.return_value = 7
+        MockAgent.return_value.get_cloud_provider_distribution = AsyncMock(return_value={
+            "total_nodes": 9, "clouds": 2, "providers": [],
+        })
+        sm = MockSM.return_value
+        sm.count_sessions_by_status = AsyncMock(return_value=0)
+        sm.count_agents_below_trust = AsyncMock(return_value=0)
+        MockPub.return_value.publish_session_metrics = AsyncMock()
+
+        ctx = _ctx(tenant_id="_platform", is_platform=True)
+        result = await R.get_metrics_overview(range="24h", ctx=ctx)
+
+        mq.overview.assert_called_once_with("24h", None)  # fleet scope
+        assert result["threats_blocked"] == 42
+        assert result["trust_score"] == 88  # fleet trust IS surfaced for platform
 
     @pytest.mark.asyncio
     @patch("app.utils.metrics_publisher.MetricsPublisher")

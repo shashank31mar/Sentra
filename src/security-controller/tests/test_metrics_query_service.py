@@ -65,6 +65,56 @@ def test_overview_unknown_range_defaults_to_24h_window():
     assert abs(span - 86400) < 5
 
 
+# --------------------------------------------------------------------------- #
+# WS-N D11 — per-tenant overview (the primary rescope, not the null-fallback)
+# --------------------------------------------------------------------------- #
+def test_overview_tenant_scoped_queries_decisions_stream():
+    """overview(tenant_id="t_a") builds SEARCH expressions over the tenant-dimensioned
+    Decisions{tenant_id,verdict}+ValidateLatency{tenant_id} streams (NOT the fleet-wide
+    ValidationsTotal), filtered on tenant_id="t_a". trust is NOT queried (no per-tenant
+    trust stream) → trust_score null."""
+    svc, cw = _svc({
+        "MetricDataResults": [
+            {"Id": "allowed", "Values": [8.0]},
+            {"Id": "denied", "Values": [2.0]},
+            {"Id": "latency", "Values": [11.0]},
+        ]
+    })
+    out = svc.overview("24h", tenant_id="t_a")
+    assert out["requests_total"] == 10
+    assert out["allowed"] == 8
+    assert out["denied"] == 2
+    assert out["threats_blocked"] == 2
+    assert out["avg_latency_ms"] == 11
+    assert out["trust_score"] is None  # no per-tenant trust CW stream
+
+    queries = cw.get_metric_data.call_args.kwargs["MetricDataQueries"]
+    ids = {q["Id"] for q in queries}
+    assert ids == {"allowed", "denied", "latency"}  # NO 'trust' query in the tenant path
+    exprs = " ".join(q["Expression"] for q in queries)
+    # tenant-dimensioned streams + the tenant filter — NOT the fleet ValidationsTotal
+    assert 'MetricName="Decisions"' in exprs
+    assert 'MetricName="ValidateLatency"' in exprs
+    assert 'tenant_id="t_a"' in exprs
+    assert 'verdict="ALLOW"' in exprs and 'verdict="DENY"' in exprs
+    assert "ValidationsTotal" not in exprs  # fleet stream must NOT be used for a tenant read
+
+
+def test_overview_fleet_path_unchanged_when_tenant_none():
+    """overview() with no tenant_id (platform/fleet) still queries the fleet-wide
+    ValidationsTotal + TrustScoreAverage streams (the pre-D11 behavior)."""
+    svc, cw = _svc({"MetricDataResults": [
+        {"Id": "allowed", "Values": [80.0]}, {"Id": "denied", "Values": [20.0]},
+        {"Id": "latency", "Values": [12.0]}, {"Id": "trust", "Values": [87.0]},
+    ]})
+    out = svc.overview("24h")  # tenant_id defaults to None
+    assert out["trust_score"] == 87
+    exprs = " ".join(q["Expression"] for q in cw.get_metric_data.call_args.kwargs["MetricDataQueries"])
+    assert 'MetricName="ValidationsTotal"' in exprs
+    assert 'MetricName="TrustScoreAverage"' in exprs
+    assert "tenant_id=" not in exprs  # fleet path is not tenant-filtered
+
+
 def test_decisions_timeseries_dense_merge():
     t1 = datetime(2026, 6, 6, 0, 0, tzinfo=timezone.utc)
     t2 = datetime(2026, 6, 6, 1, 0, tzinfo=timezone.utc)

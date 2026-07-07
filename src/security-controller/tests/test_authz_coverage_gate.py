@@ -35,10 +35,9 @@ from app.api import tenancy_routes as tenancy_mod
 _AUTHZ_ALLOWLIST = {
     # --- permanent (data-plane / bootstrap; NOT an operator-RBAC surface) --------
     "validate_tool_call": "data-plane POST /v1/validate; agent-JWT boundary, not RBAC",
-    # Data-plane reads gated by the M5 verified-JWT tenant-bind, NOT require_role
-    # (Invariant 6 — they carry no operator role).
-    "get_session_trail": "data-plane read; M5 JWT-tenant-bind, not RBAC",
-    "get_session_signals": "data-plane read; M5 JWT-tenant-bind, not RBAC",
+    # (WS-N D10: get_session_trail/get_session_signals were here as agent-lane GET
+    # reads; they are now operator-bound GETs — removed. GETs never hit this
+    # mutating-route gate anyway; kept out for accuracy.)
     # Auth bootstrap routes: an operator with no membership yet cannot depend on
     # resolve_operator_tenant — they verify ALB-OIDC in-body instead.
     "create_tenant": "first-tenant creator has no membership; verifies OIDC in-body",
@@ -196,9 +195,11 @@ def test_resource_id_routes_have_ownership_assert():
 # Each entry MUST carry a reason. Only genuinely tenant-agnostic routes belong.
 _READ_AUTHZ_ALLOWLIST = {
     "health_check": "liveness probe; no auth, no tenant data",
-    # Data-plane reads gated by the M5 verified-JWT tenant-bind, NOT resolve_operator_tenant.
-    "get_session_trail": "data-plane read; M5 JWT-tenant-bind, not operator-OIDC",
-    "get_session_signals": "data-plane read; M5 JWT-tenant-bind, not operator-OIDC",
+    # WS-N D10 (ADR-038): get_session_trail + get_session_signals were formerly
+    # allowlisted here as agent-JWT-lane data-plane reads. They are now OPERATOR
+    # control-plane reads carrying Depends(resolve_operator_tenant) (the console is
+    # their sole consumer), so they are GATED, not allowlisted — and per lld/40 §5.2
+    # a tenant-partitioned read may NEVER be allowlisted. Removed deliberately.
 }
 
 
@@ -262,12 +263,19 @@ def test_read_allowlist_requires_reason():
         assert reason, f"allowlist entry {name!r} has no reason"
 
 
-def test_read_gate_accepts_dataplane_bind():
-    """The data-plane reads (trail, signals) are on the allowlist and do NOT
-    need resolve_operator_tenant (they use _dataplane_tenant_bind)."""
-    names = {name for _, name in _read_routes()}
+def test_trail_signals_are_operator_bound():
+    """WS-N D10 (ADR-038): get_session_trail + get_session_signals were reclassified
+    from the agent-JWT data-plane lane to the OPERATOR control-plane lane. They MUST
+    now carry Depends(resolve_operator_tenant) (the console is their sole consumer) and
+    MUST NOT be on the read allowlist (a tenant-partitioned read is never allowlisted,
+    lld/40 §5.2)."""
+    routes_by_name = {name: route for route, name in _read_routes()}
     for dp_name in ("get_session_trail", "get_session_signals"):
-        assert dp_name in _READ_AUTHZ_ALLOWLIST or dp_name not in names
+        assert dp_name in routes_by_name, f"{dp_name} missing from control-plane GET routes"
+        assert _has_read_auth_depends(routes_by_name[dp_name]), (
+            f"{dp_name} must carry resolve_operator_tenant (D10 lane reversal)")
+        assert dp_name not in _READ_AUTHZ_ALLOWLIST, (
+            f"{dp_name} is now bound — remove it from the read allowlist")
 
 
 def test_allowlist_requires_reason():

@@ -154,126 +154,32 @@ def test_credential_present_classification():
 
 
 # --------------------------------------------------------------------------- #
-# M5.2 — /trail + /signals bind the verified tenant (deny at enforce; no default)
+# M5.2 SUPERSEDED by WS-N D10 (ADR-038, founder 2026-07-07).
+#
+# /trail + /signals were formerly agent-JWT data-plane reads bound by
+# `_dataplane_tenant_bind` (the M5.2 tests that lived here). They are now OPERATOR
+# control-plane reads gated by `Depends(resolve_operator_tenant)` — the SOC console
+# is their sole consumer (verified: no agent/SDK reads these GETs; connectors only
+# WRITE via POST /signals, still agent-lane). The isolation guarantee is PRESERVED
+# (customer=own-tenant composite partition, platform=fleet+audited) but by the operator
+# OIDC bind, not the agent JWT. The behavioral proofs now live in
+# `test_read_route_authz.py` (the WS-N operator-lane suite) alongside the other 21
+# read routes. Only the operator-lane WIRING assertion is kept here.
 # --------------------------------------------------------------------------- #
-@pytest.mark.asyncio
-async def test_trail_read_binds_verified_tenant():
-    """A verified+enforce agent JWT binds ctx.tenant_id for the DecisionsService read
-    (not the ambient default)."""
-    seen = {}
-
-    def _trail(**k):
-        seen["tenant"] = tenancy.current_tenant()
-        return {"ok": True}
-
-    svc = Mock()
-    svc.get_session_trail = Mock(side_effect=_trail)
-    verified = TenantContext.verified(tenant_id="t_a", agent_id="t_a-x", effective_mode="enforce")
-    with patch("app.api.deps.resolve_tenant_from_jwt", return_value=verified), \
-         patch("app.api.routes._decisions_service", return_value=svc):
-        out = await R.get_session_trail("s1", "r1", _Req())
-    assert out == {"ok": True}
-    assert seen["tenant"] == "t_a"  # bound to the verified tenant during the read
-
-
-@pytest.mark.asyncio
-async def test_signals_read_binds_verified_tenant():
-    seen = {}
-
-    def _signals(**k):
-        seen["tenant"] = tenancy.current_tenant()
-        return {"signals": []}
-
-    svc = Mock()
-    svc.get_session_signals = Mock(side_effect=_signals)
-    verified = TenantContext.verified(tenant_id="t_b", agent_id="t_b-x", effective_mode="enforce")
-    with patch("app.api.deps.resolve_tenant_from_jwt", return_value=verified), \
-         patch("app.api.routes._decisions_service", return_value=svc):
-        await R.get_session_signals("s1", _Req())
-    assert seen["tenant"] == "t_b"
-
-
-@pytest.mark.asyncio
-async def test_trail_enforce_missing_jwt_denies_not_default():
-    """At enforce, a missing/invalid JWT (should_deny) → 401, NEVER a read on the
-    ambient default partition."""
-    unver = TenantContext.unverified(effective_mode="enforce")  # should_deny is True
-    svc = Mock()
-    with patch("app.api.deps.resolve_tenant_from_jwt", return_value=unver), \
-         patch("app.api.routes._decisions_service", return_value=svc):
-        with pytest.raises(HTTPException) as ei:
-            await R.get_session_trail("s1", "r1", _Req())
-    assert ei.value.status_code == 401
-    svc.get_session_trail.assert_not_called()
-
-
-@pytest.mark.asyncio
-async def test_acme_session_read_isolated_from_foreign_verified_tenant():
-    """ACME ISOLATION (founder 2026-07-07): a VERIFIED *foreign* tenant reading an
-    acme session_id must be scoped to the FOREIGN tenant's own partition — it must
-    NEVER see acme's rows. The DDB PK is the composite ``{tenant}#{session_id}``, so
-    binding the caller's verified tenant means a foreign caller queries
-    ``t_foreign#{acme_session}`` (empty), not ``acme#{acme_session}``. This is the
-    regression guard that acme trail/signals cannot be cross-tenant-read by another
-    verified agent. FAILS if the read is ever bound to the acme session's owner
-    rather than the authenticated caller."""
-    seen = {}
-
-    def _trail(**k):
-        seen["tenant"] = tenancy.current_tenant()
-        return {"buckets": {}, "rows": []}
-
-    svc = Mock()
-    svc.get_session_trail = Mock(side_effect=_trail)
-    # Caller is a verified NON-acme tenant, requesting an acme-owned session id.
-    foreign = TenantContext.verified(
-        tenant_id="t_foreign", agent_id="t_foreign-aws-x", effective_mode="enforce"
-    )
-    with patch("app.api.deps.resolve_tenant_from_jwt", return_value=foreign), \
-         patch("app.api.routes._decisions_service", return_value=svc):
-        await R.get_session_trail("acme-payments-sess-001", "r1", _Req())
-    # The read partition is the CALLER's tenant, never acme's — so an acme session
-    # queried by t_foreign lands on t_foreign's (empty) partition.
-    assert seen["tenant"] == "t_foreign"
-    assert seen["tenant"] != "acme"
-
-
-@pytest.mark.asyncio
-async def test_acme_session_tokenless_read_denied_not_default():
-    """ACME ISOLATION: a TOKENLESS read of an acme session at the enforce ceiling is
-    denied (401) — it must NOT fall through to the shared ``default`` partition where
-    acme's pre-enforce rows could co-mingle. Mirrors the prod posture (acme +
-    fleet-ceiling both enforce)."""
-    unver = TenantContext.unverified(effective_mode="enforce")  # should_deny True
-    svc = Mock()
-    with patch("app.api.deps.resolve_tenant_from_jwt", return_value=unver), \
-         patch("app.api.routes._decisions_service", return_value=svc):
-        with pytest.raises(HTTPException) as ei:
-            await R.get_session_signals("acme-identity-sess-002", _Req())
-    assert ei.value.status_code == 401
-    svc.get_session_signals.assert_not_called()
-
-
-@pytest.mark.asyncio
-async def test_trail_disabled_mode_reads_without_bind_change():
-    """Identity OFF fleet-wide (disabled) → the read runs as before (no hard deny —
-    the console must keep working before identity rolls out)."""
-    svc = Mock()
-    svc.get_session_trail = Mock(return_value={"ok": True})
-    disabled = TenantContext.disabled()
-    with patch("app.api.deps.resolve_tenant_from_jwt", return_value=disabled), \
-         patch("app.api.routes._decisions_service", return_value=svc):
-        out = await R.get_session_trail("s1", "r1", _Req())
-    assert out == {"ok": True}
-
-
-def test_trail_signals_carry_no_require_role():
-    """Invariant 6: these are data-plane reads — they must NOT carry a require_role
-    gate (their isolation is the JWT-tenant-bind, not RBAC)."""
+def test_trail_signals_are_operator_lane_after_d10():
+    """WS-N D10: /trail + /signals now carry an operator `ctx` gate
+    (resolve_operator_tenant), NOT the agent-JWT `http_request` data-plane bind.
+    FAILS if either regresses to the agent lane (no ctx param) or drops its gate."""
     import inspect
+    from app.api.deps import resolve_operator_tenant
     for handler in (R.get_session_trail, R.get_session_signals):
         params = inspect.signature(handler).parameters
-        assert "ctx" not in params, f"{handler.__name__} must not carry an operator ctx gate"
+        assert "ctx" in params, f"{handler.__name__} must carry the operator ctx gate (D10)"
+        assert "http_request" not in params, (
+            f"{handler.__name__} must NOT take http_request (the agent-lane bind is gone)")
+        dep = getattr(params["ctx"].default, "dependency", None)
+        assert dep is resolve_operator_tenant, (
+            f"{handler.__name__} ctx must resolve via resolve_operator_tenant")
 
 
 # --------------------------------------------------------------------------- #

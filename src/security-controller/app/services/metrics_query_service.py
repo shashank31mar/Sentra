@@ -101,26 +101,63 @@ class MetricsQueryService:
         outer = "SUM" if stat == "Sum" else "AVG"
         return f"{outer}(SEARCH('{schema}{filt}', '{stat}', {period}))"
 
+    @staticmethod
+    def _search_tenant(metric: str, stat: str, period: int, tenant_id: str,
+                       verdict: Optional[str] = None) -> str:
+        """WS-N D11 — the PER-TENANT SEARCH over the tenant-dimensioned streams.
+
+        The ``Decisions{tenant_id,verdict}`` and ``ValidateLatency{tenant_id}`` metrics
+        (metrics_publisher.py — LLD-26 §9.1 / WS-E E1) carry the request's resolved
+        ``current_tenant()``, so a customer overview filters on ``tenant_id="<tid>"``
+        instead of the fleet-wide ``ValidationsTotal`` (which has no tenant dim). This
+        is the D11 rescope: same collapse-with-SUM/AVG shape, tenant-scoped schema.
+        """
+        if verdict is not None:
+            schema = '{%s,tenant_id,verdict}' % NAMESPACE
+            filt = f' MetricName="{metric}" tenant_id="{tenant_id}" verdict="{verdict}"'
+        else:
+            schema = '{%s,tenant_id}' % NAMESPACE
+            filt = f' MetricName="{metric}" tenant_id="{tenant_id}"'
+        outer = "SUM" if stat == "Sum" else "AVG"
+        return f"{outer}(SEARCH('{schema}{filt}', '{stat}', {period}))"
+
     # --------------------------------------------------------------- queries
 
-    def overview(self, range_token: str = "24h") -> Dict[str, Any]:
+    def overview(self, range_token: str = "24h", tenant_id: Optional[str] = None) -> Dict[str, Any]:
         """CloudWatch-owned KPI numbers for GET /v1/metrics/overview.
 
         Returns requests_total, allowed, denied (threats_blocked), avg_latency_ms,
         trust_score. DDB-owned fields are added by the route (T20).
+
+        WS-N D11 dual-mode: ``tenant_id=None`` → FLEET view (platform operator) via the
+        fleet-wide ``ValidationsTotal`` stream. ``tenant_id="<tid>"`` → PER-TENANT view
+        (customer operator) via the tenant-dimensioned ``Decisions{tenant_id,verdict}``
+        + ``ValidateLatency{tenant_id}`` streams. ``trust_score`` has NO per-tenant CW
+        stream (``TrustScoreAverage`` is fleet-only), so it is null in the scoped view —
+        an honest gap, not fabricated.
         """
         start, end, seconds = self._range_window(range_token)
         period = seconds  # one bucket over the whole range → scalar
-        # NOTE: ValidationsTotal is always published with BOTH {AgentId, Decision} dims
-        # (metrics_publisher), so a SEARCH schema without Decision matches nothing. Rather than a
-        # separate unfiltered "total" series (which returned 0 — every metric carries a Decision),
-        # total = allowed + denied. DENY/ALLOW are the only decisions emitted for this counter.
-        q = [
-            {"Id": "allowed", "Expression": self._search("ValidationsTotal", "Sum", period, "ALLOW"), "ReturnData": True},
-            {"Id": "denied", "Expression": self._search("ValidationsTotal", "Sum", period, "DENY"), "ReturnData": True},
-            {"Id": "latency", "Expression": self._search("ValidationLatency", "Average", period), "ReturnData": True},
-            {"Id": "trust", "Expression": self._search("TrustScoreAverage", "Average", period), "ReturnData": True},
-        ]
+        if tenant_id is not None:
+            # Per-tenant (customer) — the D11 rescope onto the tenant-dimensioned streams.
+            q = [
+                {"Id": "allowed", "Expression": self._search_tenant("Decisions", "Sum", period, tenant_id, "ALLOW"), "ReturnData": True},
+                {"Id": "denied", "Expression": self._search_tenant("Decisions", "Sum", period, tenant_id, "DENY"), "ReturnData": True},
+                {"Id": "latency", "Expression": self._search_tenant("ValidateLatency", "Average", period, tenant_id), "ReturnData": True},
+                # trust_score has no per-tenant CW stream (TrustScoreAverage is fleet-only) → null below.
+            ]
+        else:
+            # Fleet (platform) — the original fleet-wide streams.
+            # NOTE: ValidationsTotal is always published with BOTH {AgentId, Decision} dims
+            # (metrics_publisher), so a SEARCH schema without Decision matches nothing. Rather than a
+            # separate unfiltered "total" series (which returned 0 — every metric carries a Decision),
+            # total = allowed + denied. DENY/ALLOW are the only decisions emitted for this counter.
+            q = [
+                {"Id": "allowed", "Expression": self._search("ValidationsTotal", "Sum", period, "ALLOW"), "ReturnData": True},
+                {"Id": "denied", "Expression": self._search("ValidationsTotal", "Sum", period, "DENY"), "ReturnData": True},
+                {"Id": "latency", "Expression": self._search("ValidationLatency", "Average", period), "ReturnData": True},
+                {"Id": "trust", "Expression": self._search("TrustScoreAverage", "Average", period), "ReturnData": True},
+            ]
         data = self._get_metric_data(q, start, end)
 
         def _sum(key: str) -> float:
@@ -134,7 +171,7 @@ class MetricsQueryService:
         denied = int(_sum("denied"))
         requests_total = allowed + denied
         avg_latency = _avg("latency")
-        trust = _avg("trust")
+        trust = _avg("trust")  # None in the per-tenant view (no tenant-scoped stream)
         return {
             "range": range_token,
             "requests_total": requests_total,

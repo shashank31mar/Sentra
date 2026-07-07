@@ -549,60 +549,59 @@ async def _dataplane_tenant_bind(http_request: Request):
 @router.get("/sessions/{session_id}/signals")
 async def get_session_signals(
     session_id: str,
-    http_request: Request,
     request_id: Optional[str] = None,
     source: Optional[str] = None,
     agent_id: Optional[str] = None,
     limit: int = 100,
+    ctx: OperatorContext = Depends(resolve_operator_tenant),
 ) -> Dict:
     """LLD 17 §8.3 — raw signal list, no combiner applied. For debugging /
     advanced UI drill-down.
 
-    Auth (WS-M M5.2 / lld/39 §5): a data-plane READ — bound to the VERIFIED agent
-    tenant via ``resolve_tenant_from_jwt``, NOT ``require_role`` (Invariant 6 — it
-    carries no operator role). Before this fix the read resolved the partition from
-    the ambient ``current_tenant()`` (``"default"``), co-mingling non-enforcing
-    tenants' rows in ``default#{session_id}`` — any caller with a session_id could
-    read them (a real cross-tenant read, NOT "structural isolation").
+    Auth (WS-N D10 / ADR-038 — lane reversal): the SOLE consumer is the operator
+    SOC console, so this is an OPERATOR control-plane read, NOT an agent data-plane
+    read. Gated by ``resolve_operator_tenant`` (verified ALB-OIDC), which binds
+    ``current_tenant(ctx.tenant_id)`` (deps.py:435) so the DDB Query hits the
+    operator's own composite partition — customer=own-tenant, platform=fleet
+    (audited). Reclassified from the former agent-JWT lane (``_dataplane_tenant_bind``)
+    per ADR-038 (Accepted, founder 2026-07-07); verified no agent/SDK caller reads
+    this GET (connectors only WRITE via ``POST /sessions/{id}/signals``, route below).
     """
-    async with _dataplane_tenant_bind(http_request):
-        return _decisions_service().get_session_signals(
-            session_id=session_id, request_id=request_id, source=source,
-            agent_id=agent_id, limit=limit,
-        )
+    return _decisions_service().get_session_signals(
+        session_id=session_id, request_id=request_id, source=source,
+        agent_id=agent_id, limit=limit,
+    )
 
 
 @router.get("/sessions/{session_id}/trail")
 async def get_session_trail(
     session_id: str,
     request_id: str,
-    http_request: Request,
+    ctx: OperatorContext = Depends(resolve_operator_tenant),
 ) -> Dict:
     """WS-D / LLD 33 §9A — the full decision trail for one request (FR-6.8 / NFR-10).
 
     Returns the four buckets (ran / ran-ABSTAIN / ran-ERROR / not-run) in coverage
     order with derived display names + counts + recomputed `winning_source` /
     `block_point`. The READ endpoint WS-G (console) calls to render the
-    Decision-detail view.
+    Decision-detail view (G3.3).
 
     Contract:
       * `request_id` is REQUIRED — the primary form is session-scoped because the
         DDB PK is session-scoped (`tenant_session_id`); a request_id alone is not a
         partition key (§9A.1 FOOTGUN). No new query, no new index.
-      * Tenant-scoped by BINDING the VERIFIED agent tenant (WS-M M5.2 / lld/39 §5):
-        the read runs inside ``set_current_tenant(ctx.tenant_id)`` so the
-        DDB Query hits the operator's own composite partition. NO `require_role()`
-        — a data-plane read matching `GET /v1/sessions/{id}/signals`, NOT a
-        control-plane mutation (this path does NOT share the X-Operator-Email
-        policy-CRUD IDOR). The prior code resolved the partition from the ambient
-        ``current_tenant()`` (``"default"``) — a live cross-tenant read for
-        non-enforcing tenants; this bind closes that gap.
+      * Auth (WS-N D10 / ADR-038 — lane reversal): the SOLE consumer is the operator
+        console, so this is an OPERATOR control-plane read. Gated by
+        ``resolve_operator_tenant`` (verified ALB-OIDC), which binds
+        ``current_tenant(ctx.tenant_id)`` (deps.py:435) so the DDB Query hits the
+        operator's own composite partition — customer=own-tenant, platform=fleet.
+        Reclassified from the former agent-JWT lane (``_dataplane_tenant_bind``) per
+        ADR-038 (Accepted, founder 2026-07-07); verified no agent/SDK caller reads it.
       * `next_token: null` — a single trail (~7 rows) fits one un-paged Query.
     """
-    async with _dataplane_tenant_bind(http_request):
-        return _decisions_service().get_session_trail(
-            session_id=session_id, request_id=request_id,
-        )
+    return _decisions_service().get_session_trail(
+        session_id=session_id, request_id=request_id,
+    )
 
 
 @router.get("/decisions")
@@ -810,8 +809,11 @@ async def get_metrics_overview(
     # WS-N FIX-B GAP-1: distribution must be fleet-wide for platform operators
     # (same dual-mode as session counts). Previously always used query_or_scan
     # (current_tenant), giving platform operators only their bound tenant's agents.
+    # WS-N D11: pass the tenant scope into overview() — customer (scope=tenant_id) reads
+    # the per-tenant Decisions{tenant_id,verdict}+ValidateLatency{tenant_id} streams;
+    # platform (scope=None) reads the fleet-wide streams. Replaces the old null-fallback.
     cw, attack_categories, distribution, quarantined, suspended, below_threshold = await asyncio.gather(
-        asyncio.to_thread(mq.overview, range),
+        asyncio.to_thread(mq.overview, range, scope),
         asyncio.to_thread(mq.attack_category_count),
         AgentService().get_cloud_provider_distribution(fleet=ctx.is_platform),
         session_manager.count_sessions_by_status("quarantined", tenant_id=scope),
@@ -837,10 +839,16 @@ async def get_metrics_overview(
         from app.utils.metrics_publisher import MetricsPublisher
         await MetricsPublisher().publish_session_metrics(quarantined, suspended)
 
-    # WS-N N4/N2 fail-secure split: CloudWatch metrics (threats_blocked, requests_total,
-    # avg_latency_ms, trust_score, attack_categories) are fleet-shared — NOT
-    # tenant-partitioned. Customer operators get DDB-scoped counts only; CW fields are
-    # nulled until per-tenant metric streams exist. Platform operators get the full fleet.
+    # WS-N D11 (primary rescope): the count/latency KPIs are now PER-TENANT for a
+    # customer operator — `overview(range, scope)` read the tenant-dimensioned
+    # `Decisions{tenant_id,verdict}` + `ValidateLatency{tenant_id}` streams (scope=tenant_id),
+    # or the fleet-wide streams (scope=None) for a platform operator. So threats_blocked /
+    # requests_total / avg_latency_ms are honest tenant-scoped numbers, no longer nulled.
+    # Two fields stay null in the customer view — an HONEST gap, not a fabrication:
+    #   * trust_score  — TrustScoreAverage has no per-tenant CW stream (fleet-only), so cw["trust_score"]
+    #                    is fleet-wide; we null it for a customer rather than leak the fleet average.
+    #   * attack_categories — attack_category_count() is fleet-wide (ListMetrics over RuleId, no tenant
+    #                    dim), so it too is nulled for a customer until a per-tenant attack stream exists.
     if ctx.is_platform:
         return {
             "range": range,
@@ -857,10 +865,11 @@ async def get_metrics_overview(
             "quarantined": quarantined,
             "false_positive_pct": None,
         }
-    # Customer operator: only tenant-scoped DDB counts; CW fields null (fleet-shared).
+    # Customer operator: tenant-scoped CW counts/latency (D11) + tenant-scoped DDB counts.
+    # trust_score + attack_categories stay null (no per-tenant CW stream — see note above).
     return {
         "range": range,
-        "threats_blocked": None,
+        "threats_blocked": cw["threats_blocked"],
         "threats_blocked_delta_pct": None,
         "attack_categories": None,
         "active_agents": distribution["total_nodes"],
@@ -868,8 +877,8 @@ async def get_metrics_overview(
         "trust_score": None,
         "trust_status": "unknown",
         "agents_below_threshold": below_threshold,
-        "requests_total": None,
-        "avg_latency_ms": None,
+        "requests_total": cw["requests_total"],
+        "avg_latency_ms": cw["avg_latency_ms"],
         "quarantined": quarantined,
         "false_positive_pct": None,
     }
