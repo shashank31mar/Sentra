@@ -40,6 +40,12 @@ _SCOPE_PARAMS = (
     "cloud_provider", "framework", "risk",
 )
 
+# Strong refs to in-flight audit-write tasks so the event loop's weak reference can't
+# GC a fire-and-forget task mid-write (mirrors audit_logger._ALARM_TASKS /
+# validation_service._bg_tasks discipline). The done-callback discards, so the set
+# never grows unbounded.
+_READ_AUDIT_TASKS: set = set()
+
 
 async def emit_read_access_event(request, *, operator_sub: str, tenant_id: str,
                                  is_platform: bool) -> None:
@@ -47,11 +53,13 @@ async def emit_read_access_event(request, *, operator_sub: str, tenant_id: str,
     ``resolve_operator_tenant`` after the tenant is resolved+bound. GET-only; never
     raises (best-effort attribution — the read is not gated on it).
 
-    The DDB write is OFFLOADED via ``asyncio.to_thread`` (mirroring the tenant-store
-    read at deps.py:222) so it NEVER blocks the single event loop — this dependency
-    runs on every operator request, and ``PlatformAuditStore.record`` is a synchronous
-    boto3 ``put_item`` whose default retry/backoff would otherwise stall ALL in-flight
-    requests on a throttled/slow audit table (the 2026-07-02 event-loop-blocking RCA)."""
+    OFF the response path (fire-and-forget): the blocking ``PlatformAuditStore.record``
+    ``put_item`` runs in a retained background task via ``asyncio.to_thread`` — so it
+    neither blocks the event loop (would stall ALL in-flight requests on a throttled
+    audit table — the 2026-07-02 RCA) NOR serializes THIS response behind a best-effort
+    audit write. The retained-task set prevents the loop's weak ref from GC-ing the
+    task mid-write (a bare ``create_task`` can be dropped). If there's no running loop
+    (sync/test context) we fall back to a direct offloaded await."""
     try:
         method = getattr(request, "method", "GET") or "GET"
         if method.upper() != "GET":
@@ -62,18 +70,31 @@ async def emit_read_access_event(request, *, operator_sub: str, tenant_id: str,
             "READ_ACCESS operator=%s tenant=%s route=%s scope=%s platform=%s",
             operator_sub, tenant_id, path, scope, is_platform,
         )
-        from app.services.platform_audit import get_platform_audit_store
 
-        # Offload the blocking put_item to a worker thread — never on the event loop.
-        await asyncio.to_thread(
-            get_platform_audit_store().record,
-            operator_sub=operator_sub,
-            target_tenant=tenant_id,          # the SPECIFIC resolved tenant (never "*")
-            what=f"read:{path}",              # e.g. read:/v1/sessions/{id}/trail
-            read_type="operator_read",
-            decision="READ",
-            consent_state=("platform_break_glass" if is_platform else "own_tenant"),
-        )
+        async def _write() -> None:
+            try:
+                from app.services.platform_audit import get_platform_audit_store
+                await asyncio.to_thread(
+                    get_platform_audit_store().record,
+                    operator_sub=operator_sub,
+                    target_tenant=tenant_id,      # the SPECIFIC resolved tenant (never "*")
+                    what=f"read:{path}",          # e.g. read:/v1/sessions/{id}/trail
+                    read_type="operator_read",
+                    decision="READ",
+                    consent_state=("platform_break_glass" if is_platform else "own_tenant"),
+                )
+            except Exception as e:  # noqa: BLE001 — best-effort attribution
+                logger.exception("N9 read-access write failed (non-blocking): %s", e)
+
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            # No running loop (sync/test context) — do the offloaded write inline.
+            await _write()
+        else:
+            task = loop.create_task(_write())
+            _READ_AUDIT_TASKS.add(task)
+            task.add_done_callback(_READ_AUDIT_TASKS.discard)
     except Exception as e:  # noqa: BLE001 — attribution is best-effort, never break the read
         logger.exception("N9 read-access audit failed (non-blocking): %s", e)
 

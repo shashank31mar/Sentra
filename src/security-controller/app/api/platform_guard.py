@@ -36,6 +36,10 @@ _METRIC_NAMESPACE = "Sentra/SecurityController"
 # A single datapoint (>=1) means a dual-membership operator authenticated → page ops.
 PLATFORM_DUAL_MEMBERSHIP_METRIC = "PlatformDualMembershipDetected"
 
+# Strong refs to in-flight side-effect tasks so the loop's weak ref can't GC a
+# fire-and-forget metric/audit write mid-flight (mirrors audit_logger._ALARM_TASKS).
+_GUARD_TASKS: set = set()
+
 _cloudwatch = None
 
 
@@ -65,9 +69,33 @@ def check_platform_membership_anomaly(
         "(mis-provisioning anomaly — fleet-metrics grant should be _platform-only)",
         operator_sub, customer_tenant_ids,
     )
-    _emit_metric(operator_sub)
-    _write_audit(operator_sub, customer_tenant_ids)
+    # OFF the response path: the CloudWatch put_metric_data + DDB put_item are blocking
+    # boto3 calls. Fire them in a retained background task so they never block the event
+    # loop (the same 2026-07-02 RCA the N9 read-audit avoids). Falls back to inline when
+    # there's no running loop (sync/test context). The boolean result returns immediately.
+    _dispatch_side_effects(operator_sub, customer_tenant_ids)
     return True
+
+
+def _dispatch_side_effects(operator_sub: str, customer_tenant_ids: List[str]) -> None:
+    """Emit the metric + audit row off the event loop (retained task), or inline if no
+    loop is running. Never raises."""
+    def _do() -> None:
+        _emit_metric(operator_sub)
+        _write_audit(operator_sub, customer_tenant_ids)
+
+    try:
+        import asyncio
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            _do()  # no running loop (sync/test context) — inline
+            return
+        task = loop.create_task(asyncio.to_thread(_do))
+        _GUARD_TASKS.add(task)
+        task.add_done_callback(_GUARD_TASKS.discard)
+    except Exception as e:  # noqa: BLE001 — a monitor must never break auth
+        logger.exception("N0.3 side-effect dispatch failed (non-blocking): %s", e)
 
 
 def _emit_metric(operator_sub: str) -> None:

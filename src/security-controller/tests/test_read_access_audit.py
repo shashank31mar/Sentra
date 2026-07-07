@@ -6,12 +6,21 @@ SOC2/HIPAA system-of-record obligation for "which operator viewed which tenant's
 Emitted from inside resolve_operator_tenant so coverage == the bound read set by
 construction. GET-only; fire-and-forget (never breaks the read).
 """
+import asyncio
 from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
 
 from app.api import read_access_audit as R9
+
+
+async def _drain_read_audit_tasks():
+    """The N9 write is fire-and-forget (a retained background task); await the in-flight
+    ones so the test can assert the write happened."""
+    tasks = list(R9._READ_AUDIT_TASKS)
+    if tasks:
+        await asyncio.gather(*tasks, return_exceptions=True)
 
 
 class _FakeQP(dict):
@@ -37,6 +46,7 @@ class TestBoundReadEmitsAccessEvent:
                 _req(path="/v1/agents"),
                 operator_sub="op-cust", tenant_id="t_a", is_platform=False,
             )
+            await _drain_read_audit_tasks()  # the write is fire-and-forget — let it run
         rec = store.return_value.record
         rec.assert_called_once()
         kw = rec.call_args.kwargs
@@ -70,6 +80,7 @@ class TestPlatformCrossTenantReadAttributed:
                 _req(path="/v1/sessions/{session_id}/trail", request_id="r1"),
                 operator_sub="op-staff", tenant_id="t_customer_b", is_platform=True,
             )
+            await _drain_read_audit_tasks()  # the write is fire-and-forget — let it run
         kw = store.return_value.record.call_args.kwargs
         assert kw["target_tenant"] == "t_customer_b"   # the specific tenant, NOT "*"
         assert kw["target_tenant"] != "*"
