@@ -198,7 +198,7 @@ class TestOverviewConcurrency:
             await asyncio.sleep(0.1)
             return 1
 
-        async def _slow_dist():
+        async def _slow_dist(**_kwargs):
             await asyncio.sleep(0.1)
             return {
                 "total_nodes": 5, "clouds": 2,
