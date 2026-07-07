@@ -1387,13 +1387,20 @@ async def get_agents(
     """
     List all registered agents.
 
+    Auth (WS-N N1/N2.3): BIND-ONLY for ALL callers (customer AND platform).
+    list_agents -> query_or_scan(current_tenant()) auto-scopes via the ambient
+    tenant set by resolve_operator_tenant. A platform operator with break-glass
+    X-Aegion-Tenant targeting tenant t_b sees t_b's agents (correct: the ambient
+    tenant IS t_b). Fleet-wide agent listing is NOT exposed here — platform SOC
+    uses /metrics/overview active_agents for fleet counts.
+
     Args:
         enrich: If True (default), include runtime statistics. Set to False for fast response.
         managed_only: If True, return ONLY Managed agents — those with observed
             /v1/validate traffic (data flowing). The Agent Inventory uses this so
             imported-but-silent agents stay in the Import tab (feature §8.1).
             Each returned agent carries `lifecycle_status="managed"` + `last_active`.
-    
+
     Returns:
         AgentsResponse with agents array and total count
         

@@ -1087,3 +1087,173 @@ class TestListPoliciesCacheLeakRegression:
         b_ids = {p["policy_id"] for p in b["policies"]}
         assert b_ids == {"pol-b"}, b_ids
         assert "pol-a" not in b_ids  # the leak this guard pins
+
+
+# ============================================================
+# GAP-6 — GET /agents: platform operator with break-glass sees target tenant
+# ============================================================
+
+class TestGetAgentsBreakGlass:
+    """Platform operator with X-Aegion-Tenant break-glass header sees the target
+    tenant's agents (bind-only via ambient current_tenant), NOT fleet.
+
+    This closes the undocumented-intent gap: the break-glass mechanism in deps.py
+    synthesizes ctx.tenant_id = target tenant, which list_agents auto-scopes via
+    query_or_scan(current_tenant()). The test proves the platform operator with
+    break-glass targeting t_b sees t_b's agents (and not t_a's)."""
+
+    @pytest.mark.asyncio
+    @patch("app.services.agent_service.AgentService")
+    async def test_platform_breakglass_sees_target_tenant_agents(self, MockAgent):
+        """Platform operator break-glass targeting t_b sees t_b's agents."""
+        svc = MockAgent.return_value
+        svc.list_agents = AsyncMock(return_value={
+            "agents": [{"agent_id": "t_b-aws-agent-1", "name": "B-Agent"}],
+            "total": 1,
+        })
+
+        # Break-glass: ctx.tenant_id = t_b (target), is_platform=True
+        ctx = _ctx(tenant_id="t_b", is_platform=True)
+        result = await R.get_agents(enrich=False, managed_only=False, ctx=ctx)
+
+        # list_agents is called (bind-only), ambient current_tenant() = t_b
+        svc.list_agents.assert_awaited_once_with(enrich=False, managed_only=False)
+        assert result["total"] == 1
+        assert result["agents"][0]["agent_id"] == "t_b-aws-agent-1"
+
+    @pytest.mark.asyncio
+    @patch("app.services.agent_service.AgentService")
+    async def test_platform_breakglass_does_not_get_fleet(self, MockAgent):
+        """Platform operator break-glass still bind-only (no fleet=True kwarg)."""
+        svc = MockAgent.return_value
+        svc.list_agents = AsyncMock(return_value={"agents": [], "total": 0})
+
+        ctx = _ctx(tenant_id="t_b", is_platform=True)
+        await R.get_agents(enrich=True, managed_only=True, ctx=ctx)
+
+        # Verify fleet=True is NOT passed (bind-only by design)
+        svc.list_agents.assert_awaited_once_with(enrich=True, managed_only=True)
+
+
+# ============================================================
+# GAP-7 — sigma-rules: cross-tenant isolation (two tenants get identical set)
+# ============================================================
+
+class TestSigmaRulesCrossTenantIsolation:
+    """Two different tenant contexts calling GET /sigma-rules must receive the
+    same result set (fleet-global resource, no accidental tenancy filtering).
+
+    Closes the gap: a regression introducing tenant-filtering on sigma-rules
+    would silently partition a fleet-global resource."""
+
+    @pytest.mark.asyncio
+    @patch("app.services.sigma_rules_service.SigmaRulesService.list_sigma_rules", new_callable=AsyncMock)
+    async def test_two_tenants_get_identical_sigma_rules(self, mock_list):
+        """Tenant t_a and t_b both get the same full rule set (no tenant filter)."""
+        fleet_rules = {"rules": [{"rule_id": "r1"}, {"rule_id": "r2"}], "total": 2}
+        mock_list.return_value = fleet_rules
+
+        ctx_a = _ctx(tenant_id="t_a")
+        ctx_b = _ctx(tenant_id="t_b")
+
+        result_a = await R.get_sigma_rules(ctx=ctx_a)
+        result_b = await R.get_sigma_rules(ctx=ctx_b)
+
+        # Both tenants see the identical rule set
+        assert result_a == result_b
+        assert result_a["total"] == 2
+        assert result_b["total"] == 2
+
+        # The service was called twice, both times WITHOUT a tenant param
+        assert mock_list.await_count == 2
+        for call in mock_list.call_args_list:
+            # No tenant_id kwarg was passed
+            assert "tenant_id" not in call.kwargs
+
+    @pytest.mark.asyncio
+    @patch("app.services.sigma_rules_service.SigmaRulesService.list_sigma_rules", new_callable=AsyncMock)
+    async def test_platform_gets_same_sigma_rules_as_customer(self, mock_list):
+        """Platform operator gets the same rule set as a customer tenant."""
+        fleet_rules = {"rules": [{"rule_id": "r1"}], "total": 1}
+        mock_list.return_value = fleet_rules
+
+        ctx_customer = _ctx(tenant_id="t_a", is_platform=False)
+        ctx_platform = _ctx(tenant_id="_platform", is_platform=True)
+
+        result_customer = await R.get_sigma_rules(ctx=ctx_customer)
+        result_platform = await R.get_sigma_rules(ctx=ctx_platform)
+
+        assert result_customer == result_platform
+
+
+# ============================================================
+# GAP-8 — discovery routes: platform operator is bind-only (intentional)
+# ============================================================
+
+class TestDiscoveryBindOnly:
+    """Discovery routes (N5) are bind-only for ALL callers — platform operators
+    do NOT get a fleet view because discovery data is tenant-scoped via
+    connections. This test documents and verifies the intentional behavior.
+
+    Closes the gap: no test verified whether the bind-only intent for platform
+    operators on discovery was intentional vs a gap."""
+
+    @pytest.mark.asyncio
+    @patch("app.services.discovery_service.DiscoveryService")
+    async def test_discovery_agents_platform_is_bind_only(self, MockDiscovery):
+        """Platform operator on /discovery/agents: bind-only (no fleet param)."""
+        svc = MockDiscovery.return_value
+        svc.list_discovered = AsyncMock(return_value={
+            "agents": [{"agent_id": "disc-1"}], "total": 1, "cursor": None,
+        })
+
+        ctx = _ctx(tenant_id="t_b", is_platform=True)
+        result = await R.discovery_agents(ctx=ctx)
+
+        # Service is called without any fleet/tenant_id override
+        svc.list_discovered.assert_awaited_once()
+        call_kwargs = svc.list_discovered.call_args.kwargs
+        assert "fleet" not in call_kwargs
+        assert "tenant_id" not in call_kwargs
+        assert result["total"] == 1
+
+    @pytest.mark.asyncio
+    @patch("app.services.discovery_service.DiscoveryService")
+    async def test_discovery_summary_platform_is_bind_only(self, MockDiscovery):
+        """Platform operator on /discovery/summary: bind-only."""
+        svc = MockDiscovery.return_value
+        svc.summary = AsyncMock(return_value={"total": 5, "by_risk": {}})
+
+        ctx = _ctx(tenant_id="t_b", is_platform=True)
+        result = await R.discovery_summary(ctx=ctx)
+
+        svc.summary.assert_awaited_once_with()
+        assert result["total"] == 5
+
+    @pytest.mark.asyncio
+    @patch("app.services.discovery_service.DiscoveryService")
+    async def test_discovery_platforms_platform_is_bind_only(self, MockDiscovery):
+        """Platform operator on /discovery/platforms: bind-only."""
+        svc = MockDiscovery.return_value
+        svc.platforms = AsyncMock(return_value={"platforms": [{"name": "aws", "count": 3}]})
+
+        ctx = _ctx(tenant_id="t_b", is_platform=True)
+        result = await R.discovery_platforms(ctx=ctx)
+
+        svc.platforms.assert_awaited_once_with()
+        assert result["platforms"][0]["count"] == 3
+
+    @pytest.mark.asyncio
+    @patch("app.services.discovery_service.DiscoveryService")
+    async def test_discovery_agents_customer_is_bind_only(self, MockDiscovery):
+        """Customer operator on /discovery/agents: bind-only (same as platform)."""
+        svc = MockDiscovery.return_value
+        svc.list_discovered = AsyncMock(return_value={
+            "agents": [], "total": 0, "cursor": None,
+        })
+
+        ctx = _ctx(tenant_id="t_a", is_platform=False)
+        result = await R.discovery_agents(ctx=ctx)
+
+        svc.list_discovered.assert_awaited_once()
+        assert result["total"] == 0
