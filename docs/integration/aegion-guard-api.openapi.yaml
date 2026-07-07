@@ -281,6 +281,7 @@ paths:
         (`signals[]`), the prompt (`user_input`), and the caller IP. Powers "why was this blocked".
       parameters:
         - { name: request_id, in: query, schema: { type: string } }
+        - { name: agent_id, in: query, schema: { type: string } }
         - { name: limit, in: query, schema: { type: integer, default: 100, maximum: 500 } }
       responses:
         '200': { description: Decision trace., content: { application/json: { schema: { $ref: '#/components/schemas/SessionDecisionsResponse' } } } }
@@ -332,7 +333,6 @@ paths:
                 properties:
                   logs: { type: array, items: { $ref: '#/components/schemas/LogEntry' } }
                   total: { type: integer }
-                  has_more: { type: boolean }
                   next_token: { type: [string, 'null'] }
 
   /v1/logs/conversation/{conversation_id}:
@@ -383,7 +383,7 @@ paths:
       summary: Allowed-vs-blocked time series
       parameters:
         - { name: range, in: query, schema: { type: string, enum: [1h, 24h, 7d, 30d], default: 24h } }
-        - { name: bucket, in: query, schema: { type: string, enum: [5m, 1h, 1d], default: 1h } }
+        - { name: bucket, in: query, schema: { type: string, enum: [1h, 1d], default: 1h } }
       responses:
         '200': { description: Series., content: { application/json: { schema: { type: object } } } }
         '400': { $ref: '#/components/responses/BadRequest' }
@@ -395,7 +395,9 @@ paths:
       x-audience: customer-reporting
       operationId: getAgents
       summary: List managed agents
-      parameters: [ { name: enrich, in: query, schema: { type: boolean, default: true } } ]
+      parameters:
+        - { name: enrich, in: query, schema: { type: boolean, default: true } }
+        - { name: managed_only, in: query, schema: { type: boolean, default: false }, description: "Filter to agents with observed /v1/validate traffic (each then carries lifecycle_status=managed and last_active)." }
       responses: { '200': { description: Agents., content: { application/json: { schema: { type: object } } } } }
 
   /v1/agents/{agent_id}:
@@ -466,9 +468,11 @@ paths:
       parameters:
         - { name: agent_id, in: query, schema: { type: string } }
         - { name: status, in: query, schema: { $ref: '#/components/schemas/PolicyStatus' } }
-        - { name: limit, in: query, schema: { type: integer, default: 50 } }
+        - { name: limit, in: query, schema: { type: integer, default: 50, minimum: 1, maximum: 200 } }
         - { name: cursor, in: query, schema: { type: string } }
-      responses: { '200': { description: Policies., content: { application/json: { schema: { type: object } } } } }
+      responses:
+        '200': { description: Policies., content: { application/json: { schema: { type: object } } } }
+        '400': { $ref: '#/components/responses/BadRequest' }
     post:
       tags: [Policies]
       x-audience: customer-admin
@@ -492,7 +496,7 @@ paths:
       x-audience: customer-admin
       operationId: getPolicyById
       summary: Get a policy (with content)
-      parameters: [ { name: include_content, in: query, schema: { type: boolean, default: false } } ]
+      parameters: [ { name: include_content, in: query, schema: { type: boolean, default: true } } ]
       responses: { '200': { description: Policy., content: { application/json: { schema: { type: object } } } }, '404': { $ref: '#/components/responses/NotFound' } }
     put:
       tags: [Policies]
@@ -504,7 +508,7 @@ paths:
         Auto-increments the patch version when omitted. Requires the `editor` role and ownership of
         the policy. A disabled policy cannot be updated (enable it first → 403).
       parameters: [ { $ref: '#/components/parameters/TenantSwitch' } ]
-      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/PolicyCreateRequest' } } } }
+      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/PolicyUpdateRequest' } } } }
       responses:
         '200': { description: Updated., content: { application/json: { schema: { type: object } } } }
         '400': { $ref: '#/components/responses/BadRequest' }
@@ -516,12 +520,14 @@ paths:
       x-audience: customer-admin
       operationId: deletePolicy
       summary: Delete (deactivate) a policy
+      security: [ { OperatorSession: [] } ]
       description: |
         Soft delete — sets `status=disabled` (row + S3 content retained for audit). Requires the
         `admin` role and ownership of the policy. System policies (`created_by=system`) cannot be
         deleted (403).
       responses:
         '200': { description: Deleted., content: { application/json: { schema: { $ref: '#/components/schemas/GenericOk' } } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
 
@@ -532,6 +538,7 @@ paths:
       x-audience: customer-admin
       operationId: setPolicyStatus
       summary: Enable or disable a policy (lifecycle flip)
+      security: [ { OperatorSession: [] } ]
       description: |
         Flips a policy's lifecycle status: `active` enables (restores every bound agent); `disabled`
         fail-secure DENYs every bound agent (`POLICY_DISABLED`). Unlike DELETE, this is intentionally
@@ -544,6 +551,7 @@ paths:
       responses:
         '200': { description: Status updated., content: { application/json: { schema: { type: object, properties: { success: { type: boolean }, policy_id: { type: string }, status: { type: string }, updated_at: { type: string, format: date-time } } } } } }
         '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
 
@@ -865,9 +873,11 @@ paths:
       security: [ { OperatorSession: [] } ]
       description: |
         Drives a live cross-account `sts:AssumeRole` (AWS) or SP token (Azure), so requires the
-        `editor` role and ownership. **Partial-success carve-out:** a *rejected* credential returns
-        HTTP **200** with `{ ok: false, message }` (the message is sanitized — raw STS/provider
-        detail is logged server-side, never returned). Only an unknown connection is an HTTP error.
+        `editor` role and ownership. **Partial-success carve-out:** a *well-formed but rejected*
+        credential returns HTTP **200** with `{ ok: false, message }` (the message is sanitized — raw
+        STS/provider detail is logged server-side, never returned). HTTP errors: an unknown connection
+        is **404**; a malformed `role_arn` in the optional convenience body is **400**
+        (`VALIDATION_ERROR`).
       parameters: [ { $ref: '#/components/parameters/TenantSwitch' } ]
       requestBody:
         required: false
@@ -875,7 +885,8 @@ paths:
           application/json:
             schema: { type: object, properties: { role_arn: { type: string, description: "Optional convenience set-then-test (AWS)." } } }
       responses:
-        '200': { description: Probe outcome (both success and rejected-credential are 200)., content: { application/json: { schema: { $ref: '#/components/schemas/ConnectionTestResult' } } } }
+        '200': { description: Probe outcome (both success and well-formed-but-rejected credential are 200)., content: { application/json: { schema: { $ref: '#/components/schemas/ConnectionTestResult' } } } }
+        '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
@@ -945,6 +956,7 @@ paths:
       responses:
         '201': { description: Key registered., content: { application/json: { schema: { $ref: '#/components/schemas/CredentialRegistered' } } } }
         '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
     get:
       tags: [Agent Credentials]
@@ -956,6 +968,7 @@ paths:
       parameters: [ { $ref: '#/components/parameters/TenantSwitch' } ]
       responses:
         '200': { description: Keys., content: { application/json: { schema: { $ref: '#/components/schemas/CredentialList' } } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
 
   /v1/agents/{agent_id}/credentials/{kid}/rotate:
@@ -975,6 +988,7 @@ paths:
       parameters: [ { $ref: '#/components/parameters/TenantSwitch' } ]
       responses:
         '200': { description: Marked rotating., content: { application/json: { schema: { $ref: '#/components/schemas/CredentialStatus' } } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
 
@@ -1030,6 +1044,7 @@ paths:
       parameters: [ { $ref: '#/components/parameters/TenantSwitch' } ]
       responses:
         '200': { description: Operator identity., content: { application/json: { schema: { $ref: '#/components/schemas/Me' } } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
 
   /v1/tenants:
@@ -1049,8 +1064,9 @@ paths:
           application/json:
             schema: { $ref: '#/components/schemas/TenantCreateRequest' }
       responses:
-        '201': { description: Created., content: { application/json: { schema: { $ref: '#/components/schemas/TenantSummary' } } } }
+        '201': { description: Created., content: { application/json: { schema: { $ref: '#/components/schemas/TenantCreateResult' } } } }
         '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
 
   /v1/tenants/{tenant_id}:
     parameters: [ { $ref: '#/components/parameters/TenantId' } ]
@@ -1063,6 +1079,7 @@ paths:
       parameters: [ { $ref: '#/components/parameters/TenantSwitch' } ]
       responses:
         '200': { description: Tenant., content: { application/json: { schema: { $ref: '#/components/schemas/Tenant' } } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
     patch:
@@ -1082,8 +1099,9 @@ paths:
           application/json:
             schema: { $ref: '#/components/schemas/TenantUpdateRequest' }
       responses:
-        '200': { description: Updated., content: { application/json: { schema: { $ref: '#/components/schemas/TenantSummary' } } } }
+        '200': { description: Updated., content: { application/json: { schema: { $ref: '#/components/schemas/UpdateTenantResponse' } } } }
         '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
     delete:
       tags: [Tenancy & Access]
@@ -1098,6 +1116,7 @@ paths:
       parameters: [ { $ref: '#/components/parameters/TenantSwitch' } ]
       responses:
         '200': { description: Deletion started., content: { application/json: { schema: { $ref: '#/components/schemas/TenantDeleteResponse' } } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
 
   /v1/tenants/{tenant_id}/members:
@@ -1112,6 +1131,7 @@ paths:
       parameters: [ { $ref: '#/components/parameters/TenantSwitch' } ]
       responses:
         '200': { description: Members., content: { application/json: { schema: { $ref: '#/components/schemas/MemberList' } } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
 
   /v1/tenants/{tenant_id}/invites:
@@ -1134,6 +1154,7 @@ paths:
             schema: { $ref: '#/components/schemas/InviteCreateRequest' }
       responses:
         '201': { description: Invite created., content: { application/json: { schema: { $ref: '#/components/schemas/InviteCreated' } } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
 
   /v1/invites/redeem:
@@ -1154,6 +1175,7 @@ paths:
       responses:
         '201': { description: Joined the tenant., content: { application/json: { schema: { $ref: '#/components/schemas/MembershipResult' } } } }
         '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
 
   /v1/tenants/{tenant_id}/members/{operator_sub}:
     parameters:
@@ -1172,6 +1194,7 @@ paths:
       responses:
         '200': { description: Removed., content: { application/json: { schema: { type: object, properties: { removed: { type: string }, tenant_id: { type: string } } } } } }
         '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
 
@@ -1186,6 +1209,7 @@ paths:
       security: [ { OperatorSession: [] } ]
       responses:
         '200': { description: Tenants., content: { application/json: { schema: { type: object } } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
   /v1/platform/tenants/{tenant_id}:
     parameters: [ { $ref: '#/components/parameters/TenantId' } ]
@@ -1198,6 +1222,8 @@ paths:
       security: [ { OperatorSession: [] } ]
       responses:
         '200': { description: Detail., content: { application/json: { schema: { type: object } } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
 
   # ----------------------------------------------------------------- System
@@ -1208,10 +1234,14 @@ paths:
       operationId: healthCheck
       summary: Liveness check
       security: []
-      description: Probes DynamoDB (critical), plus S3/CloudWatch (non-critical). Overall health gates ONLY on DynamoDB; a non-critical failure still returns 200 with `status=degraded`.
+      description: |
+        Probes DynamoDB (critical), plus S3/CloudWatch (non-critical). Overall health gates ONLY on
+        DynamoDB: a non-critical (S3/CloudWatch) failure still returns **200** with `status=healthy`
+        and no `errors`. `status=degraded` and the `errors` array appear ONLY in the **503** body
+        (DynamoDB critical failure, returned as `detail`).
       responses:
-        '200': { description: All critical deps healthy (or only non-critical degraded)., content: { application/json: { schema: { type: object, properties: { status: { type: string, enum: [healthy, degraded], example: healthy }, version: { type: string }, dependencies: { type: object, additionalProperties: true }, uptime_seconds: { type: number }, errors: { type: array, items: { type: string } } } } } } }
-        '503': { description: DynamoDB (critical) unhealthy — the full health response is returned as `detail`., content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+        '200': { description: DynamoDB (critical) healthy — S3/CloudWatch failures do not degrade the 200 status., content: { application/json: { schema: { type: object, properties: { status: { type: string, enum: [healthy], example: healthy }, version: { type: string }, dependencies: { type: object, additionalProperties: true }, uptime_seconds: { type: number } } } } } }
+        '503': { description: "DynamoDB (critical) unhealthy — the full health response (status=degraded + errors[]) is returned as `detail`.", content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
 
 # =============================================================================
 components:
@@ -1288,7 +1318,11 @@ components:
 
     PolicyStatus:
       type: string
-      enum: [active, disabled, draft]
+      description: >-
+        Policy lifecycle status used by the list filter (`GET /v1/policies?status=`). The
+        enable/disable flip (`PATCH /v1/policies/{policy_id}/status`) uses a narrower `active|disabled`
+        set — see that operation. A soft-deleted policy is `disabled`.
+      enum: [active, inactive, deprecated]
 
     ThreatType:
       type: string
@@ -1438,14 +1472,39 @@ components:
 
     LogEntry:
       type: object
+      description: >-
+        One audit record — the parsed CloudWatch `@message` JSON emitted per validation
+        (`audit_logger`). Fields below are a representative (not exhaustive) set; the record carries
+        the base + trust fields on every decision, adds `reason`/`threat_type` and detection detail on
+        a DENY, and adds action/content/cross-cloud fields for the phases/operations that produce them.
       properties:
-        id: { type: string }
-        timestamp: { type: string, format: date-time }
+        request_id: { type: [string, 'null'], description: The originating validate request id (tracing). }
         session_id: { type: [string, 'null'] }
         agent_id: { type: [string, 'null'] }
-        decision: { type: [string, 'null'] }
-        threat_type: { type: [string, 'null'] }
-        message: { type: string }
+        tool_name: { type: [string, 'null'], description: The tool the action targeted. }
+        tool_params: { type: object, additionalProperties: true, description: The tool arguments inspected for this call. }
+        user_input: { type: [string, 'null'], description: The end-user prompt that was validated. }
+        multi_agent_context: { type: object, additionalProperties: true, description: "Cross-agent invocation context, when present." }
+        operation_type: { type: [string, 'null'], description: READ or WRITE. }
+        decision: { type: [string, 'null'], description: ALLOW or DENY. }
+        timestamp: { type: string, format: date-time, description: ISO-8601 UTC (trailing Z). }
+        latency_ms: { type: [number, 'null'], description: End-to-end validation latency for this call. }
+        reason: { type: [string, 'null'], description: "Deciding reason (DENY: the blocking rationale; ALLOW: 'All validation checks passed')." }
+        trust_score_before: { type: [number, 'null'], description: Session trust score before this decision. }
+        trust_score_after: { type: [number, 'null'], description: Session trust score after applying any penalty. }
+        trust_delta: { type: [number, 'null'], description: Trust penalty applied (0 on ALLOW). }
+        threat_type: { $ref: '#/components/schemas/ThreatType', description: "DENY only, when a threat was detected." }
+        severity: { type: [string, 'null'], description: "DENY only, when the deciding validator reports a severity." }
+        matched_rule: { type: [string, 'null'], description: "DENY only, the sigma/policy rule id that fired (when applicable)." }
+        violation_type: { type: [string, 'null'], description: "DENY only, the violation classification (when applicable)." }
+        signals: { type: array, items: { $ref: '#/components/schemas/DecisionSignal' }, description: Per-validator breadcrumbs that fed this decision. }
+        action_id: { type: [string, 'null'], description: "WRITE/process_refund records: the reversible-action handle." }
+        reversible: { type: [boolean, 'null'], description: "WRITE/process_refund records: whether the action is reversible." }
+        rollback_status: { type: [string, 'null'], description: "WRITE/process_refund records: current rollback state." }
+        tenant_id: { type: [string, 'null'], description: "WRITE/process_refund records: the owning tenant." }
+        content_text: { type: [string, 'null'], description: "content/output/memory phases: the inspected payload." }
+        platform: { type: [string, 'null'], description: "Cross-cloud records: originating platform." }
+        cloud_region: { type: [string, 'null'], description: "Cross-cloud records: native cloud region." }
 
     MetricsOverview:
       type: object
@@ -1456,13 +1515,17 @@ components:
         active_agents: { type: integer }
         clouds: { type: integer }
         trust_score: { type: [number, 'null'] }
+        trust_status: { type: string, enum: [healthy, degraded, critical, unknown] }
+        agents_below_threshold: { type: integer }
+        threats_blocked_delta_pct: { type: [number, 'null'] }
+        false_positive_pct: { type: [number, 'null'] }
         avg_latency_ms: { type: integer }
         quarantined: { type: integer }
         attack_categories: { type: integer }
 
     PolicyCreateRequest:
       type: object
-      required: [agent_id, name, allowed_tools]
+      required: [agent_id, name, allowed_tools, version, policies]
       properties:
         agent_id: { type: string }
         name: { type: string }
@@ -1502,6 +1565,36 @@ components:
             max_age_seconds: 300
         policies:
           - { policy_id: pay-baseline, name: Baseline, action: ALLOW, severity: low, enabled: true }
+
+    PolicyUpdateRequest:
+      type: object
+      description: >-
+        Same body as PolicyCreateRequest, but `version` is optional — omitting it auto-increments the
+        patch version server-side.
+      required: [agent_id, name, allowed_tools, policies]
+      properties:
+        agent_id: { type: string }
+        name: { type: string }
+        schema_version: { type: string, example: v1 }
+        version: { type: string, example: "1.0.0" }
+        platform: { type: string, example: bedrock }
+        cloud_region: { type: string, example: us-east-1 }
+        allowed_tools: { type: array, minItems: 1, items: { type: string }, description: Tool ids this agent may call. }
+        max_calls_per_minute: { type: integer, example: 30 }
+        cross_cloud_dependencies:
+          type: array
+          description: Preconditions — e.g. require a prior verify on another agent within N seconds.
+          items:
+            type: object
+            properties:
+              target_agent: { type: string }
+              target_tool: { type: string }
+              required_before: { type: array, items: { type: string } }
+              max_age_seconds: { type: integer }
+        policies:
+          type: array
+          description: Inner rule list (carries action/severity; the engine is tool-name-driven).
+          items: { type: object }
 
     # ---- Multi-tenancy: roles & enums ------------------------------------
     Role:
@@ -1597,14 +1690,13 @@ components:
         plan: { $ref: '#/components/schemas/PlanType' }
       example: { display_name: Acme Corp, plan: trial }
 
-    TenantSummary:
+    TenantCreateResult:
       type: object
       properties:
         tenant_id: { type: string }
         display_name: { type: string }
         plan: { $ref: '#/components/schemas/PlanType' }
         status: { $ref: '#/components/schemas/TenantStatus' }
-        identity_mode: { $ref: '#/components/schemas/IdentityMode' }
         role: { $ref: '#/components/schemas/Role' }
 
     Tenant:
@@ -1621,9 +1713,19 @@ components:
       type: object
       description: All fields optional; only those present are changed.
       properties:
-        display_name: { type: string }
+        display_name: { type: string, maxLength: 128, description: "Rename the tenant (the one free-text label). Trimmed; a blank value is rejected (400). Admin+ may set it." }
         identity_mode: { $ref: '#/components/schemas/IdentityMode' }
         status: { type: string, enum: [active, suspended], description: Use the delete endpoint for deletion. }
+        platform_read_consent: { type: boolean, description: "Owner-only (or platform operator): consent to AegionAI-staff cross-tenant reads (WS-E E3)." }
+
+    UpdateTenantResponse:
+      type: object
+      properties:
+        tenant_id: { type: string }
+        display_name: { type: string }
+        identity_mode: { $ref: '#/components/schemas/IdentityMode' }
+        status: { $ref: '#/components/schemas/TenantStatus' }
+        platform_read_consent: { type: boolean }
 
     TenantDeleteResponse:
       type: object

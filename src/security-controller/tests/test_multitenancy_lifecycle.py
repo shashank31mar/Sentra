@@ -89,6 +89,23 @@ def test_identity_mode_validation(mt_env):
         store.set_identity_mode(t.tenant_id, "bogus")
 
 
+def test_set_display_name_renames_and_rejects_blank(mt_env):
+    from app.services.tenant_service import TenantError, get_tenant_store
+
+    store = get_tenant_store()
+    t = store.create(display_name="Acme")
+    store.set_display_name(t.tenant_id, "Acme Renamed")
+    assert store.get(t.tenant_id).display_name == "Acme Renamed"
+    # trimmed
+    store.set_display_name(t.tenant_id, "  Trimmed  ")
+    assert store.get(t.tenant_id).display_name == "Trimmed"
+    # a blank/whitespace name can't wipe the label
+    with pytest.raises(TenantError):
+        store.set_display_name(t.tenant_id, "   ")
+    with pytest.raises(TenantError):
+        store.set_display_name(t.tenant_id, "x" * 129)
+
+
 def test_free_mail_domain_detection():
     from app.services.tenant_service import is_free_mail_domain
 
@@ -276,6 +293,21 @@ def test_create_tenant_always_mints_opaque_slug(mt_env, monkeypatch):
     # the id is always a minted t_ slug — never "microsoft-com".
     res = run(create_tenant(TenantCreateRequest(display_name="Acme"), FakeRequest({})))
     assert res["tenant_id"].startswith("t_") and res["role"] == "owner"
+
+
+def test_update_tenant_applies_display_name_rename(mt_env):
+    """A PATCH with display_name actually renames the tenant (it used to be a
+    silent 200 no-op) and echoes the new name back."""
+    from app.api.deps import OperatorContext
+    from app.api.tenancy_routes import TenantUpdateRequest, update_tenant
+    from app.services.tenant_service import get_tenant_store
+
+    store = get_tenant_store()
+    t = store.create(display_name="Old Name")
+    admin = OperatorContext(sub="op_admin", tenant_id=t.tenant_id, role="admin")
+    res = run(update_tenant(t.tenant_id, TenantUpdateRequest(display_name="New Name"), ctx=admin))
+    assert res["display_name"] == "New Name"
+    assert store.get(t.tenant_id).display_name == "New Name"
 
 
 def test_platform_break_glass_is_read_only(mt_env, monkeypatch):

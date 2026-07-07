@@ -230,6 +230,22 @@ class TenantStore:
             ExpressionAttributeValues={":s": status, ":u": _now_ms(), ":purged": "purged"},
         )
 
+    def set_display_name(self, tenant_id: str, display_name: str) -> None:
+        """Rename a tenant (the one free-text, human-facing tenant attribute).
+        Trimmed + length-bounded; a blank name is rejected so a PATCH can't wipe
+        the label to empty."""
+        name = (display_name or "").strip()
+        if not name:
+            raise TenantError("display_name must not be blank")
+        if len(name) > 128:
+            raise TenantError("display_name must be <= 128 characters")
+        self._table().update_item(
+            Key={"tenant_id": tenant_id},
+            UpdateExpression="SET display_name = :n, updated_at = :u",
+            ConditionExpression="attribute_exists(tenant_id)",
+            ExpressionAttributeValues={":n": name, ":u": _now_ms()},
+        )
+
     def set_identity_mode(self, tenant_id: str, mode: str) -> None:
         if mode not in tenancy.IDENTITY_MODES:
             raise TenantError(f"invalid identity_mode {mode!r}")

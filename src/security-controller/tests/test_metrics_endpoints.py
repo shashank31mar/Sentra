@@ -147,6 +147,15 @@ class TestDecisionsTimeseries:
         resp = client.get("/v1/metrics/decisions-timeseries?range=bogus")
         assert resp.status_code == 400
 
+    def test_timeseries_rejects_unsupported_bucket(self, client, mock_metrics_query):
+        # `5m` is not a real bucket; it used to silently coerce to 1h and return
+        # 1h data mislabelled as 5m. It must now fail loudly with 400 and never
+        # reach the aggregator.
+        resp = client.get("/v1/metrics/decisions-timeseries?range=24h&bucket=5m")
+        assert resp.status_code == 400
+        assert "bucket" in resp.json()["detail"]
+        mock_metrics_query.decisions_timeseries.assert_not_called()
+
 
 class TestOverviewConcurrency:
     """RCA 2026-07-02 regression guard: the overview handler must dispatch its
