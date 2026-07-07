@@ -29,10 +29,11 @@ def _req(method="GET", path="/v1/sessions/{session_id}/trail", headers=None, **p
 
 
 class TestBoundReadEmitsAccessEvent:
-    def test_bound_read_emits_access_event(self):
+    @pytest.mark.asyncio
+    async def test_bound_read_emits_access_event(self):
         """A customer GET read writes an event with sub + tenant_id + route scope."""
         with patch("app.services.platform_audit.get_platform_audit_store") as store:
-            R9.emit_read_access_event(
+            await R9.emit_read_access_event(
                 _req(path="/v1/agents"),
                 operator_sub="op-cust", tenant_id="t_a", is_platform=False,
             )
@@ -46,11 +47,12 @@ class TestBoundReadEmitsAccessEvent:
         assert kw["decision"] == "READ"
         assert kw["consent_state"] == "own_tenant"
 
-    def test_non_get_is_not_attributed_here(self):
+    @pytest.mark.asyncio
+    async def test_non_get_is_not_attributed_here(self):
         """A mutation (POST/PUT/DELETE) is NOT recorded by the read trail — it has its
         own audit path; double-logging would be noise."""
         with patch("app.services.platform_audit.get_platform_audit_store") as store:
-            R9.emit_read_access_event(
+            await R9.emit_read_access_event(
                 _req(method="POST", path="/v1/policies"),
                 operator_sub="op", tenant_id="t_a", is_platform=False,
             )
@@ -58,12 +60,13 @@ class TestBoundReadEmitsAccessEvent:
 
 
 class TestPlatformCrossTenantReadAttributed:
-    def test_platform_cross_tenant_read_is_attributed(self):
+    @pytest.mark.asyncio
+    async def test_platform_cross_tenant_read_is_attributed(self):
         """A _platform (break-glass) operator's read records the SPECIFIC resolved
         target tenant_id (never '*'), so the operator-lane cross-tenant read is
         non-repudiable — complementing _audit_platform_read's aggregate '*' rows."""
         with patch("app.services.platform_audit.get_platform_audit_store") as store:
-            R9.emit_read_access_event(
+            await R9.emit_read_access_event(
                 _req(path="/v1/sessions/{session_id}/trail", request_id="r1"),
                 operator_sub="op-staff", tenant_id="t_customer_b", is_platform=True,
             )
@@ -74,12 +77,13 @@ class TestPlatformCrossTenantReadAttributed:
 
 
 class TestNeverBreaksTheRead:
-    def test_audit_write_failure_does_not_raise(self):
+    @pytest.mark.asyncio
+    async def test_audit_write_failure_does_not_raise(self):
         """A ledger write failure must not break the read (best-effort attribution)."""
         with patch("app.services.platform_audit.get_platform_audit_store",
                    side_effect=RuntimeError("ddb down")):
             # Must not raise.
-            R9.emit_read_access_event(
+            await R9.emit_read_access_event(
                 _req(path="/v1/agents"),
                 operator_sub="op", tenant_id="t_a", is_platform=False,
             )
@@ -101,7 +105,7 @@ class TestCoverageEqualsBoundReadSet:
     @pytest.mark.asyncio
     async def test_resolve_operator_tenant_emits_read_event(self):
         import app.api.deps as deps
-        from unittest.mock import Mock
+        from unittest.mock import AsyncMock, Mock
 
         m = Mock()
         m.tenant_id = "t_a"
@@ -111,8 +115,11 @@ class TestCoverageEqualsBoundReadSet:
 
         deps._alb_claims_override = lambda r: {"sub": "op_a", "email": "a@x"}
         try:
+            # emit is now async (offloads the DDB write via asyncio.to_thread) — patch
+            # with AsyncMock so the `await` in resolve_operator_tenant resolves.
             with patch("app.api.deps.get_member_store") as gms, \
-                 patch("app.api.read_access_audit.emit_read_access_event") as emit:
+                 patch("app.api.read_access_audit.emit_read_access_event",
+                       new_callable=AsyncMock) as emit:
                 gms.return_value.by_operator.return_value = [m]
                 ctx = await deps.resolve_operator_tenant(req)
             assert ctx.tenant_id == "t_a"

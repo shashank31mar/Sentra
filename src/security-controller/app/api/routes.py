@@ -916,18 +916,15 @@ async def get_decisions_timeseries(
 ) -> Dict:
     """WS-21 T22: allowed-vs-blocked dense time-series (Chart.js area chart).
 
-    Auth (WS-N N4): CloudWatch reads fail-closed for customer (fleet-shared).
+    Auth (WS-N D11): dual-mode, mirroring /metrics/overview — a customer operator gets
+    a PER-TENANT series from the tenant-dimensioned Decisions{tenant_id,verdict} stream;
+    a platform operator gets the FLEET series (audited). This replaces the earlier
+    fail-closed 422 (which predated D11 proving the per-tenant stream exists).
     """
-    # WS-N N4.1 (FG-6) + FIX-B GAP-2: authz check BEFORE input validation.
-    # A customer operator must see the fail-closed 422 rather than a 400 that
-    # reveals accepted parameter values (information leakage to unauthorized callers).
-    if not ctx.is_platform:
-        raise HTTPException(
-            status_code=422,
-            detail="tenant-scoped telemetry not yet available (CloudWatch metrics are fleet-shared)",
-        )
-    from app.api.tenancy_routes import _audit_platform_read
-    _audit_platform_read(ctx, "*", "metrics.decisions_timeseries")
+    # WS-N D11: scope the series to the operator's tenant (customer) or fleet (platform,
+    # audited via _operator_read_scope). scope=None → fleet ValidationsTotal; scope=tid →
+    # per-tenant Decisions stream.
+    scope = _operator_read_scope(ctx, "metrics.decisions_timeseries")
 
     if range not in _VALID_METRIC_RANGES:
         raise HTTPException(
@@ -946,7 +943,7 @@ async def get_decisions_timeseries(
 
     try:
         return await asyncio.to_thread(
-            MetricsQueryService().decisions_timeseries, range, bucket
+            MetricsQueryService().decisions_timeseries, range, bucket, scope
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))

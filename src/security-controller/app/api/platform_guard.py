@@ -25,7 +25,6 @@ import logging
 from typing import List
 
 import boto3
-from botocore.exceptions import ClientError
 
 from app.config import settings
 
@@ -84,7 +83,7 @@ def _emit_metric(operator_sub: str) -> None:
                 }
             ],
         )
-    except (ClientError, Exception) as e:  # noqa: BLE001 — a monitor must never break auth
+    except Exception as e:  # noqa: BLE001 — a monitor must never break auth (incl. ClientError)
         logger.exception("N0.3 dual-membership metric emit failed (non-blocking): %s", e)
 
 

@@ -13,6 +13,7 @@ distribution, quarantined counts) are joined by the route layer (T20/T21).
 Metric names/namespace MUST mirror ``app/utils/metrics_publisher.py``.
 """
 import logging
+import re
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -24,6 +25,12 @@ logger = logging.getLogger(__name__)
 
 # Mirrors MetricsPublisher (do not drift). See metrics_publisher.py.
 NAMESPACE = "Sentra/SecurityController"
+
+# WS-N D11 defence-in-depth: a dimension value safe to interpolate into a CloudWatch
+# SEARCH expression (no quote/paren/space that could break the grammar or widen the
+# filter). Server-minted tenant ids (t_<opaque>) always match; this rejects anything
+# that could ever inject — fail-secure (raise) rather than build a malformed query.
+_SAFE_METRIC_TOKEN = re.compile(r"^[A-Za-z0-9_\-]+$")
 
 # range token -> total seconds
 _RANGE_SECONDS: Dict[str, int] = {
@@ -111,7 +118,18 @@ class MetricsQueryService:
         ``current_tenant()``, so a customer overview filters on ``tenant_id="<tid>"``
         instead of the fleet-wide ``ValidationsTotal`` (which has no tenant dim). This
         is the D11 rescope: same collapse-with-SUM/AVG shape, tenant-scoped schema.
+
+        Defence-in-depth: ``tenant_id`` is interpolated into the CloudWatch SEARCH
+        expression. Today it is always a server-minted ``t_<opaque>`` id (from a validated
+        membership row — never attacker free-text; the header can only *select* an existing
+        membership). We still validate it here so a FUTURE non-slug id (or a code change
+        that lets an arbitrary string reach this) fails loud rather than silently breaking
+        the SEARCH grammar or altering the tenant filter — fail-secure, not injectable.
         """
+        if not _SAFE_METRIC_TOKEN.match(tenant_id or ""):
+            raise ValueError(
+                f"unsafe tenant_id for CloudWatch SEARCH: {tenant_id!r} "
+                "(expected an alphanumeric/_/- token — never interpolate free text)")
         if verdict is not None:
             schema = '{%s,tenant_id,verdict}' % NAMESPACE
             filt = f' MetricName="{metric}" tenant_id="{tenant_id}" verdict="{verdict}"'
@@ -206,13 +224,17 @@ class MetricsQueryService:
         return len(seen)
 
     def decisions_timeseries(
-        self, range_token: str = "24h", bucket: str = "1h"
+        self, range_token: str = "24h", bucket: str = "1h", tenant_id: Optional[str] = None
     ) -> Dict[str, Any]:
         """Allowed-vs-blocked dense time-series for GET /v1/metrics/decisions-timeseries.
 
         Raises ValueError if the range/bucket combo exceeds the point cap
         (e.g. 30d @ 1h) — the route maps this to HTTP 400.
-        """
+
+        WS-N D11 dual-mode (mirrors overview()): ``tenant_id=None`` → FLEET series via
+        the fleet-wide ``ValidationsTotal`` stream (platform operator); ``tenant_id="<tid>"``
+        → PER-TENANT series via the tenant-dimensioned ``Decisions{tenant_id,verdict}``
+        stream (customer operator). Same allowed/blocked shape either way."""
         start, end, seconds = self._range_window(range_token)
         period = _BUCKET_SECONDS.get(bucket, _BUCKET_SECONDS["1h"])
         if seconds // period > _MAX_TIMESERIES_POINTS:
@@ -220,12 +242,20 @@ class MetricsQueryService:
                 f"range={range_token} with bucket={bucket} produces too many points "
                 f"(>{_MAX_TIMESERIES_POINTS}); use a coarser bucket (e.g. 1d)"
             )
-        q = [
-            {"Id": "allowed", "Expression": self._search("ValidationsTotal", "Sum", period, "ALLOW"),
-             "ReturnData": True, "Period": period},
-            {"Id": "blocked", "Expression": self._search("ValidationsTotal", "Sum", period, "DENY"),
-             "ReturnData": True, "Period": period},
-        ]
+        if tenant_id is not None:
+            q = [
+                {"Id": "allowed", "Expression": self._search_tenant("Decisions", "Sum", period, tenant_id, "ALLOW"),
+                 "ReturnData": True, "Period": period},
+                {"Id": "blocked", "Expression": self._search_tenant("Decisions", "Sum", period, tenant_id, "DENY"),
+                 "ReturnData": True, "Period": period},
+            ]
+        else:
+            q = [
+                {"Id": "allowed", "Expression": self._search("ValidationsTotal", "Sum", period, "ALLOW"),
+                 "ReturnData": True, "Period": period},
+                {"Id": "blocked", "Expression": self._search("ValidationsTotal", "Sum", period, "DENY"),
+                 "ReturnData": True, "Period": period},
+            ]
         # Need timestamps too — fetch raw results (not just values).
         resp_results = self._get_metric_data_with_ts(q, start, end)
         allowed_ts = resp_results.get("allowed", {})

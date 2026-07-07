@@ -115,6 +115,47 @@ def test_overview_fleet_path_unchanged_when_tenant_none():
     assert "tenant_id=" not in exprs  # fleet path is not tenant-filtered
 
 
+def test_search_tenant_rejects_unsafe_tenant_id():
+    """WS-N D11 defence-in-depth: a tenant_id with a SEARCH metachar is REJECTED (raise),
+    never interpolated — fail-secure against a future non-slug id / injection path."""
+    import pytest as _pytest
+    svc, _ = _svc({"MetricDataResults": []})
+    for bad in ('t_a" OR verdict="DENY', "t_a')", 't"', "with space", ""):
+        with _pytest.raises(ValueError):
+            svc._search_tenant("Decisions", "Sum", 3600, bad, "ALLOW")
+    # a normal server-minted id is accepted
+    expr = svc._search_tenant("Decisions", "Sum", 3600, "t_0abc123def456", "ALLOW")
+    assert 'tenant_id="t_0abc123def456"' in expr
+
+
+def test_decisions_timeseries_tenant_scoped_uses_decisions_stream():
+    """WS-N D11: decisions_timeseries(tenant_id=...) queries the tenant-dimensioned
+    Decisions{tenant_id,verdict} stream (customer per-tenant series), NOT fleet
+    ValidationsTotal."""
+    svc, cw = _svc({"MetricDataResults": [
+        {"Id": "allowed", "Timestamps": [], "Values": []},
+        {"Id": "blocked", "Timestamps": [], "Values": []},
+    ]})
+    svc.decisions_timeseries("24h", "1h", tenant_id="t_a")
+    exprs = " ".join(q["Expression"] for q in cw.get_metric_data.call_args.kwargs["MetricDataQueries"])
+    assert 'MetricName="Decisions"' in exprs
+    assert 'tenant_id="t_a"' in exprs
+    assert 'verdict="ALLOW"' in exprs and 'verdict="DENY"' in exprs
+    assert "ValidationsTotal" not in exprs  # not the fleet stream
+
+
+def test_decisions_timeseries_fleet_path_unchanged():
+    """decisions_timeseries() with no tenant (platform) still uses fleet ValidationsTotal."""
+    svc, cw = _svc({"MetricDataResults": [
+        {"Id": "allowed", "Timestamps": [], "Values": []},
+        {"Id": "blocked", "Timestamps": [], "Values": []},
+    ]})
+    svc.decisions_timeseries("24h", "1h")  # tenant_id defaults None
+    exprs = " ".join(q["Expression"] for q in cw.get_metric_data.call_args.kwargs["MetricDataQueries"])
+    assert 'MetricName="ValidationsTotal"' in exprs
+    assert "tenant_id=" not in exprs
+
+
 def test_decisions_timeseries_dense_merge():
     t1 = datetime(2026, 6, 6, 0, 0, tzinfo=timezone.utc)
     t2 = datetime(2026, 6, 6, 1, 0, tzinfo=timezone.utc)

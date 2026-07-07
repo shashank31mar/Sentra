@@ -454,7 +454,7 @@ async def _resolve_operator_tenant_inner(request: Request) -> OperatorContext:
     # SPECIFIC resolved tenant (chosen.tenant_id), making it non-repudiable.
     from app.api.read_access_audit import emit_read_access_event
 
-    emit_read_access_event(
+    await emit_read_access_event(
         request, operator_sub=sub, tenant_id=chosen.tenant_id, is_platform=is_platform,
     )
 

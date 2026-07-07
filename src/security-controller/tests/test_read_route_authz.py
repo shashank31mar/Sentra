@@ -153,13 +153,20 @@ class TestCloudWatchFailClosed:
         assert exc_info.value.status_code == 422
 
     @pytest.mark.asyncio
-    async def test_decisions_timeseries_customer_failclosed(self):
-        """Customer ctx on /metrics/decisions-timeseries -> 422."""
-        from fastapi import HTTPException
-        ctx = _ctx(is_platform=False)
-        with pytest.raises(HTTPException) as exc_info:
-            await R.get_decisions_timeseries(ctx=ctx)
-        assert exc_info.value.status_code == 422
+    @patch("app.services.metrics_query_service.MetricsQueryService")
+    async def test_decisions_timeseries_customer_scoped_d11(self, MockMQ):
+        """WS-N D11: /metrics/decisions-timeseries is now PER-TENANT for a customer (no
+        longer 422) — the service is called with the customer's tenant scope so the
+        series comes from the tenant-dimensioned Decisions stream, not fleet-wide."""
+        MockMQ.return_value.decisions_timeseries = MagicMock(return_value={
+            "range": "24h", "bucket": "1h", "series": [],
+        })
+        ctx = _ctx(tenant_id="t_a", is_platform=False)
+        result = await R.get_decisions_timeseries(range="24h", bucket="1h", ctx=ctx)
+        assert result["range"] == "24h"
+        # called with the customer's tenant scope (positional: range, bucket, tenant_id)
+        args = MockMQ.return_value.decisions_timeseries.call_args.args
+        assert args[2] == "t_a", f"expected tenant scope t_a, got {args}"
 
     @pytest.mark.asyncio
     @patch("app.api.tenancy_routes._audit_platform_read")
@@ -632,23 +639,27 @@ class TestOverviewPlatformFleetDistribution:
 
 
 # ============================================================
-# FIX-B GAP-2 — decisions-timeseries: authz before input validation
+# WS-N D11 — decisions-timeseries is now per-tenant (was FIX-B GAP-2 fail-closed 422)
 # ============================================================
 
-class TestDecisionsTimeseriesAuthzOrder:
-    """Customer operator with invalid range must see 422 (authz fail-closed),
-    NOT 400 (which reveals valid parameter set) — GAP-2."""
+class TestDecisionsTimeseriesD11Scoped:
+    """WS-N D11 superseded FIX-B GAP-2: /metrics/decisions-timeseries is now a per-tenant
+    read (customer gets their own series from the Decisions{tenant_id,verdict} stream),
+    so a customer is an AUTHORIZED caller. A bad range therefore returns the normal 400
+    validation error for BOTH customer and platform — the 422 fail-closed (and its
+    param-leak concern for an *unauthorized* caller) no longer applies, since the caller
+    is now authorized to read this route."""
 
     @pytest.mark.asyncio
-    async def test_customer_invalid_range_gets_422_not_400(self):
-        """Customer with bad range -> 422 (authz), never 400 (info leak)."""
+    @patch("app.services.metrics_query_service.MetricsQueryService")
+    async def test_customer_invalid_range_gets_400(self, MockMQ):
+        """Customer with bad range -> 400 (they're an authorized caller now; the old
+        422 info-leak concern is moot)."""
         from fastapi import HTTPException
-        ctx = _ctx(is_platform=False)
+        ctx = _ctx(tenant_id="t_a", is_platform=False)
         with pytest.raises(HTTPException) as exc_info:
             await R.get_decisions_timeseries(range="999d", bucket="1h", ctx=ctx)
-        # Must be 422 (fail-closed), not 400 (which reveals valid ranges)
-        assert exc_info.value.status_code == 422
-        assert "tenant-scoped telemetry" in exc_info.value.detail
+        assert exc_info.value.status_code == 400
 
     @pytest.mark.asyncio
     @patch("app.api.tenancy_routes._audit_platform_read")

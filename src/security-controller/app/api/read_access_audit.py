@@ -26,6 +26,7 @@ in its own path; a read is not gated on its attribution write.
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import Optional
 
@@ -40,30 +41,38 @@ _SCOPE_PARAMS = (
 )
 
 
-def emit_read_access_event(request, *, operator_sub: str, tenant_id: str,
-                           is_platform: bool) -> None:
-    """Record a read-access event for a bound operator READ. Called from
+async def emit_read_access_event(request, *, operator_sub: str, tenant_id: str,
+                                 is_platform: bool) -> None:
+    """Record a read-access event for a bound operator READ. Called (awaited) from
     ``resolve_operator_tenant`` after the tenant is resolved+bound. GET-only; never
-    raises (best-effort attribution — the read is not gated on it)."""
+    raises (best-effort attribution — the read is not gated on it).
+
+    The DDB write is OFFLOADED via ``asyncio.to_thread`` (mirroring the tenant-store
+    read at deps.py:222) so it NEVER blocks the single event loop — this dependency
+    runs on every operator request, and ``PlatformAuditStore.record`` is a synchronous
+    boto3 ``put_item`` whose default retry/backoff would otherwise stall ALL in-flight
+    requests on a throttled/slow audit table (the 2026-07-02 event-loop-blocking RCA)."""
     try:
         method = getattr(request, "method", "GET") or "GET"
         if method.upper() != "GET":
             return  # reads only — mutations have their own audit trail
         path = _safe_path(request)
         scope = _safe_scope(request)
+        logger.info(
+            "READ_ACCESS operator=%s tenant=%s route=%s scope=%s platform=%s",
+            operator_sub, tenant_id, path, scope, is_platform,
+        )
         from app.services.platform_audit import get_platform_audit_store
 
-        get_platform_audit_store().record(
+        # Offload the blocking put_item to a worker thread — never on the event loop.
+        await asyncio.to_thread(
+            get_platform_audit_store().record,
             operator_sub=operator_sub,
             target_tenant=tenant_id,          # the SPECIFIC resolved tenant (never "*")
             what=f"read:{path}",              # e.g. read:/v1/sessions/{id}/trail
             read_type="operator_read",
             decision="READ",
             consent_state=("platform_break_glass" if is_platform else "own_tenant"),
-        )
-        logger.info(
-            "READ_ACCESS operator=%s tenant=%s route=%s scope=%s platform=%s",
-            operator_sub, tenant_id, path, scope, is_platform,
         )
     except Exception as e:  # noqa: BLE001 — attribution is best-effort, never break the read
         logger.exception("N9 read-access audit failed (non-blocking): %s", e)
