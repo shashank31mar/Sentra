@@ -329,22 +329,24 @@ The retrofit isn't done until, for every gated route, the tests below pass. (Tes
 
 ## 5. Acceptance criteria (one checklist for the whole workstream)
 
-- [ ] **M0:** `app/api/ownership.py` exists with `assert_owns` over AGENT/POLICY/CONNECTION/SESSION/ACTION/CONVERSATION; `_assert_owns_agent` re-exported and `tenancy_routes.py`'s existing gates repointed with no behavior change (the 10-gate regression suite still green).
-- [ ] **M0:** the systemic CI enumerator fails the build on any ungated `post/put/patch/delete` (accepts `require_platform`; catches role-gated-but-ownership-missing); allowlist entries each carry a reason.
-- [ ] **M0:** the audit-trail exploitation review is **run and its result recorded**.
-- [ ] **M1:** the signer-ARN + Cognito-issuer pin lands in `verify_alb_oidc` on both header paths; AS-1 ALB/pool count run + recorded.
-- [ ] **M1 (BUG-1 closed):** routes 1–6 carry `require_role` + anti-IDOR ownership; `X-Operator-Email` is no longer an authority (operator = `ctx.sub`); a cross-tenant policy call → 403/404.
-- [ ] **M2:** connection routes 7–11 gated (viewer cannot write credentials/trigger AssumeRole); quarantine/release 13–14 admin-gated with `operator_id` from `ctx` (contained session cannot self-release).
-- [ ] **M2:** rollback 15–16 tenant-scoped (ACTION/CONVERSATION `assert_owns`); the `tenant_id` emit-stamp predecessor landed in `_build_log_event`; the injection-safe exact-match query + regex reject; idempotency ledger (no double-reverse); break-glass (if shipped) is `_platform`+dual-control.
-- [ ] **M2:** discovery import 17 editor-gated + tenant-prefix-stamps imported ids; verdict 18 authenticated + session-owned; route-19 interim fail-closed guard ships; the fake-200 factory hardened + route-9 message sanitized.
-- [ ] **M3:** `update_sigma_rule` + `_bump_enforcement_version` are `require_platform`-gated; a tenant-admin (not `_platform`) gets 403; WS-F's CI WARNING clears.
-- [ ] **M3 loop-closure:** on landing, `ws-f-prompt-signatures.md` (3 threat rows + line 411) and `lld/35 §3.3` are updated to CLOSED (WS-M owns the doc update, not a WS-F follow-up).
-- [ ] **M5:** every data-plane route denies a missing/invalid JWT independent of `identity_mode`; `/trail` + `/signals` bind the verified tenant (cross-tenant read → zero rows); the operator-dependency contextvar reset lands.
-- [ ] **M5.2 loop-closure:** the deployed WS-D `/trail`+`/signals` code is patched (tenant bind shipped); `ws-d-decision-trail.md` D5.3 + T-TRAIL-21 updated to "bind SHIPPED (WS-M M5.2)".
-- [ ] **`GET /trail` + `/signals` do NOT carry `require_role`** — a test proves cross-tenant returns zero rows via the JWT-tenant-bind, not RBAC.
-- [ ] **Edge authorizer + route-19 producer credential + Tier-2 roles are NOT built** (design-only/deferred) — recorded, not tasked.
-- [ ] **unit tests pass** (covering all cases named in §4).
-- [ ] **integration tests pass** (covering the shared-contract seams: `assert_owns`, the policy-CRUD routes, the sigma-retire chain, the data-plane JWT boundary).
+> **Verification note (2026-07-07):** boxes ticked below are confirmed by the green hermetic suite (1087 pass / 11 skip / 0 fail) and the prod deploy (milestone-102, digest `9a6d38108eac…`, task RUNNING+HEALTHY, boot clean). Live smoke: `POST /v1/policies` with no ALB-OIDC → **401** (M1 gate enforcing in prod — BUG-1 closed live); `GET /v1/health` → 200. The **one partial** is the M1 signer-pin *enforcement* (see its line): the pin CODE shipped and AS-1 discovery ran (single fronting ALB `sentra-private-alb`), but the pins are **not yet populated + `alb_oidc_pin_enforce_at_boot` stays `false`** — a deliberate, confirm-first prod step (populating pins + flipping boot-enforce bricks the control plane if wrong).
+
+- [x] **M0:** `app/api/ownership.py` exists with `assert_owns` over AGENT/POLICY/CONNECTION/SESSION/ACTION/CONVERSATION; `_assert_owns_agent` re-exported and `tenancy_routes.py`'s existing gates repointed with no behavior change (the 10-gate regression suite still green).
+- [x] **M0:** the systemic CI enumerator fails the build on any ungated `post/put/patch/delete` (accepts `require_platform`; catches role-gated-but-ownership-missing); allowlist entries each carry a reason.
+- [x] **M0:** the audit-trail exploitation review is **run and its result recorded**.
+- [~] **M1 (PARTIAL):** the signer-ARN + Cognito-issuer pin **code** lands in `verify_alb_oidc` on both header paths (`tests/test_verify_alb_oidc_pin.py` green); AS-1 ALB discovery **run + recorded** (single fronting app ALB `sentra-private-alb` `…/07711983f370fe05`; `casaglow-alb` unrelated, `sentra-api-nlb` is an NLB). **NOT YET ENFORCED in prod** — pins unpopulated, `alb_oidc_pin_enforce_at_boot: false` (transition window held; flip is a confirm-first destructive step + needs the Cognito issuer/pool id).
+- [x] **M1 (BUG-1 closed):** routes 1–6 carry `require_role` + anti-IDOR ownership; `X-Operator-Email` is no longer an authority (operator = `ctx.sub`); a cross-tenant policy call → 403/404. **Live-verified in prod: `POST /v1/policies` without OIDC → 401.**
+- [x] **M2:** connection routes 7–11 gated (viewer cannot write credentials/trigger AssumeRole); quarantine/release 13–14 admin-gated with `operator_id` from `ctx` (contained session cannot self-release).
+- [x] **M2:** rollback 15–16 tenant-scoped (ACTION/CONVERSATION `assert_owns`); the `tenant_id` emit-stamp predecessor landed in `_build_log_event`; the injection-safe exact-match query + regex reject; idempotency ledger (no double-reverse); break-glass (if shipped) is `_platform`+dual-control. **(Conversation-path execution IDOR + double-reverse — caught by integration-sentinel, fixed 2026-07-07: tenant-scoped enumeration + per-action re-verify + ledger claim; honest 5XX + sanitized message on total failure.)**
+- [x] **M2:** discovery import 17 editor-gated + tenant-prefix-stamps imported ids; verdict 18 authenticated + session-owned; route-19 interim fail-closed guard ships; the fake-200 factory hardened + route-9 message sanitized.
+- [x] **M3:** `update_sigma_rule` + `_bump_enforcement_version` are `require_platform`-gated; a tenant-admin (not `_platform`) gets 403; WS-F's CI WARNING clears.
+- [x] **M3 loop-closure:** on landing, `ws-f-prompt-signatures.md` (3 threat rows + line 411) and `lld/35 §3.3` are updated to CLOSED (WS-M owns the doc update, not a WS-F follow-up).
+- [x] **M5:** every data-plane route denies a missing/invalid JWT independent of `identity_mode`; `/trail` + `/signals` bind the verified tenant (cross-tenant read → zero rows); the operator-dependency contextvar reset lands.
+- [x] **M5.2 loop-closure:** the deployed WS-D `/trail`+`/signals` code is patched (tenant bind shipped); `ws-d-decision-trail.md` D5.3 + T-TRAIL-21 updated to "bind SHIPPED (WS-M M5.2)".
+- [x] **`GET /trail` + `/signals` do NOT carry `require_role`** — a test proves cross-tenant returns zero rows via the JWT-tenant-bind, not RBAC.
+- [x] **Edge authorizer + route-19 producer credential + Tier-2 roles are NOT built** (design-only/deferred) — recorded, not tasked.
+- [x] **unit tests pass** (covering all cases named in §4) — 1087 pass / 11 skip / 0 fail (hermetic).
+- [x] **integration tests pass** (covering the shared-contract seams: `assert_owns`, the policy-CRUD routes, the sigma-retire chain, the data-plane JWT boundary) — `tests/integration/` green.
 
 ---
 
