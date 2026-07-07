@@ -234,6 +234,9 @@ async def update_tenant(
         raise HTTPException(status_code=403, detail="not a member of tenant")
     store = get_tenant_store()
     try:
+        if body.display_name is not None:
+            # The one free-text mutable field; admin+ may rename (no owner gate).
+            store.set_display_name(tenant_id, body.display_name)
         if body.identity_mode is not None:
             # Flipping a tenant to `enforce` is a gated rollout action (WS-B B1) —
             # owner-only, never an admin self-serve.
@@ -254,7 +257,8 @@ async def update_tenant(
     except TenantError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     tenant = store.get(tenant_id)
-    return {"tenant_id": tenant_id, "identity_mode": tenant.identity_mode,
+    return {"tenant_id": tenant_id, "display_name": tenant.display_name,
+            "identity_mode": tenant.identity_mode,
             "status": tenant.status, "platform_read_consent": tenant.platform_read_consent}
 
 

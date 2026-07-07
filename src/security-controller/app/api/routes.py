@@ -755,6 +755,11 @@ async def get_metrics(
 # ============================================================
 
 _VALID_METRIC_RANGES = {"1h", "24h", "7d", "30d"}
+# Bucket tokens the time-series aggregator actually supports (mirror
+# metrics_query_service._BUCKET_SECONDS). An unlisted value used to silently
+# fall back to 1h — a caller asking for `5m` got 1h-bucketed data labelled `5m`.
+# Validate at the edge so an unsupported bucket fails loudly (400), not silently.
+_VALID_METRIC_BUCKETS = {"1h", "1d"}
 
 
 def _trust_status(score: Optional[float]) -> str:
@@ -893,6 +898,11 @@ async def get_decisions_timeseries(
         raise HTTPException(
             status_code=400,
             detail=f"range must be one of {sorted(_VALID_METRIC_RANGES)}",
+        )
+    if bucket not in _VALID_METRIC_BUCKETS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"bucket must be one of {sorted(_VALID_METRIC_BUCKETS)}",
         )
     # WS-N N4.1 (FG-6): CloudWatch is NOT tenant-partitioned.
     if not ctx.is_platform:

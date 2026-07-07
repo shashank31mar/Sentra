@@ -340,6 +340,10 @@ paths:
         in: query
         schema:
           type: string
+      - name: agent_id
+        in: query
+        schema:
+          type: string
       - name: limit
         in: query
         schema:
@@ -454,8 +458,6 @@ paths:
                       $ref: '#/components/schemas/LogEntry'
                   total:
                     type: integer
-                  has_more:
-                    type: boolean
                   next_token:
                     type:
                     - string
@@ -549,7 +551,6 @@ paths:
         schema:
           type: string
           enum:
-          - 5m
           - 1h
           - 1d
           default: 1h
@@ -575,6 +576,13 @@ paths:
         schema:
           type: boolean
           default: true
+      - name: managed_only
+        in: query
+        schema:
+          type: boolean
+          default: false
+        description: Filter to agents with observed /v1/validate traffic (each then carries lifecycle_status=managed
+          and last_active).
       responses:
         '200':
           description: Agents.
@@ -733,6 +741,8 @@ paths:
         schema:
           type: integer
           default: 50
+          minimum: 1
+          maximum: 200
       - name: cursor
         in: query
         schema:
@@ -744,6 +754,8 @@ paths:
             application/json:
               schema:
                 type: object
+        '400':
+          $ref: '#/components/responses/BadRequest'
     post:
       tags:
       - Policies
@@ -817,7 +829,7 @@ paths:
         in: query
         schema:
           type: boolean
-          default: false
+          default: true
       responses:
         '200':
           description: Policy.
@@ -844,7 +856,7 @@ paths:
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/PolicyCreateRequest'
+              $ref: '#/components/schemas/PolicyUpdateRequest'
       responses:
         '200':
           description: Updated.
@@ -866,6 +878,8 @@ paths:
       x-audience: customer-admin
       operationId: deletePolicy
       summary: Delete (deactivate) a policy
+      security:
+      - OperatorSession: []
       description: "Soft delete \u2014 sets `status=disabled` (row + S3 content retained for audit). Requires\
         \ the\n`admin` role and ownership of the policy. System policies (`created_by=system`) cannot\
         \ be\ndeleted (403).\n"
@@ -876,6 +890,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/GenericOk'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
         '403':
           $ref: '#/components/responses/Forbidden'
         '404':
@@ -893,6 +909,8 @@ paths:
       x-audience: customer-admin
       operationId: setPolicyStatus
       summary: Enable or disable a policy (lifecycle flip)
+      security:
+      - OperatorSession: []
       description: 'Flips a policy''s lifecycle status: `active` enables (restores every bound agent);
         `disabled`
 
@@ -934,6 +952,8 @@ paths:
                     format: date-time
         '400':
           $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
         '403':
           $ref: '#/components/responses/Forbidden'
         '404':
@@ -1304,6 +1324,8 @@ paths:
                 $ref: '#/components/schemas/CredentialRegistered'
         '400':
           $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
         '403':
           $ref: '#/components/responses/Forbidden'
     get:
@@ -1324,6 +1346,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/CredentialList'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
         '403':
           $ref: '#/components/responses/Forbidden'
   /v1/agents/{agent_id}/credentials/{kid}/rotate:
@@ -1360,6 +1384,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/CredentialStatus'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
         '403':
           $ref: '#/components/responses/Forbidden'
         '404':
@@ -1424,6 +1450,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/Me'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
         '403':
           $ref: '#/components/responses/Forbidden'
   /v1/tenants:
@@ -1450,9 +1478,11 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/TenantSummary'
+                $ref: '#/components/schemas/TenantCreateResult'
         '400':
           $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
   /v1/tenants/{tenant_id}:
     parameters:
     - $ref: '#/components/parameters/TenantId'
@@ -1473,6 +1503,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/Tenant'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
         '403':
           $ref: '#/components/responses/Forbidden'
         '404':
@@ -1502,9 +1534,11 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/TenantSummary'
+                $ref: '#/components/schemas/UpdateTenantResponse'
         '400':
           $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
         '403':
           $ref: '#/components/responses/Forbidden'
     delete:
@@ -1531,6 +1565,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/TenantDeleteResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
         '403':
           $ref: '#/components/responses/Forbidden'
   /v1/tenants/{tenant_id}/members:
@@ -1554,6 +1590,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/MemberList'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
         '403':
           $ref: '#/components/responses/Forbidden'
   /v1/tenants/{tenant_id}/invites:
@@ -1590,6 +1628,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/InviteCreated'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
         '403':
           $ref: '#/components/responses/Forbidden'
   /v1/invites/redeem:
@@ -1622,6 +1662,8 @@ paths:
                 $ref: '#/components/schemas/MembershipResult'
         '400':
           $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
   /v1/tenants/{tenant_id}/members/{operator_sub}:
     parameters:
     - $ref: '#/components/parameters/TenantId'
@@ -1661,6 +1703,8 @@ paths:
                     type: string
         '400':
           $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
         '403':
           $ref: '#/components/responses/Forbidden'
         '404':
@@ -1673,11 +1717,20 @@ paths:
       operationId: healthCheck
       summary: Liveness check
       security: []
-      description: Probes DynamoDB (critical), plus S3/CloudWatch (non-critical). Overall health gates
-        ONLY on DynamoDB; a non-critical failure still returns 200 with `status=degraded`.
+      description: 'Probes DynamoDB (critical), plus S3/CloudWatch (non-critical). Overall health gates
+        ONLY on
+
+        DynamoDB: a non-critical (S3/CloudWatch) failure still returns **200** with `status=healthy`
+
+        and no `errors`. `status=degraded` and the `errors` array appear ONLY in the **503** body
+
+        (DynamoDB critical failure, returned as `detail`).
+
+        '
       responses:
         '200':
-          description: All critical deps healthy (or only non-critical degraded).
+          description: "DynamoDB (critical) healthy \u2014 S3/CloudWatch failures do not degrade the 200\
+            \ status."
           content:
             application/json:
               schema:
@@ -1687,7 +1740,6 @@ paths:
                     type: string
                     enum:
                     - healthy
-                    - degraded
                     example: healthy
                   version:
                     type: string
@@ -1696,12 +1748,9 @@ paths:
                     additionalProperties: true
                   uptime_seconds:
                     type: number
-                  errors:
-                    type: array
-                    items:
-                      type: string
         '503':
-          description: "DynamoDB (critical) unhealthy \u2014 the full health response is returned as `detail`."
+          description: "DynamoDB (critical) unhealthy \u2014 the full health response (status=degraded\
+            \ + errors[]) is returned as `detail`."
           content:
             application/json:
               schema:
@@ -1775,10 +1824,13 @@ components:
       - suspended
     PolicyStatus:
       type: string
+      description: "Policy lifecycle status used by the list filter (`GET /v1/policies?status=`). The\
+        \ enable/disable flip (`PATCH /v1/policies/{policy_id}/status`) uses a narrower `active|disabled`\
+        \ set \u2014 see that operation. A soft-deleted policy is `disabled`."
       enum:
       - active
-      - disabled
-      - draft
+      - inactive
+      - deprecated
     ThreatType:
       type: string
       description: Set on a DENY when a threat was detected.
@@ -2147,12 +2199,17 @@ components:
           format: date-time
     LogEntry:
       type: object
+      description: "One audit record \u2014 the parsed CloudWatch `@message` JSON emitted per validation\
+        \ (`audit_logger`). Fields below are a representative (not exhaustive) set; the record carries\
+        \ the base + trust fields on every decision, adds `reason`/`threat_type` and detection detail\
+        \ on a DENY, and adds action/content/cross-cloud fields for the phases/operations that produce\
+        \ them."
       properties:
-        id:
-          type: string
-        timestamp:
-          type: string
-          format: date-time
+        request_id:
+          type:
+          - string
+          - 'null'
+          description: The originating validate request id (tracing).
         session_id:
           type:
           - string
@@ -2161,16 +2218,122 @@ components:
           type:
           - string
           - 'null'
+        tool_name:
+          type:
+          - string
+          - 'null'
+          description: The tool the action targeted.
+        tool_params:
+          type: object
+          additionalProperties: true
+          description: The tool arguments inspected for this call.
+        user_input:
+          type:
+          - string
+          - 'null'
+          description: The end-user prompt that was validated.
+        multi_agent_context:
+          type: object
+          additionalProperties: true
+          description: Cross-agent invocation context, when present.
+        operation_type:
+          type:
+          - string
+          - 'null'
+          description: READ or WRITE.
         decision:
           type:
           - string
           - 'null'
-        threat_type:
+          description: ALLOW or DENY.
+        timestamp:
+          type: string
+          format: date-time
+          description: ISO-8601 UTC (trailing Z).
+        latency_ms:
+          type:
+          - number
+          - 'null'
+          description: End-to-end validation latency for this call.
+        reason:
           type:
           - string
           - 'null'
-        message:
-          type: string
+          description: 'Deciding reason (DENY: the blocking rationale; ALLOW: ''All validation checks
+            passed'').'
+        trust_score_before:
+          type:
+          - number
+          - 'null'
+          description: Session trust score before this decision.
+        trust_score_after:
+          type:
+          - number
+          - 'null'
+          description: Session trust score after applying any penalty.
+        trust_delta:
+          type:
+          - number
+          - 'null'
+          description: Trust penalty applied (0 on ALLOW).
+        threat_type:
+          $ref: '#/components/schemas/ThreatType'
+          description: DENY only, when a threat was detected.
+        severity:
+          type:
+          - string
+          - 'null'
+          description: DENY only, when the deciding validator reports a severity.
+        matched_rule:
+          type:
+          - string
+          - 'null'
+          description: DENY only, the sigma/policy rule id that fired (when applicable).
+        violation_type:
+          type:
+          - string
+          - 'null'
+          description: DENY only, the violation classification (when applicable).
+        signals:
+          type: array
+          items:
+            $ref: '#/components/schemas/DecisionSignal'
+          description: Per-validator breadcrumbs that fed this decision.
+        action_id:
+          type:
+          - string
+          - 'null'
+          description: 'WRITE/process_refund records: the reversible-action handle.'
+        reversible:
+          type:
+          - boolean
+          - 'null'
+          description: 'WRITE/process_refund records: whether the action is reversible.'
+        rollback_status:
+          type:
+          - string
+          - 'null'
+          description: 'WRITE/process_refund records: current rollback state.'
+        tenant_id:
+          type:
+          - string
+          - 'null'
+          description: 'WRITE/process_refund records: the owning tenant.'
+        content_text:
+          type:
+          - string
+          - 'null'
+          description: 'content/output/memory phases: the inspected payload.'
+        platform:
+          type:
+          - string
+          - 'null'
+          description: 'Cross-cloud records: originating platform.'
+        cloud_region:
+          type:
+          - string
+          - 'null'
+          description: 'Cross-cloud records: native cloud region.'
     MetricsOverview:
       type: object
       properties:
@@ -2188,6 +2351,23 @@ components:
           type:
           - number
           - 'null'
+        trust_status:
+          type: string
+          enum:
+          - healthy
+          - degraded
+          - critical
+          - unknown
+        agents_below_threshold:
+          type: integer
+        threats_blocked_delta_pct:
+          type:
+          - number
+          - 'null'
+        false_positive_pct:
+          type:
+          - number
+          - 'null'
         avg_latency_ms:
           type: integer
         quarantined:
@@ -2200,6 +2380,8 @@ components:
       - agent_id
       - name
       - allowed_tools
+      - version
+      - policies
       properties:
         agent_id:
           type: string
@@ -2273,6 +2455,62 @@ components:
           action: ALLOW
           severity: low
           enabled: true
+    PolicyUpdateRequest:
+      type: object
+      description: "Same body as PolicyCreateRequest, but `version` is optional \u2014 omitting it auto-increments\
+        \ the patch version server-side."
+      required:
+      - agent_id
+      - name
+      - allowed_tools
+      - policies
+      properties:
+        agent_id:
+          type: string
+        name:
+          type: string
+        schema_version:
+          type: string
+          example: v1
+        version:
+          type: string
+          example: 1.0.0
+        platform:
+          type: string
+          example: bedrock
+        cloud_region:
+          type: string
+          example: us-east-1
+        allowed_tools:
+          type: array
+          minItems: 1
+          items:
+            type: string
+          description: Tool ids this agent may call.
+        max_calls_per_minute:
+          type: integer
+          example: 30
+        cross_cloud_dependencies:
+          type: array
+          description: "Preconditions \u2014 e.g. require a prior verify on another agent within N seconds."
+          items:
+            type: object
+            properties:
+              target_agent:
+                type: string
+              target_tool:
+                type: string
+              required_before:
+                type: array
+                items:
+                  type: string
+              max_age_seconds:
+                type: integer
+        policies:
+          type: array
+          description: Inner rule list (carries action/severity; the engine is tool-name-driven).
+          items:
+            type: object
     Role:
       type: string
       description: Control-plane RBAC role (data-plane access is governed by policy, not roles).
@@ -2429,7 +2667,7 @@ components:
       example:
         display_name: Acme Corp
         plan: trial
-    TenantSummary:
+    TenantCreateResult:
       type: object
       properties:
         tenant_id:
@@ -2440,8 +2678,6 @@ components:
           $ref: '#/components/schemas/PlanType'
         status:
           $ref: '#/components/schemas/TenantStatus'
-        identity_mode:
-          $ref: '#/components/schemas/IdentityMode'
         role:
           $ref: '#/components/schemas/Role'
     Tenant:
@@ -2465,6 +2701,9 @@ components:
       properties:
         display_name:
           type: string
+          maxLength: 128
+          description: Rename the tenant (the one free-text label). Trimmed; a blank value is rejected
+            (400). Admin+ may set it.
         identity_mode:
           $ref: '#/components/schemas/IdentityMode'
         status:
@@ -2473,6 +2712,23 @@ components:
           - active
           - suspended
           description: Use the delete endpoint for deletion.
+        platform_read_consent:
+          type: boolean
+          description: 'Owner-only (or platform operator): consent to AegionAI-staff cross-tenant reads
+            (WS-E E3).'
+    UpdateTenantResponse:
+      type: object
+      properties:
+        tenant_id:
+          type: string
+        display_name:
+          type: string
+        identity_mode:
+          $ref: '#/components/schemas/IdentityMode'
+        status:
+          $ref: '#/components/schemas/TenantStatus'
+        platform_read_consent:
+          type: boolean
     TenantDeleteResponse:
       type: object
       properties:
