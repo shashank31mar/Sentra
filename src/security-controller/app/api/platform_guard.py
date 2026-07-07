@@ -32,8 +32,9 @@ from app.config import settings
 logger = logging.getLogger(__name__)
 
 _METRIC_NAMESPACE = "Sentra/SecurityController"
-# The metric the CDK alarm (monitoring_stack.py) watches; a single datapoint (>=1)
-# means a dual-membership operator authenticated → page ops to fix the grant.
+# The metric the CDK alarm watches — `{prefix}-sc-platform-dual-membership` in
+# monitoring_stack.py (SnsAction → critical_alerts_topic, threshold >=1, 1 datapoint).
+# A single datapoint (>=1) means a dual-membership operator authenticated → page ops.
 PLATFORM_DUAL_MEMBERSHIP_METRIC = "PlatformDualMembershipDetected"
 
 _cloudwatch = None

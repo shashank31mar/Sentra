@@ -446,6 +446,18 @@ async def _resolve_operator_tenant_inner(request: Request) -> OperatorContext:
             raise HTTPException(status_code=403, detail="operator has no tenant membership")
 
     tenancy.set_current_tenant(chosen.tenant_id)
+
+    # WS-N N9 / lld/40 §8 SEC-5 (D12): attribute the operator READ. Emitted HERE so
+    # coverage == every resolve_operator_tenant-bound read by construction (a bound
+    # read cannot be forgotten). GET-only + fire-and-forget inside the helper — never
+    # breaks the read. The break-glass `_platform` cross-tenant read records the
+    # SPECIFIC resolved tenant (chosen.tenant_id), making it non-repudiable.
+    from app.api.read_access_audit import emit_read_access_event
+
+    emit_read_access_event(
+        request, operator_sub=sub, tenant_id=chosen.tenant_id, is_platform=is_platform,
+    )
+
     return OperatorContext(
         sub=sub,
         tenant_id=chosen.tenant_id,

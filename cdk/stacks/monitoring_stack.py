@@ -809,6 +809,35 @@ class MonitoringStack(Stack):
         sc_quota_exceeded_alarm.add_alarm_action(cw_actions.SnsAction(self.alerts_topic))
         self.alarms.append(sc_quota_exceeded_alarm)
 
+        # Alarm 8: WS-N N0.3 — `_platform` mis-provisioning anomaly (P0 - Security).
+        # An operator holding BOTH the `_platform` fleet-metrics grant AND a customer
+        # membership is the mis-provisioning fingerprint (a bad invite/redeem path).
+        # The controller (app/api/platform_guard.py) emits PlatformDualMembershipDetected
+        # (=1) whenever such an operator authenticates; a single datapoint pages ops to
+        # fix the grant. Alarm-only by design (the read is served — the grant is
+        # server-derived/unspoofable — but the anomaly MUST be noticed, not silent).
+        sc_platform_dual_membership_alarm = cloudwatch.Alarm(
+            self,
+            "SecurityControllerPlatformDualMembership",
+            alarm_name=f"{prefix}-sc-platform-dual-membership",
+            alarm_description="WS-N N0.3: an operator holds BOTH _platform AND a customer "
+                              "membership (mis-provisioning anomaly — cross-tenant fleet-metrics "
+                              "grant should be _platform-only). Fix the grant. (P0-Security)",
+            metric=cloudwatch.Metric(
+                namespace="Sentra/SecurityController",
+                metric_name="PlatformDualMembershipDetected",
+                statistic="Sum",
+                period=Duration.minutes(5),
+            ),
+            threshold=1,  # a single detection is an anomaly worth paging on
+            evaluation_periods=1,
+            datapoints_to_alarm=1,
+            comparison_operator=cloudwatch.ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD,
+            treat_missing_data=cloudwatch.TreatMissingData.NOT_BREACHING,
+        )
+        sc_platform_dual_membership_alarm.add_alarm_action(cw_actions.SnsAction(self.critical_alerts_topic))
+        self.alarms.append(sc_platform_dual_membership_alarm)
+
         # ============================================================
         # Agent Management API Metrics and Alarms (Task 10)
         # ============================================================
