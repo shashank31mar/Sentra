@@ -518,3 +518,268 @@ class TestOverviewMetricsPublishGuard:
 
         # Platform DOES publish the fleet gauge
         pub.publish_session_metrics.assert_awaited_once_with(3, 3)
+
+
+# ============================================================
+# FIX-B GAP-1 — overview: platform operator gets fleet distribution
+# ============================================================
+
+class TestOverviewPlatformFleetDistribution:
+    """Platform operator on /metrics/overview must get fleet-wide distribution
+    (active_agents/clouds), not just their bound tenant's agents (GAP-1)."""
+
+    @pytest.mark.asyncio
+    @patch("app.api.tenancy_routes._audit_platform_read")
+    @patch("app.utils.metrics_publisher.MetricsPublisher")
+    @patch("app.utils.session_manager.SessionManager")
+    @patch("app.services.agent_service.AgentService")
+    @patch("app.services.metrics_query_service.MetricsQueryService")
+    async def test_platform_overview_distribution_uses_fleet(
+        self, MockMQ, MockAgent, MockSM, MockPub, _audit
+    ):
+        """Platform ctx -> get_cloud_provider_distribution called with fleet=True."""
+        mq = MockMQ.return_value
+        mq.overview.return_value = {
+            "threats_blocked": 5, "requests_total": 100, "avg_latency_ms": 10, "trust_score": 80,
+        }
+        mq.attack_category_count.return_value = 2
+        agent_svc = MockAgent.return_value
+        agent_svc.get_cloud_provider_distribution = AsyncMock(return_value={
+            "total_nodes": 10, "clouds": 3, "providers": [],
+        })
+        sm = MockSM.return_value
+        sm.count_sessions_by_status = AsyncMock(return_value=3)
+        sm.count_agents_below_trust = AsyncMock(return_value=1)
+        pub = MockPub.return_value
+        pub.publish_session_metrics = AsyncMock()
+
+        ctx = _ctx(tenant_id="_platform", is_platform=True)
+        result = await R.get_metrics_overview(range="24h", ctx=ctx)
+
+        # The distribution must be fleet-wide (fleet=True passed)
+        agent_svc.get_cloud_provider_distribution.assert_awaited_once_with(fleet=True)
+        assert result["active_agents"] == 10
+        assert result["clouds"] == 3
+
+    @pytest.mark.asyncio
+    @patch("app.utils.metrics_publisher.MetricsPublisher")
+    @patch("app.utils.session_manager.SessionManager")
+    @patch("app.services.agent_service.AgentService")
+    @patch("app.services.metrics_query_service.MetricsQueryService")
+    async def test_customer_overview_distribution_not_fleet(
+        self, MockMQ, MockAgent, MockSM, MockPub
+    ):
+        """Customer ctx -> get_cloud_provider_distribution called with fleet=False."""
+        mq = MockMQ.return_value
+        mq.overview.return_value = {
+            "threats_blocked": 0, "requests_total": 0, "avg_latency_ms": 0, "trust_score": None,
+        }
+        mq.attack_category_count.return_value = 0
+        agent_svc = MockAgent.return_value
+        agent_svc.get_cloud_provider_distribution = AsyncMock(return_value={
+            "total_nodes": 2, "clouds": 1, "providers": [],
+        })
+        sm = MockSM.return_value
+        sm.count_sessions_by_status = AsyncMock(return_value=0)
+        sm.count_agents_below_trust = AsyncMock(return_value=0)
+        pub = MockPub.return_value
+        pub.publish_session_metrics = AsyncMock()
+
+        ctx = _ctx(tenant_id="t_a", is_platform=False)
+        result = await R.get_metrics_overview(range="24h", ctx=ctx)
+
+        # Customer must NOT get fleet view
+        agent_svc.get_cloud_provider_distribution.assert_awaited_once_with(fleet=False)
+        assert result["active_agents"] == 2
+
+
+# ============================================================
+# FIX-B GAP-2 — decisions-timeseries: authz before input validation
+# ============================================================
+
+class TestDecisionsTimeseriesAuthzOrder:
+    """Customer operator with invalid range must see 422 (authz fail-closed),
+    NOT 400 (which reveals valid parameter set) — GAP-2."""
+
+    @pytest.mark.asyncio
+    async def test_customer_invalid_range_gets_422_not_400(self):
+        """Customer with bad range -> 422 (authz), never 400 (info leak)."""
+        from fastapi import HTTPException
+        ctx = _ctx(is_platform=False)
+        with pytest.raises(HTTPException) as exc_info:
+            await R.get_decisions_timeseries(range="999d", bucket="1h", ctx=ctx)
+        # Must be 422 (fail-closed), not 400 (which reveals valid ranges)
+        assert exc_info.value.status_code == 422
+        assert "tenant-scoped telemetry" in exc_info.value.detail
+
+    @pytest.mark.asyncio
+    @patch("app.api.tenancy_routes._audit_platform_read")
+    async def test_platform_invalid_range_gets_400(self, _audit):
+        """Platform with bad range -> 400 (legitimate validation error)."""
+        from fastapi import HTTPException
+        ctx = _ctx(is_platform=True)
+        with pytest.raises(HTTPException) as exc_info:
+            await R.get_decisions_timeseries(range="999d", bucket="1h", ctx=ctx)
+        assert exc_info.value.status_code == 400
+
+
+# ============================================================
+# FIX-B GAP-3 — platform-distribution: fleet view for platform operators
+# ============================================================
+
+class TestPlatformDistributionFleetView:
+    """Platform operator on /metrics/platform-distribution must get fleet-wide
+    distribution, not just their bound tenant (GAP-3)."""
+
+    @pytest.mark.asyncio
+    @patch("app.api.tenancy_routes._audit_platform_read")
+    @patch("app.services.agent_service.AgentService")
+    async def test_platform_distribution_uses_fleet(self, MockAgent, mock_audit):
+        """Platform ctx -> get_cloud_provider_distribution(fleet=True) + audited."""
+        agent_svc = MockAgent.return_value
+        agent_svc.get_cloud_provider_distribution = AsyncMock(return_value={
+            "total_nodes": 8, "clouds": 2,
+            "providers": [{"cloud_provider": "aws", "label": "AWS", "count": 5, "pct": 62},
+                          {"cloud_provider": "azure", "label": "Azure", "count": 3, "pct": 38}],
+        })
+
+        ctx = _ctx(tenant_id="_platform", is_platform=True)
+        result = await R.get_platform_distribution(ctx=ctx)
+
+        agent_svc.get_cloud_provider_distribution.assert_awaited_once_with(fleet=True)
+        mock_audit.assert_called_once_with(ctx, "*", "metrics.platform_distribution")
+        assert result["total_nodes"] == 8
+
+    @pytest.mark.asyncio
+    @patch("app.services.agent_service.AgentService")
+    async def test_customer_distribution_not_fleet(self, MockAgent):
+        """Customer ctx -> get_cloud_provider_distribution(fleet=False), no audit."""
+        agent_svc = MockAgent.return_value
+        agent_svc.get_cloud_provider_distribution = AsyncMock(return_value={
+            "total_nodes": 2, "clouds": 1,
+            "providers": [{"cloud_provider": "aws", "label": "AWS", "count": 2, "pct": 100}],
+        })
+
+        ctx = _ctx(tenant_id="t_a", is_platform=False)
+        result = await R.get_platform_distribution(ctx=ctx)
+
+        agent_svc.get_cloud_provider_distribution.assert_awaited_once_with(fleet=False)
+        assert result["total_nodes"] == 2
+
+
+# ============================================================
+# FIX-B GAP-4 — platform operator by-id routes with break-glass header
+# ============================================================
+
+class TestPlatformBreakGlassByIdRoutes:
+    """Platform operator using X-Aegion-Tenant break-glass header to read
+    resources in another tenant's partition must succeed (GAP-4).
+
+    The break-glass mechanism (deps.py:418) synthesizes a viewer Membership for
+    the requested tenant, so ctx.tenant_id = the target tenant. assert_owns then
+    checks the resource against that bound tenant — should pass for resources
+    owned by the target tenant.
+    """
+
+    @pytest.mark.asyncio
+    @patch("app.services.agent_service.AgentService")
+    async def test_platform_breakglass_get_agent_succeeds(self, MockAgent):
+        """Platform operator with break-glass tenant t_b can read t_b's agent."""
+        svc = MockAgent.return_value
+        svc.get_agent = AsyncMock(return_value={"agent_id": "t_b-aws-x-1", "name": "X"})
+
+        # Break-glass: ctx.tenant_id = t_b (the target tenant), is_platform=True
+        ctx = _ctx(tenant_id="t_b", is_platform=True)
+        result = await R.get_agent(agent_id="t_b-aws-x-1", ctx=ctx)
+        assert result["agent_id"] == "t_b-aws-x-1"
+
+    @pytest.mark.asyncio
+    @patch("app.api.ownership.tenancy.v2_enabled", return_value=True)
+    @patch("boto3.resource")
+    @patch("app.services.policy_service.PolicyService")
+    async def test_platform_breakglass_get_policy_succeeds(self, MockPolicy, mock_resource, _v2):
+        """Platform operator with break-glass tenant t_b can read t_b's policy."""
+        mock_table = MagicMock()
+        mock_table.get_item.return_value = {"Item": {"policy_id": "pol-b", "tenant_id": "t_b"}}
+        mock_ddb = MagicMock()
+        mock_ddb.Table.return_value = mock_table
+        mock_resource.return_value = mock_ddb
+
+        svc = MockPolicy.return_value
+        svc.get_policy = AsyncMock(return_value={"policy_id": "pol-b", "name": "Test B"})
+        svc.get_policy_content = AsyncMock(return_value="rules: []")
+
+        ctx = _ctx(tenant_id="t_b", is_platform=True)
+        result = await R.get_policy_by_id(policy_id="pol-b", ctx=ctx)
+        assert result["success"] is True
+
+    @pytest.mark.asyncio
+    @patch("boto3.resource")
+    @patch("app.services.connections_service.ConnectionsService")
+    async def test_platform_breakglass_get_connection_succeeds(self, MockConn, mock_resource):
+        """Platform operator with break-glass tenant t_b can read t_b's connection."""
+        mock_table = MagicMock()
+        mock_table.get_item.return_value = {"Item": {"tenant_id": "t_b", "id": "conn-b"}}
+        mock_ddb = MagicMock()
+        mock_ddb.Table.return_value = mock_table
+        mock_resource.return_value = mock_ddb
+
+        svc = MockConn.return_value
+        svc.get_connection.return_value = {"id": "conn-b", "status": "active"}
+
+        ctx = _ctx(tenant_id="t_b", is_platform=True)
+        result = await R.get_connection(connection_id="conn-b", ctx=ctx)
+        assert result["id"] == "conn-b"
+
+    @pytest.mark.asyncio
+    @patch("app.api.ownership.tenancy.v2_enabled", return_value=True)
+    @patch("app.utils.rollback_coordinator._tenant_of_conversation", return_value="t_b")
+    @patch("app.services.conversation_service.ConversationService")
+    async def test_platform_breakglass_get_conversation_succeeds(self, MockConv, _mock_tenant, _v2):
+        """Platform operator with break-glass tenant t_b can read t_b's conversation."""
+        svc = MockConv.return_value
+        svc.get_timeline = AsyncMock(return_value={
+            "conversation_id": "conv-b-1", "timeline": [], "agents": [],
+        })
+
+        ctx = _ctx(tenant_id="t_b", is_platform=True)
+        result = await R.get_conversation_timeline(conversation_id="conv-b-1", ctx=ctx)
+        assert result["conversation_id"] == "conv-b-1"
+
+
+# ============================================================
+# FIX-B GAP-5 — get_agents list: platform operator bind-only behavior
+# ============================================================
+
+class TestGetAgentsBindOnly:
+    """GET /agents for a platform operator is bind-only (scoped to their bound
+    tenant via query_or_scan, NOT fleet). This is by design (task doc N2.3).
+    The test verifies the platform operator does NOT get fleet=True (no fleet_scan)
+    — it gets the same tenant-scoped view as a customer (GAP-5)."""
+
+    @pytest.mark.asyncio
+    @patch("app.services.agent_service.AgentService")
+    async def test_platform_get_agents_not_fleet(self, MockAgent):
+        """Platform operator on GET /agents gets bind-only (NOT fleet scan)."""
+        svc = MockAgent.return_value
+        svc.list_agents = AsyncMock(return_value={"agents": [], "total": 0})
+
+        ctx = _ctx(tenant_id="t_b", is_platform=True)
+        result = await R.get_agents(enrich=False, managed_only=False, ctx=ctx)
+
+        # list_agents is called WITHOUT fleet=True (bind-only by design)
+        svc.list_agents.assert_awaited_once_with(enrich=False, managed_only=False)
+        assert result["total"] == 0
+
+    @pytest.mark.asyncio
+    @patch("app.services.agent_service.AgentService")
+    async def test_customer_get_agents_scoped(self, MockAgent):
+        """Customer operator on GET /agents gets scoped view (bind-only)."""
+        svc = MockAgent.return_value
+        svc.list_agents = AsyncMock(return_value={"agents": [{"agent_id": "t_a-x"}], "total": 1})
+
+        ctx = _ctx(tenant_id="t_a", is_platform=False)
+        result = await R.get_agents(enrich=True, managed_only=False, ctx=ctx)
+
+        svc.list_agents.assert_awaited_once_with(enrich=True, managed_only=False)
+        assert result["total"] == 1

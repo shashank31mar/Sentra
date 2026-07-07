@@ -802,10 +802,13 @@ async def get_metrics_overview(
     # worker threads and run all five CONCURRENTLY so this handler's wall time is
     # the MAX of the reads, not their SUM. (The count_* / distribution methods
     # already offload their own blocking scans via asyncio.to_thread.)
+    # WS-N FIX-B GAP-1: distribution must be fleet-wide for platform operators
+    # (same dual-mode as session counts). Previously always used query_or_scan
+    # (current_tenant), giving platform operators only their bound tenant's agents.
     cw, attack_categories, distribution, quarantined, suspended, below_threshold = await asyncio.gather(
         asyncio.to_thread(mq.overview, range),
         asyncio.to_thread(mq.attack_category_count),
-        AgentService().get_cloud_provider_distribution(),
+        AgentService().get_cloud_provider_distribution(fleet=ctx.is_platform),
         session_manager.count_sessions_by_status("quarantined", tenant_id=scope),
         session_manager.count_sessions_by_status("suspended", tenant_id=scope),
         session_manager.count_agents_below_trust(70.0, tenant_id=scope),
@@ -873,12 +876,18 @@ async def get_platform_distribution(
 ) -> Dict:
     """WS-21 T21: agent counts grouped by hosting cloud_provider.
 
-    Auth (WS-N N1/N2.3): bind-only — list_agents -> query_or_scan auto-scopes on
-    current_tenant() (already bound by resolve_operator_tenant). NOT dual-mode.
+    Auth (WS-N N1/N2.3 + FIX-B GAP-3): dual-mode — customer sees own-tenant
+    distribution (query_or_scan); platform operator sees fleet-wide distribution
+    (fleet_scan + audited via _operator_read_scope).
     """
     from app.services.agent_service import AgentService
 
-    distribution = await AgentService().get_cloud_provider_distribution()
+    # WS-N FIX-B GAP-3: platform operator needs fleet view, not just bound tenant.
+    if ctx.is_platform:
+        from app.api.tenancy_routes import _audit_platform_read
+        _audit_platform_read(ctx, "*", "metrics.platform_distribution")
+
+    distribution = await AgentService().get_cloud_provider_distribution(fleet=ctx.is_platform)
     return {
         "total_nodes": distribution["total_nodes"],
         "providers": distribution["providers"],
@@ -895,12 +904,9 @@ async def get_decisions_timeseries(
 
     Auth (WS-N N4): CloudWatch reads fail-closed for customer (fleet-shared).
     """
-    if range not in _VALID_METRIC_RANGES:
-        raise HTTPException(
-            status_code=400,
-            detail=f"range must be one of {sorted(_VALID_METRIC_RANGES)}",
-        )
-    # WS-N N4.1 (FG-6): CloudWatch is NOT tenant-partitioned.
+    # WS-N N4.1 (FG-6) + FIX-B GAP-2: authz check BEFORE input validation.
+    # A customer operator must see the fail-closed 422 rather than a 400 that
+    # reveals accepted parameter values (information leakage to unauthorized callers).
     if not ctx.is_platform:
         raise HTTPException(
             status_code=422,
@@ -908,6 +914,12 @@ async def get_decisions_timeseries(
         )
     from app.api.tenancy_routes import _audit_platform_read
     _audit_platform_read(ctx, "*", "metrics.decisions_timeseries")
+
+    if range not in _VALID_METRIC_RANGES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"range must be one of {sorted(_VALID_METRIC_RANGES)}",
+        )
 
     import asyncio
 
