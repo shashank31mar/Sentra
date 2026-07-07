@@ -96,11 +96,21 @@ ml_classifier_enabled: true
 # hosts multiple stacks, so a sibling ALB's token would otherwise verify. Populate
 # both with THIS stack's ALB ARN + Cognito issuer to enforce the pin, then flip
 # alb_oidc_pin_enforce_at_boot -> true so an unpinned deploy fails to boot.
-#   alb_oidc_expected_signers: "arn:aws:elasticloadbalancing:us-east-1:531109575379:loadbalancer/app/sentra-private-alb/xxxx"
-#   alb_oidc_expected_issuer:  "https://cognito-idp.us-east-1.amazonaws.com/us-east-1_xxxxxxxxx"
-# Empty (current transition window) => NO pin; the runtime pin check is inert and
-# verify_alb_oidc accepts any signature-valid ALB token (the AS-1 build-time check
-# to discover the real ARN + issuer is still pending — lld/39 §3.1 M1.0).
+#
+# AS-1 discovery COMPLETE (2026-07-07, verified via `aws elbv2 describe-rules`):
+# the authenticate-cognito ALB (the JWT SIGNER) is `sentra-public-alb`
+# (arn .../app/sentra-public-alb/7687a95a29307d8c) — NOT the private ALB; its
+# authenticate-cognito action targets Cognito pool us-east-1_IIMNeRWtA. AWS docs
+# confirm the JWT header `signer` == the ALB ARN (this exact string). The signer
+# pin is populated below; it fires on EVERY operator request the moment it is set
+# (gated on non-empty pins, independent of the boot flag), closing the sibling-ALB
+# forgery gap on acct 531109575379 immediately.
+alb_oidc_expected_signers: "arn:aws:elasticloadbalancing:us-east-1:531109575379:loadbalancer/app/sentra-public-alb/7687a95a29307d8c"
+# ISSUER pin held for a verified follow-up: the ALB's JWT `iss` for a Cognito pool
+# is the pool issuer URL (expected: https://cognito-idp.us-east-1.amazonaws.com/us-east-1_IIMNeRWtA),
+# but the EXACT `iss` string the ALB emits must be confirmed against a live token
+# before pinning, else a mismatch 401s every operator. Enable after log-verifying.
+#   alb_oidc_expected_issuer: "https://cognito-idp.us-east-1.amazonaws.com/us-east-1_IIMNeRWtA"
 #
 # Boot-time enforcement (WS-M M1.0 FIX-B): compute_stack.py DEFAULTS
 # ALB_OIDC_PIN_ENFORCE_AT_BOOT to true, and assert_alb_oidc_pin_ready_at_boot()
