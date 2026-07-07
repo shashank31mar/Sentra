@@ -50,11 +50,18 @@ class RouteSpec:
     failure_axis: Tuple[str, ...] = ()
     landed_flag: bool = True
     authz_gap_flag: bool = False
+    # WS-M M5.2 / lld/39 §5 — a data-plane READ gated by the verified-agent-JWT bind
+    # (``_dataplane_tenant_bind``), NOT ``require_role``. Under the deployed enforce
+    # ceiling (or the ``require_dataplane_credential`` latch) a tokenless read → 401;
+    # at the hermetic default (identity off, latch off) the read runs on the ambient
+    # tenant → 200. J7.5 asserts the bind; J7.1's positive probe must accept EITHER
+    # honest outcome (200 ambient-read OR 401 refused) for these rows — never a 5xx.
+    dataplane_bind: bool = False
 
 
 def _key(path: str, method: str, owner: str, axes=(), landed: bool = True,
-         gap: bool = False) -> RouteSpec:
-    return RouteSpec(path, method, "key", owner, tuple(axes), landed, gap)
+         gap: bool = False, dp_bind: bool = False) -> RouteSpec:
+    return RouteSpec(path, method, "key", owner, tuple(axes), landed, gap, dp_bind)
 
 
 def _oidc(path: str, method: str, owner: str, axes=(), gap: bool = False) -> RouteSpec:
@@ -88,8 +95,8 @@ ROUTE_MANIFEST: List[RouteSpec] = [
     _key("/v1/logs/conversation/{conversation_id}", "GET", "WS-D", ("401",)),
     _key("/v1/sessions", "GET", "WS-D", ("401",)),
     _key("/v1/sessions/{session_id}/decisions", "GET", "WS-D", ("401",)),
-    _key("/v1/sessions/{session_id}/trail", "GET", "WS-D", ("401",)),
-    _key("/v1/sessions/{session_id}/signals", "GET", "WS-D", ("401",)),
+    _key("/v1/sessions/{session_id}/trail", "GET", "WS-D", ("401",), dp_bind=True),
+    _key("/v1/sessions/{session_id}/signals", "GET", "WS-D", ("401",), dp_bind=True),
     _key("/v1/sessions/{session_id}/signals", "POST", "WS-D", ("401", "422"), gap=True),
     _key("/v1/decisions", "GET", "WS-D", ("401",)),
     _key("/v1/decisions/{decision_id}/verdict", "POST", "WS-D", ("401", "422"), gap=True),
@@ -183,7 +190,7 @@ REQUIRED_SCENARIOS: Dict[str, bool] = {
     "J6": True,
     "J3": False,   # differential conformance — WS-A local-floor + WS-I emitter
     "J5": False,   # metering no-miss/dedup — WS-H
-    "J7": False,   # server+console authz 403 gate — WS-M
+    "J7": True,    # server authz gate — WS-M LANDED 2026-07-07 (§5A); console UI = J8
     "J8": False,   # console UI sweep + OIDC routes — WS-G/WS-M (Increment 2)
 }
 

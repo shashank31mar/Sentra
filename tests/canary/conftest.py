@@ -286,33 +286,125 @@ def _teardown_tenant_member(tenant_id: str) -> None:
 
 
 # --------------------------------------------------------------------------- operator
+def _seed_member_row(operator_sub: str, tenant_id: str, role: str) -> bool:
+    """Seed ONE ``sentra-tenant-members`` row (``operator_sub`` PK / ``tenant_id`` SK)
+    with the given role. Customer roles (owner|admin|editor|viewer) go through the
+    service ``MemberStore.add`` (VALID_ROLES-checked, create-only). The reserved
+    ``_platform`` role is NOT in VALID_ROLES, so it is written directly via put_item
+    into the ``_platform`` tenant partition. Returns True on success; best-effort —
+    a moto/table absence returns False rather than reddening a scenario at collection."""
+    try:
+        from app.services.tenant_service import get_member_store
+
+        store = get_member_store()
+        if role == "_platform":
+            store._table().put_item(
+                Item={
+                    "operator_sub": operator_sub,
+                    "tenant_id": tenant_id,
+                    "role": "_platform",
+                    "is_primary": False,
+                }
+            )
+        else:
+            store.add(
+                operator_sub=operator_sub, tenant_id=tenant_id, role=role,
+                is_primary=True,
+            )
+        return True
+    except Exception:  # noqa: BLE001 — best-effort seed; caller asserts on the result.
+        return False
+
+
+class _OperatorMinter:
+    """J7 (WS-M authz) — a factory that mints a VERIFIED operator identity at a chosen
+    role in a chosen tenant, INPROCESS ONLY. Installs ``deps._alb_claims_override``
+    (the ALB-OIDC test seam, [deps.py:301](../../src/security-controller/app/api/deps.py#L301))
+    so ``verify_alb_oidc`` returns the synthetic claims, AND seeds the matching
+    ``sentra-tenant-members`` row so ``resolve_operator_tenant`` finds a real primary
+    membership (WITHOUT a seeded row a minted operator 403s at membership resolution —
+    the bug the old fixture's docstring claimed to fix but did not). Every mint is
+    torn down (override reset + best-effort member-row delete) at fixture teardown.
+
+    ``_platform`` mints a reserved cross-tenant membership (for the ``require_platform``
+    sigma route). This is a TEST seam confined to the fixture — never a scenario body
+    (transport-purity, Jc.2), and it does NOT exist on the deployed service, so J7's
+    authorized/role/IDOR legs are ``inprocess``-only (``live`` = J8, the Cognito
+    hosted-UI login fixture). Mirrors the documented J3.3/J4.2 live-weaker exceptions."""
+
+    def __init__(self, deps_mod) -> None:
+        self._deps = deps_mod
+        self._prev = deps_mod._alb_claims_override
+        self._minted = []  # (operator_sub, tenant_id) for teardown
+
+    def mint(self, tenant_id: str, role: str = "editor") -> Dict[str, str]:
+        from app.utils import tenancy as _tncy
+
+        sub = f"canary-op-{uuid.uuid4().hex[:12]}"
+        email = f"{sub}@canary.invalid"
+        if role == "_platform":
+            # A _platform operator needs TWO membership rows:
+            # 1) the reserved _platform partition (grants is_platform=True)
+            # 2) a customer-primary row in the working tenant (so
+            #    resolve_operator_tenant can bind to a real tenant; a pure-
+            #    platform with no customer membership can't resolve → 403).
+            plat = _tncy.PLATFORM_TENANT
+            s1 = _seed_member_row(sub, plat, "_platform")
+            s2 = _seed_member_row(sub, tenant_id, "admin")
+            self._minted.append((sub, plat))
+            self._minted.append((sub, tenant_id))
+            if not (s1 and s2):
+                raise RuntimeError(
+                    f"canary_operator could not seed _platform dual-membership for "
+                    f"{sub} in {plat}+{tenant_id} — RED/INFRA, never a skip."
+                )
+        else:
+            seeded = _seed_member_row(sub, tenant_id, role)
+            self._minted.append((sub, tenant_id))
+            if not seeded:
+                raise RuntimeError(
+                    f"canary_operator could not seed a {role} membership for {sub} in "
+                    f"{tenant_id} — RED/INFRA, never a skip."
+                )
+        self._deps._alb_claims_override = lambda _req, _s=sub, _e=email: {"sub": _s, "email": _e}
+        return {"sub": sub, "email": email, "tenant_id": tenant_id, "role": role}
+
+    def teardown(self) -> None:
+        self._deps._alb_claims_override = self._prev
+        for sub, tid in self._minted:
+            try:
+                from app.services.tenant_service import get_member_store
+
+                get_member_store()._table().delete_item(
+                    Key={"operator_sub": sub, "tenant_id": tid}
+                )
+            except Exception:  # noqa: BLE001 — idempotent best-effort; never reds a run.
+                pass
+
+
 @pytest.fixture
 def canary_operator(request):
-    """J1.3 — synthetic verified operator claims for OIDC-gated handlers, INPROCESS
-    ONLY (Increment 1). Installs ``deps._alb_claims_override`` (the test seam,
-    deps.py:279/289) returning ``{"sub","email"}`` + seeds a matching
-    ``sentra-tenant-members`` row; resets the override to ``None`` on teardown.
+    """J1.3 / J7 — a role-parameterized VERIFIED-operator minter, INPROCESS ONLY.
 
-    The ``live`` (real-Cognito) form is Increment-2 deferred (task §3.2) — invoking
-    this fixture in ``live`` mode raises ``NotImplementedError``.
-    """
+    Yields an ``_OperatorMinter``; call ``.mint(tenant_id, role)`` to install one
+    operator identity (``viewer|editor|admin|owner|_platform``). **Last-minted wins** —
+    calling ``mint()`` again overrides the previous identity (both membership rows are
+    cleaned up, but only the last override is active). Each J7 test mints once.
+    Backwards-compatible for the J1 smoke use: ``op = canary_operator.mint(tid)``
+    returns ``{sub,email,...}``.
+
+    The ``live`` (real-Cognito) form is Increment-2 deferred (task §3.2) — using this
+    fixture in ``live`` mode raises ``NotImplementedError`` (the deployed service has no
+    ``_alb_claims_override`` seam; J8 supplies the hosted-UI login)."""
     target = os.environ.get(CANARY_TARGET_ENV, "inprocess")
     if target == "live":
         raise NotImplementedError(
-            "canary_operator live form is Increment-2 (console/auth)"
+            "canary_operator live form is Increment-2 (console/auth, J8)"
         )
-
     from app.api import deps
 
-    sub = f"canary-op-{uuid.uuid4().hex[:12]}"
-    email = f"{sub}@canary.invalid"
-
-    def _claims(_request) -> Dict[str, str]:
-        return {"sub": sub, "email": email}
-
-    prev = deps._alb_claims_override
-    deps._alb_claims_override = _claims
+    minter = _OperatorMinter(deps)
     try:
-        yield {"sub": sub, "email": email}
+        yield minter
     finally:
-        deps._alb_claims_override = prev
+        minter.teardown()

@@ -104,12 +104,13 @@ def test_manifest_covers_every_wired_v1_route():
 
 
 def test_required_scenarios_present():
-    """Jc.1 — a landed WS's scenario letter must be marked required (J2/J4/J6 now)."""
+    """Jc.1 — a landed WS's scenario letter must be marked required."""
     assert REQUIRED_SCENARIOS["J2"] is True
     assert REQUIRED_SCENARIOS["J4"] is True
     assert REQUIRED_SCENARIOS["J6"] is True
+    assert REQUIRED_SCENARIOS["J7"] is True  # WS-M LANDED 2026-07-07 (§5A)
     # Deferred WS stay non-required until their landed_flag flips.
-    for letter in ("J3", "J5", "J7", "J8"):
+    for letter in ("J3", "J5", "J8"):
         assert REQUIRED_SCENARIOS[letter] is False
 
 

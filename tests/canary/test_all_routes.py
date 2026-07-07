@@ -31,7 +31,10 @@ _NEGATIVE_IDS = [f"{s.method} {s.path} [{axis}]" for s, axis in _NEGATIVE]
 
 @pytest.mark.parametrize("spec", _KEY_ROUTES, ids=_POSITIVE_IDS)
 def test_route_positive(canary_client, spec):
-    scenarios.scenario_j2_4_positive(canary_client, spec.path, spec.method)
+    scenarios.scenario_j2_4_positive(
+        canary_client, spec.path, spec.method,
+        authz_gap=spec.authz_gap_flag, dataplane_bind=spec.dataplane_bind,
+    )
 
 
 @pytest.mark.parametrize("spec,axis", _NEGATIVE, ids=_NEGATIVE_IDS)

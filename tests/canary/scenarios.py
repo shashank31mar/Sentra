@@ -120,16 +120,45 @@ def scenario_j2_3_unknown_phase(canary_client) -> None:
     register_cell("/v1/validate", "POST", "422")
 
 
-def scenario_j2_4_positive(canary_client, path: str, method: str) -> None:
-    """J2.4 — a well-formed authenticated request against a landed key route →
-    a documented success code (200/201/204) or a documented not-found (404, for
-    id-addressed reads against an empty hermetic store). Never a 5xx, never a
-    200-wrapping-an-error."""
+def scenario_j2_4_positive(canary_client, path: str, method: str,
+                           authz_gap: bool = False, dataplane_bind: bool = False) -> None:
+    """J2.4 / J7.1 — a well-formed request (X-Api-Key only, no operator/agent
+    identity) against a landed key route lands an HONEST status: never a 5xx, never a
+    200-wrapping-an-error. The DOCUMENTED-correct status depends on the route's gate:
+
+      * an ``authz_gap`` mutation (WS-M ``require_role``/``require_platform``) → a
+        FAIL-SECURE refusal of the un-authenticated caller: **401/403** is the correct
+        positive outcome, NOT a 2xx. A 2xx here means the WS-M lock leaked → RED
+        (SEC-12 ``AUTHZ_GAP_CLOSED_MANIFEST_STALE``, asserted by the coverage guard).
+      * a ``dataplane_bind`` read (verified-agent-JWT bind, WS-M M5.2) → EITHER a
+        401 (tokenless under the enforce ceiling / ``require_dataplane_credential``
+        latch, the deployed reality) OR a 200 (ambient read at the hermetic identity
+        default). Both are honest; only a 5xx / fake-200-error is a finding.
+      * an ungated public/key route → the documented success set (200/201/202/204)
+        or a documented 4xx (404 id-read on empty store, 400/422 body shape).
+
+    This is per-route BY DESIGN: widening the allowed set to include 401/403 for ALL
+    routes would let a genuinely-broken auth on an ungated read (e.g. GET /v1/agents
+    starts 401ing) pass silently. A gated route REQUIRES 401/403; an ungated route
+    FORBIDS them."""
     resp = _probe(canary_client, path, method, _positive_body(path, method))
+    # Universal invariant, every route: an honest status, never a 5xx.
     assert resp.status_code < 500, f"{method} {path} → {resp.status_code}: {resp.text[:200]}"
-    assert resp.status_code in (200, 201, 202, 204, 404, 400, 422), (
-        f"{method} {path} unexpected positive status {resp.status_code}"
-    )
+    if authz_gap:
+        assert resp.status_code in (401, 403), (
+            f"{method} {path} is a WS-M-gated mutation — an un-authenticated caller "
+            f"MUST be refused 401/403, got {resp.status_code} (authz lock leaked?)"
+        )
+    elif dataplane_bind:
+        assert resp.status_code in (200, 401, 422), (
+            f"{method} {path} dataplane-bind read → want 200 (ambient), 401 "
+            f"(enforce/latch), or 422 (missing required param before bind); "
+            f"got {resp.status_code}"
+        )
+    else:
+        assert resp.status_code in (200, 201, 202, 204, 404, 400, 422), (
+            f"{method} {path} unexpected positive status {resp.status_code}"
+        )
     register_cell(path, method, "positive")
 
 

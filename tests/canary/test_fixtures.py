@@ -48,14 +48,18 @@ def test_canary_tenant_distinct_ids(canary_tenant):
     assert canary_tenant.startswith("canary-")
 
 
-def test_canary_operator_inprocess(canary_client, canary_operator):
-    """J1.3 — with the operator override active, an OIDC-gated handler resolves the
-    synthetic sub in inprocess mode."""
+def test_canary_operator_inprocess(canary_client, canary_operator, canary_tenant):
+    """J1.3 / J7 — minting an operator installs the ALB-OIDC override so an OIDC-gated
+    handler resolves the synthetic sub in inprocess mode. (Contract changed 2026-07-07:
+    ``canary_operator`` is now a role-parameterized minter, not a bare dict — it seeds
+    the ``sentra-tenant-members`` row too, which the old dict form did not.)"""
     from app.api import deps
 
+    # Before any mint, the override is untouched.
+    op = canary_operator.mint(canary_tenant, role="editor")
     assert deps._alb_claims_override is not None
     claims = deps._alb_claims_override(None)
-    assert claims["sub"] == canary_operator["sub"]
+    assert claims["sub"] == op["sub"]
 
 
 def test_canary_operator_override_reset():
