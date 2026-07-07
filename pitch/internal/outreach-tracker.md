@@ -12,12 +12,14 @@ State legend: `Not contacted` → `Sent (LinkedIn)` → `Responded` → `Moved t
 |---|------|---------|-------|--------------|---------|-----|-------|----------------|-----------|
 | 1 | Vivek Garg | Swiggy | VP Engineering | Cold | LinkedIn → email | Design partner (payments/marketplace) | **No response** | vivek.garg@swiggy.in | Stalled after multiple follow-ups; deprioritize |
 | 2 | Animesh Srivastava | JPMorgan Chase | VP, GenAI & Applied ML | Cold | LinkedIn | Design partner (financial-action agents) | **Sent (LinkedIn)** | — | Await reply |
-| 3 | Parminder Bhatia | GE HealthCare | Chief AI Officer | **Warm — college senior** | LinkedIn | Advisory + design partner (healthcare) | **Sent (LinkedIn)** | — | Await reply |
+| 3 | Parminder Bhatia | GE HealthCare | Chief AI Officer | **Warm — college senior** | LinkedIn | Advisory + design partner (healthcare) | **Responded — will connect this week** | — | He said he'll connect this week; hold a slot, come with the healthcare/HIPAA-audit angle |
 | 4 | Ashish S. | Siemens | Leads Data & AI / Physical AI | Cold | LinkedIn | Advisory + design partner (securing agents, general) | **Sent (LinkedIn)** | — | Await reply |
 | 5 | Vasi Philomin | Siemens | EVP Data & AI (ex-AWS VP) | Cold | LinkedIn | Advisory + design partner (securing agents) | **Sent (LinkedIn)** | — | Await reply |
 | 6 | Mayank Shrivastava | SAP | Senior ML leader | Cold | LinkedIn | Advisory + design partner (enterprise workflows) | **Sent (LinkedIn)** | — | Await reply |
 | 7 | Rutvik Doshi | Athera Venture Partners | VC / Partner | Inbound/warm | — | **Investor (fundraising)** — not a design partner | **Intro call scheduled** | — | First/intro call Mon 2026-06-29 |
-| 8 | Randy Franklin | Consertus | Tech exec (COO Forum; CISSP/CCSP) | Warm | — | **Investor (fundraising)** — may invest or intro to other investors | **Bought in — scheduling call** | — | Availability sent; await his reply to lock time |
+| 8 | Randy Franklin | Consertus | Tech exec (COO Forum; CISSP/CCSP) | Warm | — | **Investor + connector** — likes it, willing to support | **Bought in — delivering intros** | — | ✅ Likes it, willing to support; introduced Jeff (#11) + Paul (#12). Ask for more named intros + whether he invests himself |
+| 11 | Jeff Spalding | Global Private Cloud Network (GPCN) | Senior exec (Charlotte NC; COO Forum) | **Warm — via Randy** | Intro → met | **Investor / connector** | **Call done — liked it, on vacation ~1wk** | — | On vacation ~1 week (from 2026-07-07); follow up when he's back. Liked it — keep warm |
+| 12 | Paul Rix | Global Private Cloud Network (GPCN) | CEO Zanaris / GPCN exec (private-cloud, data-sovereignty) | **Warm — via Randy** | Intro → meeting | **Investor / connector** | **Call scheduled — TODAY** | — | Meeting today 2026-07-07. Lead with in-VPC / data-residency angle (his GPCN thesis). Soft ask: invest and/or intros |
 | 9 | Zafar | — | Potential investor | Warm | In-person | **Investor (fundraising)** — needs significant convincing | **Engaged — strategy doc sent; intro'ing marketing team** | — | Meet in India 3rd week July; prep convincing pitch + engage marketing team |
 | 10 | Jyoti Bansal | Harness (+ Unusual Ventures) | Co-Founder & CEO / VC Co-Founder | Cold (target warm path) | LinkedIn | **Both tracks** — design partner (Harness) → investor (Unusual) | **Not contacted** | — | Find warm intro; lead with Harness design-partner ask |
 
@@ -83,10 +85,11 @@ State legend: `Not contacted` → `Sent (LinkedIn)` → `Responded` → `Moved t
 - LinkedIn: https://www.linkedin.com/in/randykellyfranklin/
 - Senior tech exec, Charlotte NC. Security-credentialed (**CISSP, CCSP**), COO Forum member, ex-7x24 Exchange VP. Operations/scaling background — and the security creds mean he can actually evaluate the tech.
 - **Investor track.** May invest directly or connect us to other investors.
-- **2026-06-25** — Reviewed the docs, **liked it, and is willing to connect us with investors.** Asked for Shashank's availability; **availability already sent — awaiting his reply to schedule.**
-- **Ask:** investor conversation + warm intros to other investors.
-- **Next:** await his response on timing. When the call happens: ask for specific names/firms + preferred intro mechanic, offer a forwardable blurb + one-pager, and ask whether he wants to participate himself.
-- _TODO: confirm his own investing capacity/role and contact details._
+- **2026-06-25** — Reviewed the docs, **liked it, and is willing to connect us with investors.**
+- **2026-07-07** — **Call done: likes it, willing to support.** ✅ Delivered intros to **Jeff Spalding (#11)** and **Paul Rix (#12)** — both Charlotte / Global Private Cloud Network / COO-Forum network.
+- **Ask:** keep him as an active connector — ask for more named intros + whether he wants to invest himself.
+- **Next:** thank-you note; ask (a) does he invest personally, (b) 2–3 more names from his network, (c) offer a forwardable blurb he can send.
+- _Note: Randy + Jeff + Paul are one operator-exec cluster (Charlotte NC / GPCN / COO Forum) — treat as angels/connectors, not institutional VCs. Warm, credibility-carrying, soft "invest and/or intro" ask._
 
 ### 9. Zafar — Potential investor
 - **Investor track.** Coming to India **3rd week of July 2026** (revised from 1st week); asked to meet in person.
@@ -96,6 +99,21 @@ State legend: `Not contacted` → `Sent (LinkedIn)` → `Responded` → `Moved t
 - **Marketing-team intro:** clarify intent — is it diligence (his team vetting us), or an offer of GTM help? Engage them professionally either way; treat as a buying signal but confirm what they need.
 - **Next:** (1) lock exact date/place for the 3rd-week-July meeting; (2) respond to the marketing-team intro and find out their goal; (3) prep an objection-handling pitch — come ready with whatever's been blocking his conviction (traction, team, defensibility, market timing).
 - _TODO: capture Zafar's full name, firm, contact, and the specific concerns blocking his investment._
+
+### 11. Jeff Spalding — Global Private Cloud Network (GPCN) — **via Randy**
+- LinkedIn: https://www.linkedin.com/in/jeffspalding/
+- Charlotte NC senior exec; COO Forum member (same network as Randy). Long-tenure leadership (a colleague cites "17 years on his team"). No public angel/VC footprint — treat as operator-exec / potential angel / connector.
+- **2026-07-07** — **Met; liked it.** Currently **on vacation ~1 week** — will reconnect when back.
+- **Ask:** investor conversation + intros; gauge whether he invests personally.
+- **Next:** diarize a follow-up for ~2026-07-14; short "great to meet, enjoy the break, let's pick up when you're back" note now so the thread stays warm.
+
+### 12. Paul Rix — Global Private Cloud Network (GPCN) / ex-CEO Zanaris — **via Randy**
+- LinkedIn: https://www.linkedin.com/in/paul-rix-0b27b414a/
+- Startup-building exec; tied to **GPCN — private cloud + data-sovereignty** themes (incl. Canadian data-residency). US/Ontario. Engages with startup-investing content but no confirmed personal angel/VC role — treat as operator-exec / potential angel / connector.
+- **2026-07-07** — **Meeting TODAY.**
+- **Angle that lands with him:** his GPCN world is private-cloud / data-sovereignty → map straight onto our **in-VPC / air-gapped / data-residency** editions and the "your data never leaves your boundary" story. That's the part of the thesis he'll instinctively get; lead there, not with the flywheel.
+- **Ask:** soft — invest and/or intros; if he's technical enough, feel out a design-partner or advisory angle on the private-cloud side.
+- **Next:** _[capture after today's call]_ — his interest level, whether he invests personally, names he'd intro, any GPCN-customer DP angle.
 
 ### 10. Jyoti Bansal — Harness (CEO) + Unusual Ventures (Co-Founder) — **two-doors-one-key**
 - LinkedIn: https://www.linkedin.com/in/jyotibansal/

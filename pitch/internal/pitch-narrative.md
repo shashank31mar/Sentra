@@ -29,7 +29,9 @@
 **Goal**: the moment their mental model breaks. (This is the "floor vs. surface" point.)
 
 ### Beat 4 — Us: the anchor + the category *(~15s)*
-> "That's the gap we fill. Before any tool actually runs, we ask: **should this action, with these parameters, by this agent, in this session, be permitted?** If not, we block it — and we can roll it back and quarantine the agent so it can't keep going. Detectors **flag**. We **enforce**."
+> "That's the gap we fill. Before any tool actually runs, we ask: **should this action, with these parameters, by this agent, in this session, be permitted?** If not, we block it before it executes — and quarantine the agent so it can't keep going. Detectors **flag**. We **enforce**."
+
+*(Honesty note: block-before-execute + quarantine ship today. **Bounded rollback is roadmap** — only mention it as "and we're building bounded rollback for reversible actions," never present-tense. See [investor-qa-objection-handling.md](investor-qa-objection-handling.md) Q on rollback.)*
 
 Then make it big:
 > "Think of it as **Kubernetes for AI agents** — the runtime control plane that governs what every agent is actually allowed to **do**."
@@ -45,7 +47,7 @@ Then make it big:
   > "Integration is one decorator per tool. The check runs before the function body and fails secure — if we're unreachable, the action is blocked, not silently allowed."
 
 - **Non-technical / business** — lean on the analogy first, skip the parameters nuance:
-  > "Right now there's no seatbelt for AI agents. We're the seatbelt and the brakes — we stop the unsafe action before it happens, and we can undo it."
+  > "Right now there's no seatbelt for AI agents. We're the seatbelt and the brakes — we stop the unsafe action before it happens." *(The "undo it" line oversells — rollback is roadmap. Say "stop it before it happens," which is what actually ships.)*
 
 ---
 

@@ -172,6 +172,11 @@ Score each dimension **0–5 on VERIFIED evidence only** (unverifiable claim = 0
 **How to read this:** every person was adversarially re-verified against primary sources. **CONFIRMED** = real public person, load-bearing creds independently verified. **PARTIAL** = real person but ≥1 claim couldn't be independently confirmed or was misstated (noted). Most are founders/execs/famous researchers → treat as **learn-from / warm-intro / advisor** targets, not recruits. Your actual co-founder comes from §3 search strings run against §2 pools.
 
 ### India-based (primary geography)
+
+> **❌ CROSSED OFF as co-founder candidates (2026-07-07).** Every named person below is **already a founder / CEO / CTO / employed exec** — none is recruitable as a full-time co-founder. Keep them ONLY as **advisors, references, and warm-intro nodes into their networks.** Do not spend a co-founder ask here.
+>
+> **DECISION (2026-07-07): drop India as a co-founder geography — weight US.** Rationale: the economic buyer (US/enterprise bank CISOs) is US-concentrated, US-buyer credibility is exactly the gap the co-founder must close, and the ~12h time-zone offset taxes daily pairing at pre-seed. Source the co-founder from the **US pools in §2** via the §3 US search strings. India names here remain **advisors / warm-intro nodes only.** (India ICs are not being cut as *hires/advisors* — only as the co-founder search geography. Revisit only if a US search stalls AND an India candidate carries portable, US-CISO-credible public proof + existing US work authorization.)
+
 | Name | Role | Specialty | Verdict | Use as | Key caveat |
 |---|---|---|---|---|---|
 | **Anant Shrivastava** | Founder, Cyfinoid Research | Supply-chain + multi-cloud (AWS/Azure/GCP) + CI/CD security; Black Hat/DEF CON/Nullcon trainer & CFP reviewer | **CONFIRMED** | Advisor / archetype / network node | Black Hat-specific billing self-reported (DEF CON 2026 training independently confirmed) |
@@ -218,6 +223,28 @@ Score each dimension **0–5 on VERIFIED evidence only** (unverifiable claim = 0
 ---
 
 ## 6. Outreach + equity + legal
+
+### Disclosure ladder + when to NDA (protecting the idea without strangling the search)
+
+> **Governing principle:** the cost of *over-guarding* (never finding a co-founder → can't sell to regulated buyers → company stalls) is **existential**; the cost of a leaked idea (someone gets a head start on a category where you hold a ~12-month build lead + a patent priority date) is **survivable and unlikely.** More founders die from secrecy than from a stolen pitch. **Talk. Stage what you reveal.**
+
+**What actually protects you (strongest → weakest):**
+1. **Patent-pending priority date** — the filing already protects the *invention*; a later copier can't jump your priority date. *(Confirm with counsel whether it's provisional or non-provisional + the exact date; if provisional, the 12-month conversion deadline is a hard diary item.)*
+2. **Execution, not the idea** — ~26K LOC of working system + deterministic Cedar/Sigma floor + the data flywheel. Nobody clones 12 months of build from a conversation. The patent is *explicitly not the moat* (per STRATEGY / investor-Q&A); execution is.
+3. **Staged disclosure** (you control depth):
+   - **First call:** problem + category only ("we govern agent *actions* across clouds"). Already public in the one-pager/deck/LinkedIn → zero incremental risk.
+   - **Getting serious:** architecture at a high level. Still not enough to clone.
+   - **Before a paid trial / deep technical dive:** *now* paper it (NDA + IP-assignment — see below).
+   - **Genuinely proprietary internals** (exact detection corpus, sequence-integrity mechanism, flywheel specifics): only after a real working relationship exists.
+4. **NDA at the right moment** — [pitch/legal/AegionAI-NDA.pdf](pitch/legal/AegionAI-NDA.pdf).
+
+**When to NDA (the nuance that matters):**
+- **Investors / angels / connectors (Randy, Paul, Jeff, VCs): NEVER ask for an NDA before a pitch.** It's a red flag and most refuse — they see hundreds of adjacent ideas. Rely on staged disclosure instead.
+- **Co-founder candidate entering a technical trial: YES — always.** Mutual NDA **+ an IP-assignment / work-for-hire clause in the consulting/trial agreement**, before any deep architecture dive or code access. This is the real protection point — not the first call. (Cross-border caveat if the person is in India but the co is US: FEMA / IP-assignment quirks — see the Legal subsections below; get coordinated counsel.)
+
+**Who NOT to pitch deeply:** never walk a *fellow founder/CEO in an adjacent space* through your architecture — they have the means, motive, and freedom to fold it into their roadmap. This is exactly why the co-founder search sources **employed ICs**, not other founders (an employed detection engineer has far less freedom to run off and clone you), and why the §5 named founders are advisors/intro-nodes only.
+
+**Not legal advice** — a 30-min startup-attorney consult before your first trial (NDA + IP-assignment + provisional-conversion deadline) is cheap insurance.
 
 ### Outreach (drafts — never auto-send; personalize line 1 with a *specific* proof point)
 Six templates live in the workflow output: cold email to a **detection engineer**, cold email to a **fintech appsec lead**, a **warm-intro request** (with a forwardable blurb), **follow-up #1** (one new proof point, softer), **follow-up #2** (graceful close), and **post-first-call → propose a paid trial before equity**. Core pattern in every one: proof over hype, name the specific gap they'd own (detection science + flywheel + buyer credibility), sign **"Founder, AegionAI"**, soft 25-min ask, easy out. (Full text in the appendix file if you want them verbatim — say the word and I'll drop them into a `outreach-drafts.md`.)
