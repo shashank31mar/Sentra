@@ -104,7 +104,7 @@ def _operator_read_scope(ctx: OperatorContext, what: str) -> Optional[str]:
 - **Unit** (`tests/test_read_route_authz.py`, one block per route): `test_<route>_missing_oidc_401` (no ALB header → 401), `test_<route>_binds_ctx_tenant` (spy `current_tenant()` inside the service call == `ctx.tenant_id`), `test_<route>_customer_sees_only_own_tenant` (seed tenant-A + tenant-B rows; ctx=A; assert only A rows returned — the anti-cross-tenant proof).
 - **Integ** (`tests/integration/test_read_route_isolation.py`): `test_decisions_cross_tenant_isolation` — real store (moto), tenant-A operator scanning `/decisions` sees zero tenant-B decisions. (This seam — operator-read × tenant-composite store — is the shared contract WS-N owns; ≥1 integ test required.)
 
-### Milestone N2 — dual-mode fleet routes (3) — bind + service `tenant_id` param
+### Milestone N2 — dual-mode fleet routes (2) — bind + service `tenant_id` param
 
 **N2.1 — `SessionManager.query_sessions`** ([session_manager.py:555](../../src/security-controller/app/utils/session_manager.py#L555)): add `tenant_id: Optional[str] = None`. When `tenant_id` is not None → `tenancy.query_or_scan()` scoped to it; when None → keep `fleet_scan()` (platform). Route `get_sessions`(:640): add `Depends`, call with `tenant_id=_operator_read_scope(ctx, "sessions.list")`.
 **N2.2 — `SessionManager.count_sessions_by_status`** ([:692](../../src/security-controller/app/utils/session_manager.py#L692)): same `tenant_id: Optional` param + same fleet_scan/query_or_scan branch. Called by `/metrics/overview`.
@@ -152,6 +152,10 @@ def _operator_read_scope(ctx: OperatorContext, what: str) -> Optional[str]:
 - **Unit** (`tests/canary/test_route_manifest.py` or the manifest's own test): `test_read_routes_are_oidc_class` (the 21 rows are `auth_class='oidc'`, not `key`), `test_no_read_route_forbids_401_under_oidc` (the positive probe for these accepts the OIDC-secured posture).
 - **Integ:** N/A hermetic (the live canary runs in prod) — **stated opt-out**; go-live-runbook step: after deploy, confirm the next canary run is GREEN (not RED on the reclassified routes).
 
+**N8.2 — the published OpenAPI contract MUST be updated in lockstep (drift surface, found 2026-07-07).** [docs/integration/aegion-guard-api.openapi.yaml](../../docs/integration/aegion-guard-api.openapi.yaml) has a global `security: [ApiKeyAuth]` (:62-63); the *mutating* routes already override to `security: [{OperatorSession: []}]` (e.g. `/policies` POST :477), but **all 21 read routes inherit the global `ApiKeyAuth`** and document as API-key-only. Once WS-N gates them, the spec is WRONG (a customer read is now operator-OIDC + tenant-scoped, not key-auth). For each of the 21, add `security: [{OperatorSession: []}]` (the canonical scheme name the spec already uses for operator routes) + document the tenant-scope + the 401/403/404 responses + the platform fleet-view semantics. Same class of drift as N8.1 (canary) — the API contract and the canary must both reflect the new auth posture. **Coordinate with whoever owns the integration spec.**
+- **Unit** (`tests/integration/test_openapi_contract.py` or a doc-lint): `test_read_routes_declare_operator_session` (every one of the 21 read paths carries `OperatorSession` security, not the inherited `ApiKeyAuth`) — a machine check so the spec can't silently re-drift.
+- **Integ:** N/A (doc/contract lint — stated opt-out).
+
 ---
 
 ## 4. Error model
@@ -178,7 +182,7 @@ def _operator_read_scope(ctx: OperatorContext, what: str) -> Optional[str]:
 - [ ] **N5:** discovery reads gated + scoped to the tenant's own source (or noted global).
 - [ ] **N6:** sigma-rule reads gated for auth, NOT tenant-filtered (fleet-global, FG-3).
 - [ ] **N7:** the systemic in-app gate (`test_authz_coverage_gate.py`) fails the build on any new ungated GET route.
-- [ ] **N8 (CRITICAL, lockstep):** the 21 rows in WS-J's `route_manifest.py` are reclassified `key→oidc` in the SAME change; the live canary stays GREEN after deploy (does NOT false-RED on the now-OIDC-gated reads).
+- [ ] **N8 (CRITICAL, lockstep):** the 21 rows in WS-J's `route_manifest.py` are reclassified `key→oidc` in the SAME change (canary stays GREEN post-deploy); AND the published `docs/integration/aegion-guard-api.openapi.yaml` gives each of the 21 read routes `security: [{OperatorSession: []}]` (no longer the inherited `ApiKeyAuth`) + tenant-scope + 401/403/404 responses.
 - [ ] **No customer can read another customer's data on ANY of the 21 routes** — proven by the cross-tenant isolation integ tests (the founder mandate, objectively verified).
 - [ ] **The console is not broken** — verified: every route the console calls returns 200 for an authenticated operator (ALB header present).
 - [ ] **unit tests pass** (covering all cases named in §3).
