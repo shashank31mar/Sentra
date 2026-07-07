@@ -812,14 +812,20 @@ async def get_metrics_overview(
     # WS-N D11: pass the tenant scope into overview() — customer (scope=tenant_id) reads
     # the per-tenant Decisions{tenant_id,verdict}+ValidateLatency{tenant_id} streams;
     # platform (scope=None) reads the fleet-wide streams. Replaces the old null-fallback.
-    cw, attack_categories, distribution, quarantined, suspended, below_threshold = await asyncio.gather(
-        asyncio.to_thread(mq.overview, range, scope),
-        asyncio.to_thread(mq.attack_category_count),
-        AgentService().get_cloud_provider_distribution(fleet=ctx.is_platform),
-        session_manager.count_sessions_by_status("quarantined", tenant_id=scope),
-        session_manager.count_sessions_by_status("suspended", tenant_id=scope),
-        session_manager.count_agents_below_trust(70.0, tenant_id=scope),
-    )
+    try:
+        cw, attack_categories, distribution, quarantined, suspended, below_threshold = await asyncio.gather(
+            asyncio.to_thread(mq.overview, range, scope),
+            asyncio.to_thread(mq.attack_category_count),
+            AgentService().get_cloud_provider_distribution(fleet=ctx.is_platform),
+            session_manager.count_sessions_by_status("quarantined", tenant_id=scope),
+            session_manager.count_sessions_by_status("suspended", tenant_id=scope),
+            session_manager.count_agents_below_trust(70.0, tenant_id=scope),
+        )
+    except ValueError as exc:
+        # _search_tenant fail-secure guard (or any downstream bad-input) → honest 4xx,
+        # never a 500 (consistency with get_decisions_timeseries). Cannot fire with
+        # today's server-minted tenant ids; guards a future non-slug id format.
+        raise HTTPException(status_code=400, detail=str(exc))
 
     # WS-21 T01: keep the CloudWatch session gauges (QuarantinedSessions /
     # SuspendedSessions) fresh. The controller has no scheduler, so we emit the
