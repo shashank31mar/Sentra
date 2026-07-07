@@ -1,6 +1,6 @@
 {
   "agentName": "sentra-mvp-customer-service-agent",
-  "agentResourceRoleArn": "${Token[TOKEN.2953]}",
+  "agentResourceRoleArn": "${Token[TOKEN.2973]}",
   "foundationModel": "anthropic.claude-sonnet-4-5-20250929-v1:0",
   "instruction": "You are a helpful customer service agent with access to customer and order databases.\n\nYou can:\n- Query customer information by state\n- Look up order details by order ID\n- Process refunds (subject to security policies)\n\nAlways be polite and provide accurate information based on the available data.\nWhen processing refunds, be aware that there are security limits in place.",
   "description": "Customer service agent with Sentra security validation",
@@ -10,7 +10,7 @@
       "actionGroupName": "customer_tools",
       "description": "Tools for customer service operations",
       "actionGroupExecutor": {
-        "lambda": "${Token[TOKEN.2946]}"
+        "lambda": "${Token[TOKEN.2966]}"
       },
       "functionSchema": {
         "functions": [
