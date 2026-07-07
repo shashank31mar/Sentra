@@ -305,6 +305,10 @@ import os
 _TENANT_SINKS = frozenset({
     "query_or_scan", "fleet_scan", "signal_pk_value", "item_key",
     "decision_date_gsi_value", "agent_index_kce_value",
+    # R4 review: read-path key-condition composers (used in a Query KeyConditionExpression,
+    # e.g. session_manager.py:793) — a read reaching only these (not query_or_scan) is
+    # still tenant-partition-scoped and must be caught.
+    "agent_index_key_condition", "status_index_query",
 })
 
 # The service/util modules the read handlers reach through (handler -> these -> sink).
@@ -404,24 +408,50 @@ def test_sink_reaching_read_not_on_allowlist():
 
 def test_sink_set_covers_every_tenant_key_composer():
     """META-GUARD (lld/40 line 228-229): the sink set can't silently go stale. Every
-    tenant-partition key-composing helper defined in tenancy.py MUST be in _TENANT_SINKS,
-    so a NEW `*_pk_value`/`*_gsi_value`/key-composer added later is force-added to the
-    gate (else this fails and the reachability gate would miss it)."""
+    tenant-partition key-composing helper defined in tenancy.py MUST be in _TENANT_SINKS
+    (a READ sink) OR on the reasoned WRITE-ONLY exemption below — so a NEW
+    current_tenant()-composing key/condition helper added later is force-classified (else
+    this fails and the reachability gate could miss a read that uses it).
+
+    CONTENT-based (not just name-suffix): any tenancy.py function whose body references
+    ``current_tenant()`` AND composes a DB key/condition/value is a candidate. The R4
+    review found name-suffix matching alone missed `agent_index_key_condition` — a real
+    read-path composer — so we key on behaviour, not the name."""
+    # Write-path composers a READ handler never reaches (they STAMP an item before a
+    # put_item, or are unused). Each is exempt from the read-sink set WITH a reason —
+    # if one ever becomes a read entrypoint it must move into _TENANT_SINKS.
+    _WRITE_ONLY_COMPOSERS = {
+        "stamp_base_item": "write: stamps tenant onto an item before put_item",
+        "stamp_agent_gsi": "write: stamps the agent-index GSI onto an item before put_item",
+        "stamp_signal_item": "write: stamps a signal row before put_item",
+        "signal_item_key": "write/point helper: builds a signal PK+SK dict (no live read caller)",
+        "policy_s3_object_key": "write: composes the S3 object key for a policy PUT",
+    }
     tenancy_path = os.path.join(_APP_ROOT, "utils/tenancy.py")
-    with open(tenancy_path) as f:
-        tree = ast.parse(f.read())
-    # Heuristic name-match for the tenant-key-composer family (the concrete functions
-    # that compose a current_tenant()-scoped key / do a scoped read).
+    src = open(tenancy_path).read()
+    tree = ast.parse(src)
+    src_lines = src.splitlines()
+
+    def _refs_current_tenant(node) -> bool:
+        body = "\n".join(src_lines[node.lineno - 1:node.end_lineno])
+        return "current_tenant" in body
+
+    # A composer = a function that reads current_tenant() and whose NAME signals it
+    # builds a key/condition/value/scan (the DB-key family), OR the explicit query sinks.
+    _COMPOSER_HINTS = ("key", "value", "condition", "scan", "query", "index")
     key_composers = {
         n.name for n in ast.walk(tree)
-        if isinstance(n, ast.FunctionDef)
-        and (n.name.endswith("_pk_value") or n.name.endswith("_gsi_value")
-             or n.name.endswith("_kce_value") or n.name in {"item_key", "query_or_scan", "fleet_scan"})
+        if isinstance(n, (ast.FunctionDef,))
+        and _refs_current_tenant(n)
+        and (any(h in n.name.lower() for h in _COMPOSER_HINTS)
+             or n.name in {"item_key", "query_or_scan", "fleet_scan"})
     }
-    missing = key_composers - _TENANT_SINKS
-    assert not missing, (
-        f"tenancy.py defines tenant-key composer(s) not in the N7 sink set: {missing}. "
-        "Add them to _TENANT_SINKS or the sink-reachability gate will miss reads using them.")
+    # Every composer must be EITHER a declared read sink OR a reasoned write-only exempt.
+    unclassified = key_composers - _TENANT_SINKS - set(_WRITE_ONLY_COMPOSERS)
+    assert not unclassified, (
+        f"tenancy.py defines current_tenant()-composing helper(s) that are neither in the "
+        f"N7 read-sink set nor the write-only exemption: {unclassified}. Add each to "
+        "_TENANT_SINKS (if a read reaches it) or _WRITE_ONLY_COMPOSERS with a reason.")
 
 
 def test_deep_gate_is_non_vacuous_flags_unbound_sink_reacher():
