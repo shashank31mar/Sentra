@@ -91,24 +91,25 @@ ROUTE_MANIFEST: List[RouteSpec] = [
     # NOTE: id-addressed COLLECTION queries (logs-by-conversation, session decisions/
     # signals, agent tools) return 200-empty for a non-existent id — they are
     # filters, not resource fetches — so they carry NO 404 axis (verified 2026-07-05).
-    _key("/v1/logs", "GET", "WS-D", ("401",)),
-    _key("/v1/logs/conversation/{conversation_id}", "GET", "WS-D", ("401",)),
-    _key("/v1/sessions", "GET", "WS-D", ("401",)),
-    _key("/v1/sessions/{session_id}/decisions", "GET", "WS-D", ("401",)),
+    # WS-N N8: reclassified key -> oidc (these now require resolve_operator_tenant).
+    _oidc("/v1/logs", "GET", "WS-N", ("401",)),
+    _oidc("/v1/logs/conversation/{conversation_id}", "GET", "WS-N", ("401",)),
+    _oidc("/v1/sessions", "GET", "WS-N", ("401",)),
+    _oidc("/v1/sessions/{session_id}/decisions", "GET", "WS-N", ("401",)),
     _key("/v1/sessions/{session_id}/trail", "GET", "WS-D", ("401",), dp_bind=True),
     _key("/v1/sessions/{session_id}/signals", "GET", "WS-D", ("401",), dp_bind=True),
     _key("/v1/sessions/{session_id}/signals", "POST", "WS-D", ("401", "422"), gap=True),
-    _key("/v1/decisions", "GET", "WS-D", ("401",)),
+    _oidc("/v1/decisions", "GET", "WS-N", ("401",)),
     _key("/v1/decisions/{decision_id}/verdict", "POST", "WS-D", ("401", "422"), gap=True),
 
     # --- metrics -------------------------------------------------------------
+    # WS-N N8: reclassified key -> oidc (these now require resolve_operator_tenant).
     # metrics/overview + decisions-timeseries read CloudWatch GetMetricData, which
-    # moto does not faithfully emulate → their positive+401 probes are requires_live
-    # (Increment-1 hermetic gap, documented). platform-distribution reads DynamoDB.
-    _key("/v1/metrics", "GET", "WS-J", ("401",)),
-    RouteSpec("/v1/metrics/overview", "GET", "key", "WS-J", ("401",), False, False),
-    _key("/v1/metrics/platform-distribution", "GET", "WS-J", ("401",)),
-    RouteSpec("/v1/metrics/decisions-timeseries", "GET", "key", "WS-J", ("401",), False, False),
+    # moto does not faithfully emulate → their positive+401 probes are requires_live.
+    _oidc("/v1/metrics", "GET", "WS-N", ("401",)),
+    _oidc("/v1/metrics/overview", "GET", "WS-N", ("401",)),
+    _oidc("/v1/metrics/platform-distribution", "GET", "WS-N", ("401",)),
+    _oidc("/v1/metrics/decisions-timeseries", "GET", "WS-N", ("401",)),
 
     # --- rollback / quarantine (WS-M-scope mutations) ------------------------
     _key("/v1/rollback", "POST", "WS-M", ("401", "422"), gap=True),
@@ -117,36 +118,41 @@ ROUTE_MANIFEST: List[RouteSpec] = [
     _key("/v1/quarantine/{session_id}", "DELETE", "WS-M", ("401", "404"), gap=True),
 
     # --- agents --------------------------------------------------------------
-    _key("/v1/agents", "GET", "WS-M", ("401",)),
-    _key("/v1/agents/{agent_id}", "GET", "WS-M", _NA404),
+    # WS-N N8: reclassified key -> oidc (these now require resolve_operator_tenant).
+    _oidc("/v1/agents", "GET", "WS-N", ("401",)),
+    _oidc("/v1/agents/{agent_id}", "GET", "WS-N", ("401", "403")),
     # agent tools is a collection query → 200-empty for a missing agent (no 404).
-    _key("/v1/agents/{agent_id}/tools", "GET", "WS-M", ("401",)),
+    _oidc("/v1/agents/{agent_id}/tools", "GET", "WS-N", ("401",)),
     _key("/v1/agents/{agent_id}/policies", "POST", "WS-M", ("401", "422"), gap=True),
     _key("/v1/agents/{agent_id}/policies/{policy_id}", "DELETE", "WS-M", ("401", "404"), gap=True),
 
     # --- policies (CRUD — the BUG-1 IDOR surface WS-M locks) -----------------
-    _key("/v1/policies", "GET", "WS-M", ("401",)),
-    _key("/v1/policies/{policy_id}", "GET", "WS-M", _NA404),
+    # WS-N N8: reclassified key -> oidc for the GET reads.
+    _oidc("/v1/policies", "GET", "WS-N", ("401",)),
+    _oidc("/v1/policies/{policy_id}", "GET", "WS-N", ("401", "404")),
     _key("/v1/policies", "POST", "WS-M", ("401", "422", "409"), gap=True),
     _key("/v1/policies/{policy_id}", "PUT", "WS-M", ("401", "404", "422"), gap=True),
     _key("/v1/policies/{policy_id}", "DELETE", "WS-M", ("401", "404"), gap=True),
     _key("/v1/policies/{policy_id}/status", "PATCH", "WS-M", ("401", "404", "422"), gap=True),
 
     # --- sigma-rules (WS-F/WS-M platform-gate on PATCH retire) ---------------
-    _key("/v1/sigma-rules", "GET", "WS-F", ("401",)),
+    # WS-N N8: GET reads reclassified key -> oidc.
+    _oidc("/v1/sigma-rules", "GET", "WS-N", ("401",)),
     _key("/v1/sigma-rules/{rule_id}", "PATCH", "WS-F", ("401", "404", "422"), gap=True),
-    _key("/v1/sigma-rules/{rule_id}/content", "GET", "WS-F", _NA404),
+    _oidc("/v1/sigma-rules/{rule_id}/content", "GET", "WS-N", ("401", "404")),
 
     # --- discovery -----------------------------------------------------------
-    _key("/v1/discovery/agents", "GET", "WS-M", ("401",)),
-    _key("/v1/discovery/summary", "GET", "WS-M", ("401",)),
-    _key("/v1/discovery/platforms", "GET", "WS-M", ("401",)),
+    # WS-N N8: reclassified key -> oidc.
+    _oidc("/v1/discovery/agents", "GET", "WS-N", ("401",)),
+    _oidc("/v1/discovery/summary", "GET", "WS-N", ("401",)),
+    _oidc("/v1/discovery/platforms", "GET", "WS-N", ("401",)),
     _key("/v1/discovery/import", "POST", "WS-M", ("401", "422"), gap=True),
 
     # --- connections (CRUD) --------------------------------------------------
-    _key("/v1/connections", "GET", "WS-M", ("401",)),
+    # WS-N N8: GET reads reclassified key -> oidc.
+    _oidc("/v1/connections", "GET", "WS-N", ("401",)),
     _key("/v1/connections", "POST", "WS-M", ("401", "422"), gap=True),
-    _key("/v1/connections/{connection_id}", "GET", "WS-M", _NA404),
+    _oidc("/v1/connections/{connection_id}", "GET", "WS-N", ("401", "404")),
     _key("/v1/connections/{connection_id}", "PUT", "WS-M", ("401", "404", "422"), gap=True),
     _key("/v1/connections/{connection_id}", "DELETE", "WS-M", ("401", "404"), gap=True),
     _key("/v1/connections/{connection_id}/test", "POST", "WS-M", ("401", "404"), gap=True),

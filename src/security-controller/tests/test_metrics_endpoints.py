@@ -2,6 +2,10 @@
 
 Services are lazily imported inside the route functions, so we patch them at
 their source modules.
+
+NOTE (WS-N): these routes now require operator OIDC auth. The fixture overrides
+resolve_operator_tenant with a platform operator (the overview/timeseries routes
+are fleet-scoped for platform; customer gets 422 on CloudWatch reads).
 """
 from unittest.mock import AsyncMock, Mock, patch
 
@@ -9,11 +13,17 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app.main import app
+from app.api.deps import OperatorContext, resolve_operator_tenant
 
 
 @pytest.fixture
 def client():
-    return TestClient(app)
+    # Platform operator so the overview/timeseries tests can pass (they use fleet_scan).
+    app.dependency_overrides[resolve_operator_tenant] = lambda: OperatorContext(
+        sub="op-test", tenant_id="_platform", role="admin", email="op@x.co",
+        is_platform=True)
+    yield TestClient(app)
+    app.dependency_overrides.pop(resolve_operator_tenant, None)
 
 
 @pytest.fixture
@@ -66,6 +76,13 @@ def mock_metrics_publisher():
         pub.publish_session_metrics = AsyncMock()
         mock.return_value = pub
         yield pub
+
+
+@pytest.fixture(autouse=True)
+def mock_platform_audit():
+    """WS-N: the platform operator triggers _audit_platform_read; stub it."""
+    with patch('app.api.tenancy_routes._audit_platform_read'):
+        yield
 
 
 class TestMetricsOverview:

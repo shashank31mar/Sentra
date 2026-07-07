@@ -17,7 +17,7 @@ from typing import Dict, NoReturn, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 
-from app.api.deps import OperatorContext, require_platform, require_role
+from app.api.deps import OperatorContext, require_platform, require_role, resolve_operator_tenant
 from app.api.ownership import ResourceKind, assert_owns
 from app.api.models import (
     ValidationRequest,
@@ -80,6 +80,27 @@ def _maybe_attach_canary_capture(
         response.headers[_CANARY_CAPTURE_HEADER] = value
     except Exception:  # noqa: BLE001 — the capture is a debug echo; never break validate
         logger.debug("x-canary-capture attach skipped", exc_info=True)
+
+
+# ============================================================
+# WS-N N0.1 — operator read-scope helper (lld/40 §6.2 D10)
+# ============================================================
+
+def _operator_read_scope(ctx: OperatorContext, what: str) -> Optional[str]:
+    """Resolve the read tenant for an operator read (WS-N N0.1 / lld/40 §6.2).
+
+    * customer operator  -> ctx.tenant_id (STRICT own-tenant; already bound by
+      resolve_operator_tenant @ deps.py:435, returned here for explicit service calls)
+    * platform operator  -> None (fleet view) + audited via _audit_platform_read(ctx,'*',what)
+
+    A customer NEVER gets None (never a fleet view). Fail-secure: if is_platform is
+    somehow absent/False, the tenant_id path is taken (deny-over-allow).
+    """
+    if ctx.is_platform:
+        from app.api.tenancy_routes import _audit_platform_read
+        _audit_platform_read(ctx, "*", what)
+        return None
+    return ctx.tenant_id
 
 
 @router.get("/health")
@@ -399,7 +420,8 @@ async def get_logs(
     session_id: Optional[str] = None,
     agent_id: Optional[str] = None,
     decision: Optional[str] = None,
-    threat_type: Optional[str] = None
+    threat_type: Optional[str] = None,
+    ctx: OperatorContext = Depends(resolve_operator_tenant),
 ) -> Dict:
     """
     Query audit logs from CloudWatch Logs.
@@ -416,8 +438,18 @@ async def get_logs(
     Returns:
         LogsResponse with logs array, total, has_more, next_token
     """
+    # WS-N N4.1 (FG-6): CloudWatch reads are NOT tenant-partitioned today. Customer
+    # operator -> FAIL CLOSED (never fleet rows); platform -> fleet (audited).
+    if not ctx.is_platform:
+        raise HTTPException(
+            status_code=422,
+            detail="tenant-scoped telemetry not yet available (CloudWatch logs are fleet-shared)",
+        )
+    from app.api.tenancy_routes import _audit_platform_read
+    _audit_platform_read(ctx, "*", "logs.list")
+
     from app.services.logs_service import LogsService
-    
+
     logs_service = LogsService()
     return await logs_service.query_logs(
         since=since,
@@ -452,10 +484,13 @@ async def get_session_decisions(
     request_id: Optional[str] = None,
     agent_id: Optional[str] = None,
     limit: int = 100,
+    ctx: OperatorContext = Depends(resolve_operator_tenant),
 ) -> Dict:
     """LLD 17 §8.2 — signals grouped by request_id, combiner applied per group.
 
     Dashboard hot path. p95 target ≤100ms (single DDB partition Query).
+    Auth (WS-N N1/N1-dc): resolve_operator_tenant binds the tenant; DDB composite
+    PK auto-scopes via current_tenant().
     """
     return _decisions_service().get_session_decisions(
         session_id=session_id, request_id=request_id, agent_id=agent_id, limit=limit
@@ -580,11 +615,14 @@ async def scan_decisions(
     session_id: Optional[str] = None,
     limit: int = 50,
     cursor: Optional[str] = None,
+    ctx: OperatorContext = Depends(resolve_operator_tenant),
 ) -> Dict:
     """LLD 17 §8.4 — paginated time-range scan via GSI 2.
 
     For cross-session views. The cursor is an opaque base64 token —
     consumers must round-trip it unchanged.
+    Auth (WS-N N1): resolve_operator_tenant binds the tenant; DDB composite
+    PK auto-scopes via current_tenant().
     """
     import asyncio
 
@@ -642,6 +680,7 @@ async def get_sessions(
     agent_id: Optional[str] = None,
     limit: int = 50,
     cursor: Optional[str] = None,
+    ctx: OperatorContext = Depends(resolve_operator_tenant),
 ) -> Dict:
     """
     Query active sessions from DynamoDB — cursor-paginated.
@@ -654,15 +693,19 @@ async def get_sessions(
 
     Returns:
         SessionsResponse with sessions array, total count, and next_token
+
+    Auth (WS-N N2): dual-mode — customer sees own tenant, platform sees fleet (audited).
     """
     from app.utils.session_manager import SessionManager
 
+    scope = _operator_read_scope(ctx, "sessions.list")
     session_manager = SessionManager()
     return await session_manager.query_sessions(
         status=status,
         agent_id=agent_id,
         limit=limit,
         cursor=cursor,
+        tenant_id=scope,
     )
 
 
@@ -673,20 +716,32 @@ async def get_sessions(
 @router.get("/metrics")
 async def get_metrics(
     since: Optional[str] = None,
-    until: Optional[str] = None
+    until: Optional[str] = None,
+    ctx: OperatorContext = Depends(resolve_operator_tenant),
 ) -> Dict:
     """
     Query summary metrics from CloudWatch Logs.
-    
+
     Query Parameters:
         since: Start time (ISO 8601 timestamp, default: 1 hour ago)
         until: End time (ISO 8601 timestamp, default: now)
-    
+
     Returns:
         MetricsResponse with aggregated metrics
+
+    Auth (WS-N N4): CloudWatch reads fail-closed for customer (fleet-shared, no tenant field).
     """
+    # WS-N N4.1 (FG-6): CloudWatch metrics are NOT tenant-partitioned today.
+    if not ctx.is_platform:
+        raise HTTPException(
+            status_code=422,
+            detail="tenant-scoped telemetry not yet available (CloudWatch metrics are fleet-shared)",
+        )
+    from app.api.tenancy_routes import _audit_platform_read
+    _audit_platform_read(ctx, "*", "metrics.summary")
+
     from app.services.metrics_service import MetricsService
-    
+
     metrics_service = MetricsService()
     return await metrics_service.query_metrics(
         since=since,
@@ -714,7 +769,10 @@ def _trust_status(score: Optional[float]) -> str:
 
 
 @router.get("/metrics/overview")
-async def get_metrics_overview(range: str = "24h") -> Dict:
+async def get_metrics_overview(
+    range: str = "24h",
+    ctx: OperatorContext = Depends(resolve_operator_tenant),
+) -> Dict:
     """WS-21 T20: single call backing the dashboard KPI cards.
 
     CloudWatch (GetMetricData) for counts/latency/deny/trust + DDB for
@@ -734,6 +792,9 @@ async def get_metrics_overview(range: str = "24h") -> Dict:
     mq = MetricsQueryService()
     session_manager = SessionManager()
 
+    # WS-N N2: dual-mode scope — customer gets own-tenant counts, platform gets fleet.
+    scope = _operator_read_scope(ctx, "metrics.overview")
+
     # RCA 2026-07-02: these five reads are independent and each does blocking
     # AWS I/O (CloudWatch GetMetricData/ListMetrics + fleet DDB scans). On the
     # single event loop they were serialized (4 concurrent dashboard reads each
@@ -745,8 +806,8 @@ async def get_metrics_overview(range: str = "24h") -> Dict:
         asyncio.to_thread(mq.overview, range),
         asyncio.to_thread(mq.attack_category_count),
         AgentService().get_cloud_provider_distribution(),
-        session_manager.count_sessions_by_status("quarantined"),
-        session_manager.count_sessions_by_status("suspended"),
+        session_manager.count_sessions_by_status("quarantined", tenant_id=scope),
+        session_manager.count_sessions_by_status("suspended", tenant_id=scope),
         session_manager.count_agents_below_trust(70.0),
     )
 
@@ -780,8 +841,14 @@ async def get_metrics_overview(range: str = "24h") -> Dict:
 
 
 @router.get("/metrics/platform-distribution")
-async def get_platform_distribution() -> Dict:
-    """WS-21 T21: agent counts grouped by hosting cloud_provider."""
+async def get_platform_distribution(
+    ctx: OperatorContext = Depends(resolve_operator_tenant),
+) -> Dict:
+    """WS-21 T21: agent counts grouped by hosting cloud_provider.
+
+    Auth (WS-N N1/N2.3): bind-only — list_agents -> query_or_scan auto-scopes on
+    current_tenant() (already bound by resolve_operator_tenant). NOT dual-mode.
+    """
     from app.services.agent_service import AgentService
 
     distribution = await AgentService().get_cloud_provider_distribution()
@@ -792,20 +859,34 @@ async def get_platform_distribution() -> Dict:
 
 
 @router.get("/metrics/decisions-timeseries")
-async def get_decisions_timeseries(range: str = "24h", bucket: str = "1h") -> Dict:
-    """WS-21 T22: allowed-vs-blocked dense time-series (Chart.js area chart)."""
+async def get_decisions_timeseries(
+    range: str = "24h",
+    bucket: str = "1h",
+    ctx: OperatorContext = Depends(resolve_operator_tenant),
+) -> Dict:
+    """WS-21 T22: allowed-vs-blocked dense time-series (Chart.js area chart).
+
+    Auth (WS-N N4): CloudWatch reads fail-closed for customer (fleet-shared).
+    """
     if range not in _VALID_METRIC_RANGES:
         raise HTTPException(
             status_code=400,
             detail=f"range must be one of {sorted(_VALID_METRIC_RANGES)}",
         )
+    # WS-N N4.1 (FG-6): CloudWatch is NOT tenant-partitioned.
+    if not ctx.is_platform:
+        raise HTTPException(
+            status_code=422,
+            detail="tenant-scoped telemetry not yet available (CloudWatch metrics are fleet-shared)",
+        )
+    from app.api.tenancy_routes import _audit_platform_read
+    _audit_platform_read(ctx, "*", "metrics.decisions_timeseries")
+
     import asyncio
 
     from app.services.metrics_query_service import MetricsQueryService
 
     try:
-        # Synchronous CloudWatch GetMetricData → worker thread (don't block the
-        # loop / serialize the dashboard's concurrent reads — RCA 2026-07-02).
         return await asyncio.to_thread(
             MetricsQueryService().decisions_timeseries, range, bucket
         )
@@ -826,6 +907,7 @@ async def discovery_agents(
     connection_id: Optional[str] = None,
     limit: int = 50,
     cursor: Optional[str] = None,
+    ctx: OperatorContext = Depends(resolve_operator_tenant),
 ) -> Dict:
     """WS-21 T32: detected-agents table (static, policy-derived read-model).
 
@@ -845,15 +927,25 @@ async def discovery_agents(
 
 
 @router.get("/discovery/summary")
-async def discovery_summary() -> Dict:
-    """WS-21 T32: discovery KPI cards."""
+async def discovery_summary(
+    ctx: OperatorContext = Depends(resolve_operator_tenant),
+) -> Dict:
+    """WS-21 T32: discovery KPI cards.
+
+    Auth (WS-N N5): bind-only — discovery source is tenant-scoped via connections.
+    """
     from app.services.discovery_service import DiscoveryService
     return await DiscoveryService().summary()
 
 
 @router.get("/discovery/platforms")
-async def discovery_platforms() -> Dict:
-    """WS-21 T32: per-cloud-provider detected counts (status idle in P0)."""
+async def discovery_platforms(
+    ctx: OperatorContext = Depends(resolve_operator_tenant),
+) -> Dict:
+    """WS-21 T32: per-cloud-provider detected counts (status idle in P0).
+
+    Auth (WS-N N5): bind-only — discovery source is tenant-scoped via connections.
+    """
     from app.services.discovery_service import DiscoveryService
     return await DiscoveryService().platforms()
 
@@ -949,10 +1041,11 @@ def _sanitize_probe_message(connection_id: str, raw_message: str) -> str:
 
 
 @router.get("/connections")
-async def list_connections() -> Dict:
+async def list_connections(
+    ctx: OperatorContext = Depends(resolve_operator_tenant),
+) -> Dict:
     """List the tenant's cloud connections (spec §4.1). Read; tenant-scoped by the
-    ambient tenant (out of WS-M's mutation scope — routes 7-11 are the credential
-    writes)."""
+    ambient tenant. Auth (WS-N N1): bind-only — DDB composite PK auto-scopes."""
     from app.services.connections_service import ConnectionsService
     return ConnectionsService().list_connections()
 
@@ -976,9 +1069,13 @@ async def create_connection(
 
 
 @router.get("/connections/{connection_id}")
-async def get_connection(connection_id: str) -> Dict:
-    """Get one connection (spec §4.3). Read; tenant-scoped by the ambient tenant
-    (out of WS-M's mutation scope — routes 7-11 are the credential writes)."""
+async def get_connection(
+    connection_id: str,
+    ctx: OperatorContext = Depends(resolve_operator_tenant),
+) -> Dict:
+    """Get one connection (spec §4.3). Auth (WS-N N3): bind + assert_owns —
+    foreign id -> 404, not a cross-tenant 200."""
+    assert_owns(ctx, ResourceKind.CONNECTION, connection_id)
     from app.services.connections_service import ConnectionsService, ConnectionError
     try:
         return ConnectionsService().get_connection(connection_id)
@@ -1233,7 +1330,11 @@ async def post_decision_verdict(
 # ============================================================
 
 @router.get("/agents")
-async def get_agents(enrich: bool = True, managed_only: bool = False) -> Dict:
+async def get_agents(
+    enrich: bool = True,
+    managed_only: bool = False,
+    ctx: OperatorContext = Depends(resolve_operator_tenant),
+) -> Dict:
     """
     List all registered agents.
 
@@ -1272,36 +1373,35 @@ async def get_agents(enrich: bool = True, managed_only: bool = False) -> Dict:
 
 
 @router.get("/agents/{agent_id}")
-async def get_agent(agent_id: str) -> Dict:
+async def get_agent(
+    agent_id: str,
+    ctx: OperatorContext = Depends(resolve_operator_tenant),
+) -> Dict:
     """
     Get detailed information about a specific agent.
-    
-    Path Parameters:
-        agent_id: Agent identifier
-    
-    Returns:
-        Agent details with runtime statistics
-        
-    HTTP Status Codes:
-        200 OK - Agent found
-        404 Not Found - Agent doesn't exist
+
+    Auth (WS-N N3): bind + assert_owns — foreign agent_id -> 403.
     """
+    assert_owns(ctx, ResourceKind.AGENT, agent_id)
     from app.services.agent_service import AgentService
-    
+
     agent_service = AgentService()
     agent = await agent_service.get_agent(agent_id)
-    
+
     if not agent:
         raise HTTPException(
             status_code=404,
             detail=f"Agent {agent_id} not found"
         )
-    
+
     return agent
 
 
 @router.get("/agents/{agent_id}/tools")
-async def get_agent_tools(agent_id: str) -> Dict:
+async def get_agent_tools(
+    agent_id: str,
+    ctx: OperatorContext = Depends(resolve_operator_tenant),
+) -> Dict:
     """
     Get list of allowed tools for an agent.
     
@@ -1348,7 +1448,8 @@ async def get_policies(
     agent_id: Optional[str] = None,
     status: Optional[str] = None,
     limit: int = 50,
-    cursor: Optional[str] = None
+    cursor: Optional[str] = None,
+    ctx: OperatorContext = Depends(resolve_operator_tenant),
 ) -> Dict:
     """
     Query agent policies with optional filters.
@@ -1415,7 +1516,8 @@ async def get_policies(
 @router.get("/policies/{policy_id}")
 async def get_policy_by_id(
     policy_id: str,
-    include_content: bool = True
+    include_content: bool = True,
+    ctx: OperatorContext = Depends(resolve_operator_tenant),
 ) -> Dict:
     """
     Get single policy with full content from S3.
@@ -1433,24 +1535,25 @@ async def get_policy_by_id(
         200 OK - Policy found
         404 Not Found - Policy not found
 
-    Reference: LLD 11 Section 3.4
+    Reference: LLD 11 Section 3.4 / WS-N N3: bind + assert_owns.
     """
+    assert_owns(ctx, ResourceKind.POLICY, policy_id)
     from app.services.policy_service import PolicyService
     from app.exceptions import NotFoundException
 
     try:
         policy_service = PolicyService()
-        
+
         # Get metadata
         metadata = await policy_service.get_policy(policy_id)
         if not metadata:
             raise NotFoundException(f"Policy {policy_id} not found")
-        
+
         # Optionally get content from S3
         content = None
         if include_content:
             content = await policy_service.get_policy_content(policy_id)
-        
+
         return {
             "success": True,
             "policy": {
@@ -1663,7 +1766,8 @@ async def get_sigma_rules(
     level: Optional[str] = None,
     limit: int = 50,
     cursor: Optional[str] = None,
-    range: str = "24h"
+    range: str = "24h",
+    ctx: OperatorContext = Depends(resolve_operator_tenant),
 ) -> Dict:
     """
     List Sigma rules with match counts.
@@ -1792,7 +1896,10 @@ async def update_sigma_rule(
 
 
 @router.get("/sigma-rules/{rule_id}/content")
-async def get_sigma_rule_content(rule_id: str) -> Dict:
+async def get_sigma_rule_content(
+    rule_id: str,
+    ctx: OperatorContext = Depends(resolve_operator_tenant),
+) -> Dict:
     """
     Get a Sigma rule's full content, including its detection selections/patterns.
 
@@ -1855,7 +1962,10 @@ async def get_sigma_rule_content(rule_id: str) -> Dict:
 # ============================================================
 
 @router.get("/logs/conversation/{conversation_id}")
-async def get_conversation_timeline(conversation_id: str) -> Dict:
+async def get_conversation_timeline(
+    conversation_id: str,
+    ctx: OperatorContext = Depends(resolve_operator_tenant),
+) -> Dict:
     """
     Get complete timeline of a conversation (cross-agent).
 
@@ -1902,7 +2012,10 @@ async def get_conversation_timeline(conversation_id: str) -> Dict:
 
     HTTP Status Codes:
         200 OK - Success (empty timeline if conversation not found)
+
+    Auth (WS-N N3): bind + assert_owns(CONVERSATION) — foreign conversation -> 404.
     """
+    assert_owns(ctx, ResourceKind.CONVERSATION, conversation_id)
     from app.services.conversation_service import ConversationService
 
     conversation_service = ConversationService()
