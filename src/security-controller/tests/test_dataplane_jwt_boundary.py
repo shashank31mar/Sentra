@@ -208,6 +208,53 @@ async def test_trail_enforce_missing_jwt_denies_not_default():
 
 
 @pytest.mark.asyncio
+async def test_acme_session_read_isolated_from_foreign_verified_tenant():
+    """ACME ISOLATION (founder 2026-07-07): a VERIFIED *foreign* tenant reading an
+    acme session_id must be scoped to the FOREIGN tenant's own partition — it must
+    NEVER see acme's rows. The DDB PK is the composite ``{tenant}#{session_id}``, so
+    binding the caller's verified tenant means a foreign caller queries
+    ``t_foreign#{acme_session}`` (empty), not ``acme#{acme_session}``. This is the
+    regression guard that acme trail/signals cannot be cross-tenant-read by another
+    verified agent. FAILS if the read is ever bound to the acme session's owner
+    rather than the authenticated caller."""
+    seen = {}
+
+    def _trail(**k):
+        seen["tenant"] = tenancy.current_tenant()
+        return {"buckets": {}, "rows": []}
+
+    svc = Mock()
+    svc.get_session_trail = Mock(side_effect=_trail)
+    # Caller is a verified NON-acme tenant, requesting an acme-owned session id.
+    foreign = TenantContext.verified(
+        tenant_id="t_foreign", agent_id="t_foreign-aws-x", effective_mode="enforce"
+    )
+    with patch("app.api.deps.resolve_tenant_from_jwt", return_value=foreign), \
+         patch("app.api.routes._decisions_service", return_value=svc):
+        await R.get_session_trail("acme-payments-sess-001", "r1", _Req())
+    # The read partition is the CALLER's tenant, never acme's — so an acme session
+    # queried by t_foreign lands on t_foreign's (empty) partition.
+    assert seen["tenant"] == "t_foreign"
+    assert seen["tenant"] != "acme"
+
+
+@pytest.mark.asyncio
+async def test_acme_session_tokenless_read_denied_not_default():
+    """ACME ISOLATION: a TOKENLESS read of an acme session at the enforce ceiling is
+    denied (401) — it must NOT fall through to the shared ``default`` partition where
+    acme's pre-enforce rows could co-mingle. Mirrors the prod posture (acme +
+    fleet-ceiling both enforce)."""
+    unver = TenantContext.unverified(effective_mode="enforce")  # should_deny True
+    svc = Mock()
+    with patch("app.api.deps.resolve_tenant_from_jwt", return_value=unver), \
+         patch("app.api.routes._decisions_service", return_value=svc):
+        with pytest.raises(HTTPException) as ei:
+            await R.get_session_signals("acme-identity-sess-002", _Req())
+    assert ei.value.status_code == 401
+    svc.get_session_signals.assert_not_called()
+
+
+@pytest.mark.asyncio
 async def test_trail_disabled_mode_reads_without_bind_change():
     """Identity OFF fleet-wide (disabled) → the read runs as before (no hard deny —
     the console must keep working before identity rolls out)."""
