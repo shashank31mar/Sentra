@@ -3,7 +3,7 @@
 > **Doc role:** This is the **workstream SCOPE** — boundary, dependencies, real `file:line` anchors, footguns, and acceptance criteria. It is an **INPUT to this workstream's implementation-grade LLD** ([lld/38-canary-synthetic-monitoring.md](../../lld/38-canary-synthetic-monitoring.md), *to be authored*), *not* the granular task breakdown. Buildable tasks are generated **from the approved LLD** (canonical order: HLD → LLD → tasks). See [00-index.md](00-index.md) for the doc-role map.
 
 **Parent HLD:** [hld/serverless-edition.md](../../hld/serverless-edition.md) — §8 hand-off (the "End-to-end canary / integration tests (build requirement)" carry-row) + **§6.4 line 564** (the six numbered scenarios + the (2b) differential-conformance requirement). Soundness bounds for (2b) live in **Appendix C** ([hld/serverless-edition.md:782](../../hld/serverless-edition.md#L782)).
-**Status:** ✅ **Increment 1 DEPLOYED to prod 2026-07-05** (all J1/J2/J-cov/J-infra/J-report/J4/J6 tasks done; live 117/117 PASS; hourly schedule ENABLED). J3/J5/J7/J8 deferred (design-only). See §0 + §3 banner.
+**Status:** ✅ **Increment 1 DEPLOYED to prod 2026-07-05** (all J1/J2/J-cov/J-infra/J-report/J4/J6 tasks done; live 117/117 PASS; hourly schedule ENABLED). J5/J8 deferred (design-only). **J7 (authz) UNBLOCKED 2026-07-07** — WS-M authz shipped to prod (milestone-102); J7 build tasks authored in **§5A** (reconcile stale-positive manifest + add authorized/under-priv/IDOR/dataplane coverage). J3 deferred (design-only). See §0 + §3 banner + §5A.
 **Owner:** TBD
 **Implements (build requirement, not a feature FR):** the §6.4 gating-test mandate over **FR-1.7, FR-3.4, FR-2.8, FR-6.8, FR-3.13, FR-12, FR-13.3, NFR-4, NFR-6, NFR-7, NFR-10, NFR-12**, **extended** (§0) to a **continuous production synthetic monitor** covering **every deployed API** and the **console UI**. It adds no product behavior; it **proves** the behavior every other WS ships — on **every PR** (merge gate) **and every hour in prod** (live monitor) — and, on failure, records **why** so each red check can be root-caused.
 
@@ -366,6 +366,89 @@ Every RED/`INFRA` check records its `failure_reason` + `expected`/`actual` + `co
 - [x] **integration tests pass** (covering: the `/v1/validate`→`_run_validation_pipeline`→`DenyOverrides` end-to-end seam; the all-route generator against the real API Gateway edge in `live`; the manifest↔`app.routes` coverage join; the WS-E redactor edge→egress + `_bg_tasks` audit barrier; the LLD-26 `enforce`-mode tenancy isolation; and the synthesized CDK templates — ECR repo, results table, task def + least-privilege role, scheduler, `EmailSubscription`→`shshgup@amazon.com`, the anti-false-PASS + overlap alarms).
 - [x] No scenario uses skip/xfail/retry to reach green; an unestablished precondition errors **RED/`INFRA`**, never a silent skip; ECS transport flake is `INFRA`, never green.
 - [x] No real PII and no real egress of secrets; all sensitive markers are the synthetic sentinel `CANARY-PII-7F3A`; secrets live only in `sentra/canary/*` (Secrets Manager); the canary carries **no standing `_platform` grant** (SEC-7).
+
+---
+
+## 5A. Increment 2 — J7 authz coverage (WS-M landed → build now)
+
+> **Trigger (2026-07-07):** WS-M ([ws-m-authz.md](ws-m-authz.md), lld/39) is **CODE-DONE + DEPLOYED to prod** (milestone-102, task-def `sentra-security-controller:58`). The 19 `authz_gap_flag=True` **key**-reachable mutations now carry `require_role`/`require_platform` + `assert_owns`; the canary manifest (`tests/canary/route_manifest.py`) was authored **before** WS-M and still asserts a *positive-2xx* on those routes — that stale contract is what tripped `sentra-mvp-canary-checks-failed` (0→19 ChecksFailed, 03:05 & 04:05 UTC). This section closes the J7 deferral: reconcile the manifest to the landed contract AND add the authz-regression coverage the founder asked for. **The canary tests the CODE, not the docs** — every fact below is grepped from real `routes.py`/`deps.py`/`ownership.py`/`config.py`, not from lld/38-Appendix-A (which is stale — see the "verify vs docs" notes).
+>
+> **Two-mode discipline (the ONE hard rule, lld/38 §3.1):** a `scenario_*` fn references only `canary_client`/`canary_operator`/`canary_tenant`, never `CANARY_TARGET`/`os.environ`. All transport divergence lives in the fixtures. J7 has a **documented live-weaker exception** (like J3.3/J4.2): the operator-identity + agent-JWT mint uses `deps._alb_claims_override` ([deps.py:301](../../src/security-controller/app/api/deps.py#L301)) + `set_current_tenant`, which are **in-process-only test seams** — the deployed service has no such seam and the canary holds no real Cognito operator cred (only `sentra/canary/api-key`). So **J7's authorized-positive + wrong-role-403 + IDOR checks are `inprocess`(PR-gate) hermetic; `live` is EXEMT-until-J8** (the Cognito hosted-UI login fixture, D-4). What `live` DOES gain now: the *no-identity* leg (X-Api-Key only, no operator/JWT → 401/403) — that IS the current prod reality and is what the hourly monitor asserts.
+
+**Verified contract (grepped 2026-07-07 — the join keys, resolve by NAME not line#):**
+
+| # | Route (path, method) | Handler | Gate | `assert_owns` kind | wrong-tenant status |
+|---|---|---|---|---|---|
+| 1 | `POST /v1/policies` | `create_policy` | `require_role("editor")` | — (born-scoped) | — |
+| 2 | `PUT /v1/policies/{id}` | `update_policy` | `require_role("editor")` | POLICY | 404 (existence-masked) |
+| 3 | `DELETE /v1/policies/{id}` | `delete_policy` | `require_role("admin")` | POLICY | 404 |
+| 4 | `PATCH /v1/policies/{id}/status` | `set_policy_status` | `require_role("editor")` | POLICY | 404 |
+| 5 | `POST /v1/agents/{id}/policies` | `attach_agent_policy` | `require_role("editor")` | AGENT then POLICY | 403 (agent) |
+| 6 | `DELETE /v1/agents/{id}/policies/{pid}` | `detach_agent_policy` | `require_role("editor")` | AGENT | 403 |
+| 7 | `POST /v1/connections` | `create_connection` | `require_role("admin")` | — (born-scoped) | — |
+| 8 | `PUT /v1/connections/{id}` | `update_connection` | `require_role("admin")` | CONNECTION | 404 |
+| 9 | `POST /v1/connections/{id}/test` | `test_connection` | `require_role("editor")` | CONNECTION | 404 |
+| 10 | `POST /v1/connections/{id}/scan` | `scan_connection` | `require_role("editor")` | CONNECTION | 404 |
+| 11 | `DELETE /v1/connections/{id}` | `delete_connection` | `require_role("admin")` | CONNECTION | 404 |
+| 12 | `PATCH /v1/sigma-rules/{id}` | `update_sigma_rule` | **`require_platform`** | — (fleet-global) | 403 |
+| 13 | `DELETE /v1/quarantine/{id}` | `release_session` | `require_role("admin")` | SESSION | 404 |
+| 14 | `POST /v1/quarantine/{id}` | `quarantine_session` | `require_role("admin")` | SESSION | 404 |
+| 15 | `POST /v1/rollback` | `rollback_action` | `require_role("admin")` | ACTION | 404 |
+| 16 | `POST /v1/rollback/conversation/{id}` | `rollback_conversation` | `require_role("admin")` | CONVERSATION | 404 |
+| 17 | `POST /v1/discovery/import` | `discovery_import` | `require_role("editor")` | — (bulk prefix-stamp) | — |
+| 18 | `POST /v1/decisions/{id}/verdict` | `post_decision_verdict` | `require_role("editor")` | SESSION | 404 |
+| 19 | `POST /v1/sessions/{id}/signals` | `post_session_signal` | **interim fail-closed** (403) | — | 403 |
+| — | `GET /v1/sessions/{id}/signals`, `GET /v1/sessions/{id}/trail` | `get_session_signals`/`get_session_trail` | **`_dataplane_tenant_bind`** (verified agent JWT, NOT `require_role` — Invariant 6) | — | 401 (under enforce / latch) |
+
+- **`assert_owns(ctx, ResourceKind, id)`** lives in [app/api/ownership.py](../../src/security-controller/app/api/ownership.py) (shipped). 403-vs-404 rule: tenant-prefixed/obviously-foreign id (AGENT) → **403**; existence-sensitive opaque id (POLICY/CONNECTION/SESSION/ACTION/CONVERSATION) in another tenant → **404** (RFC 9110 existence-mask). Store-error/unresolvable → **deny** (never allow).
+- **Verdict route (#18) resolves a doc discrepancy:** lld/38 Appendix A listed only `GET .../verdict`; the real wired route is **`POST`** with `require_role("editor")` + `assert_owns(SESSION, decision_id.split(":")[0])` ([routes.py:1200,1218](../../src/security-controller/app/api/routes.py#L1200)) and it **is** already `gap=True` in the manifest. No manifest add needed — but its authz probe must assert `SESSION`-scoped 404, not AGENT-403.
+- **Dataplane latch (config truth, docs omit it):** `require_dataplane_credential` (default **False**, [config.py:152](../../src/security-controller/app/config.py#L152)) and the effective identity ceiling `TENANT_IDENTITY_MODE` (deployed = `enforce`) both feed `_dataplane_tenant_bind` ([routes.py:465](../../src/security-controller/app/api/routes.py#L465)): a missing/invalid agent JWT → **401** when EITHER the latch is on OR the tenant enforces; shadow/off + latch-off → no bind (ambient read). `POST /signals` interim reject is gated by `external_signal_write_enabled` (default **False**, [config.py:303](../../src/security-controller/app/config.py#L303)) → **403** today.
+
+### J7 build tasks
+
+- **J7.1 — Reconcile the manifest positive-contract to the landed authz gate (closes the alarm).**
+  - **Touches:** `tests/canary/route_manifest.py`, `tests/canary/scenarios.py` (`scenario_j2_4_positive`), `tests/canary/test_all_routes.py`.
+  - **HOW:** the positive probe carries only `X-Api-Key` (no operator/JWT — hermetic can't mint at collection time, live has no operator cred). For a `authz_gap_flag=True` **or** dataplane-latched row, the **documented-correct positive outcome is a 401/403** (fail-secure refusal of an unauthenticated caller), NOT a 2xx. Make `scenario_j2_4_positive` branch on the spec: a gated route asserts `resp.status_code in (401, 403)` (+ the existing "never 5xx, never fake-200" invariant); an ungated route keeps the `(200,201,202,204,404,400,422)` set. Add a `RouteSpec` field the scenario reads (e.g. reuse `authz_gap_flag` + a new `dataplane_bind: bool` for the 2 GET reads + `POST /signals`), so the branch is manifest-driven, not a hand-list.
+  - **FOOTGUN:** do NOT just widen the allowed-status set to include 401/403 for ALL routes — that would make a genuinely-broken auth on a *public/key read* (e.g. `GET /v1/agents` starts 401ing) pass silently. The gate must be **per-route**: gated routes REQUIRE 401/403, ungated routes FORBID them. This is the SEC-12 `AUTHZ_GAP_CLOSED_MANIFEST_STALE` inversion — a `gap=True` row that now returns 2xx is itself a RED (the lock leaked).
+  - **Unit test** — `test_j7_1_gated_positive_is_refused` in a new `test_j7_authz.py`: every `authz_gap_flag`/dataplane row, no-identity → 401/403 (hermetic); a spot ungated route → 2xx/404. **Integration test** — the same over the real API Gateway edge in `live` (the 19 routes 401/403 with only the api-key). This is the leg that turns the prod alarm green.
+
+- **J7.2 — Authorized-positive: the correct role/identity SUCCEEDS (hermetic).**
+  - **Touches:** `tests/canary/scenarios.py` (new `scenario_j7_authorized`), `tests/canary/conftest.py` (fix `canary_operator` to actually seed the membership row — see footgun), `tests/canary/test_j7_authz.py`.
+  - **HOW:** parameterize `canary_operator` by role (`viewer|editor|admin|_platform`). For each gated route, mint an operator at **≥ the route's required role** in the route's owning tenant, create the owned resource under that tenant, then assert the mutation reaches its handler (2xx, OR a documented 400/404-on-empty — never 401/403). Drives `require_role` + `assert_owns` positive paths. `require_platform` route (#12) uses a `_platform`-membership operator.
+  - **FOOTGUN (real bug found):** `canary_operator`'s docstring claims it "seeds a matching `sentra-tenant-members` row" but the code ([conftest.py:289](../../tests/canary/conftest.py#L289)) does NOT — it only installs `_alb_claims_override`. A minted operator with no membership fails `resolve_operator_tenant` (no primary membership → 403), so an authorized-positive test would falsely 403. Fix: seed one `sentra-tenant-members` row (`operator_sub`=the minted sub, `tenant_id`, `role`, `is_primary=True`) under the moto table, keyed to the requested role; tear down in the finalizer. Reuse the `_seed_tenant_member` shape already in conftest.
+  - **Unit test** — `test_j7_2_authorized_role_succeeds` (per-route, role ≥ required → not 401/403). **Integration test** — `inprocess`-only (marked EXEMPT in `live` with an explicit reason string, per the J3.3/J4.2 pattern — no silent skip).
+
+- **J7.3 — Under-privileged role is REFUSED with 403 (hermetic; the RBAC ladder proof).**
+  - **Touches:** `scenarios.py` (`scenario_j7_underprivileged`), `test_j7_authz.py`.
+  - **HOW:** mint an operator **one tier below** the route's required role (an `editor` for an `admin` route like delete/rollback/quarantine/connection-write; a `viewer` for an `editor` route; a tenant-`admin` for the `require_platform` sigma route) in the owning tenant, then assert the mutation → **403** (`require_role`/`require_platform` denies). This is the leg that proves the ladder isn't merely "logged-in = allowed."
+  - **FOOTGUN:** the sigma route (#12) is `require_platform`, NOT `require_role("owner")` — a tenant `admin`/`owner` must STILL 403 (pinned by WS-M's own `test_sigma_retire_tenant_admin_403`). Assert with a tenant-scoped `admin`, not just a `viewer`, or the test is vacuous.
+  - **Unit test** — `test_j7_3_underprivileged_403` (per-route, role = required−1 → 403). **Integration test** — `inprocess`-only, `live`-EXEMPT (reason string).
+
+- **J7.4 — No-IDOR: cross-tenant ownership is REFUSED (hermetic; the BUG-1 regression guard).**
+  - **Touches:** `scenarios.py` (`scenario_j7_cross_tenant_idor`), `test_j7_authz.py`.
+  - **HOW:** for each `assert_owns`-carrying route, create a resource under **tenant A**, then mint an operator with a **sufficient role in tenant B** and attempt the mutation on A's resource id. Assert the documented refusal per the ownership table: AGENT → **403**; POLICY/CONNECTION/SESSION/ACTION/CONVERSATION → **404** (existence-masked). This directly guards the BUG-1 IDOR WS-M closed — a success here is a `CRITICAL` finding (§4 error-model "Under-privileged / cross-tenant mutation succeeds → RED CRITICAL").
+  - **FOOTGUN (warm-cache IDOR):** POLICY ownership MUST be proven against the tenant-blind `PolicyService.get_policy` cache (`policy:{id}` process-wide singleton). To make the test non-vacuous, prime the cache by having tenant A read its policy first, THEN attempt the tenant-B cross-read — asserting the bypass (direct tenant-scoped point-read) still 404s. A test that never warms the cache can't catch a cache-reintroduced IDOR.
+  - **Unit test** — `test_j7_4_cross_tenant_refused` (per-`assert_owns` route → 403/404 per kind; POLICY includes the warm-cache variant). **Integration test** — `inprocess`-only, `live`-EXEMPT (reason string).
+
+- **J7.5 — Dataplane-read JWT bind + signals fail-closed (mixed mode).**
+  - **Touches:** `scenarios.py` (`scenario_j7_dataplane_bind`, `scenario_j7_signals_failclosed`), `route_manifest.py` (mark the 2 GET reads + `POST /signals`), `test_j7_authz.py`.
+  - **HOW:** (a) `GET /v1/sessions/{id}/signals` + `/trail` with no agent JWT under the enforce ceiling (or `require_dataplane_credential=True`) → **401** ("verified agent identity required"); with a verified-agent-JWT bind → reaches the read (200/empty). Hermetic mints the JWT via `resolve_tenant_from_jwt`'s test path + `set_current_tenant`; `live` asserts only the no-JWT-401 leg (the enforce reality). (b) `POST /v1/sessions/{id}/signals` external write with `external_signal_write_enabled=False` (default) → **403** interim fail-closed; assert the reject, and (hermetic) that flipping the flag on changes the contract. This proves the external-producer injection surface stays closed.
+  - **FOOTGUN:** `GET /trail` REQUIRES a `request_id` query param — without it FastAPI 422s *before* the auth bind (this is why `/trail` incidentally "passed" pre-J7 while `/signals` 401'd). The dataplane-bind assertion must send a well-formed request (with `request_id` for `/trail`) so the 401 it asserts comes from the JWT bind, not a missing-param 422.
+  - **Unit test** — `test_j7_5_dataplane_requires_jwt` + `test_j7_5_signals_failclosed`. **Integration test** — the no-JWT-401 + signals-403 legs in `live` (both are the deployed reality); the positive-bind + flag-flip legs are `inprocess`-only.
+
+- **J7.6 — Coverage-guard: activate the J7 gate + the manifest-stale tripwire.**
+  - **Touches:** `tests/canary/route_manifest.py` (`REQUIRED_SCENARIOS["J7"]=True`), `tests/canary/test_coverage_guard.py` (or the guard module), `tests/canary/test_route_manifest.py`.
+  - **HOW:** flip `J7` on in `REQUIRED_SCENARIOS`. Add two guard conditions (lld/38 §5.7/§5.8, SEC-12): `AUTHZ_GAP_CLOSED_MANIFEST_STALE` — a `authz_gap_flag=True` route whose live/hermetic positive probe returns 2xx (the lock is gone or the flag is stale) → RED; and require that every `authz_gap_flag`/dataplane route has a registered J7 cell (no-identity + — hermetic — authorized + under-priv + IDOR) or the guard REDs `AUTHZ_CELL_UNCOVERED`. This is the mechanism that keeps a future new mutation from landing ungated-and-untested.
+  - **FOOTGUN:** the guard join is on `(path, method)` — the two `/signals` methods (GET read-bind vs POST fail-closed) and the two `/quarantine` methods are distinct cells; don't collapse by path. And `landed_flag=False` (the 9 oidc rows) stay EXEMPT from the J7 gate (J8's concern), so scope the requirement to `auth_class in ("public","key")`.
+  - **Unit test** — `test_j7_6_guard_reds_on_stale_gap` (synthesize a `gap=True` row returning 2xx → guard RED) + `test_j7_6_requires_authz_cells`. **Integration test** — the full `inprocess` guard pass over the real manifest is green with J7 active.
+
+**J7 acceptance (Increment 2 — objectively verifiable):**
+- [ ] `CANARY_TARGET=inprocess pytest tests/canary/ -m "not requires_live"` is **green** — the 19 gated routes' positive probes assert 401/403 (no-identity), and J7.2–J7.4 prove authorized-success / under-priv-403 / cross-tenant-404·403 hermetically.
+- [ ] The `live` entrypoint's positive probes on the 19 gated routes assert 401/403 (the deployed reality) — so the hourly `sentra-mvp-canary-checks-failed` alarm returns to 0 without weakening any check.
+- [ ] `canary_operator` actually seeds the `sentra-tenant-members` row it documents; role-parameterized (`viewer|editor|admin|_platform`); torn down idempotently; still `inprocess`-only (its `live` form raises `NotImplementedError` until J8).
+- [ ] Coverage guard: `REQUIRED_SCENARIOS["J7"]=True`; a `authz_gap_flag=True` route returning 2xx → RED (`AUTHZ_GAP_CLOSED_MANIFEST_STALE`); every gated key-route has its J7 cells or RED `AUTHZ_CELL_UNCOVERED`; the 9 oidc rows stay EXEMPT (`landed_flag=False`).
+- [ ] Every J7 `live`-EXEMPT leg (authorized-positive, under-priv, IDOR — need the mint seam) carries an explicit reason string (never a silent skip/xfail; §4 error-model — a skipped security canary is an ungated claim).
+- [ ] No new product-code change; J7 is test-only. The `deps._alb_claims_override` + `set_current_tenant` mints are confined to fixtures, never a scenario body (transport-purity lint still passes).
 
 ---
 
