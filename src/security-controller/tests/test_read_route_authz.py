@@ -783,3 +783,307 @@ class TestGetAgentsBindOnly:
 
         svc.list_agents.assert_awaited_once_with(enrich=True, managed_only=False)
         assert result["total"] == 1
+
+
+# ============================================================
+# N-SENTINEL — BEHAVIORAL cross-tenant isolation proofs (integration-sentinel
+# coverage gaps). These stand up a REAL moto-backed two-tenant store, bind one
+# tenant the way resolve_operator_tenant does (set_current_tenant, deps.py:435),
+# run the real route handler, and assert the OTHER tenant's rows never appear.
+#
+# Why these exist: the sibling tests above mock the service layer, so they prove
+# wiring (the dep is present, fleet flags are right) but NOT that current_tenant()
+# actually scopes the DDB read. A mock returning canned rows proves nothing about
+# isolation. These exercise the real query_or_scan / composite-PK path end-to-end.
+#
+# TWO of them (list_agents, query_policies) are ALSO regression guards for the
+# cross-tenant CACHE-KEY leaks fixed in this change: those services cache on the
+# PROCESS-GLOBAL get_cache_manager() singleton under a key that omitted the tenant
+# (agent_service.py:159, policy_service.py:101). With the cache ON and a shared
+# singleton, tenant B's list-read hit tenant A's cached rows. The fix prefixes
+# both keys with tenancy.current_tenant() (mirroring policy_engine.py's
+# `policy_bundle:{current_tenant()}:`). These two tests FAIL against the pre-fix
+# tenant-less key and PASS after — that is what makes them non-vacuous guards.
+# ============================================================
+
+import asyncio  # noqa: E402
+import boto3  # noqa: E402
+from moto import mock_aws  # noqa: E402
+
+from app.config import settings as _settings  # noqa: E402
+from app.utils import tenancy  # noqa: E402
+from tests.mt_helpers import create_mt_tables  # noqa: E402
+
+
+def _run(coro):
+    """Run a coroutine on a fresh loop. set_current_tenant is set in THIS context
+    before the call, and asyncio captures the current context when it wraps the
+    coro in a Task — so the bound tenant propagates into the handler (and across
+    its asyncio.to_thread hops, per test_multitenancy_isolation B7)."""
+    return asyncio.new_event_loop().run_until_complete(coro)
+
+
+def _as_tenant(tenant_id, coro_factory):
+    """Bind current_tenant the way resolve_operator_tenant does, run the handler,
+    then reset. The direct-handler harness MUST reproduce the dep's bind or the
+    service reads the ambient 'default' partition and the test proves nothing."""
+    token = tenancy.set_current_tenant(tenant_id)
+    try:
+        return _run(coro_factory())
+    finally:
+        tenancy.reset_current_tenant(token)
+
+
+def _create_registry_v2(ddb):
+    ddb.create_table(
+        TableName=_settings.dynamodb_agent_registry_table_v2,
+        KeySchema=[{"AttributeName": "tenant_id", "KeyType": "HASH"},
+                   {"AttributeName": "agent_id", "KeyType": "RANGE"}],
+        AttributeDefinitions=[{"AttributeName": "tenant_id", "AttributeType": "S"},
+                              {"AttributeName": "agent_id", "AttributeType": "S"}],
+        BillingMode="PAY_PER_REQUEST",
+    )
+
+
+def _create_policies_v2(ddb):
+    ddb.create_table(
+        TableName=_settings.dynamodb_policies_metadata_table_v2,
+        KeySchema=[{"AttributeName": "tenant_id", "KeyType": "HASH"},
+                   {"AttributeName": "policy_id", "KeyType": "RANGE"}],
+        AttributeDefinitions=[{"AttributeName": "tenant_id", "AttributeType": "S"},
+                              {"AttributeName": "policy_id", "AttributeType": "S"},
+                              {"AttributeName": "tenant_agent_id", "AttributeType": "S"},
+                              {"AttributeName": "status", "AttributeType": "S"}],
+        GlobalSecondaryIndexes=[
+            {"IndexName": "agent-index",
+             "KeySchema": [{"AttributeName": "tenant_agent_id", "KeyType": "HASH"}],
+             "Projection": {"ProjectionType": "ALL"}},
+            {"IndexName": "status-index",
+             "KeySchema": [{"AttributeName": "tenant_id", "KeyType": "HASH"},
+                           {"AttributeName": "status", "KeyType": "RANGE"}],
+             "Projection": {"ProjectionType": "ALL"}}],
+        BillingMode="PAY_PER_REQUEST",
+    )
+
+
+def _create_signals_v2(ddb):
+    """validation-signals v2: composite PK tenant_session_id (get_session_decisions
+    Query) + the agent-timestamp-index GSI keyed on the composite tenant_agent_id
+    (discovery's _last_active / agent_activity)."""
+    ddb.create_table(
+        TableName=_settings.dynamodb_validation_signals_table_v2,
+        KeySchema=[{"AttributeName": "tenant_session_id", "KeyType": "HASH"},
+                   {"AttributeName": "sk", "KeyType": "RANGE"}],
+        AttributeDefinitions=[{"AttributeName": "tenant_session_id", "AttributeType": "S"},
+                              {"AttributeName": "sk", "AttributeType": "S"},
+                              {"AttributeName": "tenant_agent_id", "AttributeType": "S"},
+                              {"AttributeName": "timestamp_ms", "AttributeType": "N"}],
+        GlobalSecondaryIndexes=[{
+            "IndexName": "agent-timestamp-index",
+            "KeySchema": [{"AttributeName": "tenant_agent_id", "KeyType": "HASH"},
+                          {"AttributeName": "timestamp_ms", "KeyType": "RANGE"}],
+            "Projection": {"ProjectionType": "ALL"}}],
+        BillingMode="PAY_PER_REQUEST",
+    )
+
+
+def _create_discovery_cache(ddb):
+    ddb.create_table(
+        TableName=_settings.dynamodb_discovery_cache_table,
+        KeySchema=[{"AttributeName": "tenant_id", "KeyType": "HASH"},
+                   {"AttributeName": "native_resource_id", "KeyType": "RANGE"}],
+        AttributeDefinitions=[{"AttributeName": "tenant_id", "AttributeType": "S"},
+                              {"AttributeName": "native_resource_id", "AttributeType": "S"}],
+        BillingMode="PAY_PER_REQUEST",
+    )
+
+
+@pytest.fixture
+def mt_store(monkeypatch):
+    """A real moto-backed v2 store with the four tables these routes read, plus a
+    RESET of the process-global service/cache singletons so a prior test's state
+    can't mask a leak. cache_enabled=True is DELIBERATE: the cache-key regression
+    guards only manifest a leak with the shared singleton enabled."""
+    for k in ("AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_SECURITY_TOKEN", "AWS_SESSION_TOKEN"):
+        monkeypatch.setenv(k, "testing")
+    monkeypatch.setenv("AWS_DEFAULT_REGION", _settings.aws_region)
+    monkeypatch.setattr(_settings, "tenancy_v2_enabled", True)
+    monkeypatch.setattr(_settings, "cache_enabled", True)
+    with mock_aws():
+        ddb = boto3.resource("dynamodb", region_name=_settings.aws_region)
+        create_mt_tables(ddb)
+        _create_registry_v2(ddb)
+        _create_policies_v2(ddb)
+        _create_signals_v2(ddb)
+        _create_discovery_cache(ddb)
+
+        # Reset every process-global that latches a client/flag/cache at __init__,
+        # so this test's moto tables + fresh cache are what the services see.
+        import app.utils.cache_manager as cm
+        import app.api.routes as routes_mod
+        cm._cache_instance = None
+        if hasattr(routes_mod, "_decisions_service_instance"):
+            del routes_mod._decisions_service_instance
+        yield ddb
+        cm._cache_instance = None
+
+
+# ------------------------------------------------------------ GAP 1: discovery/agents
+class TestDiscoveryAgentsTenantIsolation:
+    """GET /discovery/agents (routes.py:951): a customer operator sees ONLY their
+    own tenant's discovered agents. DiscoveryService routes BOTH sources through
+    the tenant partition — registry/policies via query_or_scan(current_tenant())
+    and the scan cache via an explicit Key('tenant_id').eq(current_tenant()) Query
+    — so this is genuine behavioral isolation, not a mock."""
+
+    def test_customer_sees_only_own_discovered_agents(self, mt_store):
+        reg = mt_store.Table(_settings.dynamodb_agent_registry_table_v2)
+        reg.put_item(Item={"tenant_id": "t_a", "agent_id": "t_a-aws-x-1", "name": "A-reg",
+                           "cloud_provider": "aws", "visibility": "external",
+                           "native_resource_id": "arn-a"})
+        reg.put_item(Item={"tenant_id": "t_b", "agent_id": "t_b-aws-y-2", "name": "B-reg",
+                           "cloud_provider": "aws", "visibility": "external",
+                           "native_resource_id": "arn-b"})
+        cache = mt_store.Table(_settings.dynamodb_discovery_cache_table)
+        cache.put_item(Item={"tenant_id": "t_a", "native_resource_id": "scan-a", "name": "A-scan",
+                             "cloud_provider": "aws"})
+        cache.put_item(Item={"tenant_id": "t_b", "native_resource_id": "scan-b", "name": "B-scan",
+                             "cloud_provider": "aws"})
+
+        ctx = _ctx(tenant_id="t_a", is_platform=False)
+        out = _as_tenant("t_a", lambda: R.discovery_agents(ctx=ctx))
+
+        names = {r["name"] for r in out["agents"]}
+        assert names == {"A-reg", "A-scan"}, names
+        # Tenant B's registry AND scanned rows are invisible.
+        assert not any(n.startswith("B") for n in names)
+
+
+# ------------------------------------------------------------ GAP 3: discovery summary/platforms
+class TestDiscoverySummaryPlatformsTenantIsolation:
+    """GET /discovery/summary + /discovery/platforms (routes.py:979, 991): bind-only.
+    A customer sees ONLY their own tenant's discovery aggregate; a _platform
+    operator sees ONLY their bound (reserved) partition — which is empty. Both are
+    scoped via _build_rows -> query_or_scan(current_tenant())."""
+
+    def test_customer_summary_and_platforms_own_tenant_only(self, mt_store):
+        reg = mt_store.Table(_settings.dynamodb_agent_registry_table_v2)
+        reg.put_item(Item={"tenant_id": "t_a", "agent_id": "t_a-aws-x-1", "name": "A",
+                           "cloud_provider": "aws", "visibility": "external",
+                           "native_resource_id": "arn-a"})
+        reg.put_item(Item={"tenant_id": "t_b", "agent_id": "t_b-azure-y-2", "name": "B",
+                           "cloud_provider": "azure", "visibility": "external",
+                           "native_resource_id": "arn-b"})
+
+        ctx = _ctx(tenant_id="t_a", is_platform=False)
+        summary = _as_tenant("t_a", lambda: R.discovery_summary(ctx=ctx))
+        platforms = _as_tenant("t_a", lambda: R.discovery_platforms(ctx=ctx))
+
+        # Only tenant A's single aws agent — tenant B's azure agent never counted.
+        assert summary["detected"] == 1
+        provider_map = {p["cloud_provider"]: p["agents"] for p in platforms["providers"]}
+        assert provider_map == {"aws": 1}, provider_map
+        assert "azure" not in provider_map  # B's cloud does not leak in
+
+    def test_platform_operator_sees_only_bound_partition(self, mt_store):
+        """A _platform operator is bound to the reserved _platform partition (no
+        fleet_scan here — bind-only, task doc FG). It holds no discovered agents,
+        so summary is empty — it does NOT see customers' agents by default."""
+        reg = mt_store.Table(_settings.dynamodb_agent_registry_table_v2)
+        reg.put_item(Item={"tenant_id": "t_a", "agent_id": "t_a-aws-x-1", "name": "A",
+                           "cloud_provider": "aws", "visibility": "external",
+                           "native_resource_id": "arn-a"})
+
+        ctx = _ctx(tenant_id=tenancy.PLATFORM_TENANT, is_platform=True)
+        summary = _as_tenant(tenancy.PLATFORM_TENANT,
+                             lambda: R.discovery_summary(ctx=ctx))
+
+        assert summary["detected"] == 0  # bound partition is empty; no customer leak
+
+
+# ------------------------------------------------------------ GAP 4: session decisions
+class TestSessionDecisionsTenantIsolation:
+    """GET /sessions/{id}/decisions (routes.py:482): tenant isolation is STRUCTURAL
+    — the signal PK is the composite tenant_session_id ({tenant}#{session_id}), so
+    a Query for another tenant's session_id lands in a partition that does not
+    exist under the caller's tenant and returns ZERO rows. A foreign session_id
+    cannot be read cross-tenant even when the session_id string is known."""
+
+    def test_foreign_session_id_returns_no_decisions(self, mt_store):
+        sig = mt_store.Table(_settings.dynamodb_validation_signals_table_v2)
+        # Tenant A owns session "sess-shared" (a DENY decision on one request).
+        sig.put_item(Item={
+            "tenant_session_id": tenancy.compose("t_a", "sess-shared"),
+            "sk": "req1#100#sentra.policy", "session_id": "sess-shared",
+            "request_id": "req1", "source": "sentra.policy", "decision": "DENY",
+            "agent_id": "t_a-aws-x-1", "timestamp_ms": 100, "priority": 100,
+            "tenant_id": "t_a", "tenant_agent_id": tenancy.compose("t_a", "t_a-aws-x-1"),
+            "timestamp_iso": "2026-06-11T00:00:00.000Z"})
+
+        # Tenant A reads its own session -> the decision is visible.
+        ctx_a = _ctx(tenant_id="t_a", is_platform=False)
+        own = _as_tenant("t_a", lambda: R.get_session_decisions(session_id="sess-shared", ctx=ctx_a))
+        assert own["total"] >= 1
+        assert own["decisions"][0]["combined"]["decision"] == "DENY"
+
+        # Tenant B requests the SAME session_id string -> foreign partition -> empty.
+        ctx_b = _ctx(tenant_id="t_b", is_platform=False)
+        foreign = _as_tenant("t_b", lambda: R.get_session_decisions(session_id="sess-shared", ctx=ctx_b))
+        assert foreign["total"] == 0
+        assert foreign["decisions"] == []
+
+
+# ------------------------------------------------------------ GAP 2: list_agents cache leak
+class TestListAgentsCacheLeakRegression:
+    """GET /agents (routes.py:1382 -> AgentService.list_agents). REGRESSION GUARD
+    for the cross-tenant cache-key leak: list_agents caches on the process-global
+    singleton, and the pre-fix key omitted the tenant, so tenant B's list-read hit
+    tenant A's cached rows. Verified to FAIL against the tenant-less key and PASS
+    after the current_tenant()-prefixed key. The A-read populates the cache; the
+    B-read must NOT see A's row."""
+
+    def test_second_tenant_never_sees_first_tenants_cached_agents(self, mt_store):
+        reg = mt_store.Table(_settings.dynamodb_agent_registry_table_v2)
+        reg.put_item(Item={"tenant_id": "t_a", "agent_id": "t_a-aws-x-1", "status": "active",
+                           "name": "A", "visibility": "external", "platform": "bedrock"})
+        reg.put_item(Item={"tenant_id": "t_b", "agent_id": "t_b-aws-y-2", "status": "active",
+                           "name": "B", "visibility": "external", "platform": "bedrock"})
+
+        # A reads first -> populates the (now tenant-scoped) cache entry.
+        ctx_a = _ctx(tenant_id="t_a", is_platform=False)
+        a = _as_tenant("t_a", lambda: R.get_agents(enrich=False, managed_only=False, ctx=ctx_a))
+        assert {x["agent_id"] for x in a["agents"]} == {"t_a-aws-x-1"}
+
+        # B reads with the cache warm -> must get ONLY its own row, never A's.
+        ctx_b = _ctx(tenant_id="t_b", is_platform=False)
+        b = _as_tenant("t_b", lambda: R.get_agents(enrich=False, managed_only=False, ctx=ctx_b))
+        b_ids = {x["agent_id"] for x in b["agents"]}
+        assert b_ids == {"t_b-aws-y-2"}, b_ids
+        assert "t_a-aws-x-1" not in b_ids  # the leak this guard pins
+
+
+# ------------------------------------------------------------ POLICY cache leak
+class TestListPoliciesCacheLeakRegression:
+    """GET /policies (routes.py:1501 -> PolicyService.query_policies). REGRESSION
+    GUARD for the SAME cache-key leak class on the list-all (agent_id=None) path:
+    the DDB read is tenant-scoped via query_or_scan(current_tenant()), but the
+    pre-fix cache key omitted the tenant, so tenant B's list-all hit tenant A's
+    cached policies. Verified to FAIL against the tenant-less key and PASS after
+    the current_tenant()-prefixed key."""
+
+    def test_second_tenant_never_sees_first_tenants_cached_policies(self, mt_store):
+        pol = mt_store.Table(_settings.dynamodb_policies_metadata_table_v2)
+        pol.put_item(Item={"tenant_id": "t_a", "policy_id": "pol-a", "status": "active", "name": "A-pol"})
+        pol.put_item(Item={"tenant_id": "t_b", "policy_id": "pol-b", "status": "active", "name": "B-pol"})
+
+        # A reads the list-all path first -> warms the (now tenant-scoped) cache.
+        ctx_a = _ctx(tenant_id="t_a", is_platform=False)
+        a = _as_tenant("t_a", lambda: R.get_policies(ctx=ctx_a))
+        assert {p["policy_id"] for p in a["policies"]} == {"pol-a"}
+
+        # B reads with the cache warm -> must get ONLY its own policy, never A's.
+        ctx_b = _ctx(tenant_id="t_b", is_platform=False)
+        b = _as_tenant("t_b", lambda: R.get_policies(ctx=ctx_b))
+        b_ids = {p["policy_id"] for p in b["policies"]}
+        assert b_ids == {"pol-b"}, b_ids
+        assert "pol-a" not in b_ids  # the leak this guard pins

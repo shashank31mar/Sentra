@@ -156,7 +156,13 @@ class AgentService:
 
         try:
             # Check cache first (separate cache keys for enriched vs non-enriched)
-            cache_key = f"agents_list_enrich_{enrich}_managed_{managed_only}_fleet_{fleet}"
+            # Tenant-scoped cache key (WS-N): the DDB read is already scoped to
+            # current_tenant() via query_or_scan, but this cache lives on the
+            # PROCESS-GLOBAL singleton (get_cache_manager) with no per-request
+            # reset — a tenant-less key would serve tenant A's list to tenant B
+            # (cross-tenant leak). Prefix with the bound tenant, mirroring
+            # policy_engine's `policy_bundle:{current_tenant()}:` pattern.
+            cache_key = f"agents_list_{tenancy.current_tenant()}_enrich_{enrich}_managed_{managed_only}_fleet_{fleet}"
             cached_data = self.cache.get(cache_key)
             if cached_data:
                 logger.debug(f"Returning cached agents list (enrich={enrich})")
