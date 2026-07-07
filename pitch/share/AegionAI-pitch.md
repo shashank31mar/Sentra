@@ -1,6 +1,6 @@
-# AegionAI — The Control Plane for Every AI Agent
+# AegionAI — The Safety Layer for AI Agents
 
-### *Govern, secure, and stop every AI agent — across every cloud — from one neutral platform.*
+### *Govern, secure, and stop every AI agent — across every cloud — from one neutral control plane.*
 
 ---
 
@@ -70,11 +70,11 @@ Others *can* build pieces of this — but the most capable builders are structur
 
 **Shikhar Jain — Security Advisor.** Engineering Lead at LinkedIn; led the security posture for **$6B-revenue** AWS services (OpenSearch, CloudWatch) — the same domain the founder built in. Advising on detection strategy, threat modeling, and enterprise/bank security requirements.
 
-**Next hire.** A full-time **security co-founder** remains the round's first-priority hire — we are recruiting one as we speak, with our advisor helping shape the profile. **This round funds that hire first.** We own the gap rather than hide it; banks buy from credentialed security leadership, and that's the first dollar we spend.
+**Next hire.** A full-time **co-founder & CTO with a security background** remains the round's first-priority hire — we are recruiting one as we speak, with our advisor helping shape the profile. **This round funds that hire first.** We own the gap rather than hide it; banks buy from credentialed security leadership, and that's the first dollar we spend.
 
 ## The Ask
 
-**We're raising $5M — and we know exactly where every dollar goes.** ~45% builds the team (a ~8-person core: backend, ML, and frontend engineers, a dedicated **security/red-team co-founder/lead**, product, and enterprise go-to-market); **~20% is cloud + GPU infrastructure** ($0.8–1.2M; self-hosted models for the in-VPC / air-gapped editions); the rest, **compliance certification (SOC 2 Type II)**, go-to-market, and operations.
+**We're raising $5M — and we know exactly where every dollar goes.** ~45% builds the team (a ~8-person core: backend, ML, and frontend engineers, a **co-founder & CTO (security background)**, product, and enterprise go-to-market); **~20% is cloud + GPU infrastructure** ($0.8–1.2M; self-hosted models for the in-VPC / air-gapped editions); the rest, **compliance certification (SOC 2 Type II)**, go-to-market, and operations.
 
 That buys **30 months of runway** to ship the third cloud, **harden for enterprise** (single-tenant in-VPC + on-prem / air-gapped, on-device threat detection, resilience to sit in front of live money movement), **deepen our defenses** (threat detection + attack coverage), and convert **3 design partners into 3–5 paying enterprises — including one marquee financial-services name — reaching ~$500K–$1M in recurring revenue, SOC 2 Type II underway.**
 

@@ -57,7 +57,7 @@ This is **not a docs-only repo** — there is working implementation (Python + A
 ├── tests/  ·  lambda/  ·  scripts/  ·  config/
 │
 ├── lld/                          # 27 docs — ARCHITECTURE.md (the index) + NN-*.md (01–26)
-├── pitch/                        # share/ (STRATEGY, architecture-brief, one-pager-v2),
+├── pitch/                        # share/ (STRATEGY, architecture-brief, AegionAI-pitch),
 │                                 #   internal/, customer/, technical/, archive/, legal/
 │
 ├── PRD.md  ·  vision.md          # canonical requirements + vision

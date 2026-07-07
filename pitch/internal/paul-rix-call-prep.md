@@ -1,6 +1,6 @@
 # Paul Rix — Call Prep (TODAY, 2026-07-07)
 
-**Track:** Investor / connector (warm — via Randy) · **Artifact OK to share:** [one-pager v2](../share/one-pager-v2.md) + the 3-mode architecture slide.
+**Track:** Investor / connector (warm — via Randy) · **Artifact OK to share:** [AegionAI pitch](../share/AegionAI-pitch.md) + the 3-mode architecture slide.
 **Companion prep:** the objection cheat-sheet [investor-qa-objection-handling.md](investor-qa-objection-handling.md) is the doc to skim (Part B = investor grill). [rutvik-call-prep.md](rutvik-call-prep.md) is Zafar-specific (a *response to his critique*) — NOT for Paul; only borrow its crisp answers.
 
 ---

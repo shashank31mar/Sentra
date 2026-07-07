@@ -5,7 +5,7 @@
 **Last Updated:** 2026-06-19
 **Status:** Draft for Review
 **Owner:** Shashank Gupta (Founder/CEO)
-**Companion docs:** [ARCHITECTURE.md](lld/ARCHITECTURE.md) (the "how") · [STRATEGY.md](pitch/share/STRATEGY.md) (market / GTM / roadmap) · [vision.md](vision.md) (vision & pillars) · [pitch/one-pager-v2.md](pitch/share/one-pager-v2.md) (the "why")
+**Companion docs:** [ARCHITECTURE.md](lld/ARCHITECTURE.md) (the "how") · [STRATEGY.md](pitch/share/STRATEGY.md) (market / GTM / roadmap) · [vision.md](vision.md) (vision & pillars) · [pitch/AegionAI-pitch.md](pitch/share/AegionAI-pitch.md) (the "why")
 
 > This PRD defines **what** AegionAI Guard is — the product requirements and how they map to the strategic roadmap. (Market, GTM, and business targets live in [STRATEGY.md](pitch/share/STRATEGY.md); the "how we build it" lives in [ARCHITECTURE.md](lld/ARCHITECTURE.md), which references this PRD by requirement ID.)
 

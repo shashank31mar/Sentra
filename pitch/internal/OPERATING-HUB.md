@@ -3,7 +3,7 @@
 **The ONE live doc. Update this weekly; everything else is reference.**
 **Last updated:** 2026-07-07 · **Owner:** Shashank (founder)
 
-> Why this exists: there are ~29 pitch docs and they drift. This is the single place that answers "what stage am I in, what am I doing this week, and where does the real info live." If a fact here disagrees with a reference doc, **fix the reference doc.** Canonical facts live in [../share/STRATEGY.md](../share/STRATEGY.md) + [../share/one-pager-v2.md](../share/one-pager-v2.md) — never restate numbers here, link to them.
+> Why this exists: there are ~29 pitch docs and they drift. This is the single place that answers "what stage am I in, what am I doing this week, and where does the real info live." If a fact here disagrees with a reference doc, **fix the reference doc.** Canonical facts live in [../share/STRATEGY.md](../share/STRATEGY.md) + [../share/AegionAI-pitch.md](../share/AegionAI-pitch.md) — never restate numbers here, link to them.
 
 ---
 
@@ -14,7 +14,7 @@
 **Therefore the prime directive is: buy validation, not code.** Freeze net-new product features. Every founder-hour goes to conversations (CTO + design partners) until real signal tells you what to build next.
 
 **The two-person split (correct, keep it):**
-- **You (Shashank):** security CTO / co-founder hunt. This unblocks the *regulated/bank* segment — your biggest checks ([one-pager-v2.md:71](../share/one-pager-v2.md#L71): "this round funds that hire as the first priority").
+- **You (Shashank):** security CTO / co-founder hunt. This unblocks the *regulated/bank* segment — your biggest checks ([AegionAI-pitch.md:71](../share/AegionAI-pitch.md#L71): "this round funds that hire as the first priority").
 - **Partner:** investors + design partners.
 
 **The three numbers that define the next 90 days** (nothing else is progress):
@@ -60,14 +60,15 @@
 - Design partners: **6 contacted · 0 calls done · 0 pilots**
 - Investors: 3 warm/engaged (Rutvik, Randy, Zafar) · Jyoti (Harness/Unusual) not yet contacted
 
-- Investors/connectors: **Randy (bought in, now delivering intros) → Jeff (met, liked it, back in ~1wk) + Paul (meeting today)** — one Charlotte/GPCN/COO-Forum operator cluster, treat as angels/connectors not VCs. Plus Rutvik, Zafar; Jyoti not yet contacted.
+- Investors/connectors: **Randy (bought in, now delivering intros) → Jeff (met, liked it, back in ~1wk) + Paul (call done — proposed a GPCN compute+channel deal: ~$1k/mo, he intros us to customers across ~30K agents on his platform + funding connects)** — one Charlotte/GPCN/COO-Forum operator cluster, treat as angels/connectors not VCs. Plus Rutvik, Zafar; Jyoti not yet contacted.
+  - ⚠️ **Paul/GPCN deal — before signing:** confirm the 30K agents take real actions + are introducible; deploy PARALLEL (don't re-platform off AWS); check for finder's-fee/equity/exclusivity (esp. "funding help"); clean no-auto-renew exit; get intro+funding commitment in writing. Reframe spend as dogfooding the in-VPC edition. (Detail in [outreach-tracker.md](outreach-tracker.md) #12.)
 - Design partners: **Parminder (GE HealthCare, warm) responded — connecting this week.**
 
 **Rule:** a prospect that's been "Sent (LinkedIn)" >10 days with no reply gets a warm-intro attempt or a break-up note — no silent stalls. **When a connector delivers (Randy did), immediately ask for the *next* 2–3 names — a warm network compounds only if you keep pulling.**
 
 ---
 
-## 3. CTO / security co-founder tracker  ← NEW, keep it here
+## 3. Co-founder & CTO tracker (security background)  ← NEW, keep it here
 
 Derive the pipeline from **proof-URLs, not resumes** ([cofounder-search.md §3](../../cofounder-search.md)). One row per person.
 
@@ -89,7 +90,7 @@ State legend: `Sourced → Verified → Contacted → Replied → Call done → 
 | Doc | What it owns |
 |---|---|
 | [../share/STRATEGY.md](../share/STRATEGY.md) | Market, beachhead, moat, GTM ladder, the $5M ask |
-| [../share/one-pager-v2.md](../share/one-pager-v2.md) | The investor one-pager (share this, not any other) |
+| [../share/AegionAI-pitch.md](../share/AegionAI-pitch.md) | The investor one-pager (share this, not any other) |
 | [../share/architecture-brief.md](../share/architecture-brief.md) | Live-vs-roadmap capability table |
 | [../../PRD.md](../../PRD.md) · [../../vision.md](../../vision.md) | Requirements · vision |
 | [OPERATING-HUB.md](OPERATING-HUB.md) | ← this doc: stage, weekly plan, trackers |

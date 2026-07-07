@@ -144,7 +144,7 @@ Aligns to the product's P0/P1/P2 phasing and the GTM ladder. Detailed year-by-ye
 
 1. **Open-source core?** — OSS agent-policy spec + basic engine (HashiCorp / Snyk playbook) vs closed.
 2. **Pricing — price points & tiers (the rework).** The *basis* is decided: **per governed agent** (tiered), never per-action; infra bundled for Serverless, customer-borne for Dedicated/Self-Managed (see ARCHITECTURE §2.10). Open: the exact prices, volume tiers, and Dedicated managed-service premium — see `pricing-model.md`.
-3. **Security co-founder** — **advisor on board** (Shikhar Jain, Engineering Lead @ LinkedIn; led security posture for $6B-revenue AWS services); full-time **co-founder search active** for bank-grade procurement credibility.
+3. **Co-founder & CTO (security background)** — **advisor on board** (Shikhar Jain, Engineering Lead @ LinkedIn; led security posture for $6B-revenue AWS services); full-time **co-founder & CTO search active** for bank-grade procurement credibility.
 
 *(Resolved: beachhead = financial-action headline with infra/automation as the Stage-0 land, B2C-fraud opportunistic; product name = AegionAI Guard.)*
 

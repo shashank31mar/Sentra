@@ -67,11 +67,11 @@
 
 ## 4. One-Pager — Angel Investor
 
-> **⚠️ The canonical one-pager lives in [../share/one-pager-v2.md](../share/one-pager-v2.md)** (and its rendered PDF). Do NOT maintain a second copy here — the old inline version drifted badly (it said $2M/82%/44%/Aug-2026/$900M-SOM, a "50+ person team" bio, present-tense rollback, and "open-source the AgentPolicy CRD / Kubernetes for AI agents," all of which are now wrong or retired).
+> **⚠️ The canonical one-pager lives in [../share/AegionAI-pitch.md](../share/AegionAI-pitch.md)** (and its rendered PDF). Do NOT maintain a second copy here — the old inline version drifted badly (it said $2M/82%/44%/Aug-2026/$900M-SOM, a "50+ person team" bio, present-tense rollback, and "open-source the AgentPolicy CRD / Kubernetes for AI agents," all of which are now wrong or retired).
 >
-> **Use `one-pager-v2.md` as the source of truth.** Canonical facts as of 2026-07: raise **$5M / ~30 months**; **96%** run agents / **21%** have governance / **65%** had an incident; EU AI Act **already in force** (anchor on incidents, not a date); beachhead **financial-action agents at mid-market fintechs (Brex/Ramp/Mercury-tier)** with **infra/automation as the Stage-0 wedge**; team bio **"~100 engineers across two orgs for a $4B-revenue service"**; **block-before-execute ships, bounded rollback is roadmap**; ML runs in **shadow**; SOC 2 Type II **in progress.**
+> **Use `AegionAI-pitch.md` as the source of truth.** Canonical facts as of 2026-07: raise **$5M / ~30 months**; **96%** run agents / **21%** have governance / **65%** had an incident; EU AI Act **already in force** (anchor on incidents, not a date); beachhead **financial-action agents at mid-market fintechs (Brex/Ramp/Mercury-tier)** with **infra/automation as the Stage-0 wedge**; team bio **"~100 engineers across two orgs for a $4B-revenue service"**; **block-before-execute ships, bounded rollback is roadmap**; ML runs in **shadow**; SOC 2 Type II **in progress.**
 >
-> When the spoken pitch above and `one-pager-v2.md` disagree, **the share doc wins** — and fix the spoken script to match.
+> When the spoken pitch above and `AegionAI-pitch.md` disagree, **the share doc wins** — and fix the spoken script to match.
 
 ---
 

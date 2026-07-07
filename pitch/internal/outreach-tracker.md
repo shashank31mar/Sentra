@@ -110,10 +110,19 @@ State legend: `Not contacted` → `Sent (LinkedIn)` → `Responded` → `Moved t
 ### 12. Paul Rix — Global Private Cloud Network (GPCN) / ex-CEO Zanaris — **via Randy**
 - LinkedIn: https://www.linkedin.com/in/paul-rix-0b27b414a/
 - Startup-building exec; tied to **GPCN — private cloud + data-sovereignty** themes (incl. Canadian data-residency). US/Ontario. Engages with startup-investing content but no confirmed personal angel/VC role — treat as operator-exec / potential angel / connector.
-- **2026-07-07** — **Meeting TODAY.**
-- **Angle that lands with him:** his GPCN world is private-cloud / data-sovereignty → map straight onto our **in-VPC / air-gapped / data-residency** editions and the "your data never leaves your boundary" story. That's the part of the thesis he'll instinctively get; lead there, not with the flywheel.
-- **Ask:** soft — invest and/or intros; if he's technical enough, feel out a design-partner or advisory angle on the private-cloud side.
-- **Next:** _[capture after today's call]_ — his interest level, whether he invests personally, names he'd intro, any GPCN-customer DP angle.
+- **Angle that lands with him:** his GPCN world is private-cloud / data-sovereignty → map straight onto our **in-VPC / air-gapped / data-residency** editions and the "your data never leaves your boundary" story.
+- **2026-07-07 — CALL DONE. He proposed a deal (verbal):**
+  - **We move to GPCN compute** at **~$1,000/mo** (he floated a 3-month framing).
+  - **In return:** once we're on his platform, he **introduces us to customers** — he says **~30K agents run on GPCN compute** and he'll vouch for us as "an awesome security company that secures agents." Claims connects with **big companies** + can **help with funding**.
+- **This is a partnership+channel deal, not a pure investor conversation.** The intros/funding-help are the prize; the compute spend is partly the price of them.
+- **⚠️ Open questions to resolve BEFORE signing (must be in the contract):**
+  1. **Do those 30K agents take real ACTIONS (money/infra/data), or chatbots?** And are they *his customers'* agents he can actually introduce? → determines if the channel is gold or noise.
+  2. **Deployment = a PARALLEL Sentra instance on GPCN (the in-VPC demo), NOT re-platforming off AWS.** Don't rip out the stack mid-validation.
+  3. **Any finder's fee / commission / equity / exclusivity?** — esp. "help with funding." A % of a raise = finder's fee = securities-law problem. Intros = yes; a cut of the round = flag + lawyer.
+  4. **Clean exit** — no auto-renew; month-to-month or 3-month max; walk after trial.
+  5. **Customer-intro + funding-help commitment written into the doc** (mutual), not just verbal.
+- **Reframe internally:** the compute spend = **dogfooding the in-VPC / data-sovereignty edition** (a real proof point), not a favor.
+- **Next:** (1) send the warm reply asking him to send the agreement (keep term/number OPEN — don't lock 3mo or $1000 in the email; those are his to put in the doc, you review first); (2) on receipt, check the 5 items above; (3) get a lawyer's 30-min read if there's ANY fee/equity/exclusivity clause.
 
 ### 10. Jyoti Bansal — Harness (CEO) + Unusual Ventures (Co-Founder) — **two-doors-one-key**
 - LinkedIn: https://www.linkedin.com/in/jyotibansal/

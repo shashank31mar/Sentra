@@ -26,7 +26,7 @@
 >
 > I'm building AegionAI — a control plane that governs what AI *agents* are allowed to *do* (the parameters, the sequence, the identity behind an action), neutral across AWS/Azure/GCP. The enforcement floor is live: block-before-execute, a Cedar policy layer, deterministic signatures, append-only audit. It runs today.
 >
-> The layer I can't build alone is yours: the detection science. My signature corpus is small, the ML classifier is still shadow, and the "does the data flywheel actually compound" question is unmeasured. I'm a platform/infra builder — I need a detection/runtime-security co-founder who owns the corpus, the shadow→enforce graduation, and the continuous red-teaming, and who a bank's security team will actually believe.
+> The layer I can't build alone is yours: the detection science. My signature corpus is small, the ML classifier is still shadow, and the "does the data flywheel actually compound" question is unmeasured. I'm a platform/infra builder — I'm looking for a **co-founder & CTO with a security background** who owns the corpus, the shadow→enforce graduation, and the continuous red-teaming, and who a bank's security team will actually believe.
 >
 > Not pitching a job — exploring whether the problem is interesting enough to you to talk. 25 min this/next week? If it's not your thing, no worries at all, and I'd still value a pointer to anyone you'd trust with it.
 >
@@ -45,7 +45,7 @@
 >
 > I'm building AegionAI: a runtime control plane that governs AI-agent *actions* — evaluating what an action does (amount, destination, sequence, the identity behind it) and blocking the harmful one before it executes, neutral across clouds. The deterministic floor is live today; the audit trail is append-only.
 >
-> Two gaps I need a co-founder for, and both are yours: (1) the detection/enforcement depth that makes this trustworthy on real money movement, and (2) the credibility a regulated buyer's security team signs off on — something a solo platform builder can't self-assert. This is a full-time co-founder conversation, not a hire.
+> Two gaps I'm looking for a **co-founder & CTO** to own, and both are yours: (1) the detection/enforcement depth that makes this trustworthy on real money movement, and (2) the credibility a regulated buyer's security team signs off on — something a solo platform builder can't self-assert. This is a full-time co-founder conversation, not a hire.
 >
 > Worth 25 minutes to see if the problem grabs you? Happy to show the live interception. Easy no if the timing's wrong.
 >
@@ -60,7 +60,7 @@
 
 > Hi [Mutual],
 >
-> Quick one — do you know [Target Name] ([role] at [Company]) well enough to intro me? I'm looking for a technical co-founder on the security side and their [detection work / appsec background] is close to exactly what I need.
+> Quick one — do you know [Target Name] ([role] at [Company]) well enough to intro me? I'm looking for a **co-founder & CTO with a security background** and their [detection work / appsec background] is close to exactly what I need.
 >
 > Forwardable blurb below so it's zero effort — and total fine if it's not a strong enough tie.
 >
@@ -68,7 +68,7 @@
 >
 > ---
 > *Forwardable:*
-> *[Name] is building AegionAI, a control plane that governs what AI agents are allowed to* do *across any cloud — the enforcement floor is already live in production. He's looking for a security co-founder to own the detection science and carry the buyer credibility. Thought of you given [Target]'s work on [X]. Worth a 25-min intro call?*
+> *[Name] is building AegionAI, a control plane that governs what AI agents are allowed to* do *across any cloud — the enforcement floor is already live in production. He's looking for a co-founder & CTO (security background) to own the detection science and carry the buyer credibility. Thought of you given [Target]'s work on [X]. Worth a 25-min intro call?*
 
 ---
 

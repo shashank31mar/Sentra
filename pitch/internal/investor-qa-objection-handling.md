@@ -10,7 +10,7 @@
 
 **How this doc is organized:**
 - **Part A — Technical / Product Differentiation** (Q1–Q7): why a customer can't DIY this, where the gate goes, how it differs from detectors/RBAC. The "is this real engineering?" questions.
-- **Part B — Strategic & Investor Objections** (B1–B13): the *grill* — moat, hot-path/latency, rollback claims, competitive landscape, team, financials, stats. The "is this an investable company?" questions. Companion docs: [one-pager-v2.md](../share/one-pager-v2.md), [STRATEGY.md](../share/STRATEGY.md), [rutvik-call-prep.md](rutvik-call-prep.md) (Zafar prep).
+- **Part B — Strategic & Investor Objections** (B1–B13): the *grill* — moat, hot-path/latency, rollback claims, competitive landscape, team, financials, stats. The "is this an investable company?" questions. Companion docs: [AegionAI-pitch.md](../share/AegionAI-pitch.md), [STRATEGY.md](../share/STRATEGY.md), [rutvik-call-prep.md](rutvik-call-prep.md) (Zafar prep).
 
 > **⚠️ 2026 reality check (the framing that changed):** It is no longer true that "competitors only detect, we enforce." Lakera (→Check Point), CalypsoAI (→F5), HiddenLayer, and Zenity now **block inline**. Our differentiation is *not* "we block, they don't" — it's **(1) we govern the *action + parameters*, not just prompt content; (2) we're **stateful** (trust decay, quarantine, rollback) where they're per-prompt; (3) we're a **neutral cross-vendor plane** — Zenity blocks Foundry-only, the clouds guard only their own.** Update any old "they only warn" phrasing to this.
 
@@ -255,11 +255,11 @@ If they mean "intercept closer to the model": two legit options —
 
 ---
 
-### B11. "Single-founder risk — no security co-founder, selling into banks." *(OWN IT — action item, don't spin)*
+### B11. "Single-founder risk — no co-founder/CTO, selling into banks." *(OWN IT — action item, don't spin)*
 
-**One-liner**: You're right that a solo founder can't self-assert bank-grade security credibility — which is why we already have a **security advisor on board: Shikhar Jain, Engineering Lead at LinkedIn, who led the security posture for $6B-revenue AWS services (OpenSearch, CloudWatch).** He advises today; separately, the round's **first dollar funds a full-time security co-founder** — that search is active now.
+**One-liner**: You're right that a solo founder can't self-assert bank-grade security credibility — which is why we already have a **security advisor on board: Shikhar Jain, Engineering Lead at LinkedIn, who led the security posture for $6B-revenue AWS services (OpenSearch, CloudWatch).** He advises today; separately, the round's **first dollar funds a full-time co-founder & CTO with a security background** — that search is active now.
 
-**Backup**: Keep the two distinct — **Shikhar is an advisor at this stage, not the co-founder** (never imply otherwise in a room). The advisor strengthens credibility now; it does **not** close the co-founder gap, which stays an open item in [STRATEGY.md](../share/STRATEGY.md). Turn the gap into a request: *"Who in your network is a security co-founder I should be talking to?"* Operators respect a founder who names the gap and recruits against it. *(Randy is a separate investor/connector — not the security advisor. Keep all three roles distinct.)*
+**Backup**: Keep the two distinct — **Shikhar is an advisor at this stage, not the co-founder/CTO** (never imply otherwise in a room). The advisor strengthens credibility now; it does **not** close the co-founder gap, which stays an open item in [STRATEGY.md](../share/STRATEGY.md). Turn the gap into a request: *"Who in your network is a co-founder & CTO on the security side I should be talking to?"* Operators respect a founder who names the gap and recruits against it. *(Randy is a separate investor/connector — not the security advisor. Keep all three roles distinct.)*
 
 ---
 
@@ -297,5 +297,5 @@ If they mean "intercept closer to the model": two legit options —
 ### Part B reusable closers
 - **The moat (strategic)**: "The intercept is old tech — anyone can copy it. What they can't copy is being *neutral across every cloud* and the *cross-vendor threat network* that only a neutral player can build. That's the Wiz playbook."
 - **On the platforms**: "AWS guards AWS, Azure guards Azure. Neither will ever guard the other. The enterprise running agents on both has no neutral control point — that's us."
-- **On the hard gaps**: "Two things you flagged I can't fix with a slide — a security co-founder and a signed LOI. Both are exactly what this round is for, and I'd rather name them than pretend."
+- **On the hard gaps**: "Two things you flagged I can't fix with a slide — a co-founder & CTO on the security side, and a signed LOI. Both are exactly what this round is for, and I'd rather name them than pretend."
 - **On enforcement parity**: "Yes, they block now too. The difference is we govern the *action and its parameters* with session state, and we're the one plane that works across every vendor — not locked to one platform's hooks."

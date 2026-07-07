@@ -122,4 +122,4 @@ A working demonstration enforcing across two clouds (AWS and Azure) runs today �
 
 ---
 
-*Companion docs (shared in confidence): [STRATEGY.md](STRATEGY.md) (market / GTM / moat) · [one-pager-v2.md](one-pager-v2.md) (the why).*
+*Companion docs (shared in confidence): [STRATEGY.md](STRATEGY.md) (market / GTM / moat) · [AegionAI-pitch.md](AegionAI-pitch.md) (the why).*
