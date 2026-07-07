@@ -127,9 +127,16 @@ def scenario_j2_4_positive(canary_client, path: str, method: str,
     200-wrapping-an-error. The DOCUMENTED-correct status depends on the route's gate:
 
       * an ``authz_gap`` mutation (WS-M ``require_role``/``require_platform``) → a
-        FAIL-SECURE refusal of the un-authenticated caller: **401/403** is the correct
-        positive outcome, NOT a 2xx. A 2xx here means the WS-M lock leaked → RED
-        (SEC-12 ``AUTHZ_GAP_CLOSED_MANIFEST_STALE``, asserted by the coverage guard).
+        FAIL-SECURE refusal of the un-authenticated caller: an honest **4xx**
+        (401/403 auth, or 400/422 if the route's body-validation fires before the
+        auth dependency — the ordering differs per route AND between the hermetic
+        TestClient and the live ALB/API-GW path, e.g. ``POST /v1/rollback`` 401s
+        hermetically but 400s live on the empty probe body). What is FORBIDDEN is a
+        **2xx** — that means the mutation EXECUTED for an anonymous caller = the
+        WS-M lock leaked. The *specific* proof that ``require_role`` fires (and denies
+        the wrong role) is carried by the hermetic J7.2/J7.3 role-ladder tests
+        (test_j7_authz.py) — if the gate were removed, J7.3 (wrong-role → 403) fails.
+        This live leg is the coarser "no anonymous 2xx on a gated mutation" monitor.
       * a ``dataplane_bind`` read (verified-agent-JWT bind, WS-M M5.2) → EITHER a
         401 (tokenless under the enforce ceiling / ``require_dataplane_credential``
         latch, the deployed reality) OR a 200 (ambient read at the hermetic identity
@@ -145,9 +152,13 @@ def scenario_j2_4_positive(canary_client, path: str, method: str,
     # Universal invariant, every route: an honest status, never a 5xx.
     assert resp.status_code < 500, f"{method} {path} → {resp.status_code}: {resp.text[:200]}"
     if authz_gap:
-        assert resp.status_code in (401, 403), (
+        # FORBID a 2xx (the mutation executed for an anonymous caller = lock leaked).
+        # 3xx is equally wrong for an API mutation. Any 4xx is an honest refusal;
+        # the SPECIFIC require_role/wrong-role proof is the hermetic J7.2/J7.3 ladder.
+        assert 400 <= resp.status_code < 500, (
             f"{method} {path} is a WS-M-gated mutation — an un-authenticated caller "
-            f"MUST be refused 401/403, got {resp.status_code} (authz lock leaked?)"
+            f"MUST be refused with a 4xx (not executed), got {resp.status_code} "
+            f"(a 2xx here = the authz lock leaked → SEC-12 AUTHZ_GAP_CLOSED_MANIFEST_STALE)"
         )
     elif dataplane_bind:
         assert resp.status_code in (200, 401, 422), (
