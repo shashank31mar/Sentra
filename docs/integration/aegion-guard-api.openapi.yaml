@@ -198,6 +198,7 @@ paths:
       x-audience: customer-reporting
       operationId: getSessionSignals
       summary: Raw signal stream for a session
+      security: [ { OperatorSession: [] } ]
       x-internal: true
       description: |
         Raw per-signal rows (no combiner). Under identity enforce (or with the credential latch on),
@@ -220,6 +221,7 @@ paths:
       x-audience: customer-reporting
       operationId: scanDecisions
       summary: List decisions across sessions (paginated)
+      security: [ { OperatorSession: [] } ]
       description: |
         Cross-session feed of recent decisions, newest first. Cursor-paginated: pass the prior
         response's `next_token` as `cursor` to page back through history (default window 30 days).
@@ -252,6 +254,7 @@ paths:
       x-audience: customer-reporting
       operationId: getSessions
       summary: Query sessions (paginated)
+      security: [ { OperatorSession: [] } ]
       parameters:
         - { name: status, in: query, schema: { $ref: '#/components/schemas/QuarantineStatus' }, description: active | quarantined | suspended }
         - { name: agent_id, in: query, schema: { type: string } }
@@ -276,6 +279,7 @@ paths:
       x-audience: customer-reporting
       operationId: getSessionDecisions
       summary: Per-request decision trace for a session
+      security: [ { OperatorSession: [] } ]
       description: |
         The forensic view: each request's combined verdict plus the per-validator breadcrumbs
         (`signals[]`), the prompt (`user_input`), and the caller IP. Powers "why was this blocked".
@@ -293,6 +297,7 @@ paths:
       x-audience: customer-reporting
       operationId: getSessionTrail
       summary: Full decision trail for one request (four-bucket coverage view)
+      security: [ { OperatorSession: [] } ]
       description: |
         The SOC console decision-detail view for a single request: every validator classified into
         `ran | ran_abstain | ran_error | not_run` in coverage order, with `winning_source`/`block_point`
@@ -314,6 +319,7 @@ paths:
       x-audience: customer-reporting
       operationId: getLogs
       summary: Query the compliance audit log (CloudWatch-backed)
+      security: [ { OperatorSession: [] } ]
       description: The long-term audit archive. For recent/hot reads prefer `/v1/decisions` (DDB-backed).
       parameters:
         - { name: since, in: query, schema: { type: string, format: date-time } }
@@ -334,6 +340,7 @@ paths:
                   logs: { type: array, items: { $ref: '#/components/schemas/LogEntry' } }
                   total: { type: integer }
                   next_token: { type: [string, 'null'] }
+        '401': { $ref: '#/components/responses/Unauthorized' }
 
   /v1/logs/conversation/{conversation_id}:
     get:
@@ -341,9 +348,10 @@ paths:
       x-audience: customer-reporting
       operationId: getConversationTimeline
       summary: Reconstruct a conversation's decision timeline
+      security: [ { OperatorSession: [] } ]
       x-internal: true
       parameters: [ { name: conversation_id, in: path, required: true, schema: { type: string } } ]
-      responses: { '200': { description: Timeline., content: { application/json: { schema: { type: object } } } } }
+      responses: { '200': { description: Timeline., content: { application/json: { schema: { type: object } } } }, '401': { $ref: '#/components/responses/Unauthorized' }, '404': { $ref: '#/components/responses/NotFound' } }
 
   /v1/metrics:
     get:
@@ -351,6 +359,7 @@ paths:
       x-audience: customer-reporting
       operationId: getMetrics
       summary: Summary metrics over a time range
+      security: [ { OperatorSession: [] } ]
       parameters:
         - { name: since, in: query, schema: { type: string, format: date-time } }
         - { name: until, in: query, schema: { type: string, format: date-time } }
@@ -362,10 +371,12 @@ paths:
       x-audience: customer-reporting
       operationId: getMetricsOverview
       summary: Dashboard KPI overview
+      security: [ { OperatorSession: [] } ]
       parameters: [ { name: range, in: query, schema: { type: string, enum: [1h, 24h, 7d, 30d], default: 24h } } ]
       responses:
         '200': { description: KPI overview., content: { application/json: { schema: { $ref: '#/components/schemas/MetricsOverview' } } } }
         '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
 
   /v1/metrics/platform-distribution:
     get:
@@ -373,6 +384,7 @@ paths:
       x-audience: customer-reporting
       operationId: getPlatformDistribution
       summary: Agent/decision distribution by cloud platform
+      security: [ { OperatorSession: [] } ]
       responses: { '200': { description: Distribution., content: { application/json: { schema: { type: object } } } } }
 
   /v1/metrics/decisions-timeseries:
@@ -381,12 +393,14 @@ paths:
       x-audience: customer-reporting
       operationId: getDecisionsTimeseries
       summary: Allowed-vs-blocked time series
+      security: [ { OperatorSession: [] } ]
       parameters:
         - { name: range, in: query, schema: { type: string, enum: [1h, 24h, 7d, 30d], default: 24h } }
         - { name: bucket, in: query, schema: { type: string, enum: [1h, 1d], default: 1h } }
       responses:
         '200': { description: Series., content: { application/json: { schema: { type: object } } } }
         '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
 
   # ----------------------------------------------------------------- Agents
   /v1/agents:
@@ -395,6 +409,7 @@ paths:
       x-audience: customer-reporting
       operationId: getAgents
       summary: List managed agents
+      security: [ { OperatorSession: [] } ]
       parameters:
         - { name: enrich, in: query, schema: { type: boolean, default: true } }
         - { name: managed_only, in: query, schema: { type: boolean, default: false }, description: "Filter to agents with observed /v1/validate traffic (each then carries lifecycle_status=managed and last_active)." }
@@ -407,7 +422,8 @@ paths:
       x-audience: customer-reporting
       operationId: getAgent
       summary: Get one agent
-      responses: { '200': { description: Agent., content: { application/json: { schema: { type: object } } } }, '404': { $ref: '#/components/responses/NotFound' } }
+      security: [ { OperatorSession: [] } ]
+      responses: { '200': { description: Agent., content: { application/json: { schema: { type: object } } } }, '401': { $ref: '#/components/responses/Unauthorized' }, '404': { $ref: '#/components/responses/NotFound' } }
 
   /v1/agents/{agent_id}/tools:
     parameters: [ { $ref: '#/components/parameters/AgentId' } ]
@@ -416,6 +432,7 @@ paths:
       x-audience: customer-reporting
       operationId: getAgentTools
       summary: List an agent's tools and which are allowed
+      security: [ { OperatorSession: [] } ]
       responses: { '200': { description: Tools., content: { application/json: { schema: { type: object } } } } }
 
   /v1/agents/{agent_id}/policies:
@@ -465,6 +482,7 @@ paths:
       x-audience: customer-admin
       operationId: getPolicies
       summary: List policies
+      security: [ { OperatorSession: [] } ]
       parameters:
         - { name: agent_id, in: query, schema: { type: string } }
         - { name: status, in: query, schema: { $ref: '#/components/schemas/PolicyStatus' } }
@@ -496,8 +514,9 @@ paths:
       x-audience: customer-admin
       operationId: getPolicyById
       summary: Get a policy (with content)
+      security: [ { OperatorSession: [] } ]
       parameters: [ { name: include_content, in: query, schema: { type: boolean, default: true } } ]
-      responses: { '200': { description: Policy., content: { application/json: { schema: { type: object } } } }, '404': { $ref: '#/components/responses/NotFound' } }
+      responses: { '200': { description: Policy., content: { application/json: { schema: { type: object } } } }, '401': { $ref: '#/components/responses/Unauthorized' }, '404': { $ref: '#/components/responses/NotFound' } }
     put:
       tags: [Policies]
       x-audience: customer-admin
@@ -562,6 +581,7 @@ paths:
       x-audience: customer-admin
       operationId: getSigmaRules
       summary: List threat-detection (sigma) rules
+      security: [ { OperatorSession: [] } ]
       description: Sorted most-active-first by per-rule CloudWatch match counts over `range`. Fails safe (200 + empty `rules` + `error`) on internal error.
       parameters:
         - { name: status, in: query, schema: { type: string, enum: [stable, experimental, deprecated] }, description: Rule status filter (400 if invalid). }
@@ -601,9 +621,11 @@ paths:
       x-audience: customer-admin
       operationId: getSigmaRuleContent
       summary: Get a sigma rule's full detection content (selections + patterns)
+      security: [ { OperatorSession: [] } ]
       description: A UI-friendly breakdown of the Sigma detection block — the top-level condition plus one entry per detection selection with its matched field and literal patterns.
       responses:
         '200': { description: Rule content breakdown., content: { application/json: { schema: { $ref: '#/components/schemas/SigmaRuleContent' } } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
         '404': { $ref: '#/components/responses/NotFound' }
 
   # ----------------------------------------------------------------- Containment & Rollback
@@ -729,6 +751,7 @@ paths:
       x-internal: true
       operationId: discoveryAgents
       summary: Discovered (unmanaged) agents
+      security: [ { OperatorSession: [] } ]
       parameters:
         - { name: cloud_provider, in: query, schema: { type: string } }
         - { name: framework, in: query, schema: { type: string } }
@@ -741,9 +764,9 @@ paths:
         '200': { description: OK, content: { application/json: { schema: { type: object } } } }
         '400': { $ref: '#/components/responses/BadRequest' }
   /v1/discovery/summary:
-    get: { tags: [Discovery], x-audience: internal, x-internal: true, operationId: discoverySummary, summary: Discovery summary, responses: { '200': { description: OK, content: { application/json: { schema: { type: object } } } } } }
+    get: { tags: [Discovery], x-audience: internal, x-internal: true, operationId: discoverySummary, summary: Discovery summary, security: [ { OperatorSession: [] } ], responses: { '200': { description: OK, content: { application/json: { schema: { type: object } } } } } }
   /v1/discovery/platforms:
-    get: { tags: [Discovery], x-audience: internal, x-internal: true, operationId: discoveryPlatforms, summary: Per-platform scan status, responses: { '200': { description: OK, content: { application/json: { schema: { type: object } } } } } }
+    get: { tags: [Discovery], x-audience: internal, x-internal: true, operationId: discoveryPlatforms, summary: Per-platform scan status, security: [ { OperatorSession: [] } ], responses: { '200': { description: OK, content: { application/json: { schema: { type: object } } } } } }
   /v1/discovery/import:
     post:
       tags: [Discovery]
@@ -783,6 +806,7 @@ paths:
       x-internal: true
       operationId: listConnections
       summary: List the tenant's cloud connections
+      security: [ { OperatorSession: [] } ]
       description: Tenant-scoped read (ambient tenant). The `azure_secret_ref` is never projected.
       responses:
         '200':
@@ -820,8 +844,10 @@ paths:
       x-internal: true
       operationId: getConnection
       summary: Get one cloud connection
+      security: [ { OperatorSession: [] } ]
       responses:
         '200': { description: The connection., content: { application/json: { schema: { $ref: '#/components/schemas/CloudConnection' } } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
         '404': { $ref: '#/components/responses/NotFound' }
     put:
       tags: [Discovery]

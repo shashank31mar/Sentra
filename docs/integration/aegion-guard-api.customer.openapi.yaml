@@ -210,6 +210,8 @@ paths:
       x-audience: customer-reporting
       operationId: scanDecisions
       summary: List decisions across sessions (paginated)
+      security:
+      - OperatorSession: []
       description: 'Cross-session feed of recent decisions, newest first. Cursor-paginated: pass the prior
 
         response''s `next_token` as `cursor` to page back through history (default window 30 days).
@@ -283,6 +285,8 @@ paths:
       x-audience: customer-reporting
       operationId: getSessions
       summary: Query sessions (paginated)
+      security:
+      - OperatorSession: []
       parameters:
       - name: status
         in: query
@@ -330,6 +334,8 @@ paths:
       x-audience: customer-reporting
       operationId: getSessionDecisions
       summary: Per-request decision trace for a session
+      security:
+      - OperatorSession: []
       description: 'The forensic view: each request''s combined verdict plus the per-validator breadcrumbs
 
         (`signals[]`), the prompt (`user_input`), and the caller IP. Powers "why was this blocked".
@@ -366,6 +372,8 @@ paths:
       x-audience: customer-reporting
       operationId: getSessionTrail
       summary: Full decision trail for one request (four-bucket coverage view)
+      security:
+      - OperatorSession: []
       description: 'The SOC console decision-detail view for a single request: every validator classified
         into
 
@@ -410,6 +418,8 @@ paths:
       x-audience: customer-reporting
       operationId: getLogs
       summary: Query the compliance audit log (CloudWatch-backed)
+      security:
+      - OperatorSession: []
       description: The long-term audit archive. For recent/hot reads prefer `/v1/decisions` (DDB-backed).
       parameters:
       - name: since
@@ -462,6 +472,8 @@ paths:
                     type:
                     - string
                     - 'null'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
   /v1/metrics:
     get:
       tags:
@@ -469,6 +481,8 @@ paths:
       x-audience: customer-reporting
       operationId: getMetrics
       summary: Summary metrics over a time range
+      security:
+      - OperatorSession: []
       parameters:
       - name: since
         in: query
@@ -494,6 +508,8 @@ paths:
       x-audience: customer-reporting
       operationId: getMetricsOverview
       summary: Dashboard KPI overview
+      security:
+      - OperatorSession: []
       parameters:
       - name: range
         in: query
@@ -514,6 +530,8 @@ paths:
                 $ref: '#/components/schemas/MetricsOverview'
         '400':
           $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
   /v1/metrics/platform-distribution:
     get:
       tags:
@@ -521,6 +539,8 @@ paths:
       x-audience: customer-reporting
       operationId: getPlatformDistribution
       summary: Agent/decision distribution by cloud platform
+      security:
+      - OperatorSession: []
       responses:
         '200':
           description: Distribution.
@@ -535,6 +555,8 @@ paths:
       x-audience: customer-reporting
       operationId: getDecisionsTimeseries
       summary: Allowed-vs-blocked time series
+      security:
+      - OperatorSession: []
       parameters:
       - name: range
         in: query
@@ -563,6 +585,8 @@ paths:
                 type: object
         '400':
           $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
   /v1/agents:
     get:
       tags:
@@ -570,6 +594,8 @@ paths:
       x-audience: customer-reporting
       operationId: getAgents
       summary: List managed agents
+      security:
+      - OperatorSession: []
       parameters:
       - name: enrich
         in: query
@@ -599,6 +625,8 @@ paths:
       x-audience: customer-reporting
       operationId: getAgent
       summary: Get one agent
+      security:
+      - OperatorSession: []
       responses:
         '200':
           description: Agent.
@@ -606,6 +634,8 @@ paths:
             application/json:
               schema:
                 type: object
+        '401':
+          $ref: '#/components/responses/Unauthorized'
         '404':
           $ref: '#/components/responses/NotFound'
   /v1/agents/{agent_id}/tools:
@@ -617,6 +647,8 @@ paths:
       x-audience: customer-reporting
       operationId: getAgentTools
       summary: List an agent's tools and which are allowed
+      security:
+      - OperatorSession: []
       responses:
         '200':
           description: Tools.
@@ -727,6 +759,8 @@ paths:
       x-audience: customer-admin
       operationId: getPolicies
       summary: List policies
+      security:
+      - OperatorSession: []
       parameters:
       - name: agent_id
         in: query
@@ -824,6 +858,8 @@ paths:
       x-audience: customer-admin
       operationId: getPolicyById
       summary: Get a policy (with content)
+      security:
+      - OperatorSession: []
       parameters:
       - name: include_content
         in: query
@@ -837,6 +873,8 @@ paths:
             application/json:
               schema:
                 type: object
+        '401':
+          $ref: '#/components/responses/Unauthorized'
         '404':
           $ref: '#/components/responses/NotFound'
     put:
@@ -965,6 +1003,8 @@ paths:
       x-audience: customer-admin
       operationId: getSigmaRules
       summary: List threat-detection (sigma) rules
+      security:
+      - OperatorSession: []
       description: Sorted most-active-first by per-rule CloudWatch match counts over `range`. Fails safe
         (200 + empty `rules` + `error`) on internal error.
       parameters:
@@ -1032,6 +1072,8 @@ paths:
       x-audience: customer-admin
       operationId: getSigmaRuleContent
       summary: Get a sigma rule's full detection content (selections + patterns)
+      security:
+      - OperatorSession: []
       description: "A UI-friendly breakdown of the Sigma detection block \u2014 the top-level condition\
         \ plus one entry per detection selection with its matched field and literal patterns."
       responses:
@@ -1041,6 +1083,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/SigmaRuleContent'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
         '404':
           $ref: '#/components/responses/NotFound'
   /v1/quarantine/{session_id}:
