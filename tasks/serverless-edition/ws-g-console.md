@@ -3,7 +3,7 @@
 > **Doc role:** This is the **workstream SCOPE** — boundary, dependencies, real `file:line` anchors, footguns, and acceptance criteria. It is an **INPUT to this workstream's implementation-grade LLD**, *not* the granular task breakdown. The granular, buildable tasks are generated **from the approved LLD** (canonical order: HLD → LLD → tasks). See [00-index.md](00-index.md) for the doc-role map.
 
 **Parent HLD:** [hld/serverless-edition.md](../../hld/serverless-edition.md) — §8 hand-off **row 8** (`FR-13.3 console`) + **§6.2(f) "Console sign-in & who-sees-what"** ([:453–:465](../../hld/serverless-edition.md), recommendation row at [:636](../../hld/serverless-edition.md)).
-**Status:** Not started
+**Status:** Scope reconciled 2026-07-07 (WS-M shipped) — implementation-grade LLD authoring next (→ **[lld/40](../../lld/40-multi-tenant-console.md)**).
 **Owner:** TBD
 **Implements:** FR-13.1 (multi-tenant console), FR-13.2 (exhaustive dashboard set), FR-13.3 (login/tenancy model); refines **AD-8 / ADR-019**; adds **ADR-035** (federation seam, *scoped-now / deferred-last*). Net-new → master §7.13.
 **Not spike-gated** (the §6.4 GA-gate spike does not block this WS).
@@ -13,6 +13,13 @@
 ---
 
 ## 0. Scope-honesty banner — READ THIS FIRST (most of the "auth" half is already DONE)
+
+> **🔄 RECONCILED 2026-07-07 — WS-M SHIPPED; several "pending" claims below are now DONE.** WS-M (auth/authz) is **CODE-DONE + deployed to prod** (milestone-102, `main` @ `0e9f6d0`; LLD [lld/39](../../lld/39-authz-rbac-edge-authorizer.md)). The server-side authorization boundary WS-G was told to *defer to / coordinate with* WS-M is now **live**:
+> - **The server gate is SHIPPED, not pending.** `require_role` covers **18/21** mutating `routes.py` routes + `assert_owns(...)` anti-IDOR ([ownership.py:54](../../src/security-controller/app/api/ownership.py)); `X-Operator-Email` is fully removed (0 reads). **BUG-1 IDOR is closed.** ⇒ Everywhere below says "server gate lands in WS-M / re-homed / pending" → read as **"WS-M's gate is LIVE; WS-G's render-gate MIRRORS it and asserts the mapping."**
+> - **G3.3 Decision-detail: WS-D's `/trail` API is LIVE in prod** — bind the real trail, do **not** mark PARTIAL / bind legacy `DecisionTrace`.
+> - **G2.2 tenant-switcher: `TenantSwitcher.tsx` already exists + is wired into `TopBar`** (LLD-26 WS-C) → this is **VERIFY**, not build.
+> - **Edge authorizer decision = ADR-037 (NOT ADR-036 — that's taken by Detection-Depth).** Per ADR-037 the edge Lambda authorizer (M4) + IdP swap (M6) are **deferred**; in-service `verify_alb_oidc` + RBAC IS the boundary. WS-G's ADR-035 federation seam stays **design-only** (Cognito kept; seam not yet in code — `OperatorContext.sub` still from the Cognito claim).
+> - **This WS-G doc's LLD → [lld/40](../../lld/40-multi-tenant-console.md)** (lld/36 was WS-A's; the old cross-ref was wrong). The real remaining build is **RBAC render-gating (7 of 8 capabilities declared-but-unused today) + promoting embedded views to routes + Usage/Billing (WS-H dep) + the ADR-035 seam design.**
 
 The owner brief framed WS-G around "fix the security bug + build membership authority." **A code-grounded read shows the membership/RBAC authority is already built and live on dev** (the LLD-26 go-live, 2026-06-24). Do **NOT** rebuild it. Concretely, the following already exist and are wired:
 
@@ -195,6 +202,6 @@ flowchart TD
 - **HLD:** [hld/serverless-edition.md](../../hld/serverless-edition.md) §6.2(f) ([:453–:465](../../hld/serverless-edition.md)), recommendation row ([:636](../../hld/serverless-edition.md)), §8 hand-off row 8 ([:678](../../hld/serverless-edition.md)), security trust-boundaries ([:521–:536](../../hld/serverless-edition.md)), E2E test req (6) ([:564](../../hld/serverless-edition.md)).
 - **Sub-PRD:** [prd/serverless-edition.md](../../prd/serverless-edition.md) §4.10 Console Experience ([:231–:238](../../prd/serverless-edition.md)); §5 status ([:325–:327](../../prd/serverless-edition.md)): FR-13.1 NOT-DONE (UI layer), FR-13.2 PARTIAL, FR-13.3 PARTIAL.
 - **Sibling WS:** **WS-D** (decision-trail persistence, FR-6.8 — Decision-detail view binds to it); **WS-H** (metering/billing, FR-12.x — Usage view binds to it); **WS-E** (platform-admin surface — `_platform`, out of WS-G scope but shares `deps.py`).
-- **LLDs:** [LLD 26 §5–6](../../lld/26-multi-tenancy.md) (membership/RBAC/switcher — the LLD this extends); LLD 08 (auth & ALB — `verify_alb_oidc`, `GET /v1/me`).
-- **ADRs:** **ADR-035** (federation seam, scoped-now/deferred-last); **AD-8 / ADR-019** (console multi-tenant SSO/RBAC, refined).
+- **LLDs:** this WS-G doc's implementation-grade LLD → **[lld/40](../../lld/40-multi-tenant-console.md)** (to be authored; *not* lld/36 = WS-A SDK); extends [LLD 26 §5–6](../../lld/26-multi-tenancy.md) (membership/RBAC/switcher); LLD 08 (auth & ALB — `verify_alb_oidc`, `GET /v1/me`); **[lld/39](../../lld/39-authz-rbac-edge-authorizer.md)** (WS-M — the SHIPPED server-side authz boundary the render-gate mirrors).
+- **ADRs:** **ADR-035** (federation seam, scoped-now/deferred-last — WS-G designs, WS-M consumes); **AD-8 / ADR-019** (console multi-tenant SSO/RBAC, refined). *(Edge authorizer = **ADR-037**, owned + deferred by WS-M — NOT ADR-036, which is Detection-Depth Enforce Overrides.)*
 - **Code anchors:** `web/console/src/lib/{auth.ts:61, rbac.ts, tenant.ts, http.ts, api/me.ts, query/useMe.ts}`, `web/console/src/app/{routes.ts, navConfig.ts, AppLayout.tsx}`, `web/console/src/components/decisions/{DecisionTrace,DecisionReviewPanel}.tsx`, `web/console/src/lib/api/sessions.ts`; `src/security-controller/app/api/deps.py:{282,316,402}`, `app/api/tenancy_routes.py:59`, `app/services/tenant_service.py:244`, `app/combiners/{deny_overrides.py,sources.py}`.
