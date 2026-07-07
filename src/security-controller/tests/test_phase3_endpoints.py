@@ -50,13 +50,13 @@ def mock_discovery():
         yield svc
 
 
-def test_discovery_agents(client, mock_discovery):
+def test_discovery_agents(client, mock_discovery, as_editor):
     r = client.get("/v1/discovery/agents?status=unmanaged")
     assert r.status_code == 200
     assert r.json()["total"] == 1
 
 
-def test_discovery_summary_and_platforms(client, mock_discovery):
+def test_discovery_summary_and_platforms(client, mock_discovery, as_editor):
     assert client.get("/v1/discovery/summary").status_code == 200
     assert client.get("/v1/discovery/platforms").status_code == 200
 

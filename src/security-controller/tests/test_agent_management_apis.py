@@ -3,18 +3,27 @@ Integration Tests for Agent Management APIs
 
 Tests all 5 new GET endpoints with real service layer (mocked AWS).
 Target: >90% code coverage
+
+NOTE (WS-N): these routes now require operator OIDC auth (resolve_operator_tenant).
+The fixture overrides the dependency to provide a test operator context.
 """
 import pytest
 from fastapi.testclient import TestClient
 from unittest.mock import Mock, AsyncMock, patch
 
 from app.main import app
+from app.api.deps import OperatorContext, resolve_operator_tenant
 
 
 @pytest.fixture
 def client():
-    """Test client for FastAPI app"""
-    return TestClient(app)
+    """Test client for FastAPI app with operator auth override.
+    Also patches assert_owns since these tests use non-prefixed agent ids."""
+    app.dependency_overrides[resolve_operator_tenant] = lambda: OperatorContext(
+        sub="op-test", tenant_id="t_test", role="viewer", email="test@x.co")
+    with patch("app.api.routes.assert_owns", return_value=None):
+        yield TestClient(app)
+    app.dependency_overrides.pop(resolve_operator_tenant, None)
 
 
 @pytest.fixture

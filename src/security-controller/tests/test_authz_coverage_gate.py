@@ -188,6 +188,88 @@ def test_resource_id_routes_have_ownership_assert():
         f"add assert_owns or a reasoned ownership-exempt entry: {missing}")
 
 
+# ============================================================
+# WS-N N7 — READ-route auth coverage gate (extends WS-M's GET-blind gate)
+# ============================================================
+
+# Reasoned allowlist for GET routes without resolve_operator_tenant.
+# Each entry MUST carry a reason. Only genuinely tenant-agnostic routes belong.
+_READ_AUTHZ_ALLOWLIST = {
+    "health_check": "liveness probe; no auth, no tenant data",
+    # Data-plane reads gated by the M5 verified-JWT tenant-bind, NOT resolve_operator_tenant.
+    "get_session_trail": "data-plane read; M5 JWT-tenant-bind, not operator-OIDC",
+    "get_session_signals": "data-plane read; M5 JWT-tenant-bind, not operator-OIDC",
+}
+
+
+def _read_routes():
+    """(APIRoute, handler_name) for every GET route on the two control-plane routers."""
+    out = []
+    for mod in (routes_mod, tenancy_mod):
+        for r in mod.router.routes:
+            if not isinstance(r, APIRoute):
+                continue
+            if "GET" not in (r.methods or set()):
+                continue
+            out.append((r, r.endpoint.__name__))
+    return out
+
+
+def _has_read_auth_depends(route: APIRoute) -> bool:
+    """True if any Depends() on the endpoint resolves to resolve_operator_tenant,
+    require_role, or require_platform (any form of operator auth)."""
+    from app.api.deps import resolve_operator_tenant
+    sig = inspect.signature(route.endpoint)
+    for p in sig.parameters.values():
+        dep = getattr(p.default, "dependency", None)
+        if dep is None:
+            continue
+        # Direct resolve_operator_tenant
+        if dep is resolve_operator_tenant:
+            return True
+        name = getattr(dep, "__name__", "")
+        if name == "require_platform":
+            return True
+        if name == "resolve_operator_tenant":
+            return True
+        # require_role("x") -> inner `_dep` closure
+        if name == "_dep":
+            closure = dep.__closure__ or ()
+            vals = {c.cell_contents for c in closure}
+            if any(isinstance(v, str) for v in vals):
+                return True
+    return False
+
+
+def test_all_read_routes_have_auth_dep():
+    """WS-N N7: every GET route on the control-plane routers carries an auth
+    dependency (resolve_operator_tenant / require_role / require_platform), or is
+    on the reasoned allowlist."""
+    ungated = []
+    for route, name in _read_routes():
+        if name in _READ_AUTHZ_ALLOWLIST:
+            continue
+        if not _has_read_auth_depends(route):
+            ungated.append(f"GET {route.path} ({name})")
+    assert not ungated, (
+        "Ungated read route(s) — add Depends(resolve_operator_tenant) "
+        f"or a reasoned allowlist entry: {ungated}")
+
+
+def test_read_allowlist_requires_reason():
+    """Every read allowlist entry must carry a non-empty reason."""
+    for name, reason in _READ_AUTHZ_ALLOWLIST.items():
+        assert reason, f"allowlist entry {name!r} has no reason"
+
+
+def test_read_gate_accepts_dataplane_bind():
+    """The data-plane reads (trail, signals) are on the allowlist and do NOT
+    need resolve_operator_tenant (they use _dataplane_tenant_bind)."""
+    names = {name for _, name in _read_routes()}
+    for dp_name in ("get_session_trail", "get_session_signals"):
+        assert dp_name in _READ_AUTHZ_ALLOWLIST or dp_name not in names
+
+
 def test_allowlist_requires_reason():
     """Every allowlist entry carries a non-empty reason (no silent bypasses)."""
     for name, reason in {**_AUTHZ_ALLOWLIST, **_OWNERSHIP_EXEMPT}.items():

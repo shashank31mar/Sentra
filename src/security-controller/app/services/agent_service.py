@@ -106,49 +106,63 @@ class AgentService:
     def policies_metadata_table(self):
         return self.dynamodb.Table(tenancy.table_name('policies_metadata'))
 
-    def _scan_all_agents_sync(self) -> List[Dict]:
+    def _scan_all_agents_sync(self, fleet: bool = False) -> List[Dict]:
         """Paginated tenant-scoped scan of the agent registry (synchronous boto3).
 
         Extracted so :meth:`list_agents` can run it via ``asyncio.to_thread`` —
         the raw ``query_or_scan`` loop otherwise blocks the sole event loop.
+
+        Args:
+            fleet: When True, use ``fleet_scan`` (cross-tenant, for platform
+                   operators' fleet KPIs). When False (default), use
+                   ``query_or_scan`` (scoped to ``current_tenant()``).
         """
+        scan_fn = tenancy.fleet_scan if fleet else tenancy.query_or_scan
         agents: List[Dict] = []
         last_evaluated_key = None
         registry_table = self.agent_registry_table
         while True:
             if last_evaluated_key:
-                response = tenancy.query_or_scan(
+                response = scan_fn(
                     registry_table, ExclusiveStartKey=last_evaluated_key
                 )
             else:
-                response = tenancy.query_or_scan(registry_table)
+                response = scan_fn(registry_table)
             agents.extend(response.get('Items', []))
             last_evaluated_key = response.get('LastEvaluatedKey')
             if not last_evaluated_key:
                 break
         return agents
 
-    async def list_agents(self, enrich: bool = True, managed_only: bool = False) -> Dict:
+    async def list_agents(self, enrich: bool = True, managed_only: bool = False, fleet: bool = False) -> Dict:
         """
         List all agents with optional runtime statistics.
-        
+
         Args:
             enrich: If True (default), include runtime stats (ECS, CloudWatch, sessions).
                     Set to False for fast response (DynamoDB only).
-        
+            fleet: If True, scan ALL tenants (platform fleet view via fleet_scan).
+                   Default False = scoped to current_tenant() via query_or_scan.
+
         Data Sources:
         1. Agent metadata from sentra-agent-registry table (Scan with pagination)
         2. (If enrich=True) Runtime stats from ECS API, CloudWatch Logs, sessions
-        
+
         Returns:
             Dictionary with agents array and total count
         """
         start_time = time.time()
         cache_hit = False
-        
+
         try:
             # Check cache first (separate cache keys for enriched vs non-enriched)
-            cache_key = f"agents_list_enrich_{enrich}_managed_{managed_only}"
+            # Tenant-scoped cache key (WS-N): the DDB read is already scoped to
+            # current_tenant() via query_or_scan, but this cache lives on the
+            # PROCESS-GLOBAL singleton (get_cache_manager) with no per-request
+            # reset — a tenant-less key would serve tenant A's list to tenant B
+            # (cross-tenant leak). Prefix with the bound tenant, mirroring
+            # policy_engine's `policy_bundle:{current_tenant()}:` pattern.
+            cache_key = f"agents_list_{tenancy.current_tenant()}_enrich_{enrich}_managed_{managed_only}_fleet_{fleet}"
             cached_data = self.cache.get(cache_key)
             if cached_data:
                 logger.debug(f"Returning cached agents list (enrich={enrich})")
@@ -161,7 +175,7 @@ class AgentService:
             # so it does not block the sole asyncio loop and serialize the
             # dashboard's concurrent reads (RCA 2026-07-02).
             logger.info("Loading agents from sentra-agent-registry")
-            agents = await asyncio.to_thread(self._scan_all_agents_sync)
+            agents = await asyncio.to_thread(self._scan_all_agents_sync, fleet)
 
             logger.debug(f"Loaded {len(agents)} agents from DynamoDB")
 
@@ -240,15 +254,19 @@ class AgentService:
             # Return empty array on error (fail-safe for Dashboard)
             return {"agents": [], "total": 0, "error": str(e)}
     
-    async def get_cloud_provider_distribution(self) -> Dict[str, Any]:
+    async def get_cloud_provider_distribution(self, fleet: bool = False) -> Dict[str, Any]:
         """WS-21 T21: group active agents by hosting cloud_provider.
 
         Backs GET /v1/metrics/platform-distribution and the overview
         active_agents/clouds KPIs. Reuses list_agents (so the visibility=internal
         filter and registry source are applied consistently); counts only
         status=active agents.
+
+        Args:
+            fleet: When True, list_agents uses fleet_scan (cross-tenant) for the
+                   platform fleet dashboard. Default False = tenant-scoped.
         """
-        listed = await self.list_agents(enrich=False)
+        listed = await self.list_agents(enrich=False, fleet=fleet)
         agents = [a for a in listed.get('agents', []) if a.get('status') == 'active']
 
         counts: Dict[str, int] = {}

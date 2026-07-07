@@ -558,6 +558,7 @@ class SessionManager:
         agent_id: Optional[str] = None,
         limit: int = 50,
         cursor: Optional[str] = None,
+        tenant_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
         Query sessions with filters for API endpoint — cursor-paginated.
@@ -567,6 +568,8 @@ class SessionManager:
             agent_id: Filter by agent ID
             limit: Max results per page (default 50, max 200)
             cursor: Opaque base64 of the DynamoDB LastEvaluatedKey (round-trip unchanged)
+            tenant_id: When set, scope via query_or_scan (customer); when None,
+                       use fleet_scan (platform fleet view). WS-N N2.1.
 
         Returns:
             Dict with `sessions`, `total` (this page), and `next_token` (null on last page)
@@ -603,11 +606,12 @@ class SessionManager:
             sessions: List[Dict[str, Any]] = []
             last_key: Optional[Dict[str, Any]] = None
             while True:
-                # FLEET-WIDE (all tenants): the SOC console session list is a
-                # platform view. query_or_scan would show only current_tenant()'s
-                # sessions (=`default`), hiding every other tenant's. fleet_scan
-                # spans all partitions; pagination is unchanged.
-                response = tenancy.fleet_scan(self.table, **scan_kwargs)
+                # WS-N N2.1 dual-mode: tenant_id set → query_or_scan (customer,
+                # single-tenant); tenant_id None → fleet_scan (platform fleet view).
+                if tenant_id is not None:
+                    response = tenancy.query_or_scan(self.table, **scan_kwargs)
+                else:
+                    response = tenancy.fleet_scan(self.table, **scan_kwargs)
                 for item in response.get('Items', []):
                     sessions.append(self._format_session_for_api(item))
                 last_key = response.get('LastEvaluatedKey')
@@ -689,18 +693,19 @@ class SessionManager:
     # Analytics Methods (for Agent Management APIs)
     # ============================================================
 
-    async def count_sessions_by_status(self, status: str) -> int:
-        """WS-21 T20: count sessions in a given quarantine_status (fleet-wide).
+    async def count_sessions_by_status(self, status: str, tenant_id: Optional[str] = None) -> int:
+        """WS-21 T20: count sessions in a given quarantine_status.
 
         Used for the overview 'quarantined' KPI. Uses Select=COUNT so DDB does
-        the counting server-side. The paginated ``fleet_scan`` is synchronous
-        boto3, so it runs on a worker thread (``to_thread``) — a raw scan on the
-        sole asyncio loop serialized the dashboard's concurrent reads (RCA
-        2026-07-02: 4 concurrent reads each ~1.5s, finishing together).
-        """
-        return await asyncio.to_thread(self._count_sessions_by_status_sync, status)
+        the counting server-side. The paginated scan is synchronous boto3, so it
+        runs on a worker thread (``to_thread``).
 
-    def _count_sessions_by_status_sync(self, status: str) -> int:
+        WS-N N2.2 dual-mode: tenant_id set -> query_or_scan (customer-scoped);
+        tenant_id None -> fleet_scan (platform fleet view, original behavior).
+        """
+        return await asyncio.to_thread(self._count_sessions_by_status_sync, status, tenant_id)
+
+    def _count_sessions_by_status_sync(self, status: str, tenant_id: Optional[str] = None) -> int:
         try:
             from boto3.dynamodb.conditions import Attr
 
@@ -710,11 +715,12 @@ class SessionManager:
                 'FilterExpression': Attr('quarantine_status').eq(status),
             }
             while True:
-                # FLEET-WIDE (all tenants): this is a platform/SOC KPI, not a
-                # per-tenant read. query_or_scan would scope to current_tenant()
-                # (=`default` on an API-key console call) and miss every other
-                # tenant's quarantined sessions. See tenancy.fleet_scan.
-                response = tenancy.fleet_scan(self.table, **scan_kwargs)
+                # WS-N N2.2 dual-mode: tenant_id set → query_or_scan (scoped);
+                # tenant_id None → fleet_scan (platform fleet view).
+                if tenant_id is not None:
+                    response = tenancy.query_or_scan(self.table, **scan_kwargs)
+                else:
+                    response = tenancy.fleet_scan(self.table, **scan_kwargs)
                 count += response.get('Count', 0)
                 lek = response.get('LastEvaluatedKey')
                 if not lek:
@@ -725,24 +731,30 @@ class SessionManager:
             logger.exception(f"Failed to count sessions with status={status}")
             return 0
 
-    async def count_agents_below_trust(self, threshold: float = 70.0) -> int:
+    async def count_agents_below_trust(self, threshold: float = 70.0, tenant_id: Optional[str] = None) -> int:
         """WS-21 T20: count distinct agents whose average session trust < threshold.
 
         Backs the overview 'agents_below_threshold' KPI. Best-effort full scan
         (acceptable at MVP scale); aggregates per-agent average in memory. The
         synchronous scan runs on a worker thread so it does not block the loop
         (see :meth:`count_sessions_by_status`).
-        """
-        return await asyncio.to_thread(self._count_agents_below_trust_sync, threshold)
 
-    def _count_agents_below_trust_sync(self, threshold: float = 70.0) -> int:
+        WS-N N2.2 dual-mode: tenant_id set -> query_or_scan (customer-scoped);
+        tenant_id None -> fleet_scan (platform fleet view, original behavior).
+        """
+        return await asyncio.to_thread(self._count_agents_below_trust_sync, threshold, tenant_id)
+
+    def _count_agents_below_trust_sync(self, threshold: float = 70.0, tenant_id: Optional[str] = None) -> int:
         try:
             scores: Dict[str, list] = {}
             scan_kwargs = {'ProjectionExpression': 'agent_id, trust_score'}
             while True:
-                # FLEET-WIDE (all tenants): agents-below-trust is a platform KPI.
-                # query_or_scan would only aggregate current_tenant()'s sessions.
-                response = tenancy.fleet_scan(self.table, **scan_kwargs)
+                # WS-N N2.2 dual-mode: tenant_id set → query_or_scan (scoped);
+                # tenant_id None → fleet_scan (platform fleet view).
+                if tenant_id is not None:
+                    response = tenancy.query_or_scan(self.table, **scan_kwargs)
+                else:
+                    response = tenancy.fleet_scan(self.table, **scan_kwargs)
                 for item in response.get('Items', []):
                     agent_id = item.get('agent_id')
                     if not agent_id:

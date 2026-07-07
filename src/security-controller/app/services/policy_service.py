@@ -97,8 +97,16 @@ class PolicyService:
         cache_hit = False
 
         try:
-            # Build cache key (cursor included so pages don't collide)
-            cache_key = f"policies:agent={agent_id}:status={status}:limit={limit}:cursor={cursor}"
+            # Build cache key (cursor included so pages don't collide). Tenant-
+            # scoped (WS-N): the list-all path (agent_id=None) reads via
+            # query_or_scan(current_tenant()), but this cache is the PROCESS-GLOBAL
+            # singleton with no per-request reset — a tenant-less key would serve
+            # tenant A's policies to tenant B (cross-tenant leak). Prefix with the
+            # bound tenant, mirroring policy_engine's `policy_bundle:{current_tenant()}:`.
+            cache_key = (
+                f"policies:{tenancy.current_tenant()}:agent={agent_id}:"
+                f"status={status}:limit={limit}:cursor={cursor}"
+            )
             # Decode the opaque cursor into a DDB ExclusiveStartKey (ValueError → 400 upstream).
             start_key = decode_cursor(cursor) if cursor else None
             cached_data = self.cache.get(cache_key)
