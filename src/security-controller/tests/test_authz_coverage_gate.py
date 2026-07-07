@@ -282,3 +282,173 @@ def test_allowlist_requires_reason():
     """Every allowlist entry carries a non-empty reason (no silent bypasses)."""
     for name, reason in {**_AUTHZ_ALLOWLIST, **_OWNERSHIP_EXEMPT}.items():
         assert reason and reason.strip(), f"allowlist entry {name} needs a reason"
+
+
+# ==========================================================================
+# WS-N N7 (DEEP) — interprocedural sink-reachability gate (lld/40 §5.2, lines
+# 226-234). The shallow `test_all_read_routes_have_auth_dep` above only checks a
+# handler's OWN signature for a Depends. The REAL D10 bug class is a handler that
+# reaches a tenant-partition STORE-ACCESS SINK *through a service method* with no
+# bind (get_agents -> AgentService.list_agents -> tenancy.query_or_scan). A
+# body-only check passes that. This gate follows the call graph handler -> service
+# -> sink and FAILS a sink-reaching read that carries no operator bind.
+#
+# Per lld/40 line 234: a tenant-partitioned (sink-reaching) read may NEVER be
+# allowlisted — the allowlist is only for genuinely tenant-agnostic routes.
+# ==========================================================================
+import ast
+import os
+
+# The tenant-partition key-composing sinks (lld/40 line 228 + the two KCE/GSI helpers
+# in tenancy.py that compose a current_tenant()-scoped key). A GET handler transitively
+# reaching ANY of these reads a tenant partition and MUST carry an operator bind.
+_TENANT_SINKS = frozenset({
+    "query_or_scan", "fleet_scan", "signal_pk_value", "item_key",
+    "decision_date_gsi_value", "agent_index_kce_value",
+})
+
+# The service/util modules the read handlers reach through (handler -> these -> sink).
+_APP_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(routes_mod.__file__)))  # .../app
+# Scan the routers + EVERY service/util module (glob, not a hand-list — a hand-list
+# silently misses a new service and under-approximates, which is fail-OPEN). This
+# builds the whole-app name-keyed call graph.
+def _all_app_py_files():
+    files = []
+    for sub in ("api", "services", "utils", "combiners", "validators"):
+        d = os.path.join(_APP_ROOT, sub)
+        if not os.path.isdir(d):
+            continue
+        for root, _dirs, names in os.walk(d):
+            for n in names:
+                if n.endswith(".py"):
+                    files.append(os.path.join(root, n))
+    return files
+
+
+def _build_function_index():
+    """Parse every app .py file → {func_name: set(callee_names)} across the whole
+    app surface (keyed by bare function/method name — Python's dynamic dispatch makes
+    a fully-qualified graph infeasible, so we over-approximate by name, which is
+    fail-CLOSED: it can only flag MORE routes as sink-reaching, never fewer)."""
+    calls_by_func: dict[str, set] = {}
+
+    class _V(ast.NodeVisitor):
+        def __init__(self):
+            self.stack = []
+
+        def _enter(self, node):
+            self.stack.append(node.name)
+            calls_by_func.setdefault(node.name, set())
+            self.generic_visit(node)
+            self.stack.pop()
+
+        visit_FunctionDef = _enter
+        visit_AsyncFunctionDef = _enter
+
+        def visit_Call(self, node):
+            if self.stack:
+                fn = node.func
+                name = getattr(fn, "attr", None) or getattr(fn, "id", None)
+                if name:
+                    calls_by_func[self.stack[-1]].add(name)
+            self.generic_visit(node)
+
+    for path in _all_app_py_files():
+        with open(path) as f:
+            _V().visit(ast.parse(f.read(), filename=path))
+    return calls_by_func
+
+
+def _reaches_sink(func_name: str, index: dict, _seen=None) -> bool:
+    """True if func_name transitively calls any tenant-partition sink (DFS over the
+    name-keyed call graph, cycle-safe)."""
+    if _seen is None:
+        _seen = set()
+    if func_name in _seen:
+        return False
+    _seen.add(func_name)
+    callees = index.get(func_name, set())
+    if callees & _TENANT_SINKS:
+        return True
+    return any(_reaches_sink(c, index, _seen) for c in callees if c in index)
+
+
+def test_sink_reaching_reads_carry_operator_bind():
+    """WS-N N7 DEEP: every GET handler that transitively reaches a tenant-partition
+    sink MUST carry an operator bind (resolve_operator_tenant / require_role /
+    require_platform). A sink-reaching read may NOT rely on the allowlist (lld/40
+    line 234). This catches the interprocedural D10 bug class the shallow check misses."""
+    index = _build_function_index()
+    offenders = []
+    for route, name in _read_routes():
+        if not _reaches_sink(name, index):
+            continue  # tenant-agnostic by construction — nothing to bind
+        if _has_read_auth_depends(route):
+            continue  # sink-reaching AND bound → correct
+        # sink-reaching + unbound. The allowlist is NOT an escape hatch here.
+        offenders.append(f"GET {route.path} ({name}) reaches a tenant sink but has no operator bind")
+    assert not offenders, (
+        "Sink-reaching read route(s) missing an operator tenant bind (lld/40 §5.2 — "
+        "a tenant-partitioned read must be BOUND, never allowlisted):\n  " + "\n  ".join(offenders))
+
+
+def test_sink_reaching_read_not_on_allowlist():
+    """lld/40 line 234: a sink-reaching (tenant-partitioned) read must never appear on
+    the read allowlist — allowlisting a partitioned read rubber-stamps a leak."""
+    index = _build_function_index()
+    bad = [name for _, name in _read_routes()
+           if name in _READ_AUTHZ_ALLOWLIST and _reaches_sink(name, index)]
+    assert not bad, (
+        f"Sink-reaching reads illegally allowlisted (must be BOUND, not allowlisted): {bad}")
+
+
+def test_sink_set_covers_every_tenant_key_composer():
+    """META-GUARD (lld/40 line 228-229): the sink set can't silently go stale. Every
+    tenant-partition key-composing helper defined in tenancy.py MUST be in _TENANT_SINKS,
+    so a NEW `*_pk_value`/`*_gsi_value`/key-composer added later is force-added to the
+    gate (else this fails and the reachability gate would miss it)."""
+    tenancy_path = os.path.join(_APP_ROOT, "utils/tenancy.py")
+    with open(tenancy_path) as f:
+        tree = ast.parse(f.read())
+    # Heuristic name-match for the tenant-key-composer family (the concrete functions
+    # that compose a current_tenant()-scoped key / do a scoped read).
+    key_composers = {
+        n.name for n in ast.walk(tree)
+        if isinstance(n, ast.FunctionDef)
+        and (n.name.endswith("_pk_value") or n.name.endswith("_gsi_value")
+             or n.name.endswith("_kce_value") or n.name in {"item_key", "query_or_scan", "fleet_scan"})
+    }
+    missing = key_composers - _TENANT_SINKS
+    assert not missing, (
+        f"tenancy.py defines tenant-key composer(s) not in the N7 sink set: {missing}. "
+        "Add them to _TENANT_SINKS or the sink-reachability gate will miss reads using them.")
+
+
+def test_deep_gate_is_non_vacuous_flags_unbound_sink_reacher():
+    """Non-vacuity (lld/40 line 231/233): prove the gate FLAGS a sink-reaching handler
+    with no bind, and PASSES the same handler once bound. Uses a synthetic call-graph
+    index + fixture handlers (no live route registration needed)."""
+    from app.api.deps import resolve_operator_tenant
+    from fastapi import Depends
+
+    # A fake handler that reaches a sink via a service method (handler -> svc -> sink).
+    fake_index = {
+        "leaky_read": {"list_things"},        # handler calls a service method...
+        "list_things": {"query_or_scan"},     # ...which hits a tenant sink
+        "safe_read": {"static_lookup"},        # reaches no sink
+        "static_lookup": set(),
+    }
+    assert _reaches_sink("leaky_read", fake_index) is True   # the bug class is detected
+    assert _reaches_sink("safe_read", fake_index) is False   # tenant-agnostic is clean
+
+    # And the bind-recognizer distinguishes bound vs unbound signatures.
+    def _unbound(agent_id: str):  # no operator Depends  # pragma: no cover
+        ...
+
+    async def _bound(agent_id: str, ctx=Depends(resolve_operator_tenant)):  # pragma: no cover
+        ...
+
+    unbound_route = APIRoute("/x", _unbound, methods=["GET"])
+    bound_route = APIRoute("/x", _bound, methods=["GET"])
+    assert _has_read_auth_depends(unbound_route) is False  # would be flagged if sink-reaching
+    assert _has_read_auth_depends(bound_route) is True     # correctly bound
