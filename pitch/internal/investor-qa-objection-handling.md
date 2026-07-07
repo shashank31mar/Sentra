@@ -257,9 +257,9 @@ If they mean "intercept closer to the model": two legit options —
 
 ### B11. "Single-founder risk — no security co-founder, selling into banks." *(OWN IT — action item, don't spin)*
 
-**One-liner**: You're right — banks won't sign with a solo founder intercepting their transactions. The round's **first dollar funds a security co-founder**; an advisor [Randy — confirm title] is already bought in and opening doors.
+**One-liner**: You're right that a solo founder can't self-assert bank-grade security credibility — which is why we already have a **security advisor on board: Shikhar Jain, Engineering Lead at LinkedIn, who led the security posture for $6B-revenue AWS services (OpenSearch, CloudWatch).** He advises today; separately, the round's **first dollar funds a full-time security co-founder** — that search is active now.
 
-**Backup**: Don't hide it — it's listed as an open item in [STRATEGY.md](../share/STRATEGY.md). Turn it into a request: *"Who in your network is a security co-founder I should be talking to?"* Operators respect a founder who names the gap and recruits against it.
+**Backup**: Keep the two distinct — **Shikhar is an advisor at this stage, not the co-founder** (never imply otherwise in a room). The advisor strengthens credibility now; it does **not** close the co-founder gap, which stays an open item in [STRATEGY.md](../share/STRATEGY.md). Turn the gap into a request: *"Who in your network is a security co-founder I should be talking to?"* Operators respect a founder who names the gap and recruits against it. *(Randy is a separate investor/connector — not the security advisor. Keep all three roles distinct.)*
 
 ---
 
