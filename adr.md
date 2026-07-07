@@ -1605,6 +1605,44 @@ But the **only** consumer of these two GET reads is the operator SOC console (WS
 
 ---
 
+## ADR-039: In-Session Tenant Switcher Reversed — Tenant Chosen at Login, Fixed for the Session; Platform Is a Separate Global-Admin Console
+
+**Status**: Accepted (founder) 2026-07-07
+**Supersedes**: the LLD-26 §5.1/§5.4 in-session `TenantSwitcher` decision ("a live tenant switcher renders for operators with `memberships.length > 1` and swaps tenant inside a running session"). That component and its `setActiveTenant`/`getActiveTenant` switch-preference primitive are removed; LLD-26 §5.1/§5.4 are reconciled by propagate-change.
+
+### Context
+
+LLD-26 §5.1/§5.4 specified a `web/console` `TenantSwitcher` dropdown that swaps the active tenant *inside* a live SPA session for multi-membership operators (partner/MSSP). An in-session swap forces a cache-race apparatus (`cancelQueries`+`removeQueries` to purge tenant-A's cached/in-flight rows, plus a per-view effective-tenant render gate to catch a late-resolving tenant-A promise) whose sole purpose is to prevent a cross-tenant flash — a fragile, load-bearing render gate standing between the user and a cross-tenant leak. A prior draft also carried a null-preference bug (commit `23cdea4`) where a non-switching operator rendered empty.
+
+### Decision
+
+**Reverse the in-session switcher.** The tenant is chosen **once, at login**, and is **fixed for the whole session**; to change tenant an operator logs out and re-enters. The **platform** (`is_platform`) surface is a **separate global-admin route-tree** (LLD-26 §5.5), not the tenant views with controls hidden.
+
+1. **`TenantSwitcher` + the `lib/tenant.ts` switch-preference primitive are deleted.** With no in-session tenant transition, the cache-race apparatus collapses: a full page reload on re-login gives a clean query cache, so a stale-tenant row structurally cannot render. The per-view render gate drops from load-bearing to cheap defense-in-depth.
+2. **Login-time selection mechanism = a POST-AUTHENTICATION org picker (Cognito-first), NOT a pre-auth name→tenant lookup.** A single-membership operator has an unambiguous tenant (no picker); a multi-membership operator authenticates via Cognito first, then picks from their **own** `MeContext.memberships[]` (returned by `GET /v1/me`) in a one-time picker that fixes `X-Aegion-Tenant` for the session. This needs **no** unauthenticated pre-Cognito endpoint and **no** ALB carve-out (the ALB fronts everything with `authenticate-cognito`; a pre-auth console page is not reachable — verified `compute_stack.py` page rule `on_unauthenticated_request="authenticate"`, `/v1*` rule `"deny"`→401).
+3. **Pre-auth home-realm discovery (`resolve_org(name)→tenant_id`) is DEFERRED and bundled with ADR-035.** SP-initiated federation may later want an org-name→IdP bridge; that is where a pre-auth lookup belongs, behind the federation seam — not built now (YAGNI; it would add a net-new unauthenticated attack surface + an ALB carve-out + a tenant-id-through-the-redirect persistence problem for zero present benefit). Until ADR-035, the post-login picker is the mechanism.
+4. **Membership is re-checked server-side regardless.** `resolve_operator_tenant` validates the selected `tenant_id ∈ memberships(sub)` and 403s a non-member (`deps.py:414–427`); the picker only proposes, it never authorizes.
+
+### Rationale
+
+- **Removes the only fragile boundary** — the in-session cache-race gate was load-bearing against a cross-tenant leak; the login-bound model makes the leak structurally impossible instead of mitigated.
+- **Honors every founder invariant with the simpler mechanism** — tenant chosen at login, fixed for the session, no in-session switch, separate platform console — while a post-login picker (vs a pre-auth endpoint) eliminates the unauthenticated surface, the ALB carve-out, and the cross-redirect persistence gap.
+
+### Consequences
+
+- ✅ No cross-tenant flash is possible in-session; query keys need not embed `tenant_id`.
+- ✅ No net-new unauthenticated endpoint or ALB listener change.
+- ⚠️ A multi-membership operator changes tenant by logout + re-login (a full reload), not a live swap — accepted (partner/MSSP re-pick each session).
+- ⚠️ **Requires WS-M / LLD-26 owner sign-off before the `TenantSwitcher`-removal lands** (mirrors the ADR-038 shipped-decision-reversal pattern), since it reverses an LLD-26-frozen UI decision.
+
+### References
+
+- **LLD**: [lld/40-multi-tenant-console.md](lld/40-multi-tenant-console.md) §5.5 (org-first login binding, switcher reversal), §3.2 (login flow), Appendix C (post-login picker; deferred `resolve_org`), §16 · [lld/26-multi-tenancy.md](lld/26-multi-tenancy.md) §5.1/§5.4 (reconciled), §5.5 (platform distinct surface)
+- **Code**: `web/console/src/components/ui/TenantSwitcher.tsx` (removed), `web/console/src/lib/tenant.ts` (`setActiveTenant`/`getActiveTenant` removed), `deps.py:414–427` (`resolve_operator_tenant` membership validation), `tenancy_routes.py` `get_me` (`memberships[]`)
+- **Builds on** ADR-019 (console multi-tenant SSO/RBAC) · **defers to** ADR-035 (federation seam — home-realm discovery lands there)
+
+---
+
 ## Future ADRs to Consider (Post-MVP)
 
 - **ADR-023**: Migration from ECS Fargate to EKS
@@ -1616,7 +1654,7 @@ But the **only** consumer of these two GET reads is the operator SOC console (WS
 
 ---
 
-**Document Version**: 2.3
-**Last Updated**: June 30, 2026
+**Document Version**: 2.4
+**Last Updated**: 2026-07-07
 **Status**: Active - Reference during implementation
 **Next Review**: Post-MVP (after Week 4)
