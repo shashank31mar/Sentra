@@ -571,30 +571,40 @@ async def test_deny_reason_never_quotes_prompt(sigma_engine):
 
 def test_sigma_route_authz_ci_assertion():
     """F6.5 (§3.3 item 4): the self-contained CI assertion inspects THIS build's route
-    table for a platform-operator require_role gate on the sigma-mutating routes.
+    table for a platform-operator gate on the sigma-mutating routes.
 
-    Founder 2026-07-05 (Option B): the check is a NON-BLOCKING WARNING — WS-F ships
-    ahead of WS-M, which owns the actual gate (M-M3). Today the PATCH /sigma-rules
-    route is UNGATED (verified), so the assertion DETECTS it and returns it (and by
-    default does not fail the build). When WS-M lands the gate, the returned list
-    empties. Flipping to build-failing is `fail_build=True` (a one-line change)."""
+    WS-M M-M3 has LANDED the gate — `update_sigma_rule` now `Depends(require_platform)`
+    (routes.py). Per lld/35 §3.3(4) the check accepts `require_platform` (the symbol
+    WS-M lands, lld/39 §3.5) as well as a platform-scoped `require_role`; so the WARNING
+    has CLEARED and the ungated list is empty. Because the invariant now holds, arming
+    the build-failing flip (`fail_build=True`) must NOT raise."""
     from app.main import app
     from app.api.sigma_authz_ci import (
-        assert_sigma_routes_gated, find_ungated_sigma_routes,
+        assert_sigma_routes_gated, find_ungated_sigma_routes, _route_has_platform_gate,
     )
 
-    # Non-blocking WARNING today: the assertion runs and returns the ungated route
-    # WITHOUT raising (WS-F merges ahead of WS-M).
+    # WS-M M-M3 landed the require_platform gate -> WARNING cleared, no ungated routes.
     ungated = assert_sigma_routes_gated(app, fail_build=False)
-    assert "PATCH /v1/sigma-rules/{rule_id}" in ungated, (
-        "the CI assertion must DETECT today's ungated sigma PATCH route"
+    assert ungated == [], (
+        "WS-M M-M3 landed require_platform on PATCH /sigma-rules/{rule_id}; the CI "
+        f"assertion must see the gate and return no ungated routes (got {ungated}). "
+        "If this fails, the grep is not accepting `require_platform` (lld/35 §3.3(4))."
     )
 
-    # If flipped to build-failing (the future one-line change once WS-M lands the
-    # gate), it would raise on the still-ungated route — proving the assertion has
-    # teeth, not that it is vacuous.
-    with pytest.raises(AssertionError):
-        assert_sigma_routes_gated(app, fail_build=True)
+    # Now that the gate is present, arming the build-failing flip must NOT raise —
+    # this is the positive proof the WARNING has cleared, not just that it is silent.
+    assert assert_sigma_routes_gated(app, fail_build=True) == []
+
+    # The grep must accept `require_platform` specifically (the WS-M M-M3 symbol) — a
+    # regression guard for the finding that it previously matched only `require_role`.
+    for route in app.routes:
+        if getattr(route, "path", None) == "/v1/sigma-rules/{rule_id}" and (
+            "PATCH" in (getattr(route, "methods", set()) or set())
+        ):
+            assert _route_has_platform_gate(route), (
+                "PATCH /sigma-rules/{rule_id} carries Depends(require_platform); the "
+                "grep must accept it as a platform-operator gate"
+            )
 
     # find_ungated_sigma_routes is the pure inspector the assertion wraps.
     assert find_ungated_sigma_routes(app) == ungated
