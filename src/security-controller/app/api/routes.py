@@ -808,7 +808,7 @@ async def get_metrics_overview(
         AgentService().get_cloud_provider_distribution(),
         session_manager.count_sessions_by_status("quarantined", tenant_id=scope),
         session_manager.count_sessions_by_status("suspended", tenant_id=scope),
-        session_manager.count_agents_below_trust(70.0),
+        session_manager.count_agents_below_trust(70.0, tenant_id=scope),
     )
 
     # WS-21 T01: keep the CloudWatch session gauges (QuarantinedSessions /
@@ -823,20 +823,41 @@ async def get_metrics_overview(
     from app.utils.metrics_publisher import MetricsPublisher
     await MetricsPublisher().publish_session_metrics(quarantined, suspended)
 
+    # WS-N N4/N2 fail-secure split: CloudWatch metrics (threats_blocked, requests_total,
+    # avg_latency_ms, trust_score, attack_categories) are fleet-shared — NOT
+    # tenant-partitioned. Customer operators get DDB-scoped counts only; CW fields are
+    # nulled until per-tenant metric streams exist. Platform operators get the full fleet.
+    if ctx.is_platform:
+        return {
+            "range": range,
+            "threats_blocked": cw["threats_blocked"],
+            "threats_blocked_delta_pct": None,
+            "attack_categories": attack_categories,
+            "active_agents": distribution["total_nodes"],
+            "clouds": distribution["clouds"],
+            "trust_score": cw["trust_score"],
+            "trust_status": _trust_status(cw["trust_score"]),
+            "agents_below_threshold": below_threshold,
+            "requests_total": cw["requests_total"],
+            "avg_latency_ms": cw["avg_latency_ms"],
+            "quarantined": quarantined,
+            "false_positive_pct": None,
+        }
+    # Customer operator: only tenant-scoped DDB counts; CW fields null (fleet-shared).
     return {
         "range": range,
-        "threats_blocked": cw["threats_blocked"],
-        "threats_blocked_delta_pct": None,  # P0: prior-window compare not wired
-        "attack_categories": attack_categories,
+        "threats_blocked": None,
+        "threats_blocked_delta_pct": None,
+        "attack_categories": None,
         "active_agents": distribution["total_nodes"],
         "clouds": distribution["clouds"],
-        "trust_score": cw["trust_score"],
-        "trust_status": _trust_status(cw["trust_score"]),
+        "trust_score": None,
+        "trust_status": "unknown",
         "agents_below_threshold": below_threshold,
-        "requests_total": cw["requests_total"],
-        "avg_latency_ms": cw["avg_latency_ms"],
+        "requests_total": None,
+        "avg_latency_ms": None,
         "quarantined": quarantined,
-        "false_positive_pct": None,  # P0: captured silently via verdict (T34), not shown
+        "false_positive_pct": None,
     }
 
 
@@ -1404,13 +1425,16 @@ async def get_agent_tools(
 ) -> Dict:
     """
     Get list of allowed tools for an agent.
-    
+
+    Auth (WS-N N3): bind + assert_owns — foreign agent_id -> 403 (defence-in-depth,
+    consistent with sibling get_agent; tools are agent-specific, not a global registry).
+
     Path Parameters:
         agent_id: Agent identifier
-    
+
     Returns:
         ToolsResponse with tools array and total count
-        
+
     Response Fields (per tool):
         - tool_id: Tool identifier
         - name: Tool name
@@ -1418,13 +1442,15 @@ async def get_agent_tools(
         - description: Tool description
         - parameters: Tool parameters schema
         - rate_limit: Rate limit (requests per minute)
-    
+
     HTTP Status Codes:
         200 OK - Success (empty array if agent has no tools)
+        403 Forbidden - Agent not owned by tenant
         404 Not Found - Agent doesn't exist
     """
+    assert_owns(ctx, ResourceKind.AGENT, agent_id)
     from app.services.agent_service import AgentService
-    
+
     agent_service = AgentService()
     result = await agent_service.get_agent_tools(agent_id)
     

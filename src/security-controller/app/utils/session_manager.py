@@ -731,24 +731,30 @@ class SessionManager:
             logger.exception(f"Failed to count sessions with status={status}")
             return 0
 
-    async def count_agents_below_trust(self, threshold: float = 70.0) -> int:
+    async def count_agents_below_trust(self, threshold: float = 70.0, tenant_id: Optional[str] = None) -> int:
         """WS-21 T20: count distinct agents whose average session trust < threshold.
 
         Backs the overview 'agents_below_threshold' KPI. Best-effort full scan
         (acceptable at MVP scale); aggregates per-agent average in memory. The
         synchronous scan runs on a worker thread so it does not block the loop
         (see :meth:`count_sessions_by_status`).
-        """
-        return await asyncio.to_thread(self._count_agents_below_trust_sync, threshold)
 
-    def _count_agents_below_trust_sync(self, threshold: float = 70.0) -> int:
+        WS-N N2.2 dual-mode: tenant_id set -> query_or_scan (customer-scoped);
+        tenant_id None -> fleet_scan (platform fleet view, original behavior).
+        """
+        return await asyncio.to_thread(self._count_agents_below_trust_sync, threshold, tenant_id)
+
+    def _count_agents_below_trust_sync(self, threshold: float = 70.0, tenant_id: Optional[str] = None) -> int:
         try:
             scores: Dict[str, list] = {}
             scan_kwargs = {'ProjectionExpression': 'agent_id, trust_score'}
             while True:
-                # FLEET-WIDE (all tenants): agents-below-trust is a platform KPI.
-                # query_or_scan would only aggregate current_tenant()'s sessions.
-                response = tenancy.fleet_scan(self.table, **scan_kwargs)
+                # WS-N N2.2 dual-mode: tenant_id set → query_or_scan (scoped);
+                # tenant_id None → fleet_scan (platform fleet view).
+                if tenant_id is not None:
+                    response = tenancy.query_or_scan(self.table, **scan_kwargs)
+                else:
+                    response = tenancy.fleet_scan(self.table, **scan_kwargs)
                 for item in response.get('Items', []):
                     agent_id = item.get('agent_id')
                     if not agent_id:

@@ -121,10 +121,11 @@ def test_by_id_handler_calls_assert_owns(handler):
     assert "assert_owns" in src, f"{handler.__name__} missing assert_owns call"
 
 
-def test_get_agent_tools_no_assert_owns():
-    """Agent tools is a global registry — no assert_owns (FG-3-adjacent)."""
+def test_get_agent_tools_has_assert_owns():
+    """Agent tools are agent-specific (bound policy) — assert_owns for defence-in-depth,
+    consistent with sibling get_agent (tools are NOT a global registry)."""
     src = inspect.getsource(R.get_agent_tools)
-    assert "assert_owns" not in src
+    assert "assert_owns" in src
 
 
 # ============================================================
@@ -216,3 +217,108 @@ class TestDualModeSessions:
         _, kwargs = mock_qs.call_args
         assert kwargs.get("tenant_id") is None
         mock_audit.assert_called_once()
+
+
+# ============================================================
+# N2/N4 — metrics/overview: customer gets null CW fields + scoped DDB counts
+# ============================================================
+
+class TestOverviewCustomerNullsCW:
+    """Customer operator on /metrics/overview: CloudWatch fields (fleet-shared, not
+    tenant-partitioned) are nulled; only DDB-scoped counts (quarantined,
+    agents_below_threshold, active_agents) are returned."""
+
+    @pytest.mark.asyncio
+    @patch("app.utils.metrics_publisher.MetricsPublisher")
+    @patch("app.utils.session_manager.SessionManager")
+    @patch("app.services.agent_service.AgentService")
+    @patch("app.services.metrics_query_service.MetricsQueryService")
+    async def test_customer_overview_nulls_cw_fields(
+        self, MockMQ, MockAgent, MockSM, MockPub
+    ):
+        """Customer ctx -> CW fields null, DDB fields present."""
+        mq = MockMQ.return_value
+        mq.overview.return_value = {
+            "threats_blocked": 99, "requests_total": 500,
+            "avg_latency_ms": 12, "trust_score": 87,
+        }
+        mq.attack_category_count.return_value = 4
+        agent_svc = MockAgent.return_value
+        agent_svc.get_cloud_provider_distribution = AsyncMock(return_value={
+            "total_nodes": 3, "clouds": 1,
+            "providers": [{"cloud_provider": "aws", "label": "AWS", "count": 3, "pct": 100}],
+        })
+        sm = MockSM.return_value
+        sm.count_sessions_by_status = AsyncMock(return_value=2)
+        sm.count_agents_below_trust = AsyncMock(return_value=1)
+        pub = MockPub.return_value
+        pub.publish_session_metrics = AsyncMock()
+
+        ctx = _ctx(tenant_id="t_a", is_platform=False)
+        result = await R.get_metrics_overview(range="24h", ctx=ctx)
+
+        # CW fields must be null for customer (fleet-shared, not tenant-partitioned)
+        assert result["threats_blocked"] is None
+        assert result["requests_total"] is None
+        assert result["avg_latency_ms"] is None
+        assert result["trust_score"] is None
+        assert result["attack_categories"] is None
+        assert result["trust_status"] == "unknown"
+
+        # DDB-scoped counts must be present
+        assert result["quarantined"] == 2
+        assert result["agents_below_threshold"] == 1
+        assert result["active_agents"] == 3
+
+    @pytest.mark.asyncio
+    @patch("app.utils.metrics_publisher.MetricsPublisher")
+    @patch("app.utils.session_manager.SessionManager")
+    @patch("app.services.agent_service.AgentService")
+    @patch("app.services.metrics_query_service.MetricsQueryService")
+    async def test_customer_overview_count_agents_scoped(
+        self, MockMQ, MockAgent, MockSM, MockPub
+    ):
+        """count_agents_below_trust must receive tenant_id=ctx.tenant_id."""
+        mq = MockMQ.return_value
+        mq.overview.return_value = {
+            "threats_blocked": 0, "requests_total": 0, "avg_latency_ms": 0, "trust_score": None,
+        }
+        mq.attack_category_count.return_value = 0
+        agent_svc = MockAgent.return_value
+        agent_svc.get_cloud_provider_distribution = AsyncMock(return_value={
+            "total_nodes": 0, "clouds": 0, "providers": [],
+        })
+        sm = MockSM.return_value
+        sm.count_sessions_by_status = AsyncMock(return_value=0)
+        sm.count_agents_below_trust = AsyncMock(return_value=0)
+        pub = MockPub.return_value
+        pub.publish_session_metrics = AsyncMock()
+
+        ctx = _ctx(tenant_id="t_a", is_platform=False)
+        await R.get_metrics_overview(range="24h", ctx=ctx)
+
+        # Must pass tenant_id for scoping
+        sm.count_agents_below_trust.assert_awaited_once_with(70.0, tenant_id="t_a")
+
+
+class TestAgentToolsOwnership:
+    """get_agent_tools enforces assert_owns — a foreign agent_id -> 403."""
+
+    @pytest.mark.asyncio
+    async def test_foreign_agent_tools_403(self):
+        """Agent owned by t_b, operator is t_a -> 403."""
+        from fastapi import HTTPException
+        ctx = _ctx(tenant_id="t_a")
+        with pytest.raises(HTTPException) as exc_info:
+            await R.get_agent_tools(agent_id="t_b-aws-agent-1", ctx=ctx)
+        assert exc_info.value.status_code == 403
+
+    @pytest.mark.asyncio
+    @patch("app.services.agent_service.AgentService")
+    async def test_own_agent_tools_passes(self, MockAgent):
+        """Agent owned by t_a, operator is t_a -> no 403."""
+        svc = MockAgent.return_value
+        svc.get_agent_tools = AsyncMock(return_value={"agent_id": "t_a-aws-x-1", "tools": [], "total": 0})
+        ctx = _ctx(tenant_id="t_a")
+        result = await R.get_agent_tools(agent_id="t_a-aws-x-1", ctx=ctx)
+        assert result["total"] == 0
