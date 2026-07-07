@@ -29,7 +29,7 @@ The full `openapi.yaml` is the single source of truth. Every operation carries:
 ```bash
 # Customer-safe subset (drops x-internal)
 python build_customer_openapi.py
-#   -> aegion-guard-api.customer.openapi.yaml   (33 paths, 40 operations)
+#   -> aegion-guard-api.customer.openapi.yaml   (36 paths, 43 operations)
 
 # Tighter: only the agent-integration surface (validate + health + edge-signal)
 python build_customer_openapi.py --audience customer-integration --out integration-only.openapi.yaml

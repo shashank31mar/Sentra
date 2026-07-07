@@ -154,8 +154,12 @@ paths:
                   value: { decision: ALLOW, reason: "All checks passed", trust_score: 95, session_id: sess-7f3a91, latency_ms: 42 }
                 deny:
                   value: { decision: DENY, reason: "Threat detected: PROMPT_INJECTION", threat_type: PROMPT_INJECTION, matched_rule: "Basic Prompt Injection Detection", severity: HIGH, trust_score: 80, session_id: sess-7f3a91, latency_ms: 51, violation_type: PROMPT_INJECTION }
-        '400': { $ref: '#/components/responses/BadRequest' }
         '403': { $ref: '#/components/responses/Forbidden' }
+        '422':
+          description: |
+            Malformed request — an unknown `phase` (`detail` string) or Pydantic validation failure
+            (missing required field, `content_text` over 1 MiB). NOT a policy verdict.
+          content: { application/json: { schema: { $ref: '#/components/schemas/Error' }, example: { detail: "unknown phase: foo" } } }
         '429': { $ref: '#/components/responses/RateLimited' }
         '500': { $ref: '#/components/responses/ServerError' }
 
@@ -170,27 +174,44 @@ paths:
         For connectors/guardrails that observe a threat *outside* Sentra (e.g. a Bedrock Guardrail
         or Azure content filter). The signal is grouped with Sentra's own signals by `request_id`
         and folded into the audit trail. Optional — most integrations only need `/v1/validate`.
+
+        **Fail-closed by default:** unless the server-side `external_signal_write_enabled` flag is
+        on (the producer-credential story is still design-only), this route returns **403**.
       requestBody:
         required: true
         content:
           application/json:
             schema: { $ref: '#/components/schemas/ExternalSignal' }
       responses:
-        '201': { description: Signal stored., content: { application/json: { schema: { $ref: '#/components/schemas/GenericOk' } } } }
+        '201':
+          description: Signal written (only when external signal writes are enabled).
+          content: { application/json: { schema: { type: object, properties: { signal_sk: { type: string, description: "{request_id}#{timestamp_ms}#{source}" }, stored_at: { type: string, format: date-time } } } } }
         '400': { $ref: '#/components/responses/BadRequest' }
-        '403': { $ref: '#/components/responses/Forbidden' }
+        '403':
+          description: External signal writes disabled (fail-closed default — producer credential not yet available).
+          content: { application/json: { schema: { $ref: '#/components/schemas/Error' }, example: { detail: "external signal writes are disabled (producer credential not yet available)" } } }
+        '503':
+          description: Signal write failed at the store (RuntimeError).
+          content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } }
     get:
       tags: [Read & Reporting]
       x-audience: customer-reporting
       operationId: getSessionSignals
       summary: Raw signal stream for a session
       x-internal: true
+      description: |
+        Raw per-signal rows (no combiner). Under identity enforce (or with the credential latch on),
+        the read is bound to the verified agent-JWT tenant partition; a missing/forged JWT then `401`s.
       parameters:
         - { name: request_id, in: query, schema: { type: string }, description: Narrow to one request }
         - { name: source, in: query, schema: { type: string } }
+        - { name: agent_id, in: query, schema: { type: string } }
         - { name: limit, in: query, schema: { type: integer, default: 100, maximum: 500 } }
       responses:
         '200': { description: Signals., content: { application/json: { schema: { type: object } } } }
+        '401':
+          description: Enforce/latch with a missing/invalid/forged agent JWT (verified agent identity required).
+          content: { application/json: { schema: { $ref: '#/components/schemas/Error' }, example: { detail: "verified agent identity required" } } }
 
   # ----------------------------------------------------------------- Read & Reporting
   /v1/decisions:
@@ -222,6 +243,7 @@ paths:
                   decisions: { type: array, items: { $ref: '#/components/schemas/DecisionItem' } }
                   total: { type: integer }
                   next_token: { type: [string, 'null'], description: Pass back as `cursor`; null on last page }
+        '400': { $ref: '#/components/responses/BadRequest' }
         '403': { $ref: '#/components/responses/Forbidden' }
 
   /v1/sessions:
@@ -262,6 +284,28 @@ paths:
         - { name: limit, in: query, schema: { type: integer, default: 100, maximum: 500 } }
       responses:
         '200': { description: Decision trace., content: { application/json: { schema: { $ref: '#/components/schemas/SessionDecisionsResponse' } } } }
+
+  /v1/sessions/{session_id}/trail:
+    parameters: [ { $ref: '#/components/parameters/SessionId' } ]
+    get:
+      tags: [Read & Reporting]
+      x-audience: customer-reporting
+      operationId: getSessionTrail
+      summary: Full decision trail for one request (four-bucket coverage view)
+      description: |
+        The SOC console decision-detail view for a single request: every validator classified into
+        `ran | ran_abstain | ran_error | not_run` in coverage order, with `winning_source`/`block_point`
+        recomputed on read (fail-secure to the persisted DENY). `request_id` is **required** (the
+        partition is session-scoped). Under identity enforce the read is bound to the verified
+        agent-JWT tenant; a missing/invalid JWT then `401`s.
+      parameters:
+        - { name: request_id, in: query, required: true, schema: { type: string }, description: The request whose full trail to return (required — the partition is session-scoped). }
+      responses:
+        '200': { description: Decision trail., content: { application/json: { schema: { $ref: '#/components/schemas/SessionTrail' } } } }
+        '401':
+          description: Enforce/latch with a missing/invalid/forged agent JWT (verified agent identity required).
+          content: { application/json: { schema: { $ref: '#/components/schemas/Error' }, example: { detail: "verified agent identity required" } } }
+        '422': { $ref: '#/components/responses/BadRequest' }
 
   /v1/logs:
     get:
@@ -319,7 +363,9 @@ paths:
       operationId: getMetricsOverview
       summary: Dashboard KPI overview
       parameters: [ { name: range, in: query, schema: { type: string, enum: [1h, 24h, 7d, 30d], default: 24h } } ]
-      responses: { '200': { description: KPI overview., content: { application/json: { schema: { $ref: '#/components/schemas/MetricsOverview' } } } } }
+      responses:
+        '200': { description: KPI overview., content: { application/json: { schema: { $ref: '#/components/schemas/MetricsOverview' } } } }
+        '400': { $ref: '#/components/responses/BadRequest' }
 
   /v1/metrics/platform-distribution:
     get:
@@ -338,7 +384,9 @@ paths:
       parameters:
         - { name: range, in: query, schema: { type: string, enum: [1h, 24h, 7d, 30d], default: 24h } }
         - { name: bucket, in: query, schema: { type: string, enum: [5m, 1h, 1d], default: 1h } }
-      responses: { '200': { description: Series., content: { application/json: { schema: { type: object } } } } }
+      responses:
+        '200': { description: Series., content: { application/json: { schema: { type: object } } } }
+        '400': { $ref: '#/components/responses/BadRequest' }
 
   # ----------------------------------------------------------------- Agents
   /v1/agents:
@@ -375,8 +423,18 @@ paths:
       x-audience: customer-admin
       operationId: attachAgentPolicy
       summary: Attach a policy to an agent
-      requestBody: { required: true, content: { application/json: { schema: { type: object, properties: { policy_id: { type: string } } } } } }
-      responses: { '200': { description: Attached., content: { application/json: { schema: { $ref: '#/components/schemas/GenericOk' } } } } }
+      security: [ { OperatorSession: [] } ]
+      description: |
+        Sets the agent's scalar policy binding — rebind-as-replace (atomic swap, no 409). Requires
+        the `editor` role and ownership of both the agent and the policy.
+      parameters: [ { $ref: '#/components/parameters/TenantSwitch' } ]
+      requestBody: { required: true, content: { application/json: { schema: { type: object, required: [policy_id], properties: { policy_id: { type: string } } } } } }
+      responses:
+        '200': { description: Bound (or atomically re-bound)., content: { application/json: { schema: { type: object, properties: { agent_id: { type: string }, policy_id: { type: string }, status: { type: string, const: attached }, attached_at: { type: string, format: date-time } } } } } }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
 
   /v1/agents/{agent_id}/policies/{policy_id}:
     delete:
@@ -384,10 +442,19 @@ paths:
       x-audience: customer-admin
       operationId: detachAgentPolicy
       summary: Detach a policy from an agent
+      security: [ { OperatorSession: [] } ]
+      description: |
+        Clears the binding only if the agent is currently bound to that exact policy (guards against
+        racing a concurrent rebind). Requires the `editor` role and ownership of the agent.
       parameters:
         - { $ref: '#/components/parameters/AgentId' }
         - { name: policy_id, in: path, required: true, schema: { type: string } }
-      responses: { '200': { description: Detached., content: { application/json: { schema: { $ref: '#/components/schemas/GenericOk' } } } } }
+        - { $ref: '#/components/parameters/TenantSwitch' }
+      responses:
+        '200': { description: Detached., content: { application/json: { schema: { type: object, properties: { agent_id: { type: string }, policy_id: { type: string }, status: { type: string, const: detached } } } } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
 
   # ----------------------------------------------------------------- Policies
   /v1/policies:
@@ -407,10 +474,16 @@ paths:
       x-audience: customer-admin
       operationId: createPolicy
       summary: Create a policy
+      security: [ { OperatorSession: [] } ]
+      description: Requires the `editor` role; the tenant is resolved server-side (a create has no cross-tenant target).
+      parameters: [ { $ref: '#/components/parameters/TenantSwitch' } ]
       requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/PolicyCreateRequest' } } } }
       responses:
-        '201': { description: Created., content: { application/json: { schema: { type: object, properties: { policy_id: { type: string }, version: { type: string }, s3_key: { type: string } } } } } }
+        '201': { description: Created., content: { application/json: { schema: { type: object, properties: { success: { type: boolean }, policy_id: { type: string }, version: { type: string }, s3_key: { type: string }, s3_version_id: { type: string }, content_hash: { type: string }, created_at: { type: string, format: date-time }, message: { type: string } } } } } }
         '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { description: Policy already exists (ConflictException)., content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
 
   /v1/policies/{policy_id}:
     parameters: [ { name: policy_id, in: path, required: true, schema: { type: string } } ]
@@ -426,14 +499,53 @@ paths:
       x-audience: customer-admin
       operationId: updatePolicy
       summary: Update a policy (new version)
+      security: [ { OperatorSession: [] } ]
+      description: |
+        Auto-increments the patch version when omitted. Requires the `editor` role and ownership of
+        the policy. A disabled policy cannot be updated (enable it first → 403).
+      parameters: [ { $ref: '#/components/parameters/TenantSwitch' } ]
       requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/PolicyCreateRequest' } } } }
-      responses: { '200': { description: Updated., content: { application/json: { schema: { type: object } } } } }
+      responses:
+        '200': { description: Updated., content: { application/json: { schema: { type: object } } } }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
     delete:
       tags: [Policies]
       x-audience: customer-admin
       operationId: deletePolicy
       summary: Delete (deactivate) a policy
-      responses: { '200': { description: Deleted., content: { application/json: { schema: { $ref: '#/components/schemas/GenericOk' } } } } }
+      description: |
+        Soft delete — sets `status=disabled` (row + S3 content retained for audit). Requires the
+        `admin` role and ownership of the policy. System policies (`created_by=system`) cannot be
+        deleted (403).
+      responses:
+        '200': { description: Deleted., content: { application/json: { schema: { $ref: '#/components/schemas/GenericOk' } } } }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /v1/policies/{policy_id}/status:
+    parameters: [ { name: policy_id, in: path, required: true, schema: { type: string } } ]
+    patch:
+      tags: [Policies]
+      x-audience: customer-admin
+      operationId: setPolicyStatus
+      summary: Enable or disable a policy (lifecycle flip)
+      description: |
+        Flips a policy's lifecycle status: `active` enables (restores every bound agent); `disabled`
+        fail-secure DENYs every bound agent (`POLICY_DISABLED`). Unlike DELETE, this is intentionally
+        **allowed on system policies**. Requires the `editor` role and ownership.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object, required: [status], properties: { status: { type: string, enum: [active, disabled] } } }
+      responses:
+        '200': { description: Status updated., content: { application/json: { schema: { type: object, properties: { success: { type: boolean }, policy_id: { type: string }, status: { type: string }, updated_at: { type: string, format: date-time } } } } } }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
 
   # ----------------------------------------------------------------- Sigma Rules
   /v1/sigma-rules:
@@ -442,22 +554,49 @@ paths:
       x-audience: customer-admin
       operationId: getSigmaRules
       summary: List threat-detection (sigma) rules
+      description: Sorted most-active-first by per-rule CloudWatch match counts over `range`. Fails safe (200 + empty `rules` + `error`) on internal error.
       parameters:
-        - { name: category, in: query, schema: { type: string } }
-        - { name: severity, in: query, schema: { type: string, enum: [low, medium, high, critical] } }
-        - { name: enabled, in: query, schema: { type: boolean } }
-        - { name: limit, in: query, schema: { type: integer, default: 50 } }
-      responses: { '200': { description: Rules., content: { application/json: { schema: { type: object } } } } }
+        - { name: status, in: query, schema: { type: string, enum: [stable, experimental, deprecated] }, description: Rule status filter (400 if invalid). }
+        - { name: level, in: query, schema: { type: string, enum: [critical, high, medium, low] }, description: Severity filter (400 if invalid). }
+        - { name: limit, in: query, schema: { type: integer, default: 50, maximum: 200 } }
+        - { name: cursor, in: query, schema: { type: string }, description: Opaque pagination cursor; malformed → 400. }
+        - { name: range, in: query, schema: { type: string, enum: [1h, 24h, 7d, 30d], default: 24h }, description: Match-count time window. }
+      responses:
+        '200': { description: Rules., content: { application/json: { schema: { type: object } } } }
+        '400': { $ref: '#/components/responses/BadRequest' }
 
   /v1/sigma-rules/{rule_id}:
     patch:
       tags: [Sigma Rules]
-      x-audience: customer-admin
+      x-audience: internal
+      x-internal: true
       operationId: updateSigmaRule
-      summary: Enable/disable a sigma rule
+      summary: Enable/disable a sigma rule (platform-admin only)
+      security: [ { OperatorSession: [] } ]
+      description: |
+        The sigma store is fleet-global (not tenant-partitioned), so flipping a rule is gated by the
+        reserved `_platform` capability (AegionAI staff) — **not** a tenant RBAC role. Accepts
+        `enabled`/`disabled` (and native `stable`/`deprecated`).
       parameters: [ { name: rule_id, in: path, required: true, schema: { type: string } } ]
-      requestBody: { required: true, content: { application/json: { schema: { type: object, properties: { status: { type: string, enum: [enabled, disabled] } } } } } }
-      responses: { '200': { description: Updated., content: { application/json: { schema: { $ref: '#/components/schemas/GenericOk' } } } } }
+      requestBody: { required: true, content: { application/json: { schema: { type: object, required: [status], properties: { status: { type: string, enum: [enabled, disabled] } } } } } }
+      responses:
+        '200': { description: Updated., content: { application/json: { schema: { type: object, properties: { success: { type: boolean }, rule_id: { type: string }, status: { type: string, enum: [enabled, disabled] } } } } } }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { description: Operator lacks the `_platform` capability., content: { application/json: { schema: { $ref: '#/components/schemas/Error' }, example: { detail: "platform access required" } } } }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /v1/sigma-rules/{rule_id}/content:
+    parameters: [ { name: rule_id, in: path, required: true, schema: { type: string }, description: "Sigma rule identifier (e.g. sigma-llm-001)." } ]
+    get:
+      tags: [Sigma Rules]
+      x-audience: customer-admin
+      operationId: getSigmaRuleContent
+      summary: Get a sigma rule's full detection content (selections + patterns)
+      description: A UI-friendly breakdown of the Sigma detection block — the top-level condition plus one entry per detection selection with its matched field and literal patterns.
+      responses:
+        '200': { description: Rule content breakdown., content: { application/json: { schema: { $ref: '#/components/schemas/SigmaRuleContent' } } } }
+        '404': { $ref: '#/components/responses/NotFound' }
 
   # ----------------------------------------------------------------- Containment & Rollback
   /v1/quarantine/{session_id}:
@@ -467,17 +606,39 @@ paths:
       x-audience: customer-admin
       operationId: quarantineSession
       summary: Quarantine a session (operator override)
-      description: Idempotent — re-quarantining an already-quarantined session returns 200.
-      requestBody: { required: true, content: { application/json: { schema: { type: object, required: [reason, operator_id], properties: { reason: { type: string }, operator_id: { type: string } } } } } }
-      responses: { '200': { description: Quarantined., content: { application/json: { schema: { type: object } } } }, '404': { $ref: '#/components/responses/NotFound' } }
+      security: [ { OperatorSession: [] } ]
+      description: |
+        Operator override to force a session into quarantine. Requires the `admin` role and ownership
+        of the session. Idempotent — re-quarantining an already-quarantined/suspended session returns
+        200 with `idempotent: true`. Operator attribution is the verified session identity, **not** a
+        body `operator_id`.
+      parameters: [ { $ref: '#/components/parameters/TenantSwitch' } ]
+      requestBody: { required: true, content: { application/json: { schema: { type: object, required: [reason], properties: { reason: { type: string } } } } } }
+      responses:
+        '200': { description: Quarantined (or idempotent no-op)., content: { application/json: { schema: { type: object } } } }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '500': { $ref: '#/components/responses/ServerError' }
     delete:
       tags: [Containment & Rollback]
       x-audience: customer-admin
       operationId: releaseSession
       summary: Release a session from quarantine
-      description: Idempotent. Restores trust above the quarantine threshold.
-      parameters: [ { name: operator_id, in: query, schema: { type: string, default: operator } } ]
-      responses: { '200': { description: Released., content: { application/json: { schema: { type: object } } } }, '404': { $ref: '#/components/responses/NotFound' } }
+      security: [ { OperatorSession: [] } ]
+      description: |
+        Operator override to lift a session's quarantine (restores trust above the quarantine
+        threshold). Requires the `admin` role and ownership. Idempotent — releasing an already-active
+        session returns 200 with `idempotent: true`. De-containment is authenticated (no
+        unauthenticated `operator_id`).
+      parameters: [ { $ref: '#/components/parameters/TenantSwitch' } ]
+      responses:
+        '200': { description: Released (or idempotent no-op)., content: { application/json: { schema: { type: object } } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '500': { $ref: '#/components/responses/ServerError' }
 
   /v1/rollback:
     post:
@@ -485,8 +646,22 @@ paths:
       x-audience: customer-admin
       operationId: rollbackAction
       summary: Reverse a single reversible action
-      requestBody: { required: true, content: { application/json: { schema: { type: object } } } }
-      responses: { '200': { description: Rolled back., content: { application/json: { schema: { type: object } } } } }
+      security: [ { OperatorSession: [] } ]
+      description: |
+        Reverses one reversible, handle-returning action. Requires the `admin` role and ownership of
+        the action (tenant-checked, then re-verified in the coordinator). A durable ledger enforces
+        idempotency (no double-reverse). Operator attribution is the verified identity, **not** a body
+        field.
+      parameters: [ { $ref: '#/components/parameters/TenantSwitch' } ]
+      requestBody: { required: true, content: { application/json: { schema: { type: object, required: [action_id, action_type, reason], properties: { action_id: { type: string }, action_type: { type: string, example: process_refund }, reason: { type: string } } } } } }
+      responses:
+        '200': { description: Rolled back., content: { application/json: { schema: { type: object } } } }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '500': { $ref: '#/components/responses/ServerError' }
+        '503': { description: Action tenant resolution temporarily unavailable (retryable)., content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
 
   /v1/rollback/conversation/{conversation_id}:
     post:
@@ -494,9 +669,24 @@ paths:
       x-audience: customer-admin
       operationId: rollbackConversation
       summary: Reverse all reversible actions in a conversation
-      parameters: [ { name: conversation_id, in: path, required: true, schema: { type: string } } ]
-      requestBody: { required: true, content: { application/json: { schema: { type: object } } } }
-      responses: { '200': { description: Rolled back., content: { application/json: { schema: { type: object } } } } }
+      security: [ { OperatorSession: [] } ]
+      description: |
+        Reverses all reversible WRITE actions in a conversation in LIFO order. Requires the `admin`
+        role and ownership. **Partial-success envelope:** a partial result stays 200 with per-action
+        `rolled_back_actions`/`failed_actions`/`skipped_actions`; a *total* failure surfaces as a real
+        500. Operator attribution is the verified identity, **not** a body field.
+      parameters:
+        - { name: conversation_id, in: path, required: true, schema: { type: string } }
+        - { $ref: '#/components/parameters/TenantSwitch' }
+      requestBody: { required: true, content: { application/json: { schema: { type: object, required: [reason], properties: { reason: { type: string } } } } } }
+      responses:
+        '200': { description: Conversation rollback ran (check per-action arrays for partial results)., content: { application/json: { schema: { type: object } } } }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '500': { $ref: '#/components/responses/ServerError' }
+        '503': { description: Conversation tenant resolution temporarily unavailable (retryable)., content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
 
   # ----------------------------------------------------------------- Read: verdict (console-internal)
   /v1/decisions/{decision_id}/verdict:
@@ -506,19 +696,230 @@ paths:
       x-internal: true
       operationId: postDecisionVerdict
       summary: Record an operator FP/FN verdict on a decision
-      parameters: [ { name: decision_id, in: path, required: true, schema: { type: string } } ]
-      requestBody: { required: true, content: { application/json: { schema: { type: object } } } }
-      responses: { '200': { description: Recorded., content: { application/json: { schema: { type: object } } } } }
+      security: [ { OperatorSession: [] } ]
+      description: |
+        Records an operator false-positive/false-negative/confirmed verdict onto every signal row of
+        the request. `decision_id` = `<session_id>:<request_id>`. Requires the `editor` role and
+        ownership of the session. Operator attribution is the verified identity, **not** a body field.
+      parameters:
+        - { name: decision_id, in: path, required: true, schema: { type: string } }
+        - { $ref: '#/components/parameters/TenantSwitch' }
+      requestBody: { required: true, content: { application/json: { schema: { type: object, required: [verdict, reason], properties: { verdict: { type: string, enum: [false_positive, confirmed_threat, false_negative, confirmed_safe] }, reason: { type: string } } } } } }
+      responses:
+        '200': { description: Recorded., content: { application/json: { schema: { type: object, properties: { decision_id: { type: string }, verdict: { type: string }, verdict_at: { type: string, format: date-time } } } } } }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { description: Decision already has a verdict., content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
 
   # ----------------------------------------------------------------- Discovery (internal)
   /v1/discovery/agents:
-    get: { tags: [Discovery], x-audience: internal, x-internal: true, operationId: discoveryAgents, summary: Discovered (unmanaged) agents, responses: { '200': { description: OK, content: { application/json: { schema: { type: object } } } } } }
+    get:
+      tags: [Discovery]
+      x-audience: internal
+      x-internal: true
+      operationId: discoveryAgents
+      summary: Discovered (unmanaged) agents
+      parameters:
+        - { name: cloud_provider, in: query, schema: { type: string } }
+        - { name: framework, in: query, schema: { type: string } }
+        - { name: risk, in: query, schema: { type: string } }
+        - { name: status, in: query, schema: { type: string }, description: managed | imported | not_imported }
+        - { name: connection_id, in: query, schema: { type: string }, description: Accepted + forwarded; no-op filter in P0. }
+        - { name: limit, in: query, schema: { type: integer, default: 50, maximum: 200 } }
+        - { name: cursor, in: query, schema: { type: string }, description: Opaque offset cursor; malformed → 400. }
+      responses:
+        '200': { description: OK, content: { application/json: { schema: { type: object } } } }
+        '400': { $ref: '#/components/responses/BadRequest' }
   /v1/discovery/summary:
     get: { tags: [Discovery], x-audience: internal, x-internal: true, operationId: discoverySummary, summary: Discovery summary, responses: { '200': { description: OK, content: { application/json: { schema: { type: object } } } } } }
   /v1/discovery/platforms:
     get: { tags: [Discovery], x-audience: internal, x-internal: true, operationId: discoveryPlatforms, summary: Per-platform scan status, responses: { '200': { description: OK, content: { application/json: { schema: { type: object } } } } } }
   /v1/discovery/import:
-    post: { tags: [Discovery], x-audience: internal, x-internal: true, operationId: discoveryImport, summary: Import discovered agents under management, requestBody: { required: true, content: { application/json: { schema: { type: object } } } }, responses: { '201': { description: Imported, content: { application/json: { schema: { type: object } } } } } }
+    post:
+      tags: [Discovery]
+      x-audience: internal
+      x-internal: true
+      operationId: discoveryImport
+      summary: Import discovered agents under management
+      security: [ { OperatorSession: [] } ]
+      description: |
+        Promote discovered agents to managed registry rows. Requires the `editor` role. Every
+        `agent_id` is prefix-stamped to the operator's tenant before write (an import can never
+        land under another tenant); per-tenant agent quota is enforced for net-new ids.
+      parameters: [ { $ref: '#/components/parameters/TenantSwitch' } ]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [agent_ids]
+              properties:
+                agent_ids: { type: array, items: { type: string }, description: Discovered agent ids to import (non-empty strings). }
+                enforcement_mode: { type: string, default: monitor }
+      responses:
+        '201': { description: Imported (per-row outcomes), content: { application/json: { schema: { type: object } } } }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '422': { description: None of the requested ids resolve to a scanned/policy agent., content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+        '429': { description: Per-tenant agent quota exceeded., content: { application/json: { schema: { $ref: '#/components/schemas/Error' }, example: { detail: "QUOTA_EXCEEDED: ..." } } } }
+
+  # ----------------------------------------------------------------- Connections (cloud discovery, internal)
+  /v1/connections:
+    get:
+      tags: [Discovery]
+      x-audience: internal
+      x-internal: true
+      operationId: listConnections
+      summary: List the tenant's cloud connections
+      description: Tenant-scoped read (ambient tenant). The `azure_secret_ref` is never projected.
+      responses:
+        '200':
+          description: All connections for the current tenant.
+          content: { application/json: { schema: { type: object, properties: { connections: { type: array, items: { $ref: '#/components/schemas/CloudConnection' } } } } } }
+    post:
+      tags: [Discovery]
+      x-audience: internal
+      x-internal: true
+      operationId: createConnection
+      summary: Create a cloud connection (mint its external_id)
+      security: [ { OperatorSession: [] } ]
+      description: |
+        Creating a cloud-credential connection is an **admin** action. For AWS, mints an `external_id`
+        (confused-deputy guard) and the `aegion_principal_arn` so the wizard can render the trust
+        policy before the role exists. `aws` + `azure` supported; `gcp` → 409; unknown provider → 400.
+      parameters: [ { $ref: '#/components/parameters/TenantSwitch' } ]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ConnectionCreateRequest' }
+      responses:
+        '201': { description: Created (status=connecting)., content: { application/json: { schema: { $ref: '#/components/schemas/CloudConnection' } } } }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { description: Provider valid but not wired in v1 (gcp)., content: { application/json: { schema: { $ref: '#/components/schemas/Error' }, example: { detail: "PROVIDER_NOT_AVAILABLE: ..." } } } }
+
+  /v1/connections/{connection_id}:
+    parameters: [ { $ref: '#/components/parameters/ConnectionId' } ]
+    get:
+      tags: [Discovery]
+      x-audience: internal
+      x-internal: true
+      operationId: getConnection
+      summary: Get one cloud connection
+      responses:
+        '200': { description: The connection., content: { application/json: { schema: { $ref: '#/components/schemas/CloudConnection' } } } }
+        '404': { $ref: '#/components/responses/NotFound' }
+    put:
+      tags: [Discovery]
+      x-audience: internal
+      x-internal: true
+      operationId: setConnectionCredentials
+      summary: Attach/replace the credential reference (AWS role_arn or Azure SP)
+      security: [ { OperatorSession: [] } ]
+      description: |
+        Attaches a credential **reference** (never a raw secret): an AWS `role_arn` or an Azure
+        service-principal (`subscription_id`/`tenant_id`/`client_id` GUIDs + a `secret_ref` vault
+        reference). Requires the `admin` role and ownership of the connection. Stays `connecting`
+        until tested.
+      parameters: [ { $ref: '#/components/parameters/TenantSwitch' } ]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ConnectionCredentialRequest' }
+      responses:
+        '200': { description: Updated (still connecting until tested)., content: { application/json: { schema: { $ref: '#/components/schemas/CloudConnection' } } } }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    delete:
+      tags: [Discovery]
+      x-audience: internal
+      x-internal: true
+      operationId: deleteConnection
+      summary: Disconnect a cloud connection (imported agents retained)
+      security: [ { OperatorSession: [] } ]
+      description: Drops the credential reference. Requires the `admin` role and ownership. Previously-imported agents are retained.
+      parameters: [ { $ref: '#/components/parameters/TenantSwitch' } ]
+      responses:
+        '204': { description: Disconnected; no content. }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /v1/connections/{connection_id}/test:
+    parameters: [ { $ref: '#/components/parameters/ConnectionId' } ]
+    post:
+      tags: [Discovery]
+      x-audience: internal
+      x-internal: true
+      operationId: testConnection
+      summary: Live read-only credential probe (AWS AssumeRole / Azure SP token)
+      security: [ { OperatorSession: [] } ]
+      description: |
+        Drives a live cross-account `sts:AssumeRole` (AWS) or SP token (Azure), so requires the
+        `editor` role and ownership. **Partial-success carve-out:** a *rejected* credential returns
+        HTTP **200** with `{ ok: false, message }` (the message is sanitized — raw STS/provider
+        detail is logged server-side, never returned). Only an unknown connection is an HTTP error.
+      parameters: [ { $ref: '#/components/parameters/TenantSwitch' } ]
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { type: object, properties: { role_arn: { type: string, description: "Optional convenience set-then-test (AWS)." } } }
+      responses:
+        '200': { description: Probe outcome (both success and rejected-credential are 200)., content: { application/json: { schema: { $ref: '#/components/schemas/ConnectionTestResult' } } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /v1/connections/{connection_id}/scan:
+    parameters: [ { $ref: '#/components/parameters/ConnectionId' } ]
+    post:
+      tags: [Discovery]
+      x-audience: internal
+      x-internal: true
+      operationId: scanConnection
+      summary: Trigger a discovery scan for a connected account
+      security: [ { OperatorSession: [] } ]
+      description: |
+        Re-runs the read-only probe and persists each discovered agent to the discovery cache
+        (idempotent). Requires `status == connected` (else 409), the `editor` role, and ownership.
+      parameters: [ { $ref: '#/components/parameters/TenantSwitch' } ]
+      responses:
+        '202': { description: Scan accepted/completed., content: { application/json: { schema: { type: object, properties: { scan_id: { type: string }, status: { type: string, const: scanning }, discovered_count: { type: integer } } } } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { description: Connection is not in `connected` status., content: { application/json: { schema: { $ref: '#/components/schemas/Error' }, example: { detail: "NOT_CONNECTED: ..." } } } }
+
+  # ----------------------------------------------------------------- DSAR / feedback subject deletion
+  /v1/feedback/subjects/{subject_locator}:
+    parameters: [ { name: subject_locator, in: path, required: true, schema: { type: string }, description: "Per-tenant HMAC-derived subject key (subject_locator GSI value)." } ]
+    delete:
+      tags: [Read & Reporting]
+      x-audience: customer-admin
+      operationId: deleteFeedbackSubject
+      summary: DSAR / GDPR subject deletion — erase a subject's redacted feedback records
+      security: [ { OperatorSession: [] } ]
+      description: |
+        Erases every redacted feedback record for one data subject **in the caller's tenant**
+        (paginated BatchWriteItem). Requires the `admin` role. The tenant is taken strictly from the
+        verified operator identity — never a caller-supplied header. Only subject-locatable records
+        are reachable here; records with no `subject_locator` are TTL-only-deletable.
+      parameters: [ { $ref: '#/components/parameters/TenantSwitch' } ]
+      responses:
+        '200': { description: Deletion completed (idempotent; deleted=0 if none matched)., content: { application/json: { schema: { type: object, properties: { deleted: { type: integer }, tenant_id: { type: string } } } } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '500': { description: Feedback store delete failed (internal detail not leaked)., content: { application/json: { schema: { $ref: '#/components/schemas/Error' }, example: { detail: "feedback deletion failed" } } } }
 
   # ----------------------------------------------------------------- Agent Credentials
   /v1/agents/{agent_id}/credentials:
@@ -593,8 +994,27 @@ paths:
       parameters: [ { $ref: '#/components/parameters/TenantSwitch' } ]
       responses:
         '200': { description: Revoked., content: { application/json: { schema: { $ref: '#/components/schemas/CredentialStatus' } } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
+
+  /v1/identity/residual-agents:
+    get:
+      tags: [Agent Credentials]
+      x-audience: internal
+      x-internal: true
+      operationId: listResidualAgents
+      summary: List agents on the legacy-fallback (uncredentialed) window
+      security: [ { OperatorSession: [] } ]
+      description: |
+        Agents in the operator's tenant currently on a legacy-fallback window — uncredentialed,
+        enforce-flipped, on borrowed time — so operators onboard or retire them before the window
+        closes. Read-only; any authenticated role may view. Tenant-scoped server-side.
+      parameters: [ { $ref: '#/components/parameters/TenantSwitch' } ]
+      responses:
+        '200': { description: Residual (fallback-window) agents for this tenant., content: { application/json: { schema: { $ref: '#/components/schemas/ResidualAgentList' } } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
 
   # ----------------------------------------------------------------- Tenancy & Access
   /v1/me:
@@ -788,7 +1208,10 @@ paths:
       operationId: healthCheck
       summary: Liveness check
       security: []
-      responses: { '200': { description: Healthy., content: { application/json: { schema: { type: object, properties: { status: { type: string, example: healthy } } } } } } }
+      description: Probes DynamoDB (critical), plus S3/CloudWatch (non-critical). Overall health gates ONLY on DynamoDB; a non-critical failure still returns 200 with `status=degraded`.
+      responses:
+        '200': { description: All critical deps healthy (or only non-critical degraded)., content: { application/json: { schema: { type: object, properties: { status: { type: string, enum: [healthy, degraded], example: healthy }, version: { type: string }, dependencies: { type: object, additionalProperties: true }, uptime_seconds: { type: number }, errors: { type: array, items: { type: string } } } } } } }
+        '503': { description: DynamoDB (critical) unhealthy — the full health response is returned as `detail`., content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
 
 # =============================================================================
 components:
@@ -832,6 +1255,12 @@ components:
       required: true
       schema: { type: string }
       description: Sentra-derived tenant slug (e.g. `t_3k9f2a8d1c0b7`).
+    ConnectionId:
+      name: connection_id
+      in: path
+      required: true
+      schema: { type: string }
+      description: Cloud connection id (e.g. `conn-aws-1a2b3c4d`).
     TenantSwitch:
       name: X-Aegion-Tenant
       in: header
@@ -878,6 +1307,10 @@ components:
         user_input: { type: string, description: The end-user's original prompt — what threat detection inspects. }
         timestamp: { type: string, format: date-time, description: "ISO-8601 timestamp with milliseconds in UTC (trailing Z)." }
         operation_type: { $ref: '#/components/schemas/OperationType' }
+        phase: { type: string, enum: [request, content, output, memory], default: request, description: "Pipeline phase. `request` runs the full pipeline; `content`/`memory` are handled; `output` (and any known-but-unbuilt phase) fail-secure DENY; an unknown value → 422." }
+        content_text: { type: [string, 'null'], maxLength: 1048576, description: "Payload for content/output/memory phases (max 1 MiB; over-cap → 422)." }
+        redaction_nonce: { type: [string, 'null'], description: Optional nonce paired with server-side redaction. }
+        redacted: { type: boolean, default: false, description: Whether content_text was already redacted upstream. }
         context:
           type: object
           additionalProperties: true
@@ -1241,6 +1674,122 @@ components:
         tenant_id: { type: string }
         role: { $ref: '#/components/schemas/Role' }
 
+    # ---- Cloud connections -----------------------------------------------
+    CloudConnection:
+      type: object
+      description: A cloud discovery connection. `azure_secret_ref` is stored but never projected.
+      properties:
+        id: { type: string, description: "conn-{provider}-{hex}." }
+        cloud_provider: { type: string, enum: [aws, azure, gcp] }
+        status: { type: string, enum: [connecting, connected, error] }
+        account_ref: { type: [string, 'null'] }
+        external_id: { type: [string, 'null'], description: "Minted for AWS (confused-deputy guard); null for Azure." }
+        aegion_principal_arn: { type: [string, 'null'], description: "arn:aws:iam::{acct}:root for AWS." }
+        role_arn: { type: [string, 'null'] }
+        azure_subscription_id: { type: [string, 'null'] }
+        azure_tenant_id: { type: [string, 'null'] }
+        azure_client_id: { type: [string, 'null'] }
+        scopes: { type: array, items: { type: string } }
+        agents_visible: { type: [integer, 'null'] }
+        last_scan: { type: [string, 'null'], format: date-time }
+        connected_at: { type: [string, 'null'], format: date-time }
+        error: { type: [string, 'null'] }
+
+    ConnectionCreateRequest:
+      type: object
+      required: [cloud_provider]
+      properties:
+        cloud_provider: { type: string, enum: [aws, azure, gcp], description: "aws/azure wired; gcp → 409; other → 400." }
+
+    ConnectionCredentialRequest:
+      type: object
+      description: "Provide EITHER `role_arn` (AWS) OR `azure` (SP). If `azure` is present the Azure path is taken."
+      properties:
+        role_arn: { type: string, description: "AWS role ARN (arn:aws:iam::<12-digit>:role/…)." }
+        azure:
+          type: object
+          properties:
+            subscription_id: { type: string, description: GUID. }
+            tenant_id: { type: string, description: GUID. }
+            client_id: { type: string, description: GUID. }
+            secret_ref: { type: string, description: Vault reference (Secrets Manager) to the SP client-secret — never a raw secret. }
+
+    ConnectionTestResult:
+      type: object
+      properties:
+        ok: { type: boolean }
+        agents_visible: { type: [integer, 'null'] }
+        message: { type: string, description: "On ok=false this is the sanitized, classification-only message — never raw STS/provider detail." }
+
+    # ---- Session trail ----------------------------------------------------
+    SessionTrail:
+      type: object
+      description: The four-bucket decision trail for one request.
+      properties:
+        session_id: { type: string }
+        request_id: { type: string }
+        phase: { type: string }
+        winning_source: { type: [string, 'null'] }
+        winning_source_display: { type: [string, 'null'] }
+        block_point: { type: [string, 'null'], description: "== winning_source on DENY; null on ALLOW." }
+        decision: { $ref: '#/components/schemas/Decision' }
+        coverage:
+          type: array
+          items:
+            type: object
+            properties:
+              source: { type: string }
+              state: { type: string, enum: [ran, ran_abstain, ran_error, not_run] }
+              decision: { type: [string, 'null'] }
+              reason: { type: [string, 'null'] }
+              latency_ms: { type: [number, 'null'] }
+              display_name: { type: [string, 'null'] }
+              state_label: { type: [string, 'null'] }
+        coverage_total: { type: integer }
+        ran_count: { type: integer }
+        abstain_count: { type: integer }
+        ran_error_count: { type: integer }
+        not_run_count: { type: integer }
+        next_token: { type: [string, 'null'] }
+
+    # ---- Sigma rule content ----------------------------------------------
+    SigmaRuleContent:
+      type: object
+      properties:
+        rule_id: { type: string }
+        title: { type: string }
+        description: { type: string }
+        level: { type: string }
+        status: { type: string }
+        tags: { type: array, items: { type: string } }
+        condition: { type: [string, 'null'], description: "The Sigma detection condition (e.g. '1 of them')." }
+        selections:
+          type: array
+          items:
+            type: object
+            properties:
+              name: { type: string, description: Selection key. }
+              field: { type: string, description: "field+modifier, e.g. 'prompt|contains'." }
+              patterns: { type: array, items: { type: string } }
+        patterns_total: { type: integer }
+
+    # ---- Residual (fallback-window) agents --------------------------------
+    ResidualAgentList:
+      type: object
+      properties:
+        tenant_id: { type: string }
+        residual_agents:
+          type: array
+          items:
+            type: object
+            properties:
+              agent_id: { type: string }
+              tenant_id: { type: string }
+              first_seen_ms: { type: integer }
+              deadline_ms: { type: integer }
+              expired: { type: boolean, description: "now_ms > deadline_ms." }
+        count: { type: integer }
+
     GenericOk:
       type: object
       properties:
@@ -1262,6 +1811,9 @@ components:
     BadRequest:
       description: Invalid request (missing/malformed fields).
       content: { application/json: { schema: { $ref: '#/components/schemas/Error' }, example: { detail: "Missing required field: session_id" } } }
+    Unauthorized:
+      description: Missing/invalid operator identity (ALB Cognito OIDC — untrusted signer/issuer or absent session).
+      content: { application/json: { schema: { $ref: '#/components/schemas/Error' }, example: { detail: "invalid ALB identity" } } }
     Forbidden:
       description: Missing/invalid API key, or a policy denial surfaced as 403.
       content: { application/json: { schema: { $ref: '#/components/schemas/Error' }, example: { message: Forbidden } } }

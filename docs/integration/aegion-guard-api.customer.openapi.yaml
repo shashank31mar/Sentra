@@ -137,10 +137,17 @@ paths:
                     session_id: sess-7f3a91
                     latency_ms: 51
                     violation_type: PROMPT_INJECTION
-        '400':
-          $ref: '#/components/responses/BadRequest'
         '403':
           $ref: '#/components/responses/Forbidden'
+        '422':
+          description: "Malformed request \u2014 an unknown `phase` (`detail` string) or Pydantic validation\
+            \ failure\n(missing required field, `content_text` over 1 MiB). NOT a policy verdict.\n"
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                detail: 'unknown phase: foo'
         '429':
           $ref: '#/components/responses/RateLimited'
         '500':
@@ -156,7 +163,9 @@ paths:
       summary: Report an external (edge) signal for a session
       description: "For connectors/guardrails that observe a threat *outside* Sentra (e.g. a Bedrock Guardrail\n\
         or Azure content filter). The signal is grouped with Sentra's own signals by `request_id`\nand\
-        \ folded into the audit trail. Optional \u2014 most integrations only need `/v1/validate`.\n"
+        \ folded into the audit trail. Optional \u2014 most integrations only need `/v1/validate`.\n\n\
+        **Fail-closed by default:** unless the server-side `external_signal_write_enabled` flag is\non\
+        \ (the producer-credential story is still design-only), this route returns **403**.\n"
       requestBody:
         required: true
         content:
@@ -165,15 +174,35 @@ paths:
               $ref: '#/components/schemas/ExternalSignal'
       responses:
         '201':
-          description: Signal stored.
+          description: Signal written (only when external signal writes are enabled).
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/GenericOk'
+                type: object
+                properties:
+                  signal_sk:
+                    type: string
+                    description: '{request_id}#{timestamp_ms}#{source}'
+                  stored_at:
+                    type: string
+                    format: date-time
         '400':
           $ref: '#/components/responses/BadRequest'
         '403':
-          $ref: '#/components/responses/Forbidden'
+          description: "External signal writes disabled (fail-closed default \u2014 producer credential\
+            \ not yet available)."
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                detail: external signal writes are disabled (producer credential not yet available)
+        '503':
+          description: Signal write failed at the store (RuntimeError).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
   /v1/decisions:
     get:
       tags:
@@ -243,6 +272,8 @@ paths:
                     - string
                     - 'null'
                     description: Pass back as `cursor`; null on last page
+        '400':
+          $ref: '#/components/responses/BadRequest'
         '403':
           $ref: '#/components/responses/Forbidden'
   /v1/sessions:
@@ -322,6 +353,52 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/SessionDecisionsResponse'
+  /v1/sessions/{session_id}/trail:
+    parameters:
+    - $ref: '#/components/parameters/SessionId'
+    get:
+      tags:
+      - Read & Reporting
+      x-audience: customer-reporting
+      operationId: getSessionTrail
+      summary: Full decision trail for one request (four-bucket coverage view)
+      description: 'The SOC console decision-detail view for a single request: every validator classified
+        into
+
+        `ran | ran_abstain | ran_error | not_run` in coverage order, with `winning_source`/`block_point`
+
+        recomputed on read (fail-secure to the persisted DENY). `request_id` is **required** (the
+
+        partition is session-scoped). Under identity enforce the read is bound to the verified
+
+        agent-JWT tenant; a missing/invalid JWT then `401`s.
+
+        '
+      parameters:
+      - name: request_id
+        in: query
+        required: true
+        schema:
+          type: string
+        description: "The request whose full trail to return (required \u2014 the partition is session-scoped)."
+      responses:
+        '200':
+          description: Decision trail.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SessionTrail'
+        '401':
+          description: Enforce/latch with a missing/invalid/forged agent JWT (verified agent identity
+            required).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                detail: verified agent identity required
+        '422':
+          $ref: '#/components/responses/BadRequest'
   /v1/logs:
     get:
       tags:
@@ -433,6 +510,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/MetricsOverview'
+        '400':
+          $ref: '#/components/responses/BadRequest'
   /v1/metrics/platform-distribution:
     get:
       tags:
@@ -481,6 +560,8 @@ paths:
             application/json:
               schema:
                 type: object
+        '400':
+          $ref: '#/components/responses/BadRequest'
   /v1/agents:
     get:
       tags:
@@ -544,22 +625,49 @@ paths:
       x-audience: customer-admin
       operationId: attachAgentPolicy
       summary: Attach a policy to an agent
+      security:
+      - OperatorSession: []
+      description: "Sets the agent's scalar policy binding \u2014 rebind-as-replace (atomic swap, no 409).\
+        \ Requires\nthe `editor` role and ownership of both the agent and the policy.\n"
+      parameters:
+      - $ref: '#/components/parameters/TenantSwitch'
       requestBody:
         required: true
         content:
           application/json:
             schema:
               type: object
+              required:
+              - policy_id
               properties:
                 policy_id:
                   type: string
       responses:
         '200':
-          description: Attached.
+          description: Bound (or atomically re-bound).
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/GenericOk'
+                type: object
+                properties:
+                  agent_id:
+                    type: string
+                  policy_id:
+                    type: string
+                  status:
+                    type: string
+                    const: attached
+                  attached_at:
+                    type: string
+                    format: date-time
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
   /v1/agents/{agent_id}/policies/{policy_id}:
     delete:
       tags:
@@ -567,6 +675,14 @@ paths:
       x-audience: customer-admin
       operationId: detachAgentPolicy
       summary: Detach a policy from an agent
+      security:
+      - OperatorSession: []
+      description: 'Clears the binding only if the agent is currently bound to that exact policy (guards
+        against
+
+        racing a concurrent rebind). Requires the `editor` role and ownership of the agent.
+
+        '
       parameters:
       - $ref: '#/components/parameters/AgentId'
       - name: policy_id
@@ -574,13 +690,28 @@ paths:
         required: true
         schema:
           type: string
+      - $ref: '#/components/parameters/TenantSwitch'
       responses:
         '200':
           description: Detached.
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/GenericOk'
+                type: object
+                properties:
+                  agent_id:
+                    type: string
+                  policy_id:
+                    type: string
+                  status:
+                    type: string
+                    const: detached
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
   /v1/policies:
     get:
       tags:
@@ -619,6 +750,12 @@ paths:
       x-audience: customer-admin
       operationId: createPolicy
       summary: Create a policy
+      security:
+      - OperatorSession: []
+      description: Requires the `editor` role; the tenant is resolved server-side (a create has no cross-tenant
+        target).
+      parameters:
+      - $ref: '#/components/parameters/TenantSwitch'
       requestBody:
         required: true
         content:
@@ -633,14 +770,35 @@ paths:
               schema:
                 type: object
                 properties:
+                  success:
+                    type: boolean
                   policy_id:
                     type: string
                   version:
                     type: string
                   s3_key:
                     type: string
+                  s3_version_id:
+                    type: string
+                  content_hash:
+                    type: string
+                  created_at:
+                    type: string
+                    format: date-time
+                  message:
+                    type: string
         '400':
           $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '409':
+          description: Policy already exists (ConflictException).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
   /v1/policies/{policy_id}:
     parameters:
     - name: policy_id
@@ -675,6 +833,12 @@ paths:
       x-audience: customer-admin
       operationId: updatePolicy
       summary: Update a policy (new version)
+      security:
+      - OperatorSession: []
+      description: "Auto-increments the patch version when omitted. Requires the `editor` role and ownership\
+        \ of\nthe policy. A disabled policy cannot be updated (enable it first \u2192 403).\n"
+      parameters:
+      - $ref: '#/components/parameters/TenantSwitch'
       requestBody:
         required: true
         content:
@@ -688,12 +852,23 @@ paths:
             application/json:
               schema:
                 type: object
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
     delete:
       tags:
       - Policies
       x-audience: customer-admin
       operationId: deletePolicy
       summary: Delete (deactivate) a policy
+      description: "Soft delete \u2014 sets `status=disabled` (row + S3 content retained for audit). Requires\
+        \ the\n`admin` role and ownership of the policy. System policies (`created_by=system`) cannot\
+        \ be\ndeleted (403).\n"
       responses:
         '200':
           description: Deleted.
@@ -701,6 +876,68 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/GenericOk'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /v1/policies/{policy_id}/status:
+    parameters:
+    - name: policy_id
+      in: path
+      required: true
+      schema:
+        type: string
+    patch:
+      tags:
+      - Policies
+      x-audience: customer-admin
+      operationId: setPolicyStatus
+      summary: Enable or disable a policy (lifecycle flip)
+      description: 'Flips a policy''s lifecycle status: `active` enables (restores every bound agent);
+        `disabled`
+
+        fail-secure DENYs every bound agent (`POLICY_DISABLED`). Unlike DELETE, this is intentionally
+
+        **allowed on system policies**. Requires the `editor` role and ownership.
+
+        '
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+              - status
+              properties:
+                status:
+                  type: string
+                  enum:
+                  - active
+                  - disabled
+      responses:
+        '200':
+          description: Status updated.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  policy_id:
+                    type: string
+                  status:
+                    type: string
+                  updated_at:
+                    type: string
+                    format: date-time
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
   /v1/sigma-rules:
     get:
       tags:
@@ -708,29 +945,50 @@ paths:
       x-audience: customer-admin
       operationId: getSigmaRules
       summary: List threat-detection (sigma) rules
+      description: Sorted most-active-first by per-rule CloudWatch match counts over `range`. Fails safe
+        (200 + empty `rules` + `error`) on internal error.
       parameters:
-      - name: category
-        in: query
-        schema:
-          type: string
-      - name: severity
+      - name: status
         in: query
         schema:
           type: string
           enum:
-          - low
-          - medium
-          - high
-          - critical
-      - name: enabled
+          - stable
+          - experimental
+          - deprecated
+        description: Rule status filter (400 if invalid).
+      - name: level
         in: query
         schema:
-          type: boolean
+          type: string
+          enum:
+          - critical
+          - high
+          - medium
+          - low
+        description: Severity filter (400 if invalid).
       - name: limit
         in: query
         schema:
           type: integer
           default: 50
+          maximum: 200
+      - name: cursor
+        in: query
+        schema:
+          type: string
+        description: "Opaque pagination cursor; malformed \u2192 400."
+      - name: range
+        in: query
+        schema:
+          type: string
+          enum:
+          - 1h
+          - 24h
+          - 7d
+          - 30d
+          default: 24h
+        description: Match-count time window.
       responses:
         '200':
           description: Rules.
@@ -738,38 +996,33 @@ paths:
             application/json:
               schema:
                 type: object
-  /v1/sigma-rules/{rule_id}:
-    patch:
+        '400':
+          $ref: '#/components/responses/BadRequest'
+  /v1/sigma-rules/{rule_id}/content:
+    parameters:
+    - name: rule_id
+      in: path
+      required: true
+      schema:
+        type: string
+      description: Sigma rule identifier (e.g. sigma-llm-001).
+    get:
       tags:
       - Sigma Rules
       x-audience: customer-admin
-      operationId: updateSigmaRule
-      summary: Enable/disable a sigma rule
-      parameters:
-      - name: rule_id
-        in: path
-        required: true
-        schema:
-          type: string
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              properties:
-                status:
-                  type: string
-                  enum:
-                  - enabled
-                  - disabled
+      operationId: getSigmaRuleContent
+      summary: Get a sigma rule's full detection content (selections + patterns)
+      description: "A UI-friendly breakdown of the Sigma detection block \u2014 the top-level condition\
+        \ plus one entry per detection selection with its matched field and literal patterns."
       responses:
         '200':
-          description: Updated.
+          description: Rule content breakdown.
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/GenericOk'
+                $ref: '#/components/schemas/SigmaRuleContent'
+        '404':
+          $ref: '#/components/responses/NotFound'
   /v1/quarantine/{session_id}:
     parameters:
     - $ref: '#/components/parameters/SessionId'
@@ -779,7 +1032,14 @@ paths:
       x-audience: customer-admin
       operationId: quarantineSession
       summary: Quarantine a session (operator override)
-      description: "Idempotent \u2014 re-quarantining an already-quarantined session returns 200."
+      security:
+      - OperatorSession: []
+      description: "Operator override to force a session into quarantine. Requires the `admin` role and\
+        \ ownership\nof the session. Idempotent \u2014 re-quarantining an already-quarantined/suspended\
+        \ session returns\n200 with `idempotent: true`. Operator attribution is the verified session identity,\
+        \ **not** a\nbody `operator_id`.\n"
+      parameters:
+      - $ref: '#/components/parameters/TenantSwitch'
       requestBody:
         required: true
         content:
@@ -788,43 +1048,55 @@ paths:
               type: object
               required:
               - reason
-              - operator_id
               properties:
                 reason:
                   type: string
-                operator_id:
-                  type: string
       responses:
         '200':
-          description: Quarantined.
+          description: Quarantined (or idempotent no-op).
           content:
             application/json:
               schema:
                 type: object
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
         '404':
           $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/ServerError'
     delete:
       tags:
       - Containment & Rollback
       x-audience: customer-admin
       operationId: releaseSession
       summary: Release a session from quarantine
-      description: Idempotent. Restores trust above the quarantine threshold.
+      security:
+      - OperatorSession: []
+      description: "Operator override to lift a session's quarantine (restores trust above the quarantine\n\
+        threshold). Requires the `admin` role and ownership. Idempotent \u2014 releasing an already-active\n\
+        session returns 200 with `idempotent: true`. De-containment is authenticated (no\nunauthenticated\
+        \ `operator_id`).\n"
       parameters:
-      - name: operator_id
-        in: query
-        schema:
-          type: string
-          default: operator
+      - $ref: '#/components/parameters/TenantSwitch'
       responses:
         '200':
-          description: Released.
+          description: Released (or idempotent no-op).
           content:
             application/json:
               schema:
                 type: object
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
         '404':
           $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/ServerError'
   /v1/rollback:
     post:
       tags:
@@ -832,12 +1104,38 @@ paths:
       x-audience: customer-admin
       operationId: rollbackAction
       summary: Reverse a single reversible action
+      security:
+      - OperatorSession: []
+      description: 'Reverses one reversible, handle-returning action. Requires the `admin` role and ownership
+        of
+
+        the action (tenant-checked, then re-verified in the coordinator). A durable ledger enforces
+
+        idempotency (no double-reverse). Operator attribution is the verified identity, **not** a body
+
+        field.
+
+        '
+      parameters:
+      - $ref: '#/components/parameters/TenantSwitch'
       requestBody:
         required: true
         content:
           application/json:
             schema:
               type: object
+              required:
+              - action_id
+              - action_type
+              - reason
+              properties:
+                action_id:
+                  type: string
+                action_type:
+                  type: string
+                  example: process_refund
+                reason:
+                  type: string
       responses:
         '200':
           description: Rolled back.
@@ -845,6 +1143,22 @@ paths:
             application/json:
               schema:
                 type: object
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/ServerError'
+        '503':
+          description: Action tenant resolution temporarily unavailable (retryable).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
   /v1/rollback/conversation/{conversation_id}:
     post:
       tags:
@@ -852,25 +1166,105 @@ paths:
       x-audience: customer-admin
       operationId: rollbackConversation
       summary: Reverse all reversible actions in a conversation
+      security:
+      - OperatorSession: []
+      description: 'Reverses all reversible WRITE actions in a conversation in LIFO order. Requires the
+        `admin`
+
+        role and ownership. **Partial-success envelope:** a partial result stays 200 with per-action
+
+        `rolled_back_actions`/`failed_actions`/`skipped_actions`; a *total* failure surfaces as a real
+
+        500. Operator attribution is the verified identity, **not** a body field.
+
+        '
       parameters:
       - name: conversation_id
         in: path
         required: true
         schema:
           type: string
+      - $ref: '#/components/parameters/TenantSwitch'
       requestBody:
         required: true
         content:
           application/json:
             schema:
               type: object
+              required:
+              - reason
+              properties:
+                reason:
+                  type: string
       responses:
         '200':
-          description: Rolled back.
+          description: Conversation rollback ran (check per-action arrays for partial results).
           content:
             application/json:
               schema:
                 type: object
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/ServerError'
+        '503':
+          description: Conversation tenant resolution temporarily unavailable (retryable).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+  /v1/feedback/subjects/{subject_locator}:
+    parameters:
+    - name: subject_locator
+      in: path
+      required: true
+      schema:
+        type: string
+      description: Per-tenant HMAC-derived subject key (subject_locator GSI value).
+    delete:
+      tags:
+      - Read & Reporting
+      x-audience: customer-admin
+      operationId: deleteFeedbackSubject
+      summary: "DSAR / GDPR subject deletion \u2014 erase a subject's redacted feedback records"
+      security:
+      - OperatorSession: []
+      description: "Erases every redacted feedback record for one data subject **in the caller's tenant**\n\
+        (paginated BatchWriteItem). Requires the `admin` role. The tenant is taken strictly from the\n\
+        verified operator identity \u2014 never a caller-supplied header. Only subject-locatable records\n\
+        are reachable here; records with no `subject_locator` are TTL-only-deletable.\n"
+      parameters:
+      - $ref: '#/components/parameters/TenantSwitch'
+      responses:
+        '200':
+          description: Deletion completed (idempotent; deleted=0 if none matched).
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  deleted:
+                    type: integer
+                  tenant_id:
+                    type: string
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '500':
+          description: Feedback store delete failed (internal detail not leaked).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                detail: feedback deletion failed
   /v1/agents/{agent_id}/credentials:
     parameters:
     - $ref: '#/components/parameters/AgentId'
@@ -1001,6 +1395,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/CredentialStatus'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
         '403':
           $ref: '#/components/responses/Forbidden'
         '404':
@@ -1277,9 +1673,11 @@ paths:
       operationId: healthCheck
       summary: Liveness check
       security: []
+      description: Probes DynamoDB (critical), plus S3/CloudWatch (non-critical). Overall health gates
+        ONLY on DynamoDB; a non-critical failure still returns 200 with `status=degraded`.
       responses:
         '200':
-          description: Healthy.
+          description: All critical deps healthy (or only non-critical degraded).
           content:
             application/json:
               schema:
@@ -1287,7 +1685,27 @@ paths:
                 properties:
                   status:
                     type: string
+                    enum:
+                    - healthy
+                    - degraded
                     example: healthy
+                  version:
+                    type: string
+                  dependencies:
+                    type: object
+                    additionalProperties: true
+                  uptime_seconds:
+                    type: number
+                  errors:
+                    type: array
+                    items:
+                      type: string
+        '503':
+          description: "DynamoDB (critical) unhealthy \u2014 the full health response is returned as `detail`."
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
 components:
   securitySchemes:
     ApiKeyAuth:
@@ -1410,6 +1828,31 @@ components:
           description: ISO-8601 timestamp with milliseconds in UTC (trailing Z).
         operation_type:
           $ref: '#/components/schemas/OperationType'
+        phase:
+          type: string
+          enum:
+          - request
+          - content
+          - output
+          - memory
+          default: request
+          description: "Pipeline phase. `request` runs the full pipeline; `content`/`memory` are handled;\
+            \ `output` (and any known-but-unbuilt phase) fail-secure DENY; an unknown value \u2192 422."
+        content_text:
+          type:
+          - string
+          - 'null'
+          maxLength: 1048576
+          description: "Payload for content/output/memory phases (max 1 MiB; over-cap \u2192 422)."
+        redaction_nonce:
+          type:
+          - string
+          - 'null'
+          description: Optional nonce paired with server-side redaction.
+        redacted:
+          type: boolean
+          default: false
+          description: Whether content_text was already redacted upstream.
         context:
           type: object
           additionalProperties: true
@@ -2099,6 +2542,118 @@ components:
           type: string
         role:
           $ref: '#/components/schemas/Role'
+    SessionTrail:
+      type: object
+      description: The four-bucket decision trail for one request.
+      properties:
+        session_id:
+          type: string
+        request_id:
+          type: string
+        phase:
+          type: string
+        winning_source:
+          type:
+          - string
+          - 'null'
+        winning_source_display:
+          type:
+          - string
+          - 'null'
+        block_point:
+          type:
+          - string
+          - 'null'
+          description: == winning_source on DENY; null on ALLOW.
+        decision:
+          $ref: '#/components/schemas/Decision'
+        coverage:
+          type: array
+          items:
+            type: object
+            properties:
+              source:
+                type: string
+              state:
+                type: string
+                enum:
+                - ran
+                - ran_abstain
+                - ran_error
+                - not_run
+              decision:
+                type:
+                - string
+                - 'null'
+              reason:
+                type:
+                - string
+                - 'null'
+              latency_ms:
+                type:
+                - number
+                - 'null'
+              display_name:
+                type:
+                - string
+                - 'null'
+              state_label:
+                type:
+                - string
+                - 'null'
+        coverage_total:
+          type: integer
+        ran_count:
+          type: integer
+        abstain_count:
+          type: integer
+        ran_error_count:
+          type: integer
+        not_run_count:
+          type: integer
+        next_token:
+          type:
+          - string
+          - 'null'
+    SigmaRuleContent:
+      type: object
+      properties:
+        rule_id:
+          type: string
+        title:
+          type: string
+        description:
+          type: string
+        level:
+          type: string
+        status:
+          type: string
+        tags:
+          type: array
+          items:
+            type: string
+        condition:
+          type:
+          - string
+          - 'null'
+          description: The Sigma detection condition (e.g. '1 of them').
+        selections:
+          type: array
+          items:
+            type: object
+            properties:
+              name:
+                type: string
+                description: Selection key.
+              field:
+                type: string
+                description: field+modifier, e.g. 'prompt|contains'.
+              patterns:
+                type: array
+                items:
+                  type: string
+        patterns_total:
+          type: integer
     GenericOk:
       type: object
       properties:
@@ -2131,6 +2686,15 @@ components:
             $ref: '#/components/schemas/Error'
           example:
             detail: 'Missing required field: session_id'
+    Unauthorized:
+      description: "Missing/invalid operator identity (ALB Cognito OIDC \u2014 untrusted signer/issuer\
+        \ or absent session)."
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          example:
+            detail: invalid ALB identity
     Forbidden:
       description: Missing/invalid API key, or a policy denial surfaced as 403.
       content:

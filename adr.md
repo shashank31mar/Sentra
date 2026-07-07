@@ -1565,6 +1565,46 @@ But the ECS controller **already verifies the same agent JWT in-app**: `/v1/vali
 
 ---
 
+## ADR-038: `/trail` + `/signals` GET Reads Are Operator-Lane (Control-Plane) Reads, Not Agent Data-Plane Reads
+
+**Status**: Accepted (founder) 2026-07-07
+**Supersedes**: the lld/39 §4 route-table + §5 disposition of `GET /v1/sessions/{id}/trail` and `GET /v1/sessions/{id}/signals` as "none — CORRECT (data-plane read) / do NOT change (Invariant 6)". Those two reads are reclassified here; lld/39 §4/§5 are reconciled by propagate-change.
+
+### Context
+
+WS-M (lld/39 M5.2, prod milestone-102) bound `get_session_trail` + `get_session_signals` through `_dataplane_tenant_bind` ([routes.py:466](../src/security-controller/app/api/routes.py#L466)), which resolves tenant from a verified **agent** ES256 JWT (`resolve_tenant_from_jwt`, the `tid` claim). lld/39 classified these as agent data-plane reads and froze them ("Invariant 6: do NOT change").
+
+But the **only** consumer of these two GET reads is the operator SOC console (WS-G), which is the **operator lane** and sends **no** agent bearer — verified: `web/console/src/lib/http.ts` attaches only `X-Aegion-Tenant` + the nginx-injected key; grep finds no `Authorization` header anywhere in `web/console/src`, and no SDK/connector/agent GET caller of `/trail` or `/sessions/{id}/signals` exists (the only `/signals` client, `src/connectors/base/signals_client.py:80`, is a POST **write** to route 19 — a different handler). So the agent-JWT bind is wrong for the real caller: at `tenant_identity_mode: enforce` (the live config) an agent-JWT-less console request is rejected **401**, breaking the Decision-detail view for the authenticated operator; at `off`/`shadow` it takes the no-bind branch and reads the ambient `default` partition (a latent cross-tenant read).
+
+### Decision
+
+**Reclassify `GET /v1/sessions/{id}/trail` and `GET /v1/sessions/{id}/signals` from the agent data-plane lane to the operator control-plane lane.** They bind through `resolve_operator_tenant` (ALB-OIDC operator identity → membership-validated tenant → `set_current_tenant`), not `_dataplane_tenant_bind`.
+
+1. **REPLACE, not fork** — because no agent/SDK/connector consumes these GET reads, the console reads move wholesale to the operator lane; `_dataplane_tenant_bind` is left with zero GET callers and is **removed** (it was named for the agent-lane read model these GETs no longer use — leaving it is a misnomer and a re-introduction hazard).
+2. **No `require_role`** — a customer forensic read carries no RBAC role; break-glass `_platform` reads default to `viewer`. This is authN + tenant-bind, not a control-plane mutation.
+3. **Invariant 6 is narrowed** to genuine agent-consumed data-plane reads — `POST /v1/validate` and route 19's write ingest — which stay unchanged. A console feed is an operator control-plane read, which the frozen row mis-categorized.
+4. **Route 19 (`POST /v1/sessions/{id}/signals` write) is untouched** — it keeps its own fail-closed disposition (lld/39 §5.3).
+
+### Rationale
+
+- **The agent JWT never legitimately reached these GETs** — moving to operator-only binding **loses no live access**; it *adds* tenant isolation (honors the switcher) and un-breaks the console at `enforce`.
+- **One bind pattern** — this is the same `resolve_operator_tenant` bind D10 applies to `/decisions`, `/sessions`, `/sessions/{id}/decisions`, and (D11) `/metrics/overview` — the console read set converges on one operator-identity mechanism.
+
+### Consequences
+
+- ✅ The console Decision-detail + forensic views work at `enforce` (no spurious 401); each read hits the operator's own composite partition.
+- ✅ Latent `default`-partition co-mingling on these two reads is closed for non-enforcing tenants.
+- ⚠️ **Shared-file edit** — lands in `routes.py`/`deps.py` (WS-M-owned) as part of the D10 PR; gated by the lld/40 §6.2 hard sequencing gate (merged + regression-green before any G3 console view that consumes a re-bound read is exposed).
+- ⚠️ **Read non-repudiation** — surfacing forensic snippets to an operator is itself an audit obligation; the D10 PR adds a server-side access-log event on these reads (`ctx.sub` + resolved `tenant_id` + query scope) — lld/40 §8 (D12).
+
+### References
+
+- **LLD**: [lld/40-multi-tenant-console.md](lld/40-multi-tenant-console.md) §6.2 (D10 lane fix), §6.5/§6.6 (forensic views), §16 · [lld/39-authz-rbac-edge-authorizer.md](lld/39-authz-rbac-edge-authorizer.md) §4 route table, §5 (reconciled)
+- **Code**: `routes.py:466` (`_dataplane_tenant_bind`, removed), `routes.py:515/541` (`get_session_signals`/`get_session_trail`), `deps.py:374` (`resolve_operator_tenant`)
+- **Builds on** ADR-037 (in-service auth boundary) and the WS-M M5.2 tenant-bind.
+
+---
+
 ## Future ADRs to Consider (Post-MVP)
 
 - **ADR-023**: Migration from ECS Fargate to EKS
