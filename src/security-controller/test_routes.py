@@ -169,3 +169,41 @@ def test_decisions_row_projection_includes_winning_source():
     # Row-level value mirrors the nested combined value (same source of truth).
     assert d["winning_source"] == d["combined"]["winning_source"]
     assert d["winning_source"] is not None, "a DENY row must name a winning source"
+
+
+def test_decisions_row_winning_source_null_on_allow_only_group():
+    """M-G3.3 (the ALLOW half): an all-ALLOW (session, request) group has NO denying
+    source, so the row-level `winning_source` MUST be null — the client then renders
+    no per-detector facet chip (decisions_service.py:554 + the deny_overrides ALLOW
+    branch that sets metadata.winning_source=None). This is the negative pin the DENY
+    test can't give: if the projection ever FABRICATED a source on an ALLOW row (a
+    spurious facet chip), this test FAILS. Same nested/row mirroring asserted."""
+    from app.combiners import Source
+
+    # One (session, request) group, both signals ALLOW → combined ALLOW, no winner.
+    rows = [
+        {"source": Source.SENTRA_TRUST, "decision": "ALLOW", "request_id": "r2",
+         "session_id": "s2", "agent_id": "agent-y", "tool_name": "read_ledger",
+         "platform": "bedrock", "trust_score_before": 0.95, "timestamp_ms": 100,
+         "timestamp_iso": "2026-07-08T00:00:00.100Z"},
+        {"source": Source.SENTRA_SIGMA, "decision": "ALLOW", "request_id": "r2",
+         "session_id": "s2", "agent_id": "agent-y", "tool_name": "read_ledger",
+         "platform": "bedrock", "trust_score_before": 0.95, "timestamp_ms": 200,
+         "timestamp_iso": "2026-07-08T00:00:00.200Z"},
+    ]
+    svc = _mk_scan_service(rows)
+
+    resp = svc.scan_decisions(limit=50)
+    matching = [d for d in resp["decisions"] if d["request_id"] == "r2"]
+    assert len(matching) == 1
+    d = matching[0]
+
+    assert d["decision"] == "ALLOW"
+    assert "winning_source" in d, "the row must still carry the field (null), not omit it"
+    assert d["winning_source"] is None, (
+        "an ALLOW-only group has no denying source — the row-level winning_source "
+        "must be null, never a fabricated detector (no spurious facet chip)"
+    )
+    # Row-level mirrors the nested combined value — both null on an ALLOW.
+    assert d["combined"]["winning_source"] is None
+    assert d["winning_source"] == d["combined"]["winning_source"]

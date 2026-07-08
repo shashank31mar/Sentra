@@ -171,6 +171,44 @@ def test_resolve_org_per_ip_table_is_bounded(mt_env, monkeypatch):
     )
 
 
+def test_resolve_org_reachable_through_mounted_public_router(mt_env):
+    """G0.2 wiring gap: the other resolve_org tests call the coroutine directly, so
+    NONE of them prove the handler is actually MOUNTED at the non-`/v1`
+    ``GET /public/resolve-org`` path the ALB carve-out (compute_stack) + nginx
+    template + the frontend org page depend on. Drive it through the real ASGI app
+    (TestClient) so a wiring regression FAILS here:
+      * router dropped from main.include_router → 404 on a KNOWN-good org
+      * path drift off ``/public/resolve-org`` → 404
+      * accidental ``/v1`` prefix (would need auth) → 401/403 instead of the 200/404
+        this pre-auth endpoint must give.
+    Asserts the hit (200 → id-only body), the miss (404), and — critically — that
+    the path is NOT under ``/v1`` (a pre-auth org lookup must not require a token)."""
+    from fastapi.testclient import TestClient
+    from app.main import app
+    from app.services.tenant_service import get_tenant_store
+
+    t = get_tenant_store().create(display_name="Mounted Org")
+    client = TestClient(app, raise_server_exceptions=False)
+
+    # HIT: the mounted path resolves and returns ONLY the id (no counts/plan/members).
+    hit = client.get("/public/resolve-org", params={"org": "mounted org"})
+    assert hit.status_code == 200, (
+        f"GET /public/resolve-org must be mounted + reachable pre-auth; got "
+        f"{hit.status_code} {hit.text!r} (router unmounted or path drifted?)"
+    )
+    assert hit.json() == {"tenant_id": t.tenant_id}, "id-only contract at the HTTP layer"
+
+    # MISS: an unknown org is a friendly 404 through the real stack (not a 500).
+    miss = client.get("/public/resolve-org", params={"org": "no-such-org"})
+    assert miss.status_code == 404, f"unknown org must be 404 at the HTTP layer, got {miss.status_code}"
+
+    # CONTRACT: the endpoint is NOT under /v1 — the pre-Cognito path must not require
+    # a token (the ALB carve-out routes /public/* around the /v1 authorizer).
+    assert client.get("/v1/public/resolve-org", params={"org": "mounted org"}).status_code == 404, (
+        "resolve-org must live at /public/resolve-org, NOT /v1/... (pre-auth carve-out)"
+    )
+
+
 # --------------------------------------------------------------------------- #
 # G0.4 / G0.5 — platform rollup + paging/sort/filter
 # --------------------------------------------------------------------------- #
