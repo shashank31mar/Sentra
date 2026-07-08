@@ -9,7 +9,7 @@ import {
   IconUserShield,
 } from '@tabler/icons-react'
 import { useCurrentUser } from '../../lib/query/useCurrentUser'
-import { displayName, initials, primaryRole, signOut, tenantOf } from '../../lib/auth'
+import { displayName, initials, primaryRole, signOut, tenantLabelForDisplay } from '../../lib/auth'
 
 const lineBorder = { border: '1px solid var(--color-line)' }
 
@@ -41,7 +41,7 @@ export function AccountMenu() {
 
   const name = displayName(user)
   const role = primaryRole(user)
-  const tenant = tenantOf(user)
+  const tenant = tenantLabelForDisplay(user)
   const monogram = initials(user)
   const email = user?.email ?? null
 
