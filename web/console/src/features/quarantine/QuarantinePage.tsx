@@ -8,6 +8,7 @@ import { StatusDot } from '../../components/ui/StatusDot'
 import { EmptyState, ErrorState, LoadingState } from '../../components/ui/states'
 import { DecisionTrace } from '../../components/decisions/DecisionTrace'
 import { useInfiniteSessions, useReleaseQuarantine } from '../../lib/query/useSessions'
+import { useCan } from '../../lib/query/useMe'
 import { formatNumber, formatRelativeTime } from '../../lib/format'
 import type { SessionInfo } from '../../types/api'
 
@@ -52,6 +53,11 @@ export function QuarantinePage() {
   const query = useInfiniteSessions({ status: 'quarantined', limit: 100 })
   const [expanded, setExpanded] = useState<string | null>(null)
   const [search, setSearch] = useState('')
+  // G2.3: release override is admin-only (server DELETE /quarantine/{id}).
+  // Compute once at component top (rules-of-hooks) — the read-only list stays
+  // visible to viewers; only the action hides.
+  const can = useCan()
+  const canRelease = can('quarantine.manage')
 
   // Flatten + dedupe across pages (cursor boundaries are clean, but guard anyway).
   const allSessions = useMemo(() => {
@@ -141,9 +147,13 @@ export function QuarantinePage() {
                       <Td className="text-right font-mono text-pink">{formatNumber(s.deny_count)}</Td>
                       <Td className="text-right font-mono text-muted">{formatRelativeTime(s.last_activity)}</Td>
                       <Td className="text-right">
-                        <span onClick={(e) => e.stopPropagation()}>
-                          <ReleaseButton session={s} />
-                        </span>
+                        {canRelease ? (
+                          <span onClick={(e) => e.stopPropagation()}>
+                            <ReleaseButton session={s} />
+                          </span>
+                        ) : (
+                          <span className="text-[11px] font-mono text-faint">—</span>
+                        )}
                       </Td>
                     </Tr>
                     {open && (

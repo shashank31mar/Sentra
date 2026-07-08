@@ -58,7 +58,7 @@ export function primaryRole(user?: CurrentUser | null): string {
  * this to scope data, gate UI, or send to the API — the server resolves and
  * enforces the real tenant from the Cognito session.
  */
-export function tenantOf(user?: CurrentUser | null): string | null {
+export function tenantLabelForDisplay(user?: CurrentUser | null): string | null {
   const email = user?.email?.trim()
   if (!email || !email.includes('@')) return null
   return email.split('@')[1] || null

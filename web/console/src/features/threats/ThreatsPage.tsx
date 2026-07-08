@@ -12,6 +12,7 @@ import { DecisionTrace } from '../../components/decisions/DecisionTrace'
 import { EmptyState, ErrorState, LoadingState } from '../../components/ui/states'
 import { useDecisions, useQuarantine } from '../../lib/query/useDecisions'
 import { useSessions } from '../../lib/query/useSessions'
+import { useCan } from '../../lib/query/useMe'
 import { formatRelativeTime } from '../../lib/format'
 import type { Decision } from '../../types/enums'
 import type { DecisionItem } from '../../types/api'
@@ -42,6 +43,9 @@ export function ThreatsPage() {
   const query = useDecisions(serverFilters)
   const quarantine = useQuarantine()
   const quarantinedSessions = useSessions({ status: 'quarantined', limit: 200 })
+  // G2.4: inline Quarantine is admin-only (server POST /quarantine/{id}).
+  const can = useCan()
+  const canQuarantine = can('quarantine.manage')
 
   // Sessions just quarantined from this page — instant feedback before the
   // sessions query refetches.
@@ -179,7 +183,7 @@ export function ThreatsPage() {
                             >
                               <IconShieldLock size={14} /> Quarantined
                             </span>
-                          ) : (
+                          ) : canQuarantine ? (
                             <Button
                               variant="danger"
                               className="!h-8 !px-3"
@@ -187,13 +191,16 @@ export function ThreatsPage() {
                               onClick={(e) => {
                                 e.stopPropagation()
                                 quarantine.mutate(
-                                  { sessionId: d.session_id, body: { reason: 'Operator review', operator_id: 'dana.reyes' } },
+                                  // No operator_id — server derives from ctx.sub (M-G3.13).
+                                  { sessionId: d.session_id, body: { reason: 'Operator review' } },
                                   { onSuccess: () => setJustQuarantined((prev) => new Set(prev).add(d.session_id)) },
                                 )
                               }}
                             >
                               <IconLockX size={14} /> {isQuarantining ? 'Quarantining…' : 'Quarantine'}
                             </Button>
+                          ) : (
+                            <span className="text-[11px] font-mono text-faint">—</span>
                           )}
                         </Td>
                       </Tr>

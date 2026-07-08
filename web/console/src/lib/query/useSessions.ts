@@ -37,8 +37,7 @@ export function useSessionDecisions(sessionId: string, requestId?: string, enabl
 export function useReleaseQuarantine() {
   const qc = useQueryClient()
   return useMutation({
-    mutationFn: ({ sessionId, operatorId }: { sessionId: string; operatorId?: string }) =>
-      sessionsApi.release(sessionId, operatorId),
+    mutationFn: ({ sessionId }: { sessionId: string }) => sessionsApi.release(sessionId),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['sessions'] })
       qc.invalidateQueries({ queryKey: ['decisions'] })

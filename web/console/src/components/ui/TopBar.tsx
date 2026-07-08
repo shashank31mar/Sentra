@@ -9,7 +9,6 @@ import {
 } from '@tabler/icons-react'
 import { NAV_ITEMS } from '../../app/navConfig'
 import { AccountMenu } from './AccountMenu'
-import { TenantSwitcher } from './TenantSwitcher'
 
 interface Crumb {
   label: string
@@ -113,8 +112,8 @@ export function TopBar({ onMenuClick }: { onMenuClick: () => void }) {
           <IconChevronDown size={13} className="text-muted" />
         </button>
 
-        {/* Tenant switcher — only for multi-membership operators (LLD-26 WS-C). */}
-        <TenantSwitcher />
+        {/* In-session tenant switcher removed (G2.10 / ADR-039): tenant is bound
+            org-first at login and changed via logout → org page → re-login. */}
 
         <button
           type="button"

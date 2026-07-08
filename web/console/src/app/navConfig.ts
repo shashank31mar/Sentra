@@ -12,6 +12,9 @@ import {
   IconLockExclamation,
   IconClockExclamation,
   IconListSearch,
+  IconBuildingSkyscraper,
+  IconChartBar,
+  IconActivityHeartbeat,
 } from '@tabler/icons-react'
 import { ROUTES } from './routes'
 
@@ -32,6 +35,7 @@ export const NAV_GROUPS: NavGroup[] = [
     title: 'Monitor',
     items: [
       { label: 'Overview', to: ROUTES.overview, icon: IconLayoutDashboard },
+      { label: 'Activity', to: ROUTES.activity, icon: IconActivityHeartbeat },
       { label: 'Threats', to: ROUTES.threats, icon: IconAlertTriangle },
       { label: 'Deployments', to: ROUTES.deployments, icon: IconRocket },
     ],
@@ -64,3 +68,27 @@ export const NAV_GROUPS: NavGroup[] = [
 
 /** Flattened lookup for breadcrumb derivation. */
 export const NAV_ITEMS: NavItem[] = NAV_GROUPS.flatMap((g) => g.items)
+
+/**
+ * Platform (cross-tenant) nav — consumed ONLY by the platform NavRail inside
+ * `PlatformLayout` (reachable only when `RequirePlatform` passes). It is
+ * deliberately NOT added to `NAV_GROUPS`, so a customer never sees a link into
+ * `/platform` (G4.8 invariant — the router guard, not a nav check, is the gate).
+ * Topology + Health are ROADMAP (zero fetch).
+ */
+export const PLATFORM_NAV_GROUPS: NavGroup[] = [
+  {
+    title: 'Fleet',
+    items: [
+      { label: 'Fleet Overview', to: ROUTES.platformOverview, icon: IconChartBar },
+      { label: 'Tenant Grid', to: ROUTES.platformTenants, icon: IconBuildingSkyscraper },
+    ],
+  },
+  {
+    title: 'Roadmap',
+    items: [
+      { label: 'Fleet Topology', to: ROUTES.platformTopology, icon: IconSitemap },
+      { label: 'System Health', to: ROUTES.platformHealth, icon: IconActivityHeartbeat },
+    ],
+  },
+]

@@ -24,6 +24,7 @@ import {
   useRemoveConnection,
   useScanConnection,
 } from '../../lib/query/useConnections'
+import { useCan } from '../../lib/query/useMe'
 import { ApiException } from '../../lib/http'
 import { importPath } from '../../app/routes'
 import type { CloudProvider } from '../../types/enums'
@@ -83,6 +84,11 @@ export function ConnectAccountPage() {
   const navigate = useNavigate()
   const { error: toastError } = useToast()
   const connections = useConnections()
+  // G2.6: create/edit/delete a connection is admin (connections.write); the
+  // test/scan probes are editor (connections.operate). Read/preview stays visible.
+  const can = useCan()
+  const canWrite = can('connections.write')
+  const canOperate = can('connections.operate')
 
   const [connectionId, setConnectionId] = useState<string | null>(null)
   const create = useCreateConnection()
@@ -207,10 +213,16 @@ export function ConnectAccountPage() {
                 <button
                   key={opt.provider}
                   type="button"
-                  // Only disabled while a create/abandon is in flight or the
-                  // provider isn't shipped yet — so operators can freely switch
-                  // clouds and click into an already-connected account.
-                  disabled={!opt.available || create.isPending || remove.isPending}
+                  // Only disabled while a create/abandon is in flight, the
+                  // provider isn't shipped yet, or the operator lacks write. A
+                  // connected tile is still clickable (navigation to review), but
+                  // starting a NEW connection requires connections.write.
+                  disabled={
+                    !opt.available ||
+                    create.isPending ||
+                    remove.isPending ||
+                    (!canWrite && !connectedByProvider.has(opt.provider))
+                  }
                   onClick={() => onChooseTile(opt.provider)}
                   className="relative text-left p-4 rounded-2xl transition-colors disabled:cursor-not-allowed enabled:hover:border-cyan/40 enabled:cursor-pointer"
                   style={{
@@ -267,24 +279,28 @@ export function ConnectAccountPage() {
           )}
           {connection &&
             (connection.cloud_provider === 'azure' ? (
-              <GrantAzureAccessCard connection={connection} />
+              <GrantAzureAccessCard connection={connection} canOperate={canOperate} />
             ) : (
-              <GrantAccessCard connection={connection} />
+              <GrantAccessCard connection={connection} canOperate={canOperate} />
             ))}
 
-          {/* Step 3 — connect & scan */}
+          {/* Step 3 — connect & scan. The combined button triggers a scan but only
+              makes sense after a create, so it requires connections.write — an
+              operate-only editor would hit a server 403 on the create it can't do. */}
           {connection && (
             <div className="flex items-center justify-between gap-3">
               <Button variant="ghost" onClick={startOver} disabled={scan.isPending}>
                 Use a different account
               </Button>
-              <Button
-                onClick={connectAndScan}
-                disabled={connection.status !== 'connected' || scan.isPending}
-              >
-                {scan.isPending ? <IconLoader2 size={14} className="animate-spin" /> : null}
-                Connect &amp; scan <IconArrowRight size={14} />
-              </Button>
+              {canWrite && (
+                <Button
+                  onClick={connectAndScan}
+                  disabled={connection.status !== 'connected' || scan.isPending}
+                >
+                  {scan.isPending ? <IconLoader2 size={14} className="animate-spin" /> : null}
+                  Connect &amp; scan <IconArrowRight size={14} />
+                </Button>
+              )}
             </div>
           )}
         </div>

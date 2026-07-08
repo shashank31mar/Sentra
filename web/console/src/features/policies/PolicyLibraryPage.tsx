@@ -169,33 +169,43 @@ export function PolicyLibraryPage() {
                     <Td className="text-right font-mono text-muted">{formatDateTime(p.updated_at)}</Td>
                     <Td className="text-right">
                       <div className="inline-flex items-center gap-1.5 justify-end">
-                        <button
-                          type="button"
-                          disabled={busy}
-                          onClick={(e) => { e.stopPropagation(); navigate(policyEditPath(p.policy_id)) }}
-                          className="px-2 py-1 rounded-lg text-[11px] font-bold text-secondary bg-surface-2 hover:text-cyan transition-colors disabled:opacity-40"
-                          style={{ border: '1px solid var(--color-line)' }}
-                        >
-                          Edit
-                        </button>
-                        <button
-                          type="button"
-                          disabled={busy}
-                          onClick={(e) => { e.stopPropagation(); onToggle(p) }}
-                          className="px-2 py-1 rounded-lg text-[11px] font-bold text-secondary bg-surface-2 hover:text-cyan transition-colors disabled:opacity-40"
-                          style={{ border: '1px solid var(--color-line)' }}
-                        >
-                          {isDisabled ? 'Enable' : 'Disable'}
-                        </button>
-                        <button
-                          type="button"
-                          disabled={busy || isSystem}
-                          title={isSystem ? "System policies can't be deleted — disable instead." : 'Delete policy'}
-                          onClick={(e) => { e.stopPropagation(); setDeleteFor(p) }}
-                          className="px-2 py-1 rounded-lg text-[11px] font-bold text-pink bg-pink/10 border border-pink/20 hover:bg-pink/20 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
-                        >
-                          Delete
-                        </button>
+                        {/* G2.2: Edit + Enable/Disable are editor-class writes
+                            (server PUT / PATCH status) — gate under policies.write. */}
+                        {can('policies.write') && (
+                          <button
+                            type="button"
+                            disabled={busy}
+                            onClick={(e) => { e.stopPropagation(); navigate(policyEditPath(p.policy_id)) }}
+                            className="px-2 py-1 rounded-lg text-[11px] font-bold text-secondary bg-surface-2 hover:text-cyan transition-colors disabled:opacity-40"
+                            style={{ border: '1px solid var(--color-line)' }}
+                          >
+                            Edit
+                          </button>
+                        )}
+                        {can('policies.write') && (
+                          <button
+                            type="button"
+                            disabled={busy}
+                            onClick={(e) => { e.stopPropagation(); onToggle(p) }}
+                            className="px-2 py-1 rounded-lg text-[11px] font-bold text-secondary bg-surface-2 hover:text-cyan transition-colors disabled:opacity-40"
+                            style={{ border: '1px solid var(--color-line)' }}
+                          >
+                            {isDisabled ? 'Enable' : 'Disable'}
+                          </button>
+                        )}
+                        {/* G2.2: Delete is admin-only (server DELETE /policies/{id});
+                            NOT rendered for editor/viewer — hidden, not disabled. */}
+                        {can('policies.delete') && (
+                          <button
+                            type="button"
+                            disabled={busy || isSystem}
+                            title={isSystem ? "System policies can't be deleted — disable instead." : 'Delete policy'}
+                            onClick={(e) => { e.stopPropagation(); setDeleteFor(p) }}
+                            className="px-2 py-1 rounded-lg text-[11px] font-bold text-pink bg-pink/10 border border-pink/20 hover:bg-pink/20 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                          >
+                            Delete
+                          </button>
+                        )}
                       </div>
                     </Td>
                   </Tr>

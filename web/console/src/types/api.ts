@@ -177,7 +177,9 @@ export interface LogEntry {
 export interface VerdictRequest {
   verdict: Verdict
   reason: string
-  operator_id: string
+  // NOTE: no `operator_id` — the server attributes the verdict to the VERIFIED
+  // `ctx.sub`, never a spoofable client field (M-G3.13, D8). Dropping the type
+  // field enforces that no caller re-adds the dead stub.
 }
 
 export interface VerdictResult {
@@ -188,7 +190,7 @@ export interface VerdictResult {
 
 export interface QuarantineRequest {
   reason: string
-  operator_id: string
+  // No `operator_id` — server derives the operator from `ctx.sub` (M-G3.13, D8).
 }
 
 /* ---------------------------- Sessions ---------------------------- */
@@ -568,4 +570,70 @@ export interface SigmaRuleContent {
   condition: string | null
   selections: SigmaRuleSelection[]
   patterns_total: number
+}
+
+/* ----------------------------- Usage (WS-H, provisional) ----------------------------- */
+
+/**
+ * Metered usage rollup (`GET /v1/usage`, WS-H-owned — PROVISIONAL). Treat the
+ * response as untrusted data and validate before rendering; until WS-H ships the
+ * endpoint returns 404/501 and the UI renders a PARTIAL banner (never fabricated
+ * totals). All fields optional so a partial rollup renders without crashing.
+ */
+export interface UsageRollup {
+  period?: string
+  validations?: number
+  quota?: number
+  blocks?: number
+  agents?: number
+}
+
+/* --------------------- Platform (cross-tenant, M-G4) --------------------- */
+
+/**
+ * One tenant row from `GET /v1/platform/tenants` (`tenancy_routes.py:437`,
+ * `require_platform`). The six metric fields are OPTIONAL (PRE-G4-a — not emitted
+ * until the per-tenant rollup lands); treat every field as untrusted and guard
+ * before render (deny_rate/trust may be absent/NaN/out of range). Identity mode is
+ * canonical `enforce`/`shadow`/`off` — never "monitor".
+ */
+export interface PlatformTenantRow {
+  tenant_id: string
+  display_name: string
+  plan: string
+  status: string
+  identity_mode: string
+  created_at: string
+  /** Whether this tenant has granted platform-read consent (drill-down gating). */
+  platform_read_consent?: boolean
+  blocks_24h?: number
+  deny_rate?: number
+  trust?: number
+  agents?: number
+  quarantined?: number
+  decisions_24h?: number
+}
+
+export interface PlatformTenantsResponse {
+  count: number
+  tenants: PlatformTenantRow[]
+  /** Present only once server paging lands (PRE-G4-b); absent ⇒ full unpaged set. */
+  cursor?: string
+}
+
+export interface PlatformMemberRow {
+  operator_sub: string
+  role: string
+}
+
+/** `GET /v1/platform/tenants/{id}` (`tenancy_routes.py:454`, `require_platform`). */
+export interface PlatformTenantDetail {
+  tenant_id: string
+  display_name: string
+  status: string
+  plan: string
+  identity_mode: string
+  quota: Record<string, unknown>
+  platform_read_consent: boolean
+  members: PlatformMemberRow[]
 }

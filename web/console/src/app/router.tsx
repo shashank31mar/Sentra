@@ -2,6 +2,8 @@ import { Suspense, type ReactNode } from 'react'
 import { createBrowserRouter } from 'react-router-dom'
 import { ROUTES } from './routes'
 import { AppLayout } from './AppLayout'
+import { PlatformLayout } from './PlatformLayout'
+import { RequirePlatform } from './RequirePlatform'
 import { RouteErrorBoundary } from './RouteErrorBoundary'
 import { PlaceholderPage } from '../components/ui/PlaceholderPage'
 import { LoadingState } from '../components/ui/states'
@@ -21,6 +23,14 @@ import {
   QuarantinePage,
   ResidualAgentsPage,
   AuditTrailPage,
+  ActivityPage,
+  DecisionDetailPage,
+  SessionForensicsPage,
+  UsagePage,
+  FleetOverviewPage,
+  TenantDetailPage,
+  FleetTopologyPage,
+  SystemHealthPage,
 } from './lazyPages'
 
 /** Wrap a lazy page in a Suspense fallback so the shell paints while its chunk
@@ -39,6 +49,7 @@ export const router = createBrowserRouter([
       // so the operator enters the authenticated console (LLD-26 WS-C). `/` itself
       // is the splash, so this alias is the in-app home target.
       { path: '/overview', element: withSuspense(<OverviewPage />) },
+      { path: ROUTES.activity, element: withSuspense(<ActivityPage />) },
       { path: ROUTES.threats, element: withSuspense(<ThreatsPage />) },
       { path: ROUTES.deployments, element: <PlaceholderPage title="Deployments" /> },
       { path: ROUTES.agents, element: withSuspense(<AgentInventoryPage />) },
@@ -55,6 +66,30 @@ export const router = createBrowserRouter([
       { path: ROUTES.quarantine, element: withSuspense(<QuarantinePage />) },
       { path: ROUTES.residualAgents, element: withSuspense(<ResidualAgentsPage />) },
       { path: ROUTES.audit, element: withSuspense(<AuditTrailPage />) },
+      // M-G3 forensics + usage. Decision-detail keys on the composite PK.
+      { path: ROUTES.decisionDetail, element: withSuspense(<DecisionDetailPage />) },
+      { path: ROUTES.sessionDetail, element: withSuspense(<SessionForensicsPage />) },
+      { path: ROUTES.usage, element: withSuspense(<UsagePage />) },
+    ],
+  },
+  // Platform (cross-tenant) tree — a DISTINCT top-level route with its own layout,
+  // gated at the router root on `is_platform` (G4.1). NOT nested under AppLayout
+  // (that would render customer tenant chrome around a platform view). Static
+  // routes precede the `:tenantId` param route.
+  {
+    path: ROUTES.platformOverview,
+    element: (
+      <RequirePlatform>
+        <PlatformLayout />
+      </RequirePlatform>
+    ),
+    errorElement: <RouteErrorBoundary />,
+    children: [
+      { index: true, element: withSuspense(<FleetOverviewPage />) },
+      { path: ROUTES.platformTenants, element: withSuspense(<FleetOverviewPage />) },
+      { path: ROUTES.platformTopology, element: withSuspense(<FleetTopologyPage />) },
+      { path: ROUTES.platformHealth, element: withSuspense(<SystemHealthPage />) },
+      { path: ROUTES.platformTenantDetail, element: withSuspense(<TenantDetailPage />) },
     ],
   },
 ])

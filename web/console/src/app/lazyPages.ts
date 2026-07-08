@@ -46,3 +46,31 @@ export const ResidualAgentsPage = lazy(() =>
 export const AuditTrailPage = lazy(() =>
   import('../features/audit/AuditTrailPage').then((m) => ({ default: m.AuditTrailPage })),
 )
+
+/* --- M-G3 new/promoted customer views --- */
+export const ActivityPage = lazy(() =>
+  import('../features/activity/ActivityPage').then((m) => ({ default: m.ActivityPage })),
+)
+export const DecisionDetailPage = lazy(() =>
+  import('../features/forensics/DecisionDetailPage').then((m) => ({ default: m.DecisionDetailPage })),
+)
+export const SessionForensicsPage = lazy(() =>
+  import('../features/forensics/SessionForensicsPage').then((m) => ({ default: m.SessionForensicsPage })),
+)
+export const UsagePage = lazy(() =>
+  import('../features/usage/UsagePage').then((m) => ({ default: m.UsagePage })),
+)
+
+/* --- Platform (cross-tenant) console — M-G4 --- */
+export const FleetOverviewPage = lazy(() =>
+  import('../features/platform/FleetOverviewPage').then((m) => ({ default: m.FleetOverviewPage })),
+)
+export const TenantDetailPage = lazy(() =>
+  import('../features/platform/TenantDetailPage').then((m) => ({ default: m.TenantDetailPage })),
+)
+export const FleetTopologyPage = lazy(() =>
+  import('../features/platform/FleetTopologyPage').then((m) => ({ default: m.FleetTopologyPage })),
+)
+export const SystemHealthPage = lazy(() =>
+  import('../features/platform/SystemHealthPage').then((m) => ({ default: m.SystemHealthPage })),
+)

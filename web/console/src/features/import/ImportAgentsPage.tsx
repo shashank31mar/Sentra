@@ -17,6 +17,7 @@ import {
   useImportAgents,
 } from '../../lib/query/useDiscovery'
 import { useConnection } from '../../lib/query/useConnections'
+import { useCan } from '../../lib/query/useMe'
 import { ImportResultDrawer } from './ImportResultDrawer'
 import { agentDetailPath, ROUTES } from '../../app/routes'
 import { ApiException } from '../../lib/http'
@@ -56,6 +57,10 @@ export function ImportAgentsPage() {
   // Scope the review table to the connected account when arriving from the wizard.
   const agentsQuery = useDiscoveredAgents(connectionId ? { connection_id: connectionId } : {})
   const importAgents = useImportAgents()
+  // G2.5: import is an editor mutation (server POST /discovery/import). The
+  // discovery review table stays visible (read); only the import action hides.
+  const can = useCan()
+  const canImport = can('agents.write')
 
   const [selected, setSelected] = useState<Set<string>>(new Set())
   const [enforcementMode, setEnforcementMode] = useState<EnforcementMode>('monitor')
@@ -98,19 +103,23 @@ export function ImportAgentsPage() {
         subtitle="Connect discovers your agents; Import brings the selected ones under management against their governing policy."
         actions={
           <>
-            <div
-              className="flex items-center gap-2"
-              title="Enforcement posture recorded on import. Monitor = observe-only; Enforce blocks. Runtime enforcement of this posture activates with governance (P1) — imports observe in Monitor today."
-            >
-              <span className="text-[11px] font-mono text-muted hidden sm:inline">Mode</span>
-              <SegmentedControl options={ENFORCEMENT_OPTIONS} value={enforcementMode} onChange={setEnforcementMode} />
-            </div>
+            {canImport && (
+              <div
+                className="flex items-center gap-2"
+                title="Enforcement posture recorded on import. Monitor = observe-only; Enforce blocks. Runtime enforcement of this posture activates with governance (P1) — imports observe in Monitor today."
+              >
+                <span className="text-[11px] font-mono text-muted hidden sm:inline">Mode</span>
+                <SegmentedControl options={ENFORCEMENT_OPTIONS} value={enforcementMode} onChange={setEnforcementMode} />
+              </div>
+            )}
             <Button variant="ghost" onClick={() => navigate(ROUTES.connect)}>
               <IconCloudComputing size={14} /> Connect account
             </Button>
-            <Button onClick={doImport} disabled={selected.size === 0 || importAgents.isPending}>
-              <IconDownload size={14} /> Import {selected.size > 0 ? `(${selected.size})` : ''}
-            </Button>
+            {canImport && (
+              <Button onClick={doImport} disabled={selected.size === 0 || importAgents.isPending}>
+                <IconDownload size={14} /> Import {selected.size > 0 ? `(${selected.size})` : ''}
+              </Button>
+            )}
           </>
         }
       />

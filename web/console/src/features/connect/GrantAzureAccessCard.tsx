@@ -11,6 +11,8 @@ import type { CloudConnection } from '../../types/api'
 
 interface GrantAzureAccessCardProps {
   connection: CloudConnection
+  /** G2.6: the SP probe/attach is a `connections.operate`/`write` action. */
+  canOperate?: boolean
 }
 
 const GUID = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/
@@ -51,7 +53,7 @@ function Field({ id, label, value, onChange, placeholder, mono = true }: FieldPr
  * (`POST /connections/{id}/test`). The client-secret never enters the browser —
  * only its vault reference does.
  */
-export function GrantAzureAccessCard({ connection }: GrantAzureAccessCardProps) {
+export function GrantAzureAccessCard({ connection, canOperate = true }: GrantAzureAccessCardProps) {
   const { error: toastError } = useToast()
   const [subscriptionId, setSubscriptionId] = useState(connection.azure_subscription_id ?? '')
   const [tenantId, setTenantId] = useState(connection.azure_tenant_id ?? '')
@@ -168,10 +170,12 @@ export function GrantAzureAccessCard({ connection }: GrantAzureAccessCardProps) 
               </div>
             </div>
           </div>
-          <Button variant="ghost" onClick={connect} disabled={!valid || busy} className="shrink-0">
-            {busy ? <IconLoader2 size={14} className="animate-spin" /> : null}
-            {isConnected ? 'Re-test' : 'Connect & test'}
-          </Button>
+          {canOperate && (
+            <Button variant="ghost" onClick={connect} disabled={!valid || busy} className="shrink-0">
+              {busy ? <IconLoader2 size={14} className="animate-spin" /> : null}
+              {isConnected ? 'Re-test' : 'Connect & test'}
+            </Button>
+          )}
         </div>
       </div>
     </Card>

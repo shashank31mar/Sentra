@@ -1,5 +1,18 @@
 /** Display formatters — all data is formatted here, never pre-formatted in props. */
 
+/**
+ * Universal trust-score → color mapping (navy design-spec §1): `≥80` green,
+ * `50–79` amber, `<50` pink. Returns the theme token hex so trust dots/bars are
+ * consistent everywhere. A null/undefined score (no samples — §11.2) is treated
+ * as "unknown" and renders faint, never as a misleading 0/red.
+ */
+export function trustColor(n: number | null | undefined): string {
+  if (n === null || n === undefined || Number.isNaN(n)) return '#4E607E' // faint / unknown
+  if (n >= 80) return '#22E58B' // green
+  if (n >= 50) return '#FFB020' // amber
+  return '#FF3D71' // pink
+}
+
 export function formatNumber(n: number | null | undefined, compact = false): string {
   if (n === null || n === undefined) return '—'
   if (compact) {

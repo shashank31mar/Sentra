@@ -11,6 +11,8 @@ import type { CloudConnection } from '../../types/api'
 
 interface GrantAccessCardProps {
   connection: CloudConnection
+  /** G2.6: the AssumeRole probe is a `connections.operate` (editor) action. */
+  canOperate?: boolean
 }
 
 /**
@@ -18,7 +20,7 @@ interface GrantAccessCardProps {
  * policy (with the minted ExternalId), captures the resulting Role ARN, and runs
  * a live AssumeRole probe (`POST /connections/{id}/test`).
  */
-export function GrantAccessCard({ connection }: GrantAccessCardProps) {
+export function GrantAccessCard({ connection, canOperate = true }: GrantAccessCardProps) {
   const [roleArn, setRoleArn] = useState(connection.role_arn ?? '')
   const test = useTestConnection(connection.id)
   // This card only renders for AWS connections, where these are always set.
@@ -104,15 +106,17 @@ export function GrantAccessCard({ connection }: GrantAccessCardProps) {
               </div>
             </div>
           </div>
-          <Button
-            variant="ghost"
-            onClick={() => test.mutate(roleArn.trim())}
-            disabled={!roleArn.trim() || test.isPending}
-            className="shrink-0"
-          >
-            {test.isPending ? <IconLoader2 size={14} className="animate-spin" /> : null}
-            {isConnected ? 'Re-test' : 'Test connection'}
-          </Button>
+          {canOperate && (
+            <Button
+              variant="ghost"
+              onClick={() => test.mutate(roleArn.trim())}
+              disabled={!roleArn.trim() || test.isPending}
+              className="shrink-0"
+            >
+              {test.isPending ? <IconLoader2 size={14} className="animate-spin" /> : null}
+              {isConnected ? 'Re-test' : 'Test connection'}
+            </Button>
+          )}
         </div>
       </div>
     </Card>

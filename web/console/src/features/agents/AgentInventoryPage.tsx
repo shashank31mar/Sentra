@@ -9,6 +9,7 @@ import { EmptyState, ErrorState, LoadingState } from '../../components/ui/states
 import { ConfirmDialog } from '../../components/ui/ConfirmDialog'
 import { useToast } from '../../components/ui/Toast'
 import { useAgents, useDetachPolicy } from '../../lib/query/useAgents'
+import { useCan } from '../../lib/query/useMe'
 import { AttachPolicyModal } from './AttachPolicyModal'
 import { agentDetailPath, policyDetailPath, policyEditPath } from '../../app/routes'
 import { formatNumber, formatRelativeTime } from '../../lib/format'
@@ -27,6 +28,10 @@ export function AgentInventoryPage() {
   const query = useAgents()
   const agents = query.data?.agents ?? []
   const { success, error } = useToast()
+  // G2.5: attach/detach are editor writes (server POST/DELETE /agents/{id}/policies).
+  // Row navigation + the policy chip (navigation) stay ungated; only mutations hide.
+  const can = useCan()
+  const canWrite = can('agents.write')
 
   // Which agent's attach modal is open, and which agent is pending a detach.
   const [attachFor, setAttachFor] = useState<AgentListItem | null>(null)
@@ -114,44 +119,50 @@ export function AgentInventoryPage() {
                     <Td className="text-right font-mono text-secondary">{a.active_sessions}</Td>
                     <Td className="text-right font-mono text-muted">{formatRelativeTime(a.last_seen)}</Td>
                     <Td className="text-right">
-                      <div className="inline-flex items-center gap-1.5 justify-end">
-                        {activePolicyId ? (
-                          <>
+                      {/* G2.5: attach/detach mutating controls gated on agents.write;
+                          not-rendered (dash) for viewers. */}
+                      {canWrite ? (
+                        <div className="inline-flex items-center gap-1.5 justify-end">
+                          {activePolicyId ? (
+                            <>
+                              <button
+                                type="button"
+                                onClick={(e) => {
+                                  e.stopPropagation()
+                                  navigate(policyEditPath(activePolicyId))
+                                }}
+                                className="px-2 py-1 rounded-lg text-[11px] font-bold text-secondary bg-surface-2 hover:text-cyan transition-colors"
+                                style={{ border: '1px solid var(--color-line)' }}
+                              >
+                                Update
+                              </button>
+                              <button
+                                type="button"
+                                onClick={(e) => {
+                                  e.stopPropagation()
+                                  setDetachFor(a)
+                                }}
+                                className="px-2 py-1 rounded-lg text-[11px] font-bold text-pink bg-pink/10 border border-pink/20 hover:bg-pink/20 transition-colors"
+                              >
+                                Detach
+                              </button>
+                            </>
+                          ) : (
                             <button
                               type="button"
                               onClick={(e) => {
                                 e.stopPropagation()
-                                navigate(policyEditPath(activePolicyId))
+                                setAttachFor(a)
                               }}
-                              className="px-2 py-1 rounded-lg text-[11px] font-bold text-secondary bg-surface-2 hover:text-cyan transition-colors"
-                              style={{ border: '1px solid var(--color-line)' }}
+                              className="px-2 py-1 rounded-lg text-[11px] font-bold text-cyan bg-cyan/10 border border-cyan/20 hover:bg-cyan/20 transition-colors"
                             >
-                              Update
+                              Attach Policy
                             </button>
-                            <button
-                              type="button"
-                              onClick={(e) => {
-                                e.stopPropagation()
-                                setDetachFor(a)
-                              }}
-                              className="px-2 py-1 rounded-lg text-[11px] font-bold text-pink bg-pink/10 border border-pink/20 hover:bg-pink/20 transition-colors"
-                            >
-                              Detach
-                            </button>
-                          </>
-                        ) : (
-                          <button
-                            type="button"
-                            onClick={(e) => {
-                              e.stopPropagation()
-                              setAttachFor(a)
-                            }}
-                            className="px-2 py-1 rounded-lg text-[11px] font-bold text-cyan bg-cyan/10 border border-cyan/20 hover:bg-cyan/20 transition-colors"
-                          >
-                            Attach Policy
-                          </button>
-                        )}
-                      </div>
+                          )}
+                        </div>
+                      ) : (
+                        <span className="text-[11px] font-mono text-faint">—</span>
+                      )}
                     </Td>
                   </Tr>
                 )
