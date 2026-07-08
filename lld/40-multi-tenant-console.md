@@ -125,11 +125,11 @@ The router (`main.tsx` → `createBrowserRouter`) branches at its root on `useMe
 
 ```mermaid
 flowchart TD
-  ALB["ALB authenticate-cognito<br/>+ nginx (injects x-api-key,<br/>re-emits x-sentra-oidc-data)"] --> APP["main.tsx → router (createBrowserRouter)"]
-  APP --> ME["useMe() → GET /v1/me<br/>MeContext{role, is_platform, tenant_id}"]
+  ALB["ALB authenticate-cognito<br/>+ nginx (injects x-api-key,<br/>re-emits x-sentra-oidc-data)"] --> APP["main.tsx -> router (createBrowserRouter)"]
+  APP --> ME["useMe() -> GET /v1/me<br/>MeContext{role, is_platform, tenant_id}"]
   ME --> ROOT{"is_platform?"}
-  ROOT -->|"NO — customer operator"| LAYOUT["AppLayout (tenant console)<br/>NavRail + TopBar + Outlet<br/>tenant FIXED from login (no switcher)"]
-  ROOT -->|"YES — platform/Sentra staff"| PLAT["PlatformLayout (§6.11)<br/>separate route-tree, read-only aggregate"]
+  ROOT -->|"NO -- customer operator"| LAYOUT["AppLayout (tenant console)<br/>NavRail + TopBar + Outlet<br/>tenant FIXED from login (no switcher)"]
+  ROOT -->|"YES -- platform/Sentra staff"| PLAT["PlatformLayout (§6.11)<br/>separate route-tree, read-only aggregate"]
   LAYOUT --> GATE["render-gate: useCan(cap) = rbac.can(role,cap)"]
   GATE --> MON["Monitor: Overview · Threats(+detector facet) · Activity feed (near-real-time pull)"]
   GATE --> ASSET["Assets: Agent Inventory · Topology"]
@@ -161,17 +161,17 @@ sequenceDiagram
   participant RES as resolve_org (public carve-out, D14)
   participant COG as Cognito (ALB authenticate-cognito)
   participant API as security-controller /v1
-  U->>ORG: open console → priority-3 public rule serves the org page (no auth)
+  U->>ORG: open console -> priority-3 public rule serves the org page (no auth)
   U->>ORG: type organization name
-  ORG->>RES: POST resolve_org(org) — public, fail-closed, rate-limited, non-enumerating
-  RES-->>ORG: {tenant_id} (or generic "continue to login" on miss)
+  ORG->>RES: POST resolve_org(org) -- public, fail-closed, rate-limited, non-enumerating
+  RES-->>ORG: (tenant_id) (or generic "continue to login" on miss)
   ORG->>U: stash tenant_id (sessionStorage), advance to Cognito login
-  U->>COG: Cognito hosted UI (priority-10 authenticate-cognito) → authenticate
-  COG-->>API: authenticated session; ALB injects signed x-amzn-oidc-data
-  U->>API: GET /v1/me; /v1 calls carry X-Aegion-Tenant = resolved tenant_id (fixed)
-  API->>API: verify_alb_oidc.sub → resolve_operator_tenant re-validates tenant ∈ memberships (403 if not) → set_current_tenant
-  API-->>U: {sub, email, role, tenant_id, is_platform, memberships[]}
-  U->>U: render customer console; tenant fixed; to change → logout → org page → pick another org → re-login
+  U->>COG: Cognito hosted UI (priority-10 authenticate-cognito) -> authenticate
+  COG-->>API: authenticated session, ALB injects signed x-amzn-oidc-data
+  U->>API: GET /v1/me, /v1 calls carry X-Aegion-Tenant = resolved tenant_id (fixed)
+  API->>API: verify_alb_oidc.sub -> resolve_operator_tenant re-validates tenant in memberships (403 if not) -> set_current_tenant
+  API-->>U: (sub, email, role, tenant_id, is_platform, memberships)
+  U->>U: render customer console, tenant fixed, to change -> logout -> org page -> pick another org -> re-login
 ```
 
 WS-G adds **new views** and **new render-gates** to this spine; it does not change the spine's contract. The removed switcher's cache-race apparatus (§5.5) collapses to cheap defense-in-depth because a full page reload on re-login (via the org page) gives a clean cache. **The org-resolved tenant survives a page reload via a scoped, non-authoritative persistence key** (Appendix C.4) — the server re-validates it against membership on every call, so a lost/absent value fails safe back to the org page, never a silent bind to the wrong tenant.
@@ -304,14 +304,14 @@ sequenceDiagram
   participant ALB as ALB (authenticate-cognito)
   participant API as security-controller /v1
   U->>N: GET /v1/me (X-Aegion-Tenant fixed from login)
-  N->>ALB: forward; ALB injects signed x-amzn-oidc-data
+  N->>ALB: forward, ALB injects signed x-amzn-oidc-data
   N->>API: re-emit as x-sentra-oidc-data + x-api-key
   API->>API: verify_alb_oidc (ES256, kid, issuer pin) -> claims.sub
   API->>API: MemberStore.by_operator(sub) -> memberships
   API->>API: validate X-Aegion-Tenant in memberships (403 if not)
-  API->>API: set_current_tenant(chosen.tenant_id) — FIXED for session
-  API-->>U: {tenant_id, role, is_platform, memberships[]}
-  U->>U: useMe() caches 5m; router root splits on is_platform; render-gate can(role,cap)
+  API->>API: set_current_tenant(chosen.tenant_id) -- FIXED for session
+  API-->>U: (tenant_id, role, is_platform, memberships)
+  U->>U: useMe() caches 5m, router root splits on is_platform, render-gate can(role,cap)
 ```
 
 ---
@@ -531,7 +531,7 @@ flowchart TD
   PROOT --> TOPO["Fleet-wide topology (fleet_scan, audited)"]
   PROOT --> DRILL["Per-tenant drill-down<br/>GET /v1/platform/tenants/{id}<br/>consent-gated + dual-audited"]
   GRID -->|"aggregate read _audit_platform_read('*')"| CTRL["security-controller /v1"]
-  DRILL -->|"per-tenant read _audit_platform_read(id) — 403 if no consent"| CTRL
+  DRILL -->|"per-tenant read _audit_platform_read(id) -- 403 if no consent"| CTRL
   DRILL -. "no import · no per-tenant mutation · no tenant selector" .-> RULES["platform-console invariants (§6.11)"]
 ```
 
@@ -891,20 +891,20 @@ The org page consumes one new backend contract:
 sequenceDiagram
   participant U as Operator (browser)
   participant ORG as Org page (public, pre-Cognito)
-  participant RES as resolve_org (public carve-out, D14 — NET-NEW)
+  participant RES as resolve_org (public carve-out, D14 -- NET-NEW)
   participant COG as Cognito (ALB authenticate-cognito)
   participant API as security-controller /v1
-  U->>ORG: open console → priority-3 public rule serves the org page (no auth)
+  U->>ORG: open console -> priority-3 public rule serves the org page (no auth)
   U->>ORG: type organization name
-  ORG->>RES: resolve_org(org) — public, fail-closed, rate-limited, non-enumerating
-  RES-->>ORG: {tenant_id} (or generic "continue to login" on miss)
+  ORG->>RES: resolve_org(org) -- public, fail-closed, rate-limited, non-enumerating
+  RES-->>ORG: (tenant_id) (or generic "continue to login" on miss)
   ORG->>U: stash tenant_id (sessionStorage §C.4), advance to Cognito
-  U->>COG: Cognito hosted UI (priority-10 authenticate-cognito) → authenticate
-  COG-->>API: authenticated session; ALB injects signed x-amzn-oidc-data
-  U->>API: GET /v1/me; /v1 calls carry X-Aegion-Tenant = resolved tenant_id (fixed)
-  API->>API: verify_alb_oidc.sub → resolve_operator_tenant re-validates tenant ∈ memberships (403 if not) → set_current_tenant
-  API-->>U: {sub, email, role, tenant_id, is_platform, memberships[]}
-  U->>U: render console; tenant fixed; to change → logout → org page → pick another org → re-login
+  U->>COG: Cognito hosted UI (priority-10 authenticate-cognito) -> authenticate
+  COG-->>API: authenticated session, ALB injects signed x-amzn-oidc-data
+  U->>API: GET /v1/me, /v1 calls carry X-Aegion-Tenant = resolved tenant_id (fixed)
+  API->>API: verify_alb_oidc.sub -> resolve_operator_tenant re-validates tenant in memberships (403 if not) -> set_current_tenant
+  API-->>U: (sub, email, role, tenant_id, is_platform, memberships)
+  U->>U: render console, tenant fixed, to change -> logout -> org page -> pick another org -> re-login
 ```
 
 ### C.4 Persisting the org-resolved tenant across a page reload (name the survivor — no silent wrong-tenant bind)
