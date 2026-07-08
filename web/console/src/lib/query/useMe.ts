@@ -20,6 +20,10 @@ export function useMe() {
     queryFn: meApi.get,
     staleTime: 5 * 60_000,
     retry: false,
+    // G2.8 fail-secure degrade: a demoted operator's role re-reads on tab focus
+    // (≤5-min staleness accepted). On a lower role, gated controls disappear on
+    // the next render — the UI never lingers showing a control the server 403s.
+    refetchOnWindowFocus: true,
   })
 }
 

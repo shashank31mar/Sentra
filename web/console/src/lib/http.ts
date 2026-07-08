@@ -1,5 +1,5 @@
 import type { ApiErrorBody } from '../types/api'
-import { tenantHeader } from './tenant'
+import { clearActiveTenant, tenantHeader } from './tenant'
 
 /**
  * Thin fetch wrapper for the SOC console.
@@ -40,6 +40,9 @@ export class ApiException extends Error {
 const REAUTH_GUARD_KEY = 'aegion:last-reauth'
 
 function reauthenticate(): never {
+  // Clear the per-tab tenant binding on session loss (ADR-039): a re-login must
+  // rebind through the org-first flow, never inherit a stale tenant preference.
+  clearActiveTenant()
   const last = Number(sessionStorage.getItem(REAUTH_GUARD_KEY) ?? 0)
   // Guard against redirect loops: auto-bounce at most once per 10s.
   if (Date.now() - last > 10_000) {
