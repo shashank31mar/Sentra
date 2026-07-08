@@ -1,5 +1,6 @@
 import { Button } from '../ui/Button'
 import { useVerdict } from '../../lib/query/useDecisions'
+import { useCan } from '../../lib/query/useMe'
 import type { DecisionItem } from '../../types/api'
 import type { Verdict } from '../../types/enums'
 
@@ -14,6 +15,9 @@ import type { Verdict } from '../../types/enums'
  */
 export function DecisionReviewPanel({ item }: { item: DecisionItem }) {
   const verdict = useVerdict()
+  // G2.4: FP/FN verdict is an editor write (server POST /decisions/{id}/verdict).
+  // Gated once inside the shared panel so every mount (Threats, Audit) inherits it.
+  const can = useCan()
   const blocked = item.decision === 'DENY'
 
   const submit = (v: Verdict) =>
@@ -21,6 +25,9 @@ export function DecisionReviewPanel({ item }: { item: DecisionItem }) {
       decisionId: item.decision_id,
       body: { verdict: v, reason: 'Operator review', operator_id: 'dana.reyes' },
     })
+
+  // Viewers get no verdict control — the trace above stays visible.
+  if (!can('decisions.verdict')) return null
 
   if (verdict.isSuccess) {
     return (
