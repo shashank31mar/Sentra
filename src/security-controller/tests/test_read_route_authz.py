@@ -1306,3 +1306,79 @@ class TestDiscoveryBindOnly:
 
         svc.list_discovered.assert_awaited_once()
         assert result["total"] == 0
+
+
+# ============================================================
+# WS-N N10 — break-glass forensic reads are CONSENT-GATED
+# ============================================================
+
+from types import SimpleNamespace as _NS  # noqa: E402
+
+
+def _plat_ctx(bound_tenant, own_memberships):
+    """A _platform OperatorContext bound to `bound_tenant`, whose OWN member tenants
+    are `own_memberships` (list of tenant_id strings)."""
+    return OperatorContext(
+        sub="op-staff", tenant_id=bound_tenant, role="viewer", email="s@sentra.io",
+        memberships=[_NS(tenant_id=t) for t in own_memberships], is_platform=True,
+    )
+
+
+class TestN10BreakGlassForensicConsentGate:
+    """A _platform operator using X-Aegion-Tenant break-glass to read a FOREIGN tenant's
+    forensic content (/trail, /signals, /decisions) must clear the deny-by-default
+    platform_read_consent gate — NOT just leave an attribution row. Customers + platform
+    operators reading their OWN member tenant are NOT gated (no-op)."""
+
+    def test_customer_is_not_gated(self):
+        """A customer operator hits the no-op path (already own-tenant scoped)."""
+        with patch("app.api.tenancy_routes._audit_platform_read") as audit:
+            R._gate_forensic_break_glass(_ctx(tenant_id="t_a", is_platform=False), "session.trail")
+        audit.assert_not_called()
+
+    def test_platform_own_member_tenant_is_not_gated(self):
+        """A _platform operator reading a tenant they ARE a member of = not break-glass."""
+        with patch("app.api.tenancy_routes._audit_platform_read") as audit:
+            R._gate_forensic_break_glass(_plat_ctx("t_own", ["t_own"]), "session.trail")
+        audit.assert_not_called()
+
+    def test_platform_break_glass_routes_through_consent_gate(self):
+        """A _platform operator bound to a NON-member (break-glass) tenant → the read is
+        routed through _audit_platform_read(ctx, THAT tenant, what) — the consent gate."""
+        with patch("app.api.tenancy_routes._audit_platform_read") as audit:
+            R._gate_forensic_break_glass(_plat_ctx("t_victim", ["t_own"]), "session.trail")
+        audit.assert_called_once()
+        args = audit.call_args.args
+        # target tenant is the SPECIFIC foreign tenant (not "*"), so the per-tenant
+        # consent branch of _audit_platform_read fires (403 unless consented).
+        assert args[1] == "t_victim"
+        assert args[2] == "session.trail"
+
+    @pytest.mark.asyncio
+    async def test_trail_break_glass_denied_without_consent(self):
+        """End-to-end at the route: a break-glass /trail read with consent enforced +
+        NOT granted → 403 (never serves the foreign tenant's trail)."""
+        from fastapi import HTTPException
+        ctx = _plat_ctx("t_victim", ["t_own"])
+        with patch("app.config.settings.platform_read_consent_enforced", True), \
+             patch("app.api.tenancy_routes.get_tenant_store") as store:
+            store.return_value.get.return_value = _NS(platform_read_consent=False)
+            with pytest.raises(HTTPException) as exc:
+                await R.get_session_trail(session_id="s1", request_id="r1", ctx=ctx)
+        assert exc.value.status_code == 403
+        assert "consent" in exc.value.detail.lower()
+
+    @pytest.mark.asyncio
+    async def test_trail_break_glass_allowed_with_consent(self):
+        """A break-glass /trail read WHERE the target tenant granted consent → served."""
+        ctx = _plat_ctx("t_victim", ["t_own"])
+        fake = MagicMock()
+        fake.get_session_trail = MagicMock(return_value={"session_id": "s1", "coverage": []})
+        with patch("app.config.settings.platform_read_consent_enforced", True), \
+             patch("app.api.tenancy_routes.get_tenant_store") as store, \
+             patch("app.services.platform_audit.get_platform_audit_store"), \
+             patch("app.api.routes._decisions_service", return_value=fake):
+            store.return_value.get.return_value = _NS(platform_read_consent=True)
+            result = await R.get_session_trail(session_id="s1", request_id="r1", ctx=ctx)
+        assert result["session_id"] == "s1"
+        fake.get_session_trail.assert_called_once()

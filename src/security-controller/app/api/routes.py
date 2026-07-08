@@ -11,7 +11,6 @@ Implements all REST endpoints:
 All business logic is delegated to service classes in app/services/.
 Routes are kept clean and focused on HTTP handling only.
 """
-import contextlib
 import logging
 from typing import Dict, NoReturn, Optional
 
@@ -101,6 +100,34 @@ def _operator_read_scope(ctx: OperatorContext, what: str) -> Optional[str]:
         _audit_platform_read(ctx, "*", what)
         return None
     return ctx.tenant_id
+
+
+def _gate_forensic_break_glass(ctx: OperatorContext, what: str) -> None:
+    """WS-N N10 (lld/40 §6.2 / LLD-26 §10 Q2) — consent-gate a PLATFORM break-glass read
+    of a SPECIFIC tenant's forensic CONTENT (prompt text, per-validator signals, caller IP
+    on /trail, /signals, /sessions/{id}/decisions).
+
+    The `_platform` grant is AegionAI's OPERATIONAL fleet view (aggregate metrics), NOT a
+    license to read an individual customer's forensic content. A `_platform` operator using
+    the `X-Aegion-Tenant` break-glass header to bind a NON-member tenant and pull that
+    tenant's content must clear the SAME deny-by-default `platform_read_consent` gate that
+    `platform_tenant_detail` enforces for metadata — otherwise it is a cross-tenant content
+    read with only an attribution row (the N9 log), no consent. This routes such a read
+    through `_audit_platform_read(ctx, ctx.tenant_id, what)` → 403 unless the target tenant
+    consented (gated behind `platform_read_consent_enforced`, same rollout latch as metadata).
+
+    No-op for: a customer operator (reads only their own tenant — the bind already scoped
+    them), and a `_platform` operator reading their OWN member tenant (not break-glass).
+    Break-glass = is_platform AND the bound tenant is not one of the operator's memberships.
+    """
+    if not ctx.is_platform:
+        return  # customer: already strictly scoped to their own tenant by the bind
+    own = {getattr(m, "tenant_id", None) for m in (ctx.memberships or [])}
+    if ctx.tenant_id in own:
+        return  # platform operator reading their OWN member tenant — not break-glass
+    # Break-glass into a foreign tenant's forensic content → consent gate (403 unless granted).
+    from app.api.tenancy_routes import _audit_platform_read
+    _audit_platform_read(ctx, ctx.tenant_id, what)
 
 
 @router.get("/health")
@@ -490,60 +517,22 @@ async def get_session_decisions(
 
     Dashboard hot path. p95 target ≤100ms (single DDB partition Query).
     Auth (WS-N N1/N1-dc): resolve_operator_tenant binds the tenant; DDB composite
-    PK auto-scopes via current_tenant().
+    PK auto-scopes via current_tenant(). WS-N N10: a platform break-glass read of a
+    foreign tenant's forensic content is consent-gated (403 unless granted).
     """
+    _gate_forensic_break_glass(ctx, "session.decisions")
     return _decisions_service().get_session_decisions(
         session_id=session_id, request_id=request_id, agent_id=agent_id, limit=limit
     )
 
 
-@contextlib.asynccontextmanager
-async def _dataplane_tenant_bind(http_request: Request):
-    """Bind a data-plane READ (``/trail`` + ``/signals``) to the VERIFIED agent
-    tenant for the duration of the store read (WS-M M5.2 / lld/39 §5).
-
-    Verifies the agent JWT via ``resolve_tenant_from_jwt`` and:
-      * ``should_deny`` (ENFORCE + not cleanly verified) → **401**. A tenant that
-        is flipped to enforce must not have its trail read cross-tenant.
-      * verified → ``set_current_tenant(ctx.tenant_id)`` for the read, reset in a
-        ``finally`` (same-task token; mirrors the ``/validate`` bind at the enforce
-        branch above).
-      * disabled / shadow (identity not enforcing yet) → no bind change. Identity
-        is OFF fleet-wide by default; keeping the ambient tenant here is
-        byte-identical to pre-M5.2 for those tenants (the enforce flip is what
-        activates the isolation, gated by WS-K's two-latch). We do NOT hard-deny a
-        tokenless read at shadow/off (that would break the console before identity
-        rolls out); the isolation is effective exactly when the tenant enforces.
-
-    NOTE: this is deliberately NOT ``require_role`` — a data-plane read carries no
-    operator role (Invariant 6). It is the JWT-tenant-bind, not RBAC.
-    """
-    from app.api.deps import resolve_tenant_from_jwt
-    from app.config import settings
-    from app.utils import tenancy
-
-    ctx = await resolve_tenant_from_jwt(http_request)
-    # WS-M M5.1 / lld/39 §5: when the data-plane credential latch is engaged, a
-    # MISSING/INVALID agent JWT is denied here too — independent of `identity_mode` —
-    # so EVERY data-plane route (not just `/validate`) requires a verified caller.
-    # Default-off, so the console keeps working at fleet `off` until the operator
-    # flips the latch (WS-K go-live runbook), same as `/validate`.
-    if settings.require_dataplane_credential and not ctx.credential_present:
-        raise HTTPException(status_code=401, detail="verified agent identity required")
-    if ctx.should_deny:
-        # ENFORCE + missing/invalid/forged JWT → fail-secure 401 (never read on the
-        # ambient `default` partition, which would be a cross-tenant read).
-        raise HTTPException(status_code=401, detail="verified agent identity required")
-    if ctx.should_route:
-        token = tenancy.set_current_tenant(ctx.tenant_id)
-        try:
-            yield
-        finally:
-            tenancy.reset_current_tenant(token)
-    else:
-        # disabled / shadow: identity not enforcing for this tenant yet — behave as
-        # before (no bind change). The read stays on the ambient tenant.
-        yield
+# WS-N D10 (ADR-038): `_dataplane_tenant_bind` (the former agent-JWT lane for /trail +
+# /signals) was REMOVED here — those two reads are now operator-lane
+# (`Depends(resolve_operator_tenant)`), the console is their sole consumer, and no agent/
+# SDK reads them (connectors only WRITE via POST /signals). The helper had no live caller
+# after the D10 swap; leaving it dead risked a future re-wire silently re-opening the
+# tokenless shadow/disabled fall-through it implemented. The `/validate` data-plane bind
+# lives in that handler; this operator-read helper is gone.
 
 
 @router.get("/sessions/{session_id}/signals")
@@ -567,6 +556,7 @@ async def get_session_signals(
     per ADR-038 (Accepted, founder 2026-07-07); verified no agent/SDK caller reads
     this GET (connectors only WRITE via ``POST /sessions/{id}/signals``, route below).
     """
+    _gate_forensic_break_glass(ctx, "session.signals")  # WS-N N10 consent gate
     return _decisions_service().get_session_signals(
         session_id=session_id, request_id=request_id, source=source,
         agent_id=agent_id, limit=limit,
@@ -598,7 +588,10 @@ async def get_session_trail(
         Reclassified from the former agent-JWT lane (``_dataplane_tenant_bind``) per
         ADR-038 (Accepted, founder 2026-07-07); verified no agent/SDK caller reads it.
       * `next_token: null` — a single trail (~7 rows) fits one un-paged Query.
+      * Auth (WS-N N10): a platform break-glass read of a foreign tenant's trail is
+        consent-gated (403 unless the target tenant granted platform_read_consent).
     """
+    _gate_forensic_break_glass(ctx, "session.trail")  # WS-N N10 consent gate
     return _decisions_service().get_session_trail(
         session_id=session_id, request_id=request_id,
     )
