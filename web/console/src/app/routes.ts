@@ -16,6 +16,12 @@ export const ROUTES = {
   quarantine: '/quarantine',
   residualAgents: '/identity/residual-agents',
   audit: '/audit',
+  // Platform (cross-tenant) console — a separate is_platform-gated tree (M-G4).
+  platformOverview: '/platform',
+  platformTenants: '/platform/tenants',
+  platformTenantDetail: '/platform/tenants/:tenantId',
+  platformTopology: '/platform/topology',
+  platformHealth: '/platform/health',
 } as const
 
 export const agentDetailPath = (agentId: string) => `/agents/${agentId}`
@@ -25,3 +31,5 @@ export const importPath = (connectionId?: string) =>
 export const policyDetailPath = (policyId: string) => `/policies/${encodeURIComponent(policyId)}`
 export const policyNewPath = () => '/policies/new'
 export const policyEditPath = (policyId: string) => `/policies/${encodeURIComponent(policyId)}/edit`
+export const platformTenantDetailPath = (tenantId: string) =>
+  `/platform/tenants/${encodeURIComponent(tenantId)}`

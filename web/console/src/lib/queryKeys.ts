@@ -50,4 +50,8 @@ export const queryKeys = {
     list: (filters: Record<string, unknown>) => ['sigma-rules', filters] as const,
     content: (id: string) => ['sigma-rules', 'content', id] as const,
   },
+  platform: {
+    tenants: (params: Record<string, unknown>) => ['platform', 'tenants', params] as const,
+    tenantDetail: (id: string) => ['platform', 'tenants', 'detail', id] as const,
+  },
 } as const

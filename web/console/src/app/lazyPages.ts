@@ -46,3 +46,17 @@ export const ResidualAgentsPage = lazy(() =>
 export const AuditTrailPage = lazy(() =>
   import('../features/audit/AuditTrailPage').then((m) => ({ default: m.AuditTrailPage })),
 )
+
+/* --- Platform (cross-tenant) console — M-G4 --- */
+export const FleetOverviewPage = lazy(() =>
+  import('../features/platform/FleetOverviewPage').then((m) => ({ default: m.FleetOverviewPage })),
+)
+export const TenantDetailPage = lazy(() =>
+  import('../features/platform/TenantDetailPage').then((m) => ({ default: m.TenantDetailPage })),
+)
+export const FleetTopologyPage = lazy(() =>
+  import('../features/platform/FleetTopologyPage').then((m) => ({ default: m.FleetTopologyPage })),
+)
+export const SystemHealthPage = lazy(() =>
+  import('../features/platform/SystemHealthPage').then((m) => ({ default: m.SystemHealthPage })),
+)

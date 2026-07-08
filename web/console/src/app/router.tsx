@@ -2,6 +2,8 @@ import { Suspense, type ReactNode } from 'react'
 import { createBrowserRouter } from 'react-router-dom'
 import { ROUTES } from './routes'
 import { AppLayout } from './AppLayout'
+import { PlatformLayout } from './PlatformLayout'
+import { RequirePlatform } from './RequirePlatform'
 import { RouteErrorBoundary } from './RouteErrorBoundary'
 import { PlaceholderPage } from '../components/ui/PlaceholderPage'
 import { LoadingState } from '../components/ui/states'
@@ -21,6 +23,10 @@ import {
   QuarantinePage,
   ResidualAgentsPage,
   AuditTrailPage,
+  FleetOverviewPage,
+  TenantDetailPage,
+  FleetTopologyPage,
+  SystemHealthPage,
 } from './lazyPages'
 
 /** Wrap a lazy page in a Suspense fallback so the shell paints while its chunk
@@ -55,6 +61,26 @@ export const router = createBrowserRouter([
       { path: ROUTES.quarantine, element: withSuspense(<QuarantinePage />) },
       { path: ROUTES.residualAgents, element: withSuspense(<ResidualAgentsPage />) },
       { path: ROUTES.audit, element: withSuspense(<AuditTrailPage />) },
+    ],
+  },
+  // Platform (cross-tenant) tree — a DISTINCT top-level route with its own layout,
+  // gated at the router root on `is_platform` (G4.1). NOT nested under AppLayout
+  // (that would render customer tenant chrome around a platform view). Static
+  // routes precede the `:tenantId` param route.
+  {
+    path: ROUTES.platformOverview,
+    element: (
+      <RequirePlatform>
+        <PlatformLayout />
+      </RequirePlatform>
+    ),
+    errorElement: <RouteErrorBoundary />,
+    children: [
+      { index: true, element: withSuspense(<FleetOverviewPage />) },
+      { path: ROUTES.platformTenants, element: withSuspense(<FleetOverviewPage />) },
+      { path: ROUTES.platformTopology, element: withSuspense(<FleetTopologyPage />) },
+      { path: ROUTES.platformHealth, element: withSuspense(<SystemHealthPage />) },
+      { path: ROUTES.platformTenantDetail, element: withSuspense(<TenantDetailPage />) },
     ],
   },
 ])
