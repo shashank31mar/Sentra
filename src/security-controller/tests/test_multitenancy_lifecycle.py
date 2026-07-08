@@ -78,6 +78,35 @@ def test_purged_is_terminal(mt_env):
         store.set_status(t.tenant_id, "active")
 
 
+def test_resolve_org_excludes_purged_tenant(mt_env):
+    """WS-G G0.2 / D14: a tombstoned (``purged``) org must NOT resolve — otherwise
+    org-first login would advance to Cognito for a purged tenant. Guards BOTH
+    exclusion branches of ``resolve_org_to_tenant_id`` (tenant_service.py:240 the
+    exact-slug fast path, :249 the name-scan loop). Non-vacuous: it asserts the
+    org resolves BEFORE purge, so a green result post-purge can only mean the
+    status check fired — dropping either check would let a purged tenant resolve."""
+    from app.services.tenant_service import get_tenant_store
+
+    store = get_tenant_store()
+    t = store.create(display_name="Purged Org")
+    # Pre-purge: both the name path and the t_-slug fast path resolve (this proves
+    # the post-purge None assertions aren't trivially-None from a bad seed).
+    assert store.resolve_org_to_tenant_id("Purged Org") == t.tenant_id
+    assert store.resolve_org_to_tenant_id(t.tenant_id) == t.tenant_id
+
+    store.set_status(t.tenant_id, "deleting")
+    store.mark_purged(t.tenant_id)
+
+    # Name-scan branch (:249): typed org NAME of a purged tenant → None.
+    assert store.resolve_org_to_tenant_id("Purged Org") is None, (
+        "a purged org resolved by display name — the :249 status check regressed"
+    )
+    # Exact-slug fast-path branch (:240): pasted t_-slug of a purged tenant → None.
+    assert store.resolve_org_to_tenant_id(t.tenant_id) is None, (
+        "a purged org resolved by t_-slug fast path — the :240 status check regressed"
+    )
+
+
 def test_identity_mode_validation(mt_env):
     from app.services.tenant_service import TenantError, get_tenant_store
 

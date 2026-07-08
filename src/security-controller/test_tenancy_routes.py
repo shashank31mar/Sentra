@@ -245,6 +245,36 @@ def test_platform_list_tenants_paginates(mt_env, monkeypatch):
     assert ids1.isdisjoint(ids2), "cursor pages must not overlap"
 
 
+def test_platform_list_tenants_tampered_cursor_falls_back_to_first_page(mt_env, monkeypatch):
+    """G0.5: a tampered/garbage opaque cursor must fail SAFE to the first page
+    (tenancy_routes.py:669-673: base64-decode Exception → start=0), never a 500
+    and never an out-of-range scan. A coder that changed the except-branch to
+    re-raise would break this. Covers non-base64 junk, valid-base64-non-int, and
+    a negative-offset payload (all must degrade to page 1, not error)."""
+    import base64
+    from app.api import tenancy_routes as tr
+    _seed_tenants(3)
+    monkeypatch.setattr(SessionManager, "fleet_rollup_by_tenant", _async_ret({}), raising=False)
+    monkeypatch.setattr(DecisionsService, "fleet_decisions_rollup_by_tenant", lambda self: {}, raising=False)
+
+    # A well-formed first page to compare the fallback against.
+    clean = run(tr.platform_list_tenants(limit=2, ctx=_platform_ctx()))
+    first_page_ids = [r["tenant_id"] for r in clean["tenants"]]
+
+    tampered = [
+        "not-base64-at-all!!",                                 # b64-decode raises
+        base64.b64encode(b"not-an-int").decode(),              # decodes, int() raises
+        base64.b64encode(b"-5").decode(),                      # negative offset → clamped to 0
+        "",                                                    # empty-ish edge (falsy → no cursor branch, still page 1)
+    ]
+    for bad in tampered:
+        out = run(tr.platform_list_tenants(limit=2, cursor=bad, ctx=_platform_ctx()))
+        assert out["count"] == 3, f"count must be honest for tampered cursor {bad!r}"
+        assert [r["tenant_id"] for r in out["tenants"]] == first_page_ids, (
+            f"tampered cursor {bad!r} must fall back to the FIRST page, not error/skip"
+        )
+
+
 def test_platform_list_tenants_sort_filter(mt_env, monkeypatch):
     from app.api import tenancy_routes as tr
     from app.services.tenant_service import get_tenant_store
