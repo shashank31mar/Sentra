@@ -654,7 +654,54 @@ class SessionManager:
             "deny_count": int(item.get('deny_count', 0)),
             "consecutive_allows": int(item.get('consecutive_allows', 0)),
             "created_at": self._format_timestamp(item.get('created_at')),
-            "last_activity": self._format_timestamp(item.get('last_activity'))
+            "last_activity": self._format_timestamp(item.get('last_activity')),
+            # WS-G G0.11 (lld/40 §7.1d): surface the quarantine WHY-TRACE the
+            # QuarantinePage renders. The store already holds `quarantine_reason` +
+            # `quarantine_operator` (set at :401-402); surface (1) the ORIGIN —
+            # operator vs auto (trust-driven) — distinguished by whether an operator
+            # sub was recorded (auto-quarantine sets no operator), NOT collapsed to a
+            # single flag (footgun 1); and (2) an ordered trigger-signal list. Absent
+            # → None/[] so the client degrades to `quarantine_status` alone
+            # (footgun 2 — never a fabricated trace).
+            **self._quarantine_why_trace(item),
+        }
+
+    @staticmethod
+    def _quarantine_why_trace(item: Dict) -> Dict[str, Any]:
+        """Build the WS-G G0.11 why-trace fields from the stored quarantine columns.
+
+        `quarantine_origin`: "operator" when a `quarantine_operator` sub was recorded
+        (a manual override), "auto" when the session is quarantined/suspended with no
+        operator (trust-driven), else None (not quarantined → nothing to explain).
+        `quarantine_reason`: the stored reason string (or None).
+        `quarantine_operator`: the operator sub for an operator-origin quarantine.
+        `trigger_signals`: an ORDERED list — the stored `trigger_signals` attribute if
+        present, else the single reason as a one-element list, else []. Never fabricated.
+        """
+        status = item.get('quarantine_status', 'active')
+        operator = item.get('quarantine_operator')
+        reason = item.get('quarantine_reason')
+
+        if operator:
+            origin: Optional[str] = "operator"
+        elif status in ('quarantined', 'suspended'):
+            origin = "auto"
+        else:
+            origin = None
+
+        stored_signals = item.get('trigger_signals')
+        if isinstance(stored_signals, list):
+            trigger_signals = [str(s) for s in stored_signals]
+        elif reason:
+            trigger_signals = [str(reason)]
+        else:
+            trigger_signals = []
+
+        return {
+            "quarantine_origin": origin,
+            "quarantine_reason": reason,
+            "quarantine_operator": operator if origin == "operator" else None,
+            "trigger_signals": trigger_signals,
         }
     
     def _format_timestamp(self, timestamp: Any) -> str:
@@ -768,6 +815,68 @@ class SessionManager:
         except ClientError:
             logger.exception("Failed to count agents below trust threshold")
             return 0
+
+    async def fleet_rollup_by_tenant(self) -> Dict[str, Dict[str, Any]]:
+        """WS-G G0.4 (lld/40 §6.11(1)): per-tenant session rollup for the platform
+        Tenant Grid, computed in a SINGLE batched fleet scan — NOT one scan per
+        tenant.
+
+        The overview-latency incident (memory: overview-latency-root-cause) was an
+        O(N-tenant) fan-out of per-tenant scans on the one event loop. This does the
+        opposite: ONE paged ``fleet_scan`` over the whole session table, grouping in
+        memory by the row's ``tenant_id`` (v2). Rows without a ``tenant_id`` (v1 /
+        pre-tenancy) group under the ``default`` bucket — honest, never fabricated.
+
+        Returns ``{tenant_id: {agents, quarantined, trust}}`` where ``agents`` is the
+        distinct agent count, ``quarantined`` the count of quarantined sessions, and
+        ``trust`` the mean per-agent average trust (0..100), or ``None`` when the
+        tenant has no sessions. Runs on a worker thread (sync boto3)."""
+        return await asyncio.to_thread(self._fleet_rollup_by_tenant_sync)
+
+    def _fleet_rollup_by_tenant_sync(self) -> Dict[str, Dict[str, Any]]:
+        # {tenant: {"agent_scores": {agent_id: [scores]}, "quarantined": int}}
+        acc: Dict[str, Dict[str, Any]] = {}
+        scan_kwargs = {
+            "ProjectionExpression": "agent_id, trust_score, quarantine_status, tenant_id",
+        }
+        try:
+            while True:
+                # SINGLE batched cross-tenant read (paged). Deliberately one
+                # fleet_scan loop for the WHOLE fleet — the tenant grouping happens
+                # in memory below, so scan count is O(pages), NOT O(tenants).
+                response = tenancy.fleet_scan(self.table, **scan_kwargs)
+                for item in response.get("Items", []):
+                    tid = item.get("tenant_id") or tenancy.DEFAULT_TENANT
+                    bucket = acc.setdefault(tid, {"agent_scores": {}, "quarantined": 0})
+                    agent_id = item.get("agent_id")
+                    if agent_id:
+                        bucket["agent_scores"].setdefault(agent_id, []).append(
+                            float(item.get("trust_score", 100))
+                        )
+                    if item.get("quarantine_status") == "quarantined":
+                        bucket["quarantined"] += 1
+                lek = response.get("LastEvaluatedKey")
+                if not lek:
+                    break
+                scan_kwargs["ExclusiveStartKey"] = lek
+        except ClientError:
+            logger.exception("fleet_rollup_by_tenant scan failed")
+            return {}
+
+        rollup: Dict[str, Dict[str, Any]] = {}
+        for tid, bucket in acc.items():
+            agent_scores = bucket["agent_scores"]
+            if agent_scores:
+                per_agent_avg = [sum(s) / len(s) for s in agent_scores.values()]
+                trust = round(sum(per_agent_avg) / len(per_agent_avg), 1)
+            else:
+                trust = None
+            rollup[tid] = {
+                "agents": len(agent_scores),
+                "quarantined": bucket["quarantined"],
+                "trust": trust,
+            }
+        return rollup
 
     async def get_agent_session_stats(self, agent_id: str) -> Dict[str, Any]:
         """Active-session count + average trust score for an agent in ONE indexed

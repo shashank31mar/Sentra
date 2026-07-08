@@ -546,6 +546,12 @@ class DecisionsService:
                 "reason": combined.reason,
                 "trust_score": rep.get("trust_score_before"),
                 "timestamp": timestamp,
+                # WS-G M-G3.3 (lld/40 §6/§7): surface `winning_source` on the ROW
+                # (DecisionItem) so the Threats per-detector facet is API-driven, not
+                # client-fabricated. It already lives in `combined.winning_source`
+                # (DecisionCombined); promote it to the row projection. null on an
+                # ALLOW (no denying source) — the client renders no facet chip then.
+                "winning_source": (combined.metadata or {}).get("winning_source"),
                 # Backward-compatible detail for drill-down consumers (Streamlit dashboard).
                 "combined": {
                     "source": Source.DASHBOARD_COMBINED,
@@ -753,6 +759,75 @@ class DecisionsService:
             logger.exception("query failed: %s", exc)
             return []
         return [self._deserialize_item(it) for it in resp.get("Items", [])]
+
+    def fleet_decisions_rollup_by_tenant(self, window_hours: int = 24) -> dict[str, dict[str, Any]]:
+        """WS-G G0.4 (lld/40 §6.11(1)): per-tenant DECISIONS rollup for the platform
+        Tenant Grid, in a SINGLE batched fleet scan over the trailing window — NOT
+        one query per tenant (the overview-latency O(N) blast this deliberately
+        avoids; memory: overview-latency-root-cause).
+
+        ONE ``Scan`` over the validation-signals table filtered to the last
+        ``window_hours`` by ``timestamp_ms``, grouping DISTINCT ``(tenant, request)``
+        into a decision by the row's ``decision`` (a DENY on any signal for a request
+        makes the request a block, mirroring deny-overrides). Rows without a
+        ``tenant_id`` (v1) group under ``default``. Marker rows are excluded.
+
+        Returns ``{tenant_id: {decisions_24h, blocks_24h, deny_rate}}`` where
+        ``deny_rate`` is ``blocks_24h / decisions_24h`` (0..1), or 0.0 when no
+        decisions. All in-memory grouping — scan count is O(pages), not O(tenants)."""
+        import time as _time
+        from decimal import Decimal
+
+        since_ms = int((_time.time() - window_hours * 3600) * 1000)
+        # (tenant, session, request) → "DENY" if any signal denied, else "ALLOW".
+        seen: dict[tuple[str, str, str], str] = {}
+        start_key: Optional[dict] = None
+        try:
+            while True:
+                kwargs: dict[str, Any] = {
+                    "TableName": self.table_name,
+                    "FilterExpression": "timestamp_ms >= :since",
+                    "ExpressionAttributeValues": {":since": {"N": str(since_ms)}},
+                    "ProjectionExpression": "tenant_id, session_id, request_id, #d, record_type, timestamp_ms",
+                    "ExpressionAttributeNames": {"#d": "decision"},
+                }
+                if start_key:
+                    kwargs["ExclusiveStartKey"] = start_key
+                resp = self._ddb().scan(**kwargs)
+                for raw in resp.get("Items", []):
+                    it = self._deserialize_item(raw)
+                    if _is_marker_row(it):
+                        continue
+                    tid = it.get("tenant_id") or tenancy.DEFAULT_TENANT
+                    key = (tid, it.get("session_id") or "?", it.get("request_id") or "?")
+                    if it.get("decision") == "DENY":
+                        seen[key] = "DENY"
+                    else:
+                        seen.setdefault(key, "ALLOW")
+                start_key = resp.get("LastEvaluatedKey")
+                if not start_key:
+                    break
+        except ClientError:
+            logger.exception("fleet_decisions_rollup_by_tenant scan failed")
+            return {}
+
+        counts: dict[str, dict[str, int]] = {}
+        for (tid, _sid, _rid), verdict in seen.items():
+            c = counts.setdefault(tid, {"decisions": 0, "blocks": 0})
+            c["decisions"] += 1
+            if verdict == "DENY":
+                c["blocks"] += 1
+
+        rollup: dict[str, dict[str, Any]] = {}
+        for tid, c in counts.items():
+            total = c["decisions"]
+            blocks = c["blocks"]
+            rollup[tid] = {
+                "decisions_24h": total,
+                "blocks_24h": blocks,
+                "deny_rate": round(blocks / total, 4) if total else 0.0,
+            }
+        return rollup
 
     def _deserialize_item(self, item: dict) -> dict[str, Any]:
         """DDB TypedDict → plain Python dict.

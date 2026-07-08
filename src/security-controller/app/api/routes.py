@@ -327,11 +327,28 @@ async def validate_tool_call(
 
     # SHADOW (incl. verified-but-shadow): observe + log, do NOT route. The legacy
     # path stays in force so an uncredentialed agent is never bricked.
+    #
+    # WS-G G0.1 / D13 (lld/40 §6.2.1): a VERIFIED shadow decision must be WRITTEN to
+    # the resolved tenant's partition (`<tenant_id>#<date>`), not `default#<date>` —
+    # otherwise a newly-onboarded tenant's console (Overview / Activity / Threats,
+    # every GET /v1/decisions-bound view) renders BLANK while shadow traffic flows.
+    # Bind the verified tenant for the write, mirroring the enforce branch
+    # (`set_current_tenant` :309 / reset :326). Guard STRICTLY on `ctx.is_verified`:
+    # an unverified/spoofed `tid` must stay ambient (`default`) and NEVER poison a
+    # real tenant's partition (fail-secure — footgun 1). Reset in `finally` so a
+    # leaked contextvar can't cross-contaminate the next request on the same worker
+    # (footgun 3). No backfill: rows written to `default#` before this bind are not
+    # migrated (footgun 2 — onboard/credential the agent before first shadow traffic).
     if ctx.is_verified:
         logger.info(
             "identity shadow: resolved tid=%s agent=%s (observed, not routed)",
             ctx.tenant_id, ctx.agent_id,
         )
+        token = tenancy.set_current_tenant(ctx.tenant_id)
+        try:
+            return await validation_service.validate_tool_call(request)
+        finally:
+            tenancy.reset_current_tenant(token)
     return await validation_service.validate_tool_call(request)
 
 
@@ -1620,11 +1637,24 @@ async def get_policy_by_id(
         if include_content:
             content = await policy_service.get_policy_content(policy_id)
 
+        # WS-G G0.10 (lld/40 §7.1c): surface the COMPILED Cedar body explicitly so the
+        # Policy-detail Cedar tab renders the real enforcement artifact, not a
+        # client-derived PARTIAL. `get_policy_content` loads `cedar_content` from the
+        # `.cedar` co-artifact only when the policy is cedar-format (policy_service.py
+        # :272-277); when the co-artifact is absent it is simply not present. We expose
+        # it as `compiled_cedar` = that body or None — NEVER a fabricated/synthesized
+        # compiled body (footgun 1). null/absent → the client degrades the Cedar tab to
+        # PARTIAL. The authored YAML stays live via `content` regardless.
+        compiled_cedar = None
+        if isinstance(content, dict):
+            compiled_cedar = content.get("cedar_content")
+
         return {
             "success": True,
             "policy": {
                 "metadata": metadata,
-                "content": content
+                "content": content,
+                "compiled_cedar": compiled_cedar,
             }
         }
     except NotFoundException as e:

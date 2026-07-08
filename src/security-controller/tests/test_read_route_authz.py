@@ -417,6 +417,69 @@ class TestPolicyOwnershipBehavioral:
         result = await R.get_policy_by_id(policy_id="pol-x", ctx=ctx)
         assert result["success"] is True
 
+    @pytest.mark.asyncio
+    @patch("app.api.ownership.tenancy.v2_enabled", return_value=True)
+    @patch("boto3.resource")
+    @patch("app.services.policy_service.PolicyService")
+    async def test_compiled_cedar_surfaced_from_content_dict(self, MockPolicy, mock_resource, _v2):
+        """WS-G G0.10 (lld/40 §7.1c): when a Cedar-format policy's content is the DICT
+        shape carrying `cedar_content`, the response surfaces it verbatim as
+        `compiled_cedar`. This exercises the real dict/cedar branch (routes.py:1649-1650)
+        that the string-returning success test never reaches — deleting/renaming the
+        field or fabricating a body FAILS this test."""
+        mock_table = MagicMock()
+        mock_table.get_item.return_value = {"Item": {"policy_id": "pol-cedar", "tenant_id": "t_a"}}
+        mock_ddb = MagicMock()
+        mock_ddb.Table.return_value = mock_table
+        mock_resource.return_value = mock_ddb
+
+        cedar_body = 'permit(principal, action, resource);'
+        svc = MockPolicy.return_value
+        svc.get_policy = AsyncMock(return_value={"policy_id": "pol-cedar", "name": "cedar-pol"})
+        # The real get_policy_content returns a dict with cedar_content for cedar-format.
+        svc.get_policy_content = AsyncMock(return_value={
+            "policy_format": "cedar",
+            "cedar_content": cedar_body,
+            "metadata": {"policy_id": "pol-cedar"},
+        })
+
+        ctx = _ctx(tenant_id="t_a")
+        result = await R.get_policy_by_id(policy_id="pol-cedar", ctx=ctx)
+        assert result["success"] is True
+        assert result["policy"]["compiled_cedar"] == cedar_body, (
+            "compiled_cedar must be the real cedar_content from the content dict, verbatim"
+        )
+
+    @pytest.mark.asyncio
+    @patch("app.api.ownership.tenancy.v2_enabled", return_value=True)
+    @patch("boto3.resource")
+    @patch("app.services.policy_service.PolicyService")
+    async def test_compiled_cedar_absent_is_null_never_fabricated(self, MockPolicy, mock_resource, _v2):
+        """WS-G G0.10 footgun 1: when no Cedar co-artifact exists (content dict has no
+        `cedar_content`, or content is plain YAML), `compiled_cedar` is None — NEVER a
+        fabricated/synthesized body. Guards against accidentally inventing a compiled
+        artifact the client would render as real."""
+        mock_table = MagicMock()
+        mock_table.get_item.return_value = {"Item": {"policy_id": "pol-yaml", "tenant_id": "t_a"}}
+        mock_ddb = MagicMock()
+        mock_ddb.Table.return_value = mock_table
+        mock_resource.return_value = mock_ddb
+
+        svc = MockPolicy.return_value
+        svc.get_policy = AsyncMock(return_value={"policy_id": "pol-yaml", "name": "yaml-pol"})
+        # YAML-format policy: dict content with NO cedar_content co-artifact.
+        svc.get_policy_content = AsyncMock(return_value={
+            "policy_format": "yaml",
+            "metadata": {"policy_id": "pol-yaml"},
+        })
+
+        ctx = _ctx(tenant_id="t_a")
+        result = await R.get_policy_by_id(policy_id="pol-yaml", ctx=ctx)
+        assert result["success"] is True
+        assert result["policy"]["compiled_cedar"] is None, (
+            "absent cedar co-artifact must yield null compiled_cedar, never a fabricated body"
+        )
+
 
 class TestConnectionOwnershipBehavioral:
     """get_connection: foreign connection_id -> 404 (existence-masked, WS-N N3)."""

@@ -13,7 +13,10 @@ one (LLD-26 §3.3 / WS-A A2).
 """
 from __future__ import annotations
 
+import asyncio
 import logging
+import threading
+import time
 from typing import Dict, List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -47,6 +50,177 @@ from app.utils import tenancy
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/v1")
+
+# =========================================================================== #
+# WS-G G0.2 / D14 (ADR-039) — PUBLIC org resolver (org-first login)
+#
+# `resolve_org(org) -> {tenant_id}` turns a typed org NAME into the opaque
+# tenant slug the org-first login flow stashes to sessionStorage before Cognito.
+# It is mounted on a NON-`/v1` public path so it is NOT caught by the priority-5
+# `ConsoleApiListenerRule` (which 401s ALL unauth `/v1/*` — compute_stack.py:967).
+# It carries NO auth by design (it runs BEFORE sign-in) and returns ONLY the
+# tenant_id — never counts / members / plan / status (zero tenant data leak).
+# Org-NAME enumeration is ACCEPTED (founder 2026-07-08, LLD v1.6 40:10): a miss is
+# an honest 404, NOT a fake-200 miss==hit. An internal fault fails CLOSED (5XX,
+# never a fake-200). Per-IP burst throttled so an unauth endpoint can't be swept.
+# =========================================================================== #
+public_router = APIRouter(tags=["public"])
+
+# In-process per-IP token bucket. Deliberately lightweight (no DDB round-trip on
+# an unauth path): a fixed-window counter keyed by client IP. Multi-worker means
+# the effective ceiling is `_RESOLVE_ORG_BURST * n_workers`, which is fine — this
+# is a coarse brute-force/sweep brake, not a billing quota. Fail-safe: on any
+# limiter bookkeeping error we DENY (429) rather than wave the request through.
+#
+# TWO brakes on this pre-auth endpoint:
+#   (1) per-IP  — `_resolve_org_hits`, keyed by `_rate_limit_key` (the TRUSTED hop:
+#       rightmost X-Forwarded-For entry our own proxy appends, else the socket peer —
+#       see `_rate_limit_key`). It is NOT keyed on the leftmost XFF: that hop is
+#       client-controlled, so an attacker rotating it would mint a fresh per-IP bucket
+#       per fake value — defeating (1) AND ballooning the dict (DoS). Keying on the
+#       infra-appended hop makes rotation share ONE bucket.
+#   (2) global  — `_resolve_org_global`, a single fixed-window counter NOT keyed by
+#       any client-supplied value, so header rotation can't escape it. It's the
+#       non-bypassable sweep brake; (1) is the fair-share brake for honest clients.
+# Belt-and-suspenders on the dict too: expired entries pruned each call + a hard cap,
+# so even a mis-provisioned proxy chain that let distinct keys through can't grow it
+# unboundedly (fail-secure: at cap, throttle).
+_RESOLVE_ORG_BURST = 20             # requests per window, per IP (fair-share)
+_RESOLVE_ORG_WINDOW_S = 10.0        # window length (shared by per-IP + global)
+_RESOLVE_ORG_GLOBAL_BURST = 2000    # requests per window across ALL IPs (sweep brake)
+_RESOLVE_ORG_MAX_TRACKED_IPS = 10000  # hard cap on the per-IP dict size (memory bound)
+_resolve_org_hits: Dict[str, "tuple[float, int]"] = {}
+# Single global window: {"window_start": monotonic_s, "count": int}. Mutable dict so
+# tests can reset it in-place (like `_resolve_org_hits.clear()`).
+_resolve_org_global: Dict[str, float] = {"window_start": 0.0, "count": 0}
+_resolve_org_lock = threading.Lock()
+
+
+def _client_ip(request: Request) -> str:
+    """First hop of X-Forwarded-For (the *claimed* real client behind the ALB/API-GW),
+    else the socket peer. Mirrors the `/validate` source-IP derivation (routes.py:184).
+
+    This is the value to LOG / attribute a request to. It is NOT a trust boundary: the
+    leftmost XFF entry is client-controlled and therefore spoofable, so it must NOT be
+    used as the rate-limit key (use `_rate_limit_key`). `/validate` (routes.py:184) has
+    the same leftmost-XFF derivation, but there it feeds only the audit trail's
+    `ip_address` (forensics attribution), never a throttle — so it carries the same
+    "informational, not a trust boundary" caveat, not a live rate-limit bypass."""
+    xff = request.headers.get("x-forwarded-for")
+    if xff:
+        return xff.split(",")[0].strip()
+    return request.client.host if request.client else "unknown"
+
+
+def _rate_limit_key(request: Request) -> str:
+    """The TRUSTED per-IP throttle key for the pre-auth resolver — deliberately NOT
+    the leftmost X-Forwarded-For hop (that one is client-controlled: an attacker
+    rotating it would bypass the per-IP throttle and balloon `_resolve_org_hits`).
+
+    Deployment topology is ALB → (internal ALB) → nginx → app, and nginx forwards
+    ``X-Forwarded-For $proxy_add_x_forwarded_for`` (docker/console/default.conf.template:55),
+    which APPENDS each proxy's observed peer to the RIGHT. So the RIGHTMOST XFF entry
+    is the hop our own infrastructure appended — the closest thing to a trusted client
+    identity we have without a full trusted-proxy-count config — and a spoofed leftmost
+    value cannot influence it. Fall back to the socket peer when no XFF is present.
+
+    Result: a flood that rotates the leftmost XFF collapses to a SINGLE bucket (same
+    trusted rightmost hop), so the per-IP brake actually bites and the dict stays
+    bounded to the count of real upstream hops."""
+    xff = request.headers.get("x-forwarded-for")
+    if xff:
+        hops = [h.strip() for h in xff.split(",") if h.strip()]
+        if hops:
+            return hops[-1]  # rightmost = infra-appended, not client-controlled
+    return request.client.host if request.client else "unknown"
+
+
+def _resolve_org_rate_ok(ip: str) -> bool:
+    """Fixed-window throttle for the pre-auth resolver. Returns False (→ 429) when
+    EITHER the global window ceiling (not spoofable) OR this IP's ceiling is hit.
+    Fail-secure: bookkeeping trouble → throttle.
+
+    Bounds the per-IP dict every call: expired windows are pruned, and once the
+    hard cap is reached a not-yet-tracked IP is throttled rather than inserted — so
+    an XFF-rotation flood can neither escape the global brake nor grow memory."""
+    now = time.monotonic()
+    try:
+        with _resolve_org_lock:
+            # (2) Global sweep brake FIRST — not keyed on any client-supplied value,
+            # so rotating X-Forwarded-For cannot mint fresh capacity here.
+            g_start = _resolve_org_global.get("window_start", 0.0)
+            g_count = _resolve_org_global.get("count", 0)
+            if now - g_start >= _RESOLVE_ORG_WINDOW_S:
+                g_start, g_count = now, 0
+            g_count += 1
+            _resolve_org_global["window_start"] = g_start
+            _resolve_org_global["count"] = g_count
+            if g_count > _RESOLVE_ORG_GLOBAL_BURST:
+                return False
+
+            # Prune per-IP entries whose window has fully expired (keeps the dict
+            # sized to ~distinct IPs seen in the last window, not all-time).
+            if _resolve_org_hits:
+                stale = [k for k, (ws, _c) in _resolve_org_hits.items()
+                         if now - ws >= _RESOLVE_ORG_WINDOW_S]
+                for k in stale:
+                    del _resolve_org_hits[k]
+
+            # (1) Per-IP fair-share brake. Hard cap: if the dict is full and this IP
+            # is new, throttle rather than insert (memory bound + fail-secure).
+            tracked = ip in _resolve_org_hits
+            if not tracked and len(_resolve_org_hits) >= _RESOLVE_ORG_MAX_TRACKED_IPS:
+                logger.warning("resolve_org per-IP table at cap (%d); throttling new ip=%s",
+                               _RESOLVE_ORG_MAX_TRACKED_IPS, ip)
+                return False
+            window_start, count = _resolve_org_hits.get(ip, (now, 0))
+            if now - window_start >= _RESOLVE_ORG_WINDOW_S:
+                window_start, count = now, 0
+            count += 1
+            _resolve_org_hits[ip] = (window_start, count)
+            return count <= _RESOLVE_ORG_BURST
+    except Exception:  # noqa: BLE001 — a limiter fault must never fail OPEN
+        logger.warning("resolve_org rate-limiter bookkeeping failed for ip=%s", ip, exc_info=True)
+        return False
+
+
+@public_router.get("/public/resolve-org")
+async def resolve_org(org: str, request: Request) -> Dict:
+    """Public org-name → ``{tenant_id}`` resolver for the org-first login flow (D14).
+
+    Contract (do NOT drift — the frontend org page + G2.12 consume this):
+      * hit   → 200 ``{"tenant_id": "<slug>"}`` and NOTHING else.
+      * miss  → 404 ``{"error": "org not found — check spelling"}`` (enumeration OK).
+      * fault → 5XX (fail-closed; never a fake-200 wrapping an error).
+      * burst → 429 (per-IP throttle).
+    """
+    # Throttle on the TRUSTED hop (rightmost XFF / socket peer), NOT the spoofable
+    # leftmost XFF — so rotating X-Forwarded-For can't bypass the per-IP brake or
+    # balloon the tracking dict. See `_rate_limit_key`.
+    if not _resolve_org_rate_ok(_rate_limit_key(request)):
+        # Honest 429 — the client backs off; no tenant data touched.
+        raise HTTPException(status_code=429, detail="too many requests — slow down")
+
+    name = (org or "").strip()
+    if not name:
+        # An empty query is a miss, not a fault (nothing to look up).
+        raise HTTPException(status_code=404, detail="org not found — check spelling")
+
+    try:
+        tenant_id = get_tenant_store().resolve_org_to_tenant_id(name)
+    except Exception:  # noqa: BLE001 — registry read/fault → fail CLOSED (never fake-200)
+        # Log the internal detail server-side; return ONLY a sanitized 5XX (the
+        # honest fault status the client decides on — engineering error-contract).
+        logger.error("resolve_org registry lookup failed for org=%r", name, exc_info=True)
+        raise HTTPException(status_code=503, detail="org lookup temporarily unavailable")
+
+    if not tenant_id:
+        # Miss → honest 404. Do NOT advance the operator to Cognito with nothing
+        # stashed; the org page keeps them put (footgun 3).
+        raise HTTPException(status_code=404, detail="org not found — check spelling")
+
+    # ONLY the id — never counts/members/plan/status (footgun 2 / §C.2).
+    return {"tenant_id": tenant_id}
 
 
 # =========================================================================== #
@@ -434,19 +608,110 @@ def _audit_platform_read(ctx: OperatorContext, target_tenant: str, what: str) ->
                 ctx.sub, what, target_tenant)
 
 
+# Sort keys the Tenant Grid may request (server-validated allowlist — never an
+# arbitrary attribute path, so a client can't drive an unbounded scan/sort). Each
+# maps to a (row-dict-key, default) the sort reads.
+_PLATFORM_SORT_KEYS = {
+    "display_name": ("display_name", ""),
+    "created_at": ("created_at", 0),
+    "blocks_24h": ("blocks_24h", 0),
+    "deny_rate": ("deny_rate", 0.0),
+    "decisions_24h": ("decisions_24h", 0),
+    "trust": ("trust", 0),
+    "agents": ("agents", 0),
+    "quarantined": ("quarantined", 0),
+    "plan": ("plan", ""),
+    "status": ("status", ""),
+}
+
+
 @router.get("/platform/tenants")
-async def platform_list_tenants(ctx: OperatorContext = Depends(require_platform)) -> Dict:
-    """Cross-tenant registry view for Sentra ops: count, plan, status, identity
-    mode, created_at. Aggregate cross-tenant read — `_platform` only."""
+async def platform_list_tenants(
+    limit: int = 50,
+    cursor: Optional[str] = None,
+    sort: Optional[str] = None,
+    filter: Optional[str] = None,  # noqa: A002 — API query param name, matches the console
+    ctx: OperatorContext = Depends(require_platform),
+) -> Dict:
+    """Cross-tenant registry view for Sentra ops. Aggregate cross-tenant read —
+    `_platform` only.
+
+    WS-G G0.4 (§6.11(1)): each row now also carries a per-tenant metrics rollup —
+    ``blocks_24h``, ``deny_rate``, ``trust``, ``agents``, ``quarantined``,
+    ``decisions_24h`` — computed via TWO SINGLE batched fleet scans (sessions +
+    decisions), grouped in memory by tenant. NOT N per-tenant scans (that O(N)
+    fan-out caused the overview-latency incident; memory: overview-latency-root-cause).
+
+    WS-G G0.5 (§6.11(2)): server-side paging (``limit``/``cursor``) + ``sort`` +
+    ``filter`` so a large fleet is served in stable pages, not one unpaged list. The
+    cursor is an opaque server-issued offset token (no client-controlled offset into
+    the cross-tenant scan). ``require_platform`` gate is unchanged — never widened."""
     _audit_platform_read(ctx, target_tenant="*", what="tenants.list")
+
     tenants = get_tenant_store().list_all()
+
+    # Batched rollups: exactly ONE call each, regardless of tenant count.
+    from app.utils.session_manager import SessionManager
+    from app.services.decisions_service import DecisionsService
+    session_rollup = await SessionManager().fleet_rollup_by_tenant()
+    decisions_rollup = await asyncio.to_thread(
+        DecisionsService().fleet_decisions_rollup_by_tenant
+    )
+
+    rows: List[Dict] = []
+    for t in tenants:
+        sr = session_rollup.get(t.tenant_id, {})
+        dr = decisions_rollup.get(t.tenant_id, {})
+        rows.append({
+            "tenant_id": t.tenant_id, "display_name": t.display_name, "plan": t.plan,
+            "status": t.status, "identity_mode": t.identity_mode, "created_at": t.created_at,
+            # G0.4 rollup fields (0/None-safe — an inactive tenant reads honestly).
+            "blocks_24h": dr.get("blocks_24h", 0),
+            "deny_rate": dr.get("deny_rate", 0.0),
+            "decisions_24h": dr.get("decisions_24h", 0),
+            "trust": sr.get("trust"),
+            "agents": sr.get("agents", 0),
+            "quarantined": sr.get("quarantined", 0),
+        })
+
+    # G0.5 filter: case-insensitive substring on display_name OR tenant_id.
+    if filter:
+        needle = filter.strip().lower()
+        rows = [r for r in rows
+                if needle in (r["display_name"] or "").lower()
+                or needle in r["tenant_id"].lower()]
+
+    # G0.5 sort (allowlisted key only; descending for metrics, ascending for names).
+    if sort:
+        key = sort.lstrip("-")
+        if key in _PLATFORM_SORT_KEYS:
+            attr, default = _PLATFORM_SORT_KEYS[key]
+            reverse = sort.startswith("-") or key in (
+                "blocks_24h", "deny_rate", "decisions_24h", "quarantined", "created_at",
+            )
+            rows.sort(key=lambda r, a=attr, d=default: (r.get(a) if r.get(a) is not None else d),
+                      reverse=reverse)
+
+    total = len(rows)
+    # G0.5 opaque cursor = the numeric offset, base64'd (server-issued; a tampered
+    # cursor decodes to 0 → first page, never an out-of-range scan).
+    import base64
+    start = 0
+    if cursor:
+        try:
+            start = max(0, int(base64.b64decode(cursor.encode()).decode()))
+        except Exception:  # noqa: BLE001 — malformed cursor → first page (fail-safe)
+            start = 0
+    page_size = max(1, min(int(limit), 200))
+    page = rows[start:start + page_size]
+    next_cursor = None
+    if start + page_size < total:
+        next_cursor = base64.b64encode(str(start + page_size).encode()).decode()
+
     return {
-        "count": len(tenants),
-        "tenants": [
-            {"tenant_id": t.tenant_id, "display_name": t.display_name, "plan": t.plan,
-             "status": t.status, "identity_mode": t.identity_mode, "created_at": t.created_at}
-            for t in tenants
-        ],
+        "count": total,
+        "tenants": page,
+        "cursor": next_cursor,
     }
 
 
