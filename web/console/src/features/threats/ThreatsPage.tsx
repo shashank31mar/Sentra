@@ -191,7 +191,8 @@ export function ThreatsPage() {
                               onClick={(e) => {
                                 e.stopPropagation()
                                 quarantine.mutate(
-                                  { sessionId: d.session_id, body: { reason: 'Operator review', operator_id: 'dana.reyes' } },
+                                  // No operator_id — server derives from ctx.sub (M-G3.13).
+                                  { sessionId: d.session_id, body: { reason: 'Operator review' } },
                                   { onSuccess: () => setJustQuarantined((prev) => new Set(prev).add(d.session_id)) },
                                 )
                               }}

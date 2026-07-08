@@ -1,4 +1,4 @@
-import { buildQuery, http } from '../http'
+import { http } from '../http'
 import type { QuarantineStatus } from '../../types/enums'
 import type {
   Page,
@@ -27,11 +27,11 @@ export const sessionsApi = {
     return { items: res.sessions ?? [], total: res.total ?? 0, next_token: res.next_token ?? null }
   },
 
-  /** Un-quarantine a session (operator override) — `DELETE /v1/quarantine/{id}`. */
-  release: (sessionId: string, operatorId = 'operator'): Promise<ReleaseResult> =>
-    http.del<ReleaseResult>(
-      `/quarantine/${encodeURIComponent(sessionId)}${buildQuery({ operator_id: operatorId })}`,
-    ),
+  /** Un-quarantine a session (operator override) — `DELETE /v1/quarantine/{id}`.
+   *  No operator_id — the server attributes the release to the verified ctx.sub
+   *  (M-G3.13, D8); a client-sent operator was dead weight. */
+  release: (sessionId: string): Promise<ReleaseResult> =>
+    http.del<ReleaseResult>(`/quarantine/${encodeURIComponent(sessionId)}`),
 
   /** Full per-request trace for a session (prompt + per-validator breadcrumbs) —
    *  `GET /v1/sessions/{id}/decisions`. Optionally narrow to one request_id. */

@@ -47,6 +47,11 @@ export const AuditTrailPage = lazy(() =>
   import('../features/audit/AuditTrailPage').then((m) => ({ default: m.AuditTrailPage })),
 )
 
+/* --- M-G3 new/promoted customer views --- */
+export const ActivityPage = lazy(() =>
+  import('../features/activity/ActivityPage').then((m) => ({ default: m.ActivityPage })),
+)
+
 /* --- Platform (cross-tenant) console — M-G4 --- */
 export const FleetOverviewPage = lazy(() =>
   import('../features/platform/FleetOverviewPage').then((m) => ({ default: m.FleetOverviewPage })),

@@ -23,7 +23,8 @@ export function DecisionReviewPanel({ item }: { item: DecisionItem }) {
   const submit = (v: Verdict) =>
     verdict.mutate({
       decisionId: item.decision_id,
-      body: { verdict: v, reason: 'Operator review', operator_id: 'dana.reyes' },
+      // No operator_id — server attributes to the verified ctx.sub (M-G3.13).
+      body: { verdict: v, reason: 'Operator review' },
     })
 
   // Viewers get no verdict control — the trace above stays visible.

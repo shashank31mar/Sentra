@@ -177,7 +177,9 @@ export interface LogEntry {
 export interface VerdictRequest {
   verdict: Verdict
   reason: string
-  operator_id: string
+  // NOTE: no `operator_id` — the server attributes the verdict to the VERIFIED
+  // `ctx.sub`, never a spoofable client field (M-G3.13, D8). Dropping the type
+  // field enforces that no caller re-adds the dead stub.
 }
 
 export interface VerdictResult {
@@ -188,7 +190,7 @@ export interface VerdictResult {
 
 export interface QuarantineRequest {
   reason: string
-  operator_id: string
+  // No `operator_id` — server derives the operator from `ctx.sub` (M-G3.13, D8).
 }
 
 /* ---------------------------- Sessions ---------------------------- */

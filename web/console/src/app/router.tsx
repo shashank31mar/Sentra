@@ -23,6 +23,7 @@ import {
   QuarantinePage,
   ResidualAgentsPage,
   AuditTrailPage,
+  ActivityPage,
   FleetOverviewPage,
   TenantDetailPage,
   FleetTopologyPage,
@@ -45,6 +46,7 @@ export const router = createBrowserRouter([
       // so the operator enters the authenticated console (LLD-26 WS-C). `/` itself
       // is the splash, so this alias is the in-app home target.
       { path: '/overview', element: withSuspense(<OverviewPage />) },
+      { path: ROUTES.activity, element: withSuspense(<ActivityPage />) },
       { path: ROUTES.threats, element: withSuspense(<ThreatsPage />) },
       { path: ROUTES.deployments, element: <PlaceholderPage title="Deployments" /> },
       { path: ROUTES.agents, element: withSuspense(<AgentInventoryPage />) },

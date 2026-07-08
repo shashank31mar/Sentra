@@ -35,6 +35,7 @@ export const NAV_GROUPS: NavGroup[] = [
     title: 'Monitor',
     items: [
       { label: 'Overview', to: ROUTES.overview, icon: IconLayoutDashboard },
+      { label: 'Activity', to: ROUTES.activity, icon: IconActivityHeartbeat },
       { label: 'Threats', to: ROUTES.threats, icon: IconAlertTriangle },
       { label: 'Deployments', to: ROUTES.deployments, icon: IconRocket },
     ],
