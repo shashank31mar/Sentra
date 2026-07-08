@@ -1,0 +1,147 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Aegion — Sign in to your organization</title>
+  <link rel="icon" href="/favicon.svg" />
+  <!-- Self-contained org-first entry page (D14 / ADR-039). NOT an SPA route — it
+       loads NO hashed /assets/* bundle, because those chunks fall through to the
+       priority-10 Cognito auth rule and would 401 for an unauthenticated visitor.
+       Everything it needs is inline. It calls the PUBLIC /public/resolve-org
+       endpoint (non-/v1, exempt from the priority-5 deny rule), stashes the
+       resolved tenant_id into sessionStorage under the ADR-039 key, then bounces
+       to the authenticated console (Cognito intercepts at the ALB). -->
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;700&family=JetBrains+Mono:wght@400;700&display=swap" rel="stylesheet" />
+  <style>
+    :root {
+      --bg: #010B13; --card: #050E16; --cyan: #0FFFFF; --pink: #FF0080;
+      --ink: #FFFFFF; --line: rgba(255, 255, 255, 0.10);
+    }
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    html, body { height: 100%; }
+    body {
+      background: var(--bg); color: var(--ink);
+      font-family: 'Space Grotesk', system-ui, sans-serif;
+      display: flex; align-items: center; justify-content: center;
+      min-height: 100vh; overflow: hidden; position: relative;
+    }
+    .grid {
+      position: fixed; inset: 0; z-index: 0; opacity: 0.04; pointer-events: none;
+      background-image:
+        linear-gradient(var(--cyan) 1px, transparent 1px),
+        linear-gradient(90deg, var(--cyan) 1px, transparent 1px);
+      background-size: 40px 40px;
+    }
+    .vignette {
+      position: fixed; inset: 0; z-index: 0; pointer-events: none;
+      background: radial-gradient(circle at 50% 40%, rgba(15,255,255,0.06), transparent 60%);
+    }
+    .wrap { position: relative; z-index: 10; width: 100%; max-width: 28rem; margin: 0 1rem; }
+    .bracket { position: absolute; width: 2rem; height: 2rem; pointer-events: none; }
+    .bracket.tl { top: -1px; left: -1px; border-top: 2px solid rgba(15,255,255,0.4); border-left: 2px solid rgba(15,255,255,0.4); }
+    .bracket.br { bottom: -1px; right: -1px; border-bottom: 2px solid rgba(255,0,128,0.4); border-right: 2px solid rgba(255,0,128,0.4); }
+    .card {
+      background: var(--card); border: 1px solid var(--line);
+      padding: 2.75rem 2.5rem; position: relative; overflow: hidden;
+      box-shadow: 0 0 50px rgba(0,0,0,0.5);
+    }
+    .brand { display: flex; flex-direction: column; align-items: center; text-align: center; margin-bottom: 2rem; }
+    .logo { width: 52px; height: 50px; filter: drop-shadow(0 0 18px rgba(15,255,255,0.75)); margin-bottom: 1rem; }
+    .logo path { fill: var(--cyan); }
+    h1 { font-size: 2.25rem; font-weight: 700; letter-spacing: -0.04em; text-transform: uppercase; line-height: 1; }
+    h1 .accent { color: var(--cyan); text-shadow: 0 0 15px rgba(15,255,255,0.8); }
+    .tagline { font-size: 11px; text-transform: uppercase; letter-spacing: 0.3em; color: rgba(255,255,255,0.7); margin-top: 0.9rem; font-weight: 700; }
+    label { display: block; font-size: 10px; text-transform: uppercase; letter-spacing: 0.2em; color: rgba(255,255,255,0.6); margin-bottom: 0.5rem; font-weight: 700; }
+    input {
+      width: 100%; padding: 0.9rem 1rem; background: rgba(255,255,255,0.03);
+      border: 1px solid var(--line); color: var(--ink); font-family: 'JetBrains Mono', monospace;
+      font-size: 14px; outline: none; transition: border-color 0.2s;
+    }
+    input:focus { border-color: var(--cyan); }
+    .cta {
+      display: block; width: 100%; margin-top: 1.5rem; padding: 1.05rem; text-align: center;
+      border: 1px solid var(--cyan); background: transparent; color: var(--cyan);
+      font-family: 'Space Grotesk', sans-serif; font-weight: 700; text-transform: uppercase;
+      letter-spacing: 0.2em; font-size: 12px; cursor: pointer; box-shadow: 0 0 20px rgba(15,255,255,0.15);
+      transition: box-shadow 0.3s;
+    }
+    .cta:hover { box-shadow: 0 0 40px rgba(15,255,255,0.4); }
+    .cta:disabled { opacity: 0.5; cursor: not-allowed; }
+    .msg { margin-top: 1rem; min-height: 1.2rem; font-size: 12px; font-family: 'JetBrains Mono', monospace; color: var(--pink); text-align: center; }
+    .foot { text-align: center; margin-top: 1.5rem; font-size: 9px; text-transform: uppercase; letter-spacing: 0.3em; color: rgba(255,255,255,0.4); font-family: 'JetBrains Mono', monospace; }
+  </style>
+</head>
+<body>
+  <div class="grid"></div>
+  <div class="vignette"></div>
+  <div class="wrap">
+    <span class="bracket tl"></span>
+    <span class="bracket br"></span>
+    <div class="card">
+      <div class="brand">
+        <svg class="logo" viewBox="0 0 48 46" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+          <path d="M25.946 44.938c-.664.845-2.021.375-2.021-.698V33.937a2.26 2.26 0 0 0-2.262-2.262H10.287c-.92 0-1.456-1.04-.92-1.788l7.48-10.471c1.07-1.497 0-3.578-1.842-3.578H1.237c-.92 0-1.456-1.04-.92-1.788L10.013.474c.214-.297.556-.474.92-.474h28.894c.92 0 1.456 1.04.92 1.788l-7.48 10.471c-1.07 1.498 0 3.579 1.842 3.579h11.377c.943 0 1.473 1.088.89 1.83L25.947 44.94z"/>
+        </svg>
+        <h1>AEG<span class="accent">ION</span></h1>
+        <p class="tagline">Sign in to your organization</p>
+      </div>
+      <form id="org-form" autocomplete="off">
+        <label for="org">Organization</label>
+        <input id="org" name="org" type="text" placeholder="your-organization" required autofocus />
+        <button class="cta" id="submit" type="submit">Continue →</button>
+      </form>
+      <p class="msg" id="msg" role="status" aria-live="polite"></p>
+      <p class="foot">Authorized Operators Only · All Activity Audited</p>
+    </div>
+  </div>
+  <script>
+    // ADR-039 per-tab tenant preference key. MUST match web/console/src/lib/tenant.ts
+    // (G2.11 migrates the store to sessionStorage under this exact key).
+    var TENANT_KEY = 'aegion.activeTenant';
+    var form = document.getElementById('org-form');
+    var input = document.getElementById('org');
+    var msg = document.getElementById('msg');
+    var submit = document.getElementById('submit');
+
+    form.addEventListener('submit', function (e) {
+      e.preventDefault();
+      var org = (input.value || '').trim();
+      if (!org) return;
+      msg.textContent = '';
+      submit.disabled = true;
+
+      // Call the PUBLIC resolver (nginx injects the api-key server-side).
+      fetch('/public/resolve-org?org=' + encodeURIComponent(org), {
+        method: 'GET',
+        headers: { 'Accept': 'application/json' },
+      }).then(function (res) {
+        if (res.status === 404) {
+          // Miss → stay on this page, nothing stashed (never advance to Cognito).
+          msg.textContent = 'org not found — check spelling';
+          submit.disabled = false;
+          return null;
+        }
+        if (!res.ok) {
+          msg.textContent = 'sign-in temporarily unavailable — try again';
+          submit.disabled = false;
+          return null;
+        }
+        return res.json();
+      }).then(function (data) {
+        if (!data || !data.tenant_id) return;
+        // Stash ONLY the resolved id (never the typed name); then bounce to the
+        // authenticated console — the ALB intercepts with Cognito, and on return
+        // the server re-validates X-Aegion-Tenant ∈ memberships.
+        try { sessionStorage.setItem(TENANT_KEY, data.tenant_id); } catch (_) {}
+        window.location = '/overview';
+      }).catch(function () {
+        msg.textContent = 'sign-in temporarily unavailable — try again';
+        submit.disabled = false;
+      });
+    });
+  </script>
+</body>
+</html>

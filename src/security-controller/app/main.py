@@ -143,6 +143,10 @@ app.include_router(routes.router)
 # Multi-tenancy control plane (LLD-26): tenants, members, invites, credentials,
 # GET /v1/me. Mounted under the same /v1 prefix.
 app.include_router(tenancy_routes.router)
+# WS-G G0.2 / D14 (ADR-039): PUBLIC org-first login resolver. Mounted on a
+# NON-`/v1` path (`/public/resolve-org`) so it is reachable before Cognito and is
+# NOT caught by the priority-5 `/v1/*` deny rule at the ALB.
+app.include_router(tenancy_routes.public_router)
 
 
 @app.get("/")

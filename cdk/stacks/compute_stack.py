@@ -919,6 +919,46 @@ class ComputeStack(Stack):
             ],
         )
 
+        # ------------------------------------------------------------
+        # WS-G G0.3 (LLD-26 / D14, ADR-039): PUBLIC org-first entry. The static
+        # `org.html` page + its `/public/resolve-org` XHR must be served WITHOUT
+        # authenticate-cognito (they run BEFORE sign-in). Priority MUST be < 5 or the
+        # `/v1/*` deny rule (priority 5, `ConsoleApiListenerRule`) would win first —
+        # but note `/public/resolve-org` is non-`/v1` so it wouldn't match that rule
+        # anyway; the load-bearing constraint is being ABOVE the priority-10 authed
+        # page rule so it isn't Cognito-gated. Plain `forward`, NO authenticate-cognito
+        # action. Shape (b) "widen carve-out to /assets/*" is REJECTED (ws-g-console
+        # :88) — org.html is self-contained and pulls no bundle.
+        # ------------------------------------------------------------
+        self.console_org_public_rule = elbv2.CfnListenerRule(
+            self,
+            "ConsoleOrgPublicRule",
+            listener_arn=self.public_https_listener.ref,
+            priority=2,  # < 5 (and < the priority-3 splash) — evaluated before auth
+            conditions=[
+                elbv2.CfnListenerRule.RuleConditionProperty(
+                    field="host-header",
+                    host_header_config=elbv2.CfnListenerRule.HostHeaderConfigProperty(
+                        values=[console_host]
+                    ),
+                ),
+                elbv2.CfnListenerRule.RuleConditionProperty(
+                    field="path-pattern",
+                    path_pattern_config=elbv2.CfnListenerRule.PathPatternConfigProperty(
+                        values=["/org.html", "/public/resolve-org"]
+                    ),
+                ),
+            ],
+            actions=[
+                # Plain forward — NO authenticate-cognito (this is the public,
+                # pre-sign-in entry surface).
+                elbv2.CfnListenerRule.ActionProperty(
+                    type="forward",
+                    target_group_arn=self.console_tg.target_group_arn,
+                ),
+            ],
+        )
+
         self.console_listener_rule = elbv2.CfnListenerRule(
             self,
             "ConsoleListenerRule",
@@ -1098,6 +1138,24 @@ class ComputeStack(Stack):
                     "/v1/invites*",
                     "/v1/platform*",
                     "/v1/identity*",
+                ])
+            ],
+            action=elbv2.ListenerAction.forward(
+                target_groups=[self.security_controller_tg]
+            )
+        )
+
+        # Priority 7: WS-G G0.3 (D14) — PUBLIC org resolver. The console nginx
+        # forwards `/public/resolve-org` (non-/v1) to this internal ALB; without an
+        # explicit forward rule the private ALB's default action (404) would swallow
+        # the internal hop (org-first login can't start). It targets the security
+        # controller (where `resolve_org` is mounted on the public_router).
+        self.private_http_listener.add_action(
+            "SecurityControllerRoutingResolveOrg",
+            priority=7,
+            conditions=[
+                elbv2.ListenerCondition.path_patterns([
+                    "/public/resolve-org",
                 ])
             ],
             action=elbv2.ListenerAction.forward(

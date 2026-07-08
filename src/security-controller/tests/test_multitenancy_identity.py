@@ -303,3 +303,43 @@ def test_revoked_key_unverified(mt_env, monkeypatch):
     token = sign_agent_jwt(priv, kid, "t_a", agent)
     ctx = run(resolve_tenant_from_jwt(FakeRequest({"Authorization": f"Bearer {token}"})))
     assert ctx.state == "unverified"  # revoked key never verifies
+
+
+# --------------------------------------------------------------------------- #
+# WS-G G1.3 (FR-13.1) — operator tenant resolution uses MEMBERSHIP, never the
+# email domain. This locks the `resolve_operator_tenant` authority so a future
+# regression to domain-derivation is caught. The email domain and the membership
+# tenant are DELIBERATELY DIFFERENT (`acme.io` vs `t_globex`) — if they matched, a
+# domain-derivation bug would pass silently.
+# --------------------------------------------------------------------------- #
+def test_resolution_uses_membership_not_email_domain(mt_env, monkeypatch):
+    from app.api import deps
+    from app.api.deps import resolve_operator_tenant
+    from app.services.tenant_service import get_member_store
+    from app.utils import tenancy
+
+    # OIDC claims: email domain = acme.io (a RED HERRING — never an authority).
+    monkeypatch.setattr(
+        deps, "verify_alb_oidc",
+        lambda req: {"sub": "alice-sub", "email": "alice@acme.io"},
+    )
+    # Sole membership is in t_globex — deliberately NOT the email domain.
+    get_member_store().add(
+        operator_sub="alice-sub", tenant_id="t_globex", role="viewer", is_primary=True,
+    )
+
+    # Read the bound contextvar INSIDE the same coroutine — `run()` executes on a
+    # Task that copies the context, so a set_current_tenant inside the dep is not
+    # visible from the caller's context after the await returns.
+    async def _resolve_and_read():
+        c = await resolve_operator_tenant(FakeRequest({}))
+        return c, tenancy.current_tenant()
+
+    ctx, bound = run(_resolve_and_read())
+
+    assert ctx.tenant_id == "t_globex", (
+        "FR-13.1: operator tenant MUST derive from membership (t_globex), "
+        f"NOT the email domain (acme.io) — got {ctx.tenant_id!r}"
+    )
+    assert ctx.tenant_id not in ("acme.io", "acme"), "FR-13.1: email domain must never be the tenant"
+    assert bound == "t_globex", "bound tenant (deps.py:449) must be the membership tenant"

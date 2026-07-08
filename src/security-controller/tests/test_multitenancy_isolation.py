@@ -306,3 +306,57 @@ def test_purge_refuses_active_tenant(mt_env):
     # A tenant must be in `deleting` before its data can be purged.
     with pytest.raises(PurgeError):
         purge_tenant(t.tenant_id)
+
+
+# --------------------------------------------------------------------------- #
+# WS-G G1.3 (FR-13.1 isolation) — an operator whose EMAIL DOMAIN matches a
+# tenant gains ZERO access to that tenant: resolution binds only their MEMBERSHIP
+# tenant, and a subsequent bound read returns only membership-tenant rows. The
+# email domain (`acme.io`) and a registry tenant named similarly (`t_acme`) are
+# deliberately present-but-unrelated to prove the domain grants nothing.
+# --------------------------------------------------------------------------- #
+def test_domain_matching_tenant_never_auto_bound(mt_env):
+    from app.api import deps
+    from app.api.deps import resolve_operator_tenant
+    from app.services.agent_service import AgentService
+    from app.services.tenant_service import get_member_store, get_tenant_store
+
+    # A DIFFERENT tenant exists in the registry that "matches" carol's email domain
+    # (t_acme ~ acme.io), but carol has NO membership there.
+    get_tenant_store().create(display_name="Acme", tenant_id="t_acme")
+    get_tenant_store().create(display_name="Globex", tenant_id="t_globex")
+    # carol@acme.io's SOLE membership is t_globex.
+    get_member_store().add(
+        operator_sub="carol-sub", tenant_id="t_globex", role="viewer", is_primary=True,
+    )
+
+    # Seed one agent per tenant so a scope leak would be observable.
+    reg = mt_env.Table(settings.dynamodb_agent_registry_table_v2)
+    reg.put_item(Item={"tenant_id": "t_globex", "agent_id": "t_globex-aws-x", "status": "active", "name": "G"})
+    reg.put_item(Item={"tenant_id": "t_acme", "agent_id": "t_acme-aws-y", "status": "active", "name": "A"})
+
+    class _Req:
+        def __init__(self, headers=None):
+            self.headers = {k.lower(): v for k, v in (headers or {}).items()}
+
+    # Resolve carol with NO X-Aegion-Tenant header → primary-pick branch. Resolve
+    # AND read in ONE coroutine so the bound contextvar (set at deps.py:449) is
+    # visible to the scoped list_agents read (a fresh `run()` would copy a fresh
+    # context and lose the bind).
+    import app.api.deps as _deps
+    orig = _deps.verify_alb_oidc
+    _deps.verify_alb_oidc = lambda req: {"sub": "carol-sub", "email": "carol@acme.io"}
+
+    async def _resolve_then_read():
+        c = await resolve_operator_tenant(_Req({}))
+        r = await AgentService().list_agents(enrich=False)
+        return c, r
+
+    try:
+        ctx, result = run(_resolve_then_read())
+        assert ctx.tenant_id == "t_globex", "must bind the membership tenant, not the email domain"
+        ids = {a["agent_id"] for a in result["agents"]}
+        assert "t_globex-aws-x" in ids
+        assert "t_acme-aws-y" not in ids, "FR-13.1: domain-matching tenant must grant zero access"
+    finally:
+        _deps.verify_alb_oidc = orig

@@ -49,6 +49,12 @@ def _now_ms() -> int:
     return int(time.time() * 1000)
 
 
+def _normalize_org_name(name: str) -> str:
+    """Case/whitespace-insensitive key for org-name resolution (D14). Collapses
+    internal runs of whitespace and lowercases so "Acme  Corp" == "acme corp"."""
+    return " ".join((name or "").split()).lower()
+
+
 class TenantError(ValueError):
     """A tenant-lifecycle precondition failed (reserved id, bad status, …)."""
 
@@ -211,6 +217,40 @@ class TenantStore:
     def get(self, tenant_id: str) -> Optional[Tenant]:
         item = self._table().get_item(Key={"tenant_id": tenant_id}).get("Item")
         return Tenant.from_item(item) if item else None
+
+    def resolve_org_to_tenant_id(self, org: str) -> Optional[str]:
+        """WS-G G0.2 / D14 (ADR-039): resolve a typed ORG NAME to its opaque
+        ``tenant_id`` slug for the public org-first login resolver.
+
+        The typed name is matched against a tenant's ``display_name`` (the one
+        human-facing label) OR — belt-and-suspenders — an exact ``tenant_id``.
+        Matching is case/space-insensitive on the display name so "Acme Corp",
+        "acme corp" and "ACME  CORP" all resolve. Returns ONLY the slug (the
+        caller returns nothing else — zero tenant-data leak) or ``None`` on a miss.
+
+        Purged tenants are excluded (a tombstoned org must not resolve). This is a
+        table Scan — acceptable at the current small fleet and off the auth hot
+        path; if the fleet grows, back it with a normalized-name GSI (follow-up)."""
+        needle = _normalize_org_name(org)
+        if not needle:
+            return None
+        # Exact-slug fast path (an operator who pasted the id) — a single get_item.
+        if org.strip().startswith("t_"):
+            row = self._table().get_item(Key={"tenant_id": org.strip()}).get("Item")
+            if row and row.get("status") != "purged":
+                return row["tenant_id"]
+        # Name match: scan display_name (small fleet). Deterministic — first row
+        # whose normalized display_name equals the needle wins.
+        resp = self._table().scan(
+            ProjectionExpression="tenant_id, display_name, #s",
+            ExpressionAttributeNames={"#s": "status"},
+        )
+        for item in resp.get("Items", []):
+            if item.get("status") == "purged":
+                continue
+            if _normalize_org_name(item.get("display_name", "")) == needle:
+                return item["tenant_id"]
+        return None
 
     def list_all(self, limit: int = 200) -> List[Tenant]:
         """Cross-tenant scan — only the platform-admin console (`_platform`) path

@@ -1,0 +1,161 @@
+{
+  "rank": [
+    "viewer",
+    "editor",
+    "admin",
+    "owner"
+  ],
+  "minRole": {
+    "viewer": 0,
+    "editor": 1,
+    "admin": 2,
+    "owner": 3
+  },
+  "routes": [
+    {
+      "path": "/v1/agents/{agent_id}/credentials",
+      "method": "POST",
+      "min_role": "viewer"
+    },
+    {
+      "path": "/v1/agents/{agent_id}/credentials/{kid}",
+      "method": "DELETE",
+      "min_role": "admin"
+    },
+    {
+      "path": "/v1/agents/{agent_id}/credentials/{kid}/rotate",
+      "method": "POST",
+      "min_role": "editor"
+    },
+    {
+      "path": "/v1/agents/{agent_id}/policies",
+      "method": "POST",
+      "min_role": "editor"
+    },
+    {
+      "path": "/v1/agents/{agent_id}/policies/{policy_id}",
+      "method": "DELETE",
+      "min_role": "editor"
+    },
+    {
+      "path": "/v1/connections",
+      "method": "POST",
+      "min_role": "admin"
+    },
+    {
+      "path": "/v1/connections/{connection_id}",
+      "method": "DELETE",
+      "min_role": "admin"
+    },
+    {
+      "path": "/v1/connections/{connection_id}",
+      "method": "PUT",
+      "min_role": "admin"
+    },
+    {
+      "path": "/v1/connections/{connection_id}/scan",
+      "method": "POST",
+      "min_role": "editor"
+    },
+    {
+      "path": "/v1/connections/{connection_id}/test",
+      "method": "POST",
+      "min_role": "editor"
+    },
+    {
+      "path": "/v1/decisions/{decision_id}/verdict",
+      "method": "POST",
+      "min_role": "editor"
+    },
+    {
+      "path": "/v1/discovery/import",
+      "method": "POST",
+      "min_role": "editor"
+    },
+    {
+      "path": "/v1/feedback/subjects/{subject_locator}",
+      "method": "DELETE",
+      "min_role": "admin"
+    },
+    {
+      "path": "/v1/platform/tenants",
+      "method": "GET",
+      "platform": true
+    },
+    {
+      "path": "/v1/platform/tenants/{tenant_id}",
+      "method": "GET",
+      "platform": true
+    },
+    {
+      "path": "/v1/policies",
+      "method": "POST",
+      "min_role": "editor"
+    },
+    {
+      "path": "/v1/policies/{policy_id}",
+      "method": "DELETE",
+      "min_role": "admin"
+    },
+    {
+      "path": "/v1/policies/{policy_id}",
+      "method": "PUT",
+      "min_role": "editor"
+    },
+    {
+      "path": "/v1/policies/{policy_id}/status",
+      "method": "PATCH",
+      "min_role": "editor"
+    },
+    {
+      "path": "/v1/quarantine/{session_id}",
+      "method": "DELETE",
+      "min_role": "admin"
+    },
+    {
+      "path": "/v1/quarantine/{session_id}",
+      "method": "POST",
+      "min_role": "admin"
+    },
+    {
+      "path": "/v1/rollback",
+      "method": "POST",
+      "min_role": "admin"
+    },
+    {
+      "path": "/v1/rollback/conversation/{conversation_id}",
+      "method": "POST",
+      "min_role": "admin"
+    },
+    {
+      "path": "/v1/sigma-rules/{rule_id}",
+      "method": "PATCH",
+      "platform": true
+    },
+    {
+      "path": "/v1/tenants/{tenant_id}",
+      "method": "DELETE",
+      "min_role": "owner"
+    },
+    {
+      "path": "/v1/tenants/{tenant_id}",
+      "method": "PATCH",
+      "min_role": "admin"
+    },
+    {
+      "path": "/v1/tenants/{tenant_id}/invites",
+      "method": "POST",
+      "min_role": "admin"
+    },
+    {
+      "path": "/v1/tenants/{tenant_id}/members",
+      "method": "GET",
+      "min_role": "admin"
+    },
+    {
+      "path": "/v1/tenants/{tenant_id}/members/{operator_sub}",
+      "method": "DELETE",
+      "min_role": "admin"
+    }
+  ]
+}

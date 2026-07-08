@@ -13,7 +13,10 @@ one (LLD-26 §3.3 / WS-A A2).
 """
 from __future__ import annotations
 
+import asyncio
 import logging
+import threading
+import time
 from typing import Dict, List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -47,6 +50,94 @@ from app.utils import tenancy
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/v1")
+
+# =========================================================================== #
+# WS-G G0.2 / D14 (ADR-039) — PUBLIC org resolver (org-first login)
+#
+# `resolve_org(org) -> {tenant_id}` turns a typed org NAME into the opaque
+# tenant slug the org-first login flow stashes to sessionStorage before Cognito.
+# It is mounted on a NON-`/v1` public path so it is NOT caught by the priority-5
+# `ConsoleApiListenerRule` (which 401s ALL unauth `/v1/*` — compute_stack.py:967).
+# It carries NO auth by design (it runs BEFORE sign-in) and returns ONLY the
+# tenant_id — never counts / members / plan / status (zero tenant data leak).
+# Org-NAME enumeration is ACCEPTED (founder 2026-07-08, LLD v1.6 40:10): a miss is
+# an honest 404, NOT a fake-200 miss==hit. An internal fault fails CLOSED (5XX,
+# never a fake-200). Per-IP burst throttled so an unauth endpoint can't be swept.
+# =========================================================================== #
+public_router = APIRouter(tags=["public"])
+
+# In-process per-IP token bucket. Deliberately lightweight (no DDB round-trip on
+# an unauth path): a fixed-window counter keyed by client IP. Multi-worker means
+# the effective ceiling is `_RESOLVE_ORG_BURST * n_workers`, which is fine — this
+# is a coarse brute-force/sweep brake, not a billing quota. Fail-safe: on any
+# limiter bookkeeping error we DENY (429) rather than wave the request through.
+_RESOLVE_ORG_BURST = 20          # requests
+_RESOLVE_ORG_WINDOW_S = 10.0     # per this many seconds, per IP
+_resolve_org_hits: Dict[str, "tuple[float, int]"] = {}
+_resolve_org_lock = threading.Lock()
+
+
+def _client_ip(request: Request) -> str:
+    """First hop of X-Forwarded-For (real client behind the ALB/API-GW), else the
+    socket peer. Mirrors the `/validate` source-IP derivation (routes.py:184)."""
+    xff = request.headers.get("x-forwarded-for")
+    if xff:
+        return xff.split(",")[0].strip()
+    return request.client.host if request.client else "unknown"
+
+
+def _resolve_org_rate_ok(ip: str) -> bool:
+    """Fixed-window per-IP throttle. Returns False once the burst ceiling is hit
+    inside the current window. Fail-secure: bookkeeping trouble → throttle."""
+    now = time.monotonic()
+    try:
+        with _resolve_org_lock:
+            window_start, count = _resolve_org_hits.get(ip, (now, 0))
+            if now - window_start >= _RESOLVE_ORG_WINDOW_S:
+                window_start, count = now, 0
+            count += 1
+            _resolve_org_hits[ip] = (window_start, count)
+            return count <= _RESOLVE_ORG_BURST
+    except Exception:  # noqa: BLE001 — a limiter fault must never fail OPEN
+        logger.warning("resolve_org rate-limiter bookkeeping failed for ip=%s", ip, exc_info=True)
+        return False
+
+
+@public_router.get("/public/resolve-org")
+async def resolve_org(org: str, request: Request) -> Dict:
+    """Public org-name → ``{tenant_id}`` resolver for the org-first login flow (D14).
+
+    Contract (do NOT drift — the frontend org page + G2.12 consume this):
+      * hit   → 200 ``{"tenant_id": "<slug>"}`` and NOTHING else.
+      * miss  → 404 ``{"error": "org not found — check spelling"}`` (enumeration OK).
+      * fault → 5XX (fail-closed; never a fake-200 wrapping an error).
+      * burst → 429 (per-IP throttle).
+    """
+    ip = _client_ip(request)
+    if not _resolve_org_rate_ok(ip):
+        # Honest 429 — the client backs off; no tenant data touched.
+        raise HTTPException(status_code=429, detail="too many requests — slow down")
+
+    name = (org or "").strip()
+    if not name:
+        # An empty query is a miss, not a fault (nothing to look up).
+        raise HTTPException(status_code=404, detail="org not found — check spelling")
+
+    try:
+        tenant_id = get_tenant_store().resolve_org_to_tenant_id(name)
+    except Exception:  # noqa: BLE001 — registry read/fault → fail CLOSED (never fake-200)
+        # Log the internal detail server-side; return ONLY a sanitized 5XX (the
+        # honest fault status the client decides on — engineering error-contract).
+        logger.error("resolve_org registry lookup failed for org=%r", name, exc_info=True)
+        raise HTTPException(status_code=503, detail="org lookup temporarily unavailable")
+
+    if not tenant_id:
+        # Miss → honest 404. Do NOT advance the operator to Cognito with nothing
+        # stashed; the org page keeps them put (footgun 3).
+        raise HTTPException(status_code=404, detail="org not found — check spelling")
+
+    # ONLY the id — never counts/members/plan/status (footgun 2 / §C.2).
+    return {"tenant_id": tenant_id}
 
 
 # =========================================================================== #
@@ -434,19 +525,110 @@ def _audit_platform_read(ctx: OperatorContext, target_tenant: str, what: str) ->
                 ctx.sub, what, target_tenant)
 
 
+# Sort keys the Tenant Grid may request (server-validated allowlist — never an
+# arbitrary attribute path, so a client can't drive an unbounded scan/sort). Each
+# maps to a (row-dict-key, default) the sort reads.
+_PLATFORM_SORT_KEYS = {
+    "display_name": ("display_name", ""),
+    "created_at": ("created_at", 0),
+    "blocks_24h": ("blocks_24h", 0),
+    "deny_rate": ("deny_rate", 0.0),
+    "decisions_24h": ("decisions_24h", 0),
+    "trust": ("trust", 0),
+    "agents": ("agents", 0),
+    "quarantined": ("quarantined", 0),
+    "plan": ("plan", ""),
+    "status": ("status", ""),
+}
+
+
 @router.get("/platform/tenants")
-async def platform_list_tenants(ctx: OperatorContext = Depends(require_platform)) -> Dict:
-    """Cross-tenant registry view for Sentra ops: count, plan, status, identity
-    mode, created_at. Aggregate cross-tenant read — `_platform` only."""
+async def platform_list_tenants(
+    limit: int = 50,
+    cursor: Optional[str] = None,
+    sort: Optional[str] = None,
+    filter: Optional[str] = None,  # noqa: A002 — API query param name, matches the console
+    ctx: OperatorContext = Depends(require_platform),
+) -> Dict:
+    """Cross-tenant registry view for Sentra ops. Aggregate cross-tenant read —
+    `_platform` only.
+
+    WS-G G0.4 (§6.11(1)): each row now also carries a per-tenant metrics rollup —
+    ``blocks_24h``, ``deny_rate``, ``trust``, ``agents``, ``quarantined``,
+    ``decisions_24h`` — computed via TWO SINGLE batched fleet scans (sessions +
+    decisions), grouped in memory by tenant. NOT N per-tenant scans (that O(N)
+    fan-out caused the overview-latency incident; memory: overview-latency-root-cause).
+
+    WS-G G0.5 (§6.11(2)): server-side paging (``limit``/``cursor``) + ``sort`` +
+    ``filter`` so a large fleet is served in stable pages, not one unpaged list. The
+    cursor is an opaque server-issued offset token (no client-controlled offset into
+    the cross-tenant scan). ``require_platform`` gate is unchanged — never widened."""
     _audit_platform_read(ctx, target_tenant="*", what="tenants.list")
+
     tenants = get_tenant_store().list_all()
+
+    # Batched rollups: exactly ONE call each, regardless of tenant count.
+    from app.utils.session_manager import SessionManager
+    from app.services.decisions_service import DecisionsService
+    session_rollup = await SessionManager().fleet_rollup_by_tenant()
+    decisions_rollup = await asyncio.to_thread(
+        DecisionsService().fleet_decisions_rollup_by_tenant
+    )
+
+    rows: List[Dict] = []
+    for t in tenants:
+        sr = session_rollup.get(t.tenant_id, {})
+        dr = decisions_rollup.get(t.tenant_id, {})
+        rows.append({
+            "tenant_id": t.tenant_id, "display_name": t.display_name, "plan": t.plan,
+            "status": t.status, "identity_mode": t.identity_mode, "created_at": t.created_at,
+            # G0.4 rollup fields (0/None-safe — an inactive tenant reads honestly).
+            "blocks_24h": dr.get("blocks_24h", 0),
+            "deny_rate": dr.get("deny_rate", 0.0),
+            "decisions_24h": dr.get("decisions_24h", 0),
+            "trust": sr.get("trust"),
+            "agents": sr.get("agents", 0),
+            "quarantined": sr.get("quarantined", 0),
+        })
+
+    # G0.5 filter: case-insensitive substring on display_name OR tenant_id.
+    if filter:
+        needle = filter.strip().lower()
+        rows = [r for r in rows
+                if needle in (r["display_name"] or "").lower()
+                or needle in r["tenant_id"].lower()]
+
+    # G0.5 sort (allowlisted key only; descending for metrics, ascending for names).
+    if sort:
+        key = sort.lstrip("-")
+        if key in _PLATFORM_SORT_KEYS:
+            attr, default = _PLATFORM_SORT_KEYS[key]
+            reverse = sort.startswith("-") or key in (
+                "blocks_24h", "deny_rate", "decisions_24h", "quarantined", "created_at",
+            )
+            rows.sort(key=lambda r, a=attr, d=default: (r.get(a) if r.get(a) is not None else d),
+                      reverse=reverse)
+
+    total = len(rows)
+    # G0.5 opaque cursor = the numeric offset, base64'd (server-issued; a tampered
+    # cursor decodes to 0 → first page, never an out-of-range scan).
+    import base64
+    start = 0
+    if cursor:
+        try:
+            start = max(0, int(base64.b64decode(cursor.encode()).decode()))
+        except Exception:  # noqa: BLE001 — malformed cursor → first page (fail-safe)
+            start = 0
+    page_size = max(1, min(int(limit), 200))
+    page = rows[start:start + page_size]
+    next_cursor = None
+    if start + page_size < total:
+        next_cursor = base64.b64encode(str(start + page_size).encode()).decode()
+
     return {
-        "count": len(tenants),
-        "tenants": [
-            {"tenant_id": t.tenant_id, "display_name": t.display_name, "plan": t.plan,
-             "status": t.status, "identity_mode": t.identity_mode, "created_at": t.created_at}
-            for t in tenants
-        ],
+        "count": total,
+        "tenants": page,
+        "cursor": next_cursor,
     }
 
 
