@@ -51,6 +51,7 @@ def mt_env(monkeypatch):
         ts._member_store = None
         deps._mode_cache.clear()
         tr._resolve_org_hits.clear()  # reset the per-IP throttle between tests
+        tr._resolve_org_global.update(window_start=0.0, count=0)  # reset global brake too
         yield ddb
 
 
@@ -110,6 +111,64 @@ def test_resolve_org_burst_throttled(mt_env):
                 hit_429 = True
                 break
     assert hit_429, "burst beyond the per-IP ceiling must return 429"
+
+
+def test_resolve_org_xff_rotation_caught_by_global_brake(mt_env, monkeypatch):
+    """FIX-B gap: X-Forwarded-For is client-controlled, so per-IP alone is bypassable
+    — an attacker rotating XFF gets a fresh per-IP bucket per fake value. The
+    NON-spoofable global window counter must still trip 429. Shrink the global ceiling
+    so the test drives it deterministically; each request uses a UNIQUE spoofed XFF so
+    the per-IP brake NEVER fires (proving the global brake is what caught it)."""
+    from app.api import tenancy_routes as tr
+    from app.api.tenancy_routes import resolve_org
+
+    monkeypatch.setattr(tr, "_RESOLVE_ORG_GLOBAL_BURST", 5)
+    tr._resolve_org_global.update(window_start=0.0, count=0)
+    tr._resolve_org_hits.clear()
+
+    hit_429 = False
+    for i in range(tr._RESOLVE_ORG_GLOBAL_BURST + 3):
+        req = _Req(headers={"x-forwarded-for": f"9.9.9.{i}"})  # unique spoofed IP each call
+        try:
+            run(resolve_org(org="nope", request=req))
+        except HTTPException as exc:
+            if exc.status_code == 429:
+                hit_429 = True
+                break
+    assert hit_429, (
+        "rotating X-Forwarded-For must NOT grant unlimited requests — the global "
+        "(non-spoofable) sweep brake must trip 429 even when every per-IP key is fresh"
+    )
+    # And no single per-IP bucket ever reached the per-IP ceiling (each key saw 1 hit),
+    # so it was demonstrably the global brake, not the per-IP one.
+    assert all(count <= tr._RESOLVE_ORG_BURST for (_ws, count) in tr._resolve_org_hits.values())
+
+
+def test_resolve_org_per_ip_table_is_bounded(mt_env, monkeypatch):
+    """FIX-B gap: `_resolve_org_hits` must not grow unboundedly on a pre-auth endpoint
+    (an XFF-rotation flood would otherwise accumulate one entry per fake IP forever).
+    Once the hard cap is reached, a not-yet-tracked IP is throttled (429) rather than
+    inserted — so the dict size is bounded by _RESOLVE_ORG_MAX_TRACKED_IPS."""
+    from app.api import tenancy_routes as tr
+    from app.api.tenancy_routes import resolve_org
+
+    monkeypatch.setattr(tr, "_RESOLVE_ORG_MAX_TRACKED_IPS", 3)
+    monkeypatch.setattr(tr, "_RESOLVE_ORG_GLOBAL_BURST", 10_000)  # isolate the per-IP cap
+    tr._resolve_org_hits.clear()
+    tr._resolve_org_global.update(window_start=0.0, count=0)
+
+    seen_429 = False
+    for i in range(tr._RESOLVE_ORG_MAX_TRACKED_IPS + 5):
+        req = _Req(headers={"x-forwarded-for": f"7.7.7.{i}"})
+        try:
+            run(resolve_org(org="nope", request=req))
+        except HTTPException as exc:
+            if exc.status_code == 429:
+                seen_429 = True
+    assert seen_429, "a new IP beyond the hard cap must be throttled, not tracked"
+    assert len(tr._resolve_org_hits) <= tr._RESOLVE_ORG_MAX_TRACKED_IPS, (
+        f"per-IP table must stay <= cap; grew to {len(tr._resolve_org_hits)}"
+    )
 
 
 # --------------------------------------------------------------------------- #

@@ -104,25 +104,68 @@ def test_shadow_branch_unverified_stays_ambient(monkeypatch):
     )
 
 
-def test_decisions_row_projection_includes_winning_source():
-    """M-G3.3: each GET /v1/decisions row (DecisionItem) carries `winning_source`
-    at the ROW level (not only inside `combined`) so the Threats per-detector facet
-    is API-driven. The DENY row's winning_source equals its combined winning_source."""
+def _mk_scan_service(rows):
+    """A DecisionsService with a real DenyOverrides combiner but no boto3, wired to a
+    FakeDDB that returns `rows` on the first query and nothing after — so the REAL
+    `scan_decisions` grouping+projection runs (same pattern as
+    tests/unit/test_trail_builder.py::test_scan_decisions_*). This is what makes the
+    winning_source assertion non-vacuous: it exercises decisions_service.py:554, so
+    deleting that line breaks this test."""
     from app.services.decisions_service import DecisionsService
-    from app.combiners.signal import Signal
+    from app.combiners import DenyOverrides
 
-    svc = DecisionsService()
-    # A minimal signal group for one (session, request): one DENY from sigma.
-    deny = Signal(source="sentra.sigma", decision="DENY", reason="rule-x",
-                  priority=100, threat_type="prompt_injection")
-    combined = svc._combiner.combine([deny])
-    # Build the row the way scan_decisions does and assert the row-level field.
-    winning_source = (combined.metadata or {}).get("winning_source")
-    row = {
-        "decision": combined.decision,
-        "winning_source": winning_source,
-        "combined": {"winning_source": winning_source},
-    }
-    assert "winning_source" in row, "row projection must carry winning_source (M-G3.3)"
-    assert row["winning_source"] == row["combined"]["winning_source"]
-    assert row["winning_source"] is not None, "a DENY row must name a winning source"
+    svc = DecisionsService.__new__(DecisionsService)
+    svc._combiner = DenyOverrides()
+
+    calls = {"n": 0}
+
+    class _FakeDDB:
+        def query(self, **kwargs):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                return {"Items": rows, "LastEvaluatedKey": None}
+            return {"Items": [], "LastEvaluatedKey": None}
+
+    svc._client = _FakeDDB()
+    svc._deserialize_item = lambda it: it  # rows are already plain dicts
+    return svc
+
+
+def test_decisions_row_projection_includes_winning_source():
+    """M-G3.3: each GET /v1/decisions row (DecisionItem) carries `winning_source` at
+    the TOP LEVEL of the row (not only inside `combined`) so the Threats per-detector
+    facet is API-driven. Drives the REAL `scan_decisions` projection so it guards
+    decisions_service.py:554 — deleting the row-level field FAILS this test."""
+    from app.combiners import Source
+
+    # One (session, request) group: trust ALLOW + sigma DENY → combined DENY, the
+    # winning source is sigma (the top-priority denier under deny-overrides).
+    rows = [
+        {"source": Source.SENTRA_TRUST, "decision": "ALLOW", "request_id": "r1",
+         "session_id": "s1", "agent_id": "agent-x", "tool_name": "wire_transfer",
+         "platform": "bedrock", "trust_score_before": 0.9, "timestamp_ms": 100,
+         "timestamp_iso": "2026-07-08T00:00:00.100Z"},
+        {"source": Source.SENTRA_SIGMA, "decision": "DENY", "reason": "injection",
+         "request_id": "r1", "session_id": "s1", "agent_id": "agent-x",
+         "tool_name": "wire_transfer", "platform": "bedrock", "threat_type": "INJECTION",
+         "trust_score_before": 0.9, "timestamp_ms": 200,
+         "timestamp_iso": "2026-07-08T00:00:00.200Z"},
+    ]
+    svc = _mk_scan_service(rows)
+
+    resp = svc.scan_decisions(limit=50)
+    matching = [d for d in resp["decisions"] if d["request_id"] == "r1"]
+    assert len(matching) == 1
+    d = matching[0]
+
+    assert "winning_source" in d, (
+        "M-G3.3: the /v1/decisions ROW projection must carry a top-level "
+        "`winning_source` (DecisionItem), not only inside `combined`"
+    )
+    assert d["decision"] == "DENY"
+    assert d["winning_source"] == Source.SENTRA_SIGMA, (
+        "a DENY row's row-level winning_source must name the deciding detector"
+    )
+    # Row-level value mirrors the nested combined value (same source of truth).
+    assert d["winning_source"] == d["combined"]["winning_source"]
+    assert d["winning_source"] is not None, "a DENY row must name a winning source"

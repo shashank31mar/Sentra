@@ -71,15 +71,35 @@ public_router = APIRouter(tags=["public"])
 # the effective ceiling is `_RESOLVE_ORG_BURST * n_workers`, which is fine — this
 # is a coarse brute-force/sweep brake, not a billing quota. Fail-safe: on any
 # limiter bookkeeping error we DENY (429) rather than wave the request through.
-_RESOLVE_ORG_BURST = 20          # requests
-_RESOLVE_ORG_WINDOW_S = 10.0     # per this many seconds, per IP
+#
+# TWO brakes on this pre-auth endpoint, because the per-IP key is client-controlled:
+#   (1) per-IP  — `_resolve_org_hits`, keyed by `_client_ip` (leftmost XFF). XFF is
+#       spoofable, so an attacker rotating the header gets a fresh per-IP bucket per
+#       fake value. That defeats (1) alone AND would grow the dict without bound.
+#   (2) global  — `_resolve_org_global`, a single fixed-window counter NOT keyed by
+#       any client-supplied value, so XFF rotation can't escape it. It's the
+#       non-bypassable sweep brake; (1) is the fair-share brake for honest clients.
+# The per-IP dict is bounded (expired entries pruned each call + a hard cap) so an
+# XFF-rotation flood cannot grow it unboundedly (fail-secure: at cap, throttle).
+_RESOLVE_ORG_BURST = 20             # requests per window, per IP (fair-share)
+_RESOLVE_ORG_WINDOW_S = 10.0        # window length (shared by per-IP + global)
+_RESOLVE_ORG_GLOBAL_BURST = 2000    # requests per window across ALL IPs (sweep brake)
+_RESOLVE_ORG_MAX_TRACKED_IPS = 10000  # hard cap on the per-IP dict size (memory bound)
 _resolve_org_hits: Dict[str, "tuple[float, int]"] = {}
+# Single global window: {"window_start": monotonic_s, "count": int}. Mutable dict so
+# tests can reset it in-place (like `_resolve_org_hits.clear()`).
+_resolve_org_global: Dict[str, float] = {"window_start": 0.0, "count": 0}
 _resolve_org_lock = threading.Lock()
 
 
 def _client_ip(request: Request) -> str:
     """First hop of X-Forwarded-For (real client behind the ALB/API-GW), else the
-    socket peer. Mirrors the `/validate` source-IP derivation (routes.py:184)."""
+    socket peer. Mirrors the `/validate` source-IP derivation (routes.py:184).
+
+    NOTE: XFF is client-controlled and therefore spoofable — this value is only the
+    *fair-share* key for honest clients, never a trust boundary. The non-bypassable
+    sweep brake is the global counter in `_resolve_org_rate_ok`, which is not keyed
+    on anything the client controls."""
     xff = request.headers.get("x-forwarded-for")
     if xff:
         return xff.split(",")[0].strip()
@@ -87,11 +107,43 @@ def _client_ip(request: Request) -> str:
 
 
 def _resolve_org_rate_ok(ip: str) -> bool:
-    """Fixed-window per-IP throttle. Returns False once the burst ceiling is hit
-    inside the current window. Fail-secure: bookkeeping trouble → throttle."""
+    """Fixed-window throttle for the pre-auth resolver. Returns False (→ 429) when
+    EITHER the global window ceiling (not spoofable) OR this IP's ceiling is hit.
+    Fail-secure: bookkeeping trouble → throttle.
+
+    Bounds the per-IP dict every call: expired windows are pruned, and once the
+    hard cap is reached a not-yet-tracked IP is throttled rather than inserted — so
+    an XFF-rotation flood can neither escape the global brake nor grow memory."""
     now = time.monotonic()
     try:
         with _resolve_org_lock:
+            # (2) Global sweep brake FIRST — not keyed on any client-supplied value,
+            # so rotating X-Forwarded-For cannot mint fresh capacity here.
+            g_start = _resolve_org_global.get("window_start", 0.0)
+            g_count = _resolve_org_global.get("count", 0)
+            if now - g_start >= _RESOLVE_ORG_WINDOW_S:
+                g_start, g_count = now, 0
+            g_count += 1
+            _resolve_org_global["window_start"] = g_start
+            _resolve_org_global["count"] = g_count
+            if g_count > _RESOLVE_ORG_GLOBAL_BURST:
+                return False
+
+            # Prune per-IP entries whose window has fully expired (keeps the dict
+            # sized to ~distinct IPs seen in the last window, not all-time).
+            if _resolve_org_hits:
+                stale = [k for k, (ws, _c) in _resolve_org_hits.items()
+                         if now - ws >= _RESOLVE_ORG_WINDOW_S]
+                for k in stale:
+                    del _resolve_org_hits[k]
+
+            # (1) Per-IP fair-share brake. Hard cap: if the dict is full and this IP
+            # is new, throttle rather than insert (memory bound + fail-secure).
+            tracked = ip in _resolve_org_hits
+            if not tracked and len(_resolve_org_hits) >= _RESOLVE_ORG_MAX_TRACKED_IPS:
+                logger.warning("resolve_org per-IP table at cap (%d); throttling new ip=%s",
+                               _RESOLVE_ORG_MAX_TRACKED_IPS, ip)
+                return False
             window_start, count = _resolve_org_hits.get(ip, (now, 0))
             if now - window_start >= _RESOLVE_ORG_WINDOW_S:
                 window_start, count = now, 0
