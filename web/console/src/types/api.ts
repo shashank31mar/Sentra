@@ -572,6 +572,22 @@ export interface SigmaRuleContent {
   patterns_total: number
 }
 
+/* ----------------------------- Usage (WS-H, provisional) ----------------------------- */
+
+/**
+ * Metered usage rollup (`GET /v1/usage`, WS-H-owned — PROVISIONAL). Treat the
+ * response as untrusted data and validate before rendering; until WS-H ships the
+ * endpoint returns 404/501 and the UI renders a PARTIAL banner (never fabricated
+ * totals). All fields optional so a partial rollup renders without crashing.
+ */
+export interface UsageRollup {
+  period?: string
+  validations?: number
+  quota?: number
+  blocks?: number
+  agents?: number
+}
+
 /* --------------------- Platform (cross-tenant, M-G4) --------------------- */
 
 /**
