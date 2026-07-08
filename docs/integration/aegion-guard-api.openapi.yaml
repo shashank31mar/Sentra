@@ -201,8 +201,10 @@ paths:
       security: [ { OperatorSession: [] } ]
       x-internal: true
       description: |
-        Raw per-signal rows (no combiner). Under identity enforce (or with the credential latch on),
-        the read is bound to the verified agent-JWT tenant partition; a missing/forged JWT then `401`s.
+        An operator SOC-console read gated by an ALB-OIDC operator session (`OperatorSession`),
+        tenant-scoped to the operator's bound tenant: a customer operator reads only its own tenant;
+        a `_platform` operator reads across the fleet, and a break-glass read of a non-member tenant is
+        consent-gated. Returns raw per-signal rows (no combiner).
       parameters:
         - { name: request_id, in: query, schema: { type: string }, description: Narrow to one request }
         - { name: source, in: query, schema: { type: string } }
@@ -211,8 +213,11 @@ paths:
       responses:
         '200': { description: Signals., content: { application/json: { schema: { type: object } } } }
         '401':
-          description: Enforce/latch with a missing/invalid/forged agent JWT (verified agent identity required).
-          content: { application/json: { schema: { $ref: '#/components/schemas/Error' }, example: { detail: "verified agent identity required" } } }
+          description: Missing/invalid ALB-OIDC operator identity (authenticated operator session required).
+          content: { application/json: { schema: { $ref: '#/components/schemas/Error' }, example: { detail: "authenticated operator session required" } } }
+        '403':
+          description: "N10 consent gate: a `_platform` break-glass read of a non-member tenant is denied when the tenant hasn't granted platform_read_consent."
+          content: { application/json: { schema: { $ref: '#/components/schemas/Error' }, example: { detail: "platform_read_consent not granted by tenant" } } }
 
   # ----------------------------------------------------------------- Read & Reporting
   /v1/decisions:
@@ -271,6 +276,8 @@ paths:
                   sessions: { type: array, items: { $ref: '#/components/schemas/SessionInfo' } }
                   total: { type: integer }
                   next_token: { type: [string, 'null'] }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
 
   /v1/sessions/{session_id}/decisions:
     parameters: [ { $ref: '#/components/parameters/SessionId' } ]
@@ -289,6 +296,10 @@ paths:
         - { name: limit, in: query, schema: { type: integer, default: 100, maximum: 500 } }
       responses:
         '200': { description: Decision trace., content: { application/json: { schema: { $ref: '#/components/schemas/SessionDecisionsResponse' } } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403':
+          description: "Foreign tenant: a non-member X-Aegion-Tenant switch, or the N10 consent gate on a `_platform` break-glass read of a tenant that hasn't granted platform_read_consent."
+          content: { application/json: { schema: { $ref: '#/components/schemas/Error' }, example: { detail: "platform_read_consent not granted by tenant" } } }
 
   /v1/sessions/{session_id}/trail:
     parameters: [ { $ref: '#/components/parameters/SessionId' } ]
@@ -299,28 +310,37 @@ paths:
       summary: Full decision trail for one request (four-bucket coverage view)
       security: [ { OperatorSession: [] } ]
       description: |
-        The SOC console decision-detail view for a single request: every validator classified into
-        `ran | ran_abstain | ran_error | not_run` in coverage order, with `winning_source`/`block_point`
-        recomputed on read (fail-secure to the persisted DENY). `request_id` is **required** (the
-        partition is session-scoped). Under identity enforce the read is bound to the verified
-        agent-JWT tenant; a missing/invalid JWT then `401`s.
+        The SOC console decision-detail view for a single request, gated by an ALB-OIDC operator
+        session (`OperatorSession`) and tenant-scoped to the operator's bound tenant (customer =
+        own tenant; `_platform` = fleet, with break-glass reads consent-gated): every validator
+        classified into `ran | ran_abstain | ran_error | not_run` in coverage order, with
+        `winning_source`/`block_point` recomputed on read (fail-secure to the persisted DENY).
+        `request_id` is **required** (the partition is session-scoped).
       parameters:
         - { name: request_id, in: query, required: true, schema: { type: string }, description: The request whose full trail to return (required — the partition is session-scoped). }
       responses:
         '200': { description: Decision trail., content: { application/json: { schema: { $ref: '#/components/schemas/SessionTrail' } } } }
         '401':
-          description: Enforce/latch with a missing/invalid/forged agent JWT (verified agent identity required).
-          content: { application/json: { schema: { $ref: '#/components/schemas/Error' }, example: { detail: "verified agent identity required" } } }
+          description: Missing/invalid ALB-OIDC operator identity (authenticated operator session required).
+          content: { application/json: { schema: { $ref: '#/components/schemas/Error' }, example: { detail: "authenticated operator session required" } } }
+        '403':
+          description: "N10 consent gate: a `_platform` break-glass read of a non-member tenant is denied when the tenant hasn't granted platform_read_consent."
+          content: { application/json: { schema: { $ref: '#/components/schemas/Error' }, example: { detail: "platform_read_consent not granted by tenant" } } }
         '422': { $ref: '#/components/responses/BadRequest' }
 
   /v1/logs:
     get:
       tags: [Read & Reporting]
-      x-audience: customer-reporting
+      x-audience: internal
+      x-internal: true
       operationId: getLogs
-      summary: Query the compliance audit log (CloudWatch-backed)
+      summary: Query the fleet-shared compliance audit log (CloudWatch-backed; platform-only today)
       security: [ { OperatorSession: [] } ]
-      description: The long-term audit archive. For recent/hot reads prefer `/v1/decisions` (DDB-backed).
+      description: |
+        The long-term audit archive, read from a fleet-shared CloudWatch log stream that is **not yet
+        tenant-partitioned**. Today this is a platform-only read: non-platform (customer) operators are
+        fail-closed with **422** until tenant-scoped telemetry lands. For recent/hot reads prefer
+        `/v1/decisions` (DDB-backed).
       parameters:
         - { name: since, in: query, schema: { type: string, format: date-time } }
         - { name: until, in: query, schema: { type: string, format: date-time } }
@@ -341,6 +361,9 @@ paths:
                   total: { type: integer }
                   next_token: { type: [string, 'null'] }
         '401': { $ref: '#/components/responses/Unauthorized' }
+        '422':
+          description: "Non-platform (customer) operators are fail-closed today: tenant-scoped telemetry not yet available (CloudWatch logs are fleet-shared)."
+          content: { application/json: { schema: { $ref: '#/components/schemas/Error' }, example: { detail: "tenant-scoped telemetry not yet available" } } }
 
   /v1/logs/conversation/{conversation_id}:
     get:
@@ -351,19 +374,30 @@ paths:
       security: [ { OperatorSession: [] } ]
       x-internal: true
       parameters: [ { name: conversation_id, in: path, required: true, schema: { type: string } } ]
-      responses: { '200': { description: Timeline., content: { application/json: { schema: { type: object } } } }, '401': { $ref: '#/components/responses/Unauthorized' }, '404': { $ref: '#/components/responses/NotFound' } }
+      responses: { '200': { description: Timeline., content: { application/json: { schema: { type: object } } } }, '401': { $ref: '#/components/responses/Unauthorized' }, '403': { $ref: '#/components/responses/Forbidden' }, '404': { $ref: '#/components/responses/NotFound' } }
 
   /v1/metrics:
     get:
       tags: [Read & Reporting]
-      x-audience: customer-reporting
+      x-audience: internal
+      x-internal: true
       operationId: getMetrics
-      summary: Summary metrics over a time range
+      summary: Summary metrics over a time range (fleet-shared; platform-only today)
       security: [ { OperatorSession: [] } ]
+      description: |
+        Summary metrics read from a fleet-shared CloudWatch metrics stream that is **not yet
+        tenant-partitioned**. Today this is a platform-only read: non-platform (customer) operators are
+        fail-closed with **422** until tenant-scoped telemetry lands.
       parameters:
         - { name: since, in: query, schema: { type: string, format: date-time } }
         - { name: until, in: query, schema: { type: string, format: date-time } }
-      responses: { '200': { description: Metrics., content: { application/json: { schema: { type: object } } } } }
+      responses:
+        '200': { description: Metrics., content: { application/json: { schema: { type: object } } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '422':
+          description: "Non-platform (customer) operators are fail-closed today: tenant-scoped telemetry not yet available (CloudWatch metrics are fleet-shared)."
+          content: { application/json: { schema: { $ref: '#/components/schemas/Error' }, example: { detail: "tenant-scoped telemetry not yet available" } } }
 
   /v1/metrics/overview:
     get:
@@ -372,6 +406,11 @@ paths:
       operationId: getMetricsOverview
       summary: Dashboard KPI overview
       security: [ { OperatorSession: [] } ]
+      description: |
+        Dual-mode output. Platform operators see fleet-wide KPIs (real `trust_score` and
+        `attack_categories`). Customer operators see tenant-scoped counts, but with `trust_score` and
+        `attack_categories` **null** and `trust_status='unknown'` — there is no per-tenant CloudWatch
+        stream yet.
       parameters: [ { name: range, in: query, schema: { type: string, enum: [1h, 24h, 7d, 30d], default: 24h } } ]
       responses:
         '200': { description: KPI overview., content: { application/json: { schema: { $ref: '#/components/schemas/MetricsOverview' } } } }
@@ -423,7 +462,7 @@ paths:
       operationId: getAgent
       summary: Get one agent
       security: [ { OperatorSession: [] } ]
-      responses: { '200': { description: Agent., content: { application/json: { schema: { type: object } } } }, '401': { $ref: '#/components/responses/Unauthorized' }, '404': { $ref: '#/components/responses/NotFound' } }
+      responses: { '200': { description: Agent., content: { application/json: { schema: { type: object } } } }, '401': { $ref: '#/components/responses/Unauthorized' }, '403': { $ref: '#/components/responses/Forbidden' }, '404': { $ref: '#/components/responses/NotFound' } }
 
   /v1/agents/{agent_id}/tools:
     parameters: [ { $ref: '#/components/parameters/AgentId' } ]
@@ -433,7 +472,7 @@ paths:
       operationId: getAgentTools
       summary: List an agent's tools and which are allowed
       security: [ { OperatorSession: [] } ]
-      responses: { '200': { description: Tools., content: { application/json: { schema: { type: object } } } } }
+      responses: { '200': { description: Tools., content: { application/json: { schema: { type: object } } } }, '401': { $ref: '#/components/responses/Unauthorized' }, '403': { $ref: '#/components/responses/Forbidden' }, '404': { $ref: '#/components/responses/NotFound' } }
 
   /v1/agents/{agent_id}/policies:
     parameters: [ { $ref: '#/components/parameters/AgentId' } ]
@@ -808,10 +847,13 @@ paths:
       summary: List the tenant's cloud connections
       security: [ { OperatorSession: [] } ]
       description: Tenant-scoped read (ambient tenant). The `azure_secret_ref` is never projected.
+      parameters: [ { $ref: '#/components/parameters/TenantSwitch' } ]
       responses:
         '200':
           description: All connections for the current tenant.
           content: { application/json: { schema: { type: object, properties: { connections: { type: array, items: { $ref: '#/components/schemas/CloudConnection' } } } } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
     post:
       tags: [Discovery]
       x-audience: internal
@@ -845,9 +887,11 @@ paths:
       operationId: getConnection
       summary: Get one cloud connection
       security: [ { OperatorSession: [] } ]
+      parameters: [ { $ref: '#/components/parameters/TenantSwitch' } ]
       responses:
         '200': { description: The connection., content: { application/json: { schema: { $ref: '#/components/schemas/CloudConnection' } } } }
         '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
     put:
       tags: [Discovery]
@@ -1244,12 +1288,19 @@ paths:
       x-audience: internal
       x-internal: true
       operationId: platformTenantDetail
-      summary: Per-tenant ops detail (registry + members + credential health)
+      summary: Per-tenant ops detail (registry + members)
       security: [ { OperatorSession: [] } ]
+      description: |
+        Registry + membership detail for one tenant (`tenant_id`, `display_name`, `status`, `plan`,
+        `identity_mode`, `quota`, `platform_read_consent`, `members[]`). A per-tenant platform read is
+        also denied (**403**) when the target tenant hasn't granted `platform_read_consent`, gated by
+        the `platform_read_consent_enforced` rollout flag (inert while off).
       responses:
         '200': { description: Detail., content: { application/json: { schema: { type: object } } } }
         '401': { $ref: '#/components/responses/Unauthorized' }
-        '403': { $ref: '#/components/responses/Forbidden' }
+        '403':
+          description: "Operator lacks `_platform`, or the target tenant hasn't granted platform_read_consent (gated by the platform_read_consent_enforced rollout flag)."
+          content: { application/json: { schema: { $ref: '#/components/schemas/Error' }, example: { detail: "platform_read_consent not granted by tenant" } } }
         '404': { $ref: '#/components/responses/NotFound' }
 
   # ----------------------------------------------------------------- System
@@ -1266,7 +1317,7 @@ paths:
         and no `errors`. `status=degraded` and the `errors` array appear ONLY in the **503** body
         (DynamoDB critical failure, returned as `detail`).
       responses:
-        '200': { description: DynamoDB (critical) healthy — S3/CloudWatch failures do not degrade the 200 status., content: { application/json: { schema: { type: object, properties: { status: { type: string, enum: [healthy], example: healthy }, version: { type: string }, dependencies: { type: object, additionalProperties: true }, uptime_seconds: { type: number } } } } } }
+        '200': { description: DynamoDB (critical) healthy — S3/CloudWatch failures do not degrade the 200 status., content: { application/json: { schema: { type: object, properties: { status: { type: string, enum: [healthy], example: healthy }, version: { type: string }, timestamp: { type: [string, 'null'] }, dependencies: { type: object, additionalProperties: true }, uptime_seconds: { type: number } } } } } }
         '503': { description: "DynamoDB (critical) unhealthy — the full health response (status=degraded + errors[]) is returned as `detail`.", content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
 
 # =============================================================================
@@ -1547,7 +1598,7 @@ components:
         false_positive_pct: { type: [number, 'null'] }
         avg_latency_ms: { type: integer }
         quarantined: { type: integer }
-        attack_categories: { type: integer }
+        attack_categories: { type: [integer, 'null'], description: "Distinct attack-category count; null in the tenant-scoped (customer) view (fleet-only CloudWatch stream). Populated only for platform operators." }
 
     PolicyCreateRequest:
       type: object

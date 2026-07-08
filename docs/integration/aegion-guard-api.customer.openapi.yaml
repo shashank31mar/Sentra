@@ -325,6 +325,10 @@ paths:
                     type:
                     - string
                     - 'null'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
   /v1/sessions/{session_id}/decisions:
     parameters:
     - $ref: '#/components/parameters/SessionId'
@@ -363,6 +367,17 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/SessionDecisionsResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          description: 'Foreign tenant: a non-member X-Aegion-Tenant switch, or the N10 consent gate on
+            a `_platform` break-glass read of a tenant that hasn''t granted platform_read_consent.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                detail: platform_read_consent not granted by tenant
   /v1/sessions/{session_id}/trail:
     parameters:
     - $ref: '#/components/parameters/SessionId'
@@ -374,16 +389,17 @@ paths:
       summary: Full decision trail for one request (four-bucket coverage view)
       security:
       - OperatorSession: []
-      description: 'The SOC console decision-detail view for a single request: every validator classified
-        into
+      description: 'The SOC console decision-detail view for a single request, gated by an ALB-OIDC operator
 
-        `ran | ran_abstain | ran_error | not_run` in coverage order, with `winning_source`/`block_point`
+        session (`OperatorSession`) and tenant-scoped to the operator''s bound tenant (customer =
 
-        recomputed on read (fail-secure to the persisted DENY). `request_id` is **required** (the
+        own tenant; `_platform` = fleet, with break-glass reads consent-gated): every validator
 
-        partition is session-scoped). Under identity enforce the read is bound to the verified
+        classified into `ran | ran_abstain | ran_error | not_run` in coverage order, with
 
-        agent-JWT tenant; a missing/invalid JWT then `401`s.
+        `winning_source`/`block_point` recomputed on read (fail-secure to the persisted DENY).
+
+        `request_id` is **required** (the partition is session-scoped).
 
         '
       parameters:
@@ -401,106 +417,24 @@ paths:
               schema:
                 $ref: '#/components/schemas/SessionTrail'
         '401':
-          description: Enforce/latch with a missing/invalid/forged agent JWT (verified agent identity
-            required).
+          description: Missing/invalid ALB-OIDC operator identity (authenticated operator session required).
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/Error'
               example:
-                detail: verified agent identity required
+                detail: authenticated operator session required
+        '403':
+          description: 'N10 consent gate: a `_platform` break-glass read of a non-member tenant is denied
+            when the tenant hasn''t granted platform_read_consent.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                detail: platform_read_consent not granted by tenant
         '422':
           $ref: '#/components/responses/BadRequest'
-  /v1/logs:
-    get:
-      tags:
-      - Read & Reporting
-      x-audience: customer-reporting
-      operationId: getLogs
-      summary: Query the compliance audit log (CloudWatch-backed)
-      security:
-      - OperatorSession: []
-      description: The long-term audit archive. For recent/hot reads prefer `/v1/decisions` (DDB-backed).
-      parameters:
-      - name: since
-        in: query
-        schema:
-          type: string
-          format: date-time
-      - name: until
-        in: query
-        schema:
-          type: string
-          format: date-time
-      - name: session_id
-        in: query
-        schema:
-          type: string
-      - name: agent_id
-        in: query
-        schema:
-          type: string
-      - name: decision
-        in: query
-        schema:
-          $ref: '#/components/schemas/Decision'
-      - name: threat_type
-        in: query
-        schema:
-          $ref: '#/components/schemas/ThreatType'
-      - name: limit
-        in: query
-        schema:
-          type: integer
-          default: 100
-          maximum: 1000
-      responses:
-        '200':
-          description: Log entries.
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  logs:
-                    type: array
-                    items:
-                      $ref: '#/components/schemas/LogEntry'
-                  total:
-                    type: integer
-                  next_token:
-                    type:
-                    - string
-                    - 'null'
-        '401':
-          $ref: '#/components/responses/Unauthorized'
-  /v1/metrics:
-    get:
-      tags:
-      - Read & Reporting
-      x-audience: customer-reporting
-      operationId: getMetrics
-      summary: Summary metrics over a time range
-      security:
-      - OperatorSession: []
-      parameters:
-      - name: since
-        in: query
-        schema:
-          type: string
-          format: date-time
-      - name: until
-        in: query
-        schema:
-          type: string
-          format: date-time
-      responses:
-        '200':
-          description: Metrics.
-          content:
-            application/json:
-              schema:
-                type: object
   /v1/metrics/overview:
     get:
       tags:
@@ -510,6 +444,10 @@ paths:
       summary: Dashboard KPI overview
       security:
       - OperatorSession: []
+      description: "Dual-mode output. Platform operators see fleet-wide KPIs (real `trust_score` and\n\
+        `attack_categories`). Customer operators see tenant-scoped counts, but with `trust_score` and\n\
+        `attack_categories` **null** and `trust_status='unknown'` \u2014 there is no per-tenant CloudWatch\n\
+        stream yet.\n"
       parameters:
       - name: range
         in: query
@@ -636,6 +574,8 @@ paths:
                 type: object
         '401':
           $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
         '404':
           $ref: '#/components/responses/NotFound'
   /v1/agents/{agent_id}/tools:
@@ -656,6 +596,12 @@ paths:
             application/json:
               schema:
                 type: object
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
   /v1/agents/{agent_id}/policies:
     parameters:
     - $ref: '#/components/parameters/AgentId'
@@ -1787,6 +1733,10 @@ paths:
                     example: healthy
                   version:
                     type: string
+                  timestamp:
+                    type:
+                    - string
+                    - 'null'
                   dependencies:
                     type: object
                     additionalProperties: true
@@ -2241,143 +2191,6 @@ components:
         last_activity:
           type: string
           format: date-time
-    LogEntry:
-      type: object
-      description: "One audit record \u2014 the parsed CloudWatch `@message` JSON emitted per validation\
-        \ (`audit_logger`). Fields below are a representative (not exhaustive) set; the record carries\
-        \ the base + trust fields on every decision, adds `reason`/`threat_type` and detection detail\
-        \ on a DENY, and adds action/content/cross-cloud fields for the phases/operations that produce\
-        \ them."
-      properties:
-        request_id:
-          type:
-          - string
-          - 'null'
-          description: The originating validate request id (tracing).
-        session_id:
-          type:
-          - string
-          - 'null'
-        agent_id:
-          type:
-          - string
-          - 'null'
-        tool_name:
-          type:
-          - string
-          - 'null'
-          description: The tool the action targeted.
-        tool_params:
-          type: object
-          additionalProperties: true
-          description: The tool arguments inspected for this call.
-        user_input:
-          type:
-          - string
-          - 'null'
-          description: The end-user prompt that was validated.
-        multi_agent_context:
-          type: object
-          additionalProperties: true
-          description: Cross-agent invocation context, when present.
-        operation_type:
-          type:
-          - string
-          - 'null'
-          description: READ or WRITE.
-        decision:
-          type:
-          - string
-          - 'null'
-          description: ALLOW or DENY.
-        timestamp:
-          type: string
-          format: date-time
-          description: ISO-8601 UTC (trailing Z).
-        latency_ms:
-          type:
-          - number
-          - 'null'
-          description: End-to-end validation latency for this call.
-        reason:
-          type:
-          - string
-          - 'null'
-          description: 'Deciding reason (DENY: the blocking rationale; ALLOW: ''All validation checks
-            passed'').'
-        trust_score_before:
-          type:
-          - number
-          - 'null'
-          description: Session trust score before this decision.
-        trust_score_after:
-          type:
-          - number
-          - 'null'
-          description: Session trust score after applying any penalty.
-        trust_delta:
-          type:
-          - number
-          - 'null'
-          description: Trust penalty applied (0 on ALLOW).
-        threat_type:
-          $ref: '#/components/schemas/ThreatType'
-          description: DENY only, when a threat was detected.
-        severity:
-          type:
-          - string
-          - 'null'
-          description: DENY only, when the deciding validator reports a severity.
-        matched_rule:
-          type:
-          - string
-          - 'null'
-          description: DENY only, the sigma/policy rule id that fired (when applicable).
-        violation_type:
-          type:
-          - string
-          - 'null'
-          description: DENY only, the violation classification (when applicable).
-        signals:
-          type: array
-          items:
-            $ref: '#/components/schemas/DecisionSignal'
-          description: Per-validator breadcrumbs that fed this decision.
-        action_id:
-          type:
-          - string
-          - 'null'
-          description: 'WRITE/process_refund records: the reversible-action handle.'
-        reversible:
-          type:
-          - boolean
-          - 'null'
-          description: 'WRITE/process_refund records: whether the action is reversible.'
-        rollback_status:
-          type:
-          - string
-          - 'null'
-          description: 'WRITE/process_refund records: current rollback state.'
-        tenant_id:
-          type:
-          - string
-          - 'null'
-          description: 'WRITE/process_refund records: the owning tenant.'
-        content_text:
-          type:
-          - string
-          - 'null'
-          description: 'content/output/memory phases: the inspected payload.'
-        platform:
-          type:
-          - string
-          - 'null'
-          description: 'Cross-cloud records: originating platform.'
-        cloud_region:
-          type:
-          - string
-          - 'null'
-          description: 'Cross-cloud records: native cloud region.'
     MetricsOverview:
       type: object
       properties:
@@ -2417,7 +2230,11 @@ components:
         quarantined:
           type: integer
         attack_categories:
-          type: integer
+          type:
+          - integer
+          - 'null'
+          description: Distinct attack-category count; null in the tenant-scoped (customer) view (fleet-only
+            CloudWatch stream). Populated only for platform operators.
     PolicyCreateRequest:
       type: object
       required:
