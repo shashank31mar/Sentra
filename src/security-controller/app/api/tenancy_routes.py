@@ -72,15 +72,19 @@ public_router = APIRouter(tags=["public"])
 # is a coarse brute-force/sweep brake, not a billing quota. Fail-safe: on any
 # limiter bookkeeping error we DENY (429) rather than wave the request through.
 #
-# TWO brakes on this pre-auth endpoint, because the per-IP key is client-controlled:
-#   (1) per-IP  — `_resolve_org_hits`, keyed by `_client_ip` (leftmost XFF). XFF is
-#       spoofable, so an attacker rotating the header gets a fresh per-IP bucket per
-#       fake value. That defeats (1) alone AND would grow the dict without bound.
+# TWO brakes on this pre-auth endpoint:
+#   (1) per-IP  — `_resolve_org_hits`, keyed by `_rate_limit_key` (the TRUSTED hop:
+#       rightmost X-Forwarded-For entry our own proxy appends, else the socket peer —
+#       see `_rate_limit_key`). It is NOT keyed on the leftmost XFF: that hop is
+#       client-controlled, so an attacker rotating it would mint a fresh per-IP bucket
+#       per fake value — defeating (1) AND ballooning the dict (DoS). Keying on the
+#       infra-appended hop makes rotation share ONE bucket.
 #   (2) global  — `_resolve_org_global`, a single fixed-window counter NOT keyed by
-#       any client-supplied value, so XFF rotation can't escape it. It's the
+#       any client-supplied value, so header rotation can't escape it. It's the
 #       non-bypassable sweep brake; (1) is the fair-share brake for honest clients.
-# The per-IP dict is bounded (expired entries pruned each call + a hard cap) so an
-# XFF-rotation flood cannot grow it unboundedly (fail-secure: at cap, throttle).
+# Belt-and-suspenders on the dict too: expired entries pruned each call + a hard cap,
+# so even a mis-provisioned proxy chain that let distinct keys through can't grow it
+# unboundedly (fail-secure: at cap, throttle).
 _RESOLVE_ORG_BURST = 20             # requests per window, per IP (fair-share)
 _RESOLVE_ORG_WINDOW_S = 10.0        # window length (shared by per-IP + global)
 _RESOLVE_ORG_GLOBAL_BURST = 2000    # requests per window across ALL IPs (sweep brake)
@@ -93,16 +97,41 @@ _resolve_org_lock = threading.Lock()
 
 
 def _client_ip(request: Request) -> str:
-    """First hop of X-Forwarded-For (real client behind the ALB/API-GW), else the
-    socket peer. Mirrors the `/validate` source-IP derivation (routes.py:184).
+    """First hop of X-Forwarded-For (the *claimed* real client behind the ALB/API-GW),
+    else the socket peer. Mirrors the `/validate` source-IP derivation (routes.py:184).
 
-    NOTE: XFF is client-controlled and therefore spoofable — this value is only the
-    *fair-share* key for honest clients, never a trust boundary. The non-bypassable
-    sweep brake is the global counter in `_resolve_org_rate_ok`, which is not keyed
-    on anything the client controls."""
+    This is the value to LOG / attribute a request to. It is NOT a trust boundary: the
+    leftmost XFF entry is client-controlled and therefore spoofable, so it must NOT be
+    used as the rate-limit key (use `_rate_limit_key`). `/validate` (routes.py:184) has
+    the same leftmost-XFF derivation, but there it feeds only the audit trail's
+    `ip_address` (forensics attribution), never a throttle — so it carries the same
+    "informational, not a trust boundary" caveat, not a live rate-limit bypass."""
     xff = request.headers.get("x-forwarded-for")
     if xff:
         return xff.split(",")[0].strip()
+    return request.client.host if request.client else "unknown"
+
+
+def _rate_limit_key(request: Request) -> str:
+    """The TRUSTED per-IP throttle key for the pre-auth resolver — deliberately NOT
+    the leftmost X-Forwarded-For hop (that one is client-controlled: an attacker
+    rotating it would bypass the per-IP throttle and balloon `_resolve_org_hits`).
+
+    Deployment topology is ALB → (internal ALB) → nginx → app, and nginx forwards
+    ``X-Forwarded-For $proxy_add_x_forwarded_for`` (docker/console/default.conf.template:55),
+    which APPENDS each proxy's observed peer to the RIGHT. So the RIGHTMOST XFF entry
+    is the hop our own infrastructure appended — the closest thing to a trusted client
+    identity we have without a full trusted-proxy-count config — and a spoofed leftmost
+    value cannot influence it. Fall back to the socket peer when no XFF is present.
+
+    Result: a flood that rotates the leftmost XFF collapses to a SINGLE bucket (same
+    trusted rightmost hop), so the per-IP brake actually bites and the dict stays
+    bounded to the count of real upstream hops."""
+    xff = request.headers.get("x-forwarded-for")
+    if xff:
+        hops = [h.strip() for h in xff.split(",") if h.strip()]
+        if hops:
+            return hops[-1]  # rightmost = infra-appended, not client-controlled
     return request.client.host if request.client else "unknown"
 
 
@@ -165,8 +194,10 @@ async def resolve_org(org: str, request: Request) -> Dict:
       * fault → 5XX (fail-closed; never a fake-200 wrapping an error).
       * burst → 429 (per-IP throttle).
     """
-    ip = _client_ip(request)
-    if not _resolve_org_rate_ok(ip):
+    # Throttle on the TRUSTED hop (rightmost XFF / socket peer), NOT the spoofable
+    # leftmost XFF — so rotating X-Forwarded-For can't bypass the per-IP brake or
+    # balloon the tracking dict. See `_rate_limit_key`.
+    if not _resolve_org_rate_ok(_rate_limit_key(request)):
         # Honest 429 — the client backs off; no tenant data touched.
         raise HTTPException(status_code=429, detail="too many requests — slow down")
 

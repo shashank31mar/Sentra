@@ -144,6 +144,51 @@ def test_resolve_org_xff_rotation_caught_by_global_brake(mt_env, monkeypatch):
     assert all(count <= tr._RESOLVE_ORG_BURST for (_ws, count) in tr._resolve_org_hits.values())
 
 
+def test_resolve_org_rate_limit_key_ignores_spoofable_leftmost_xff(mt_env, monkeypatch):
+    """FINDING 2a (MEDIUM): the per-IP throttle key must be derived from the TRUSTED
+    hop (rightmost XFF our proxy appends), NOT the client-controlled leftmost XFF.
+    Otherwise an attacker rotating the leftmost XFF gets a fresh per-IP bucket per fake
+    value and bypasses the per-IP brake (and balloons the dict).
+
+    Drive it purely through the per-IP brake: raise the GLOBAL ceiling out of the way,
+    then send > _RESOLVE_ORG_BURST requests each with a DIFFERENT spoofed leftmost XFF
+    but the SAME trusted rightmost hop (what nginx's `$proxy_add_x_forwarded_for`
+    appends). They MUST collapse to ONE bucket and trip the per-IP 429.
+
+    Under the OLD (leftmost-keyed) behavior every request keyed to a distinct value, so
+    no per-IP 429 ever fired and the dict grew one entry per fake IP — this test FAILS
+    on the pre-fix code and passes after."""
+    from app.api import tenancy_routes as tr
+    from app.api.tenancy_routes import resolve_org
+
+    monkeypatch.setattr(tr, "_RESOLVE_ORG_GLOBAL_BURST", 10_000)  # isolate the per-IP brake
+    tr._resolve_org_hits.clear()
+    tr._resolve_org_global.update(window_start=0.0, count=0)
+
+    trusted_hop = "203.0.113.7"  # the hop nginx appends (rightmost) — the real client
+    hit_429 = False
+    for i in range(tr._RESOLVE_ORG_BURST + 5):
+        # Rotate the LEFTMOST (spoofable) value each call; keep the trusted rightmost
+        # hop fixed — exactly the shape of an XFF-rotation bypass attempt.
+        req = _Req(headers={"x-forwarded-for": f"66.66.66.{i}, {trusted_hop}"})
+        try:
+            run(resolve_org(org="nope", request=req))
+        except HTTPException as exc:
+            if exc.status_code == 429:
+                hit_429 = True
+                break
+    assert hit_429, (
+        "rotating the LEFTMOST X-Forwarded-For must NOT grant unlimited requests — the "
+        "per-IP brake keyed on the trusted (rightmost) hop must trip 429"
+    )
+    # All those spoofed calls collapsed to ONE tracked bucket (the trusted hop), proving
+    # the key ignored the rotating leftmost value.
+    assert set(tr._resolve_org_hits.keys()) == {trusted_hop}, (
+        f"spoofed-XFF flood must share ONE bucket keyed on the trusted hop, "
+        f"got {set(tr._resolve_org_hits.keys())}"
+    )
+
+
 def test_resolve_org_per_ip_table_is_bounded(mt_env, monkeypatch):
     """FIX-B gap: `_resolve_org_hits` must not grow unboundedly on a pre-auth endpoint
     (an XFF-rotation flood would otherwise accumulate one entry per fake IP forever).
@@ -283,6 +328,56 @@ def test_platform_list_tenants_paginates(mt_env, monkeypatch):
     assert ids1.isdisjoint(ids2), "cursor pages must not overlap"
 
 
+def test_platform_list_tenants_covers_full_fleet_beyond_200(mt_env, monkeypatch):
+    """FINDING 3 (MEDIUM): paging/sort/filter must operate over the TRUE fleet, not an
+    arbitrary first ≤200-row scan window. `list_all()` was a single `scan(Limit=200)`,
+    so a >200-tenant fleet under-reported `count`/`total` and hid later tenants from
+    sort/filter — contradicting the docstring's "large fleet served in stable pages".
+
+    Seed 250 tenants, then assert (a) `count` is the true 250, and (b) a page PAST the
+    old 200-row window returns the expected sorted rows (so tenant #200+ is reachable).
+    Under the pre-fix code `count` would be 200 and the deep page would be empty — this
+    FAILS pre-fix and passes after.
+
+    Seeds directly onto the moto tenants table (batched) so the test is fast and does
+    not depend on 250 slug mints; `list_all` reads them back via `Tenant.from_item`."""
+    import base64
+    from app.api import tenancy_routes as tr
+    from app.config import settings as _settings
+
+    n = 250
+    tbl = mt_env.Table(_settings.dynamodb_tenants_table)
+    with tbl.batch_writer() as batch:
+        for i in range(n):
+            batch.put_item(Item={
+                "tenant_id": f"t_seed{i:04d}",
+                "display_name": f"Org {i:04d}",
+                "status": "active",
+                "plan": "trial",
+                "identity_mode": "off",
+                "created_at": 1_000_000 + i,
+            })
+    monkeypatch.setattr(SessionManager, "fleet_rollup_by_tenant", _async_ret({}), raising=False)
+    monkeypatch.setattr(DecisionsService, "fleet_decisions_rollup_by_tenant", lambda self: {}, raising=False)
+
+    # (a) count reflects the TRUE fleet size, not a 200-row scan window.
+    out = run(tr.platform_list_tenants(limit=50, sort="display_name", ctx=_platform_ctx()))
+    assert out["count"] == n, f"count must be the true fleet size {n}, got {out['count']}"
+
+    # (b) a page PAST the old 200 ceiling returns the expected sorted rows. The cursor
+    # is the server's opaque base64 offset; request offset 200 directly.
+    deep_cursor = base64.b64encode(b"200").decode()
+    deep = run(tr.platform_list_tenants(limit=50, cursor=deep_cursor, sort="display_name",
+                                        ctx=_platform_ctx()))
+    assert deep["count"] == n, "count stays honest on a deep page"
+    names = [r["display_name"] for r in deep["tenants"]]
+    assert len(names) == 50, f"deep page must serve 50 rows from the >200 window, got {len(names)}"
+    assert names[0] == "Org 0200" and names[-1] == "Org 0249", (
+        f"deep page (offset 200) must be Org 0200..Org 0249 under display_name sort, "
+        f"got {names[0]}..{names[-1]}"
+    )
+
+
 def test_platform_list_tenants_tampered_cursor_falls_back_to_first_page(mt_env, monkeypatch):
     """G0.5: a tampered/garbage opaque cursor must fail SAFE to the first page
     (tenancy_routes.py:669-673: base64-decode Exception → start=0), never a 500
@@ -331,6 +426,80 @@ def test_platform_list_tenants_sort_filter(mt_env, monkeypatch):
     sorted_rows = run(tr.platform_list_tenants(sort="display_name", ctx=_platform_ctx()))
     names = [r["display_name"] for r in sorted_rows["tenants"]]
     assert names == sorted(names), "display_name sort must be ascending"
+
+
+def test_platform_list_tenants_sort_metrics_key_descending(mt_env, monkeypatch):
+    """FINDING 1 (HIGH): a metrics sort key (e.g. `blocks_24h`) must return tenants in
+    DESCENDING order (most-blocks first) — the operational default for a triage grid.
+    A regression that dropped the metrics keys from the auto-reverse tuple
+    (tenancy_routes.py:658-660) or inverted it would make this ASCENDING and FAIL here.
+    Values are distinct + intentionally NOT display-name-ordered so ascending vs
+    descending is unambiguous."""
+    from app.api import tenancy_routes as tr
+    from app.services.tenant_service import get_tenant_store
+    store = get_tenant_store()
+    low = store.create(display_name="Zeta")     # fewest blocks
+    mid = store.create(display_name="Alpha")    # middle
+    high = store.create(display_name="Mango")   # most blocks
+    dr = {
+        low.tenant_id: {"blocks_24h": 1, "deny_rate": 0.01, "decisions_24h": 10},
+        mid.tenant_id: {"blocks_24h": 50, "deny_rate": 0.5, "decisions_24h": 100},
+        high.tenant_id: {"blocks_24h": 999, "deny_rate": 0.99, "decisions_24h": 5000},
+    }
+    monkeypatch.setattr(SessionManager, "fleet_rollup_by_tenant", _async_ret({}), raising=False)
+    monkeypatch.setattr(DecisionsService, "fleet_decisions_rollup_by_tenant",
+                        lambda self: dr, raising=False)
+
+    out = run(tr.platform_list_tenants(sort="blocks_24h", ctx=_platform_ctx()))
+    blocks = [r["blocks_24h"] for r in out["tenants"]]
+    assert blocks == [999, 50, 1], (
+        f"metrics-key sort (blocks_24h) must be DESCENDING (most first), got {blocks}"
+    )
+    # Ordering is by the metric, NOT display_name — proves the reverse applies to the
+    # metric key, not a coincidental name order.
+    assert [r["tenant_id"] for r in out["tenants"]] == [high.tenant_id, mid.tenant_id, low.tenant_id]
+
+
+def test_platform_list_tenants_sort_minus_prefix_descending(mt_env, monkeypatch):
+    """FINDING 1 (HIGH): the explicit `-`-prefix descending form must work for a key
+    that is NOT in the auto-descending metrics set — proving the `sort.startswith("-")`
+    branch (tenancy_routes.py:658) is honored independently. `created_at` is used with
+    a `-` prefix: newest-first. A regression dropping the `-`-prefix handling would
+    return ascending and FAIL. Also asserts the bare (no-`-`) `display_name` stays
+    ASCENDING, so this can't pass by everything being reversed."""
+    import time as _time
+    from app.api import tenancy_routes as tr
+    from app.services.tenant_service import get_tenant_store
+    store = get_tenant_store()
+    # Distinct created_at values (creation order == chronological order).
+    first = store.create(display_name="Aaa")
+    _time.sleep(0.002)
+    second = store.create(display_name="Bbb")
+    _time.sleep(0.002)
+    third = store.create(display_name="Ccc")
+    monkeypatch.setattr(SessionManager, "fleet_rollup_by_tenant", _async_ret({}), raising=False)
+    monkeypatch.setattr(DecisionsService, "fleet_decisions_rollup_by_tenant", lambda self: {}, raising=False)
+
+    # `created_at` is in the auto-descending set, so pin the `-`-prefix branch on a
+    # key that is NOT auto-descending: `display_name`. `-display_name` => Z..A.
+    out = run(tr.platform_list_tenants(sort="-display_name", ctx=_platform_ctx()))
+    names = [r["display_name"] for r in out["tenants"]]
+    assert names == ["Ccc", "Bbb", "Aaa"], (
+        f"`-`-prefix descending form must reverse a non-metrics key, got {names}"
+    )
+
+    # And `-created_at` (a metrics-set key, explicitly minus-prefixed) is newest-first.
+    out2 = run(tr.platform_list_tenants(sort="-created_at", ctx=_platform_ctx()))
+    ids = [r["tenant_id"] for r in out2["tenants"]]
+    assert ids == [third.tenant_id, second.tenant_id, first.tenant_id], (
+        "`-created_at` must be newest-first (descending)"
+    )
+
+    # Sanity: bare display_name (no `-`, not a metrics key) stays ASCENDING — so a
+    # blanket "always reverse" bug would break THIS assertion.
+    out3 = run(tr.platform_list_tenants(sort="display_name", ctx=_platform_ctx()))
+    asc = [r["display_name"] for r in out3["tenants"]]
+    assert asc == ["Aaa", "Bbb", "Ccc"], f"bare display_name must stay ascending, got {asc}"
 
 
 def _async_ret(value):

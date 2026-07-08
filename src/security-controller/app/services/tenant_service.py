@@ -252,11 +252,36 @@ class TenantStore:
                 return item["tenant_id"]
         return None
 
-    def list_all(self, limit: int = 200) -> List[Tenant]:
-        """Cross-tenant scan — only the platform-admin console (`_platform`) path
-        may call this."""
-        resp = self._table().scan(Limit=limit)
-        return [Tenant.from_item(i) for i in resp.get("Items", [])]
+    def list_all(self) -> List[Tenant]:
+        """Return EVERY tenant in the registry — only the platform-admin console
+        (`_platform`) path may call this.
+
+        Paginates through ALL scan pages (accumulating ``LastEvaluatedKey``) rather
+        than returning an arbitrary first ``Limit=200`` window. The platform list
+        route sorts/filters/pages over the TRUE fleet, so ``count``/``total`` must be
+        the real tenant count — a single truncated page would silently under-report a
+        >200-tenant fleet (contradicting the route's "large fleet served in stable
+        pages" contract) and hide most tenants from sort/filter.
+
+        This is ONE logical batched scan of a SINGLE table (bounded by fleet size),
+        NOT a per-tenant fan-out — that O(N)-round-trips pattern is the overview-latency
+        incident this deliberately avoids. A DynamoDB scan page truncates at 1 MB and
+        returns ``LastEvaluatedKey`` for the remainder, so the loop is required for
+        correctness; without a hard ceiling the fleet size is the only bound (that is
+        the intended semantics — the platform console must see every tenant)."""
+        table = self._table()
+        tenants: List[Tenant] = []
+        start_key: Optional[Dict] = None
+        while True:
+            kwargs: Dict = {}
+            if start_key is not None:
+                kwargs["ExclusiveStartKey"] = start_key
+            resp = table.scan(**kwargs)
+            tenants.extend(Tenant.from_item(i) for i in resp.get("Items", []))
+            start_key = resp.get("LastEvaluatedKey")
+            if not start_key:
+                break
+        return tenants
 
     def set_status(self, tenant_id: str, status: str) -> None:
         if status not in VALID_STATUSES:
