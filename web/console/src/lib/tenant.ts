@@ -14,7 +14,15 @@
  * Empty ⇒ no header ⇒ server uses the sole membership (single-tenant) OR, for a
  * multi-membership operator, the org page rebinds (G2.12) — never a silent primary.
  */
-const STORAGE_KEY = 'aegion.activeTenant'
+/**
+ * The per-tab ADR-039 storage key. This module is the storage AUTHORITY (the only
+ * place the console reads/writes it). `public/org.html` re-declares the same string
+ * inline as `TENANT_KEY` (it can't import this module — it loads no bundle); the
+ * `orgEntry.parity.test.ts` gate asserts the two stay in lockstep against this
+ * exported constant, so a change on one side without the other fails the suite.
+ */
+export const ACTIVE_TENANT_STORAGE_KEY = 'aegion.activeTenant'
+const STORAGE_KEY = ACTIVE_TENANT_STORAGE_KEY
 
 let _active: string | null = readInitial()
 const listeners = new Set<() => void>()

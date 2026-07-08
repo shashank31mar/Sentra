@@ -6,10 +6,16 @@ import type { MeContext } from '../types/api'
  *
  * MIRRORS the inline script in `public/org.html` — that page is standalone static
  * HTML (it must load NO hashed `/assets/*` bundle, which would 401 under the
- * priority-10 Cognito auth rule), so it can't import this module; the two are kept
- * in lockstep by the `orgEntry.test.ts` contract. This module is the canonical,
- * unit-tested source of the resolve→stash→redirect behavior, reused by the SPA
- * router guard (`needsOrgRedirect`).
+ * priority-10 Cognito auth rule), so it can't import this module and re-implements
+ * the flow inline. The two are held in lockstep by the `orgEntry.parity.test.ts`
+ * gate, which reads `public/org.html`, extracts its inline `<script>`, and asserts
+ * the load-bearing invariants match this module + the shared storage key exported
+ * from `tenant.ts` (`ACTIVE_TENANT_STORAGE_KEY`): same resolve endpoint
+ * (`RESOLVE_ORG_PATH`), same post-bind redirect (`POST_BIND_REDIRECT`), stash-only-
+ * `tenant_id` (never the typed name), and the 404-vs-non-ok branch distinction.
+ * Change one side without the other and that test fails. This module is the
+ * canonical, unit-tested source of the resolve→stash→redirect behavior, reused by
+ * the SPA router guard (`needsOrgRedirect`).
  *
  * Flow: unauth operator types an org name → GET `/public/resolve-org?org=…` (a
  * NON-`/v1` public path, exempt from the deny rule) → on hit, stash the resolved
