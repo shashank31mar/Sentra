@@ -1,6 +1,6 @@
 # AegionAI — Design Partner Outreach Tracker
 
-**Last updated:** 2026-06-26
+**Last updated:** 2026-07-09
 
 > Two tracks here: **design partners** (#1–6, pilot/customer motion — do NOT send the investor one-pager) and **investors** (#7+, fundraising motion — the investor one-pager IS appropriate). Keep them separate. **Exception: #10 Jyoti Bansal spans both** (Harness = design partner, Unusual Ventures = investor) — lead with the design-partner ask.
 
@@ -22,6 +22,7 @@ State legend: `Not contacted` → `Sent (LinkedIn)` → `Responded` → `Moved t
 | 12 | Paul Rix | Global Private Cloud Network (GPCN) | CEO Zanaris / GPCN exec (private-cloud, data-sovereignty) | **Warm — via Randy** | Intro → meeting | **Investor / connector** | **Call scheduled — TODAY** | — | Meeting today 2026-07-07. Lead with in-VPC / data-residency angle (his GPCN thesis). Soft ask: invest and/or intros |
 | 9 | Zafar | — | Potential investor | Warm | In-person | **Investor (fundraising)** — needs significant convincing | **Engaged — strategy doc sent; intro'ing marketing team** | — | Meet in India 3rd week July; prep convincing pitch + engage marketing team |
 | 10 | Jyoti Bansal | Harness (+ Unusual Ventures) | Co-Founder & CEO / VC Co-Founder | Cold (target warm path) | LinkedIn | **Both tracks** — design partner (Harness) → investor (Unusual) | **Not contacted** | — | Find warm intro; lead with Harness design-partner ask |
+| 13 | Ali El Hassouni | MarvelX (ex-bunq) | Founder & CEO (ex-bunq Head of Data & AI) | **Warm — accepted LinkedIn invite** | LinkedIn | Design partner (MarvelX insurance claims agents) + **warm intro to bunq** (Kleppe/Bernal-Mencia) | **Sent (LinkedIn)** | — | Await reply; if engages, pursue MarvelX DP + bunq intro |
 
 ## Detail / history
 
@@ -123,6 +124,14 @@ State legend: `Not contacted` → `Sent (LinkedIn)` → `Responded` → `Moved t
   5. **Customer-intro + funding-help commitment written into the doc** (mutual), not just verbal.
 - **Reframe internally:** the compute spend = **dogfooding the in-VPC / data-sovereignty edition** (a real proof point), not a favor.
 - **Next:** (1) send the warm reply asking him to send the agreement (keep term/number OPEN — don't lock 3mo or $1000 in the email; those are his to put in the doc, you review first); (2) on receipt, check the 5 items above; (3) get a lawyer's 30-min read if there's ANY fee/equity/exclusivity clause.
+
+### 13. Ali El Hassouni — MarvelX (Founder & CEO; ex-bunq Head of Data & AI) — **warm, accepted invite**
+- LinkedIn: https://www.linkedin.com/in/alielhassouni-marvelx/
+- **Verified (primary source, FinTech Global 2025-05-13):** "former bunq head of data and AI" + "MarvelX CEO". MarvelX = Amsterdam agentic-AI startup for **insurance** (claims agents for insurers/MGAs/TPAs/brokers, EU+US); ~$6M pre-seed led by **EQT Ventures**, May 2025.
+- ⚠️ **Unverified — do NOT reuse:** a "2.5x fraud-detection benchmark at bunq" claim (that metric ties to MarvelX's ClaimOS product, not his bunq tenure; source URL 404'd). A possible current "AI Evangelist / advisor to bunq" role is user-sourced only — did not assert it in writing.
+- **Two asks in one message:** (1) MarvelX as a design partner (agents that take consequential insurance-claim actions), (2) light secondary favor — warm intro into bunq's AI team he formerly led: **Benjamin Kleppe** (ML Eng Lead) / **Pablo Bernal-Mencia** (Head of Product). bunq is a flat founder-coder org (no CTO/VP-Eng); economic buyer there = CEO Ali Niknam; security gate = likely CISO Pierre Lazarus.
+- **2026-07-09** — **Sent (LinkedIn).** ~220-word founder-to-founder note; neutrality framed as vision (AWS/Azure today, GCP + in-VPC/air-gapped roadmap); honest staging (deterministic + audit live, ML shadow, no enterprise logos); link `aegionai.ai` after the ask. No offer specifics (held for the call).
+- **Next:** await reply. If he engages: MarvelX design-partner call + request the bunq intro. Verify "Benjamin/Pablo" names + aegionai.ai landing page are current.
 
 ### 10. Jyoti Bansal — Harness (CEO) + Unusual Ventures (Co-Founder) — **two-doors-one-key**
 - LinkedIn: https://www.linkedin.com/in/jyotibansal/
