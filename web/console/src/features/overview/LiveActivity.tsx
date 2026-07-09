@@ -68,7 +68,7 @@ export function LiveActivity({
           )}
         </div>
       </div>
-      <div className="flex-1 overflow-y-auto scrollbar-thin">
+      <div className="flex-1 overflow-y-auto scrollbar-thin" role="log" aria-live="polite" aria-relevant="additions" aria-label="Near-real-time decision activity feed">
         {isLoading && items.length === 0 ? (
           <LoadingState label="Loading activity…" />
         ) : items.length === 0 ? (

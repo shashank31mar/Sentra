@@ -160,7 +160,7 @@ export function QuarantinePage() {
                       <tr>
                         <td colSpan={9} className="p-0">
                           <div className="px-6 pt-3 text-[10px] uppercase tracking-[0.2em] text-label bg-white/[0.015]">
-                            Why quarantined — the requests that decayed this session's trust
+                            Session decision trail — the recorded requests for this session
                           </div>
                           <DecisionTrace sessionId={s.session_id} />
                         </td>

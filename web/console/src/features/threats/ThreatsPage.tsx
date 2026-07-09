@@ -14,7 +14,7 @@ import { useDecisions, useQuarantine } from '../../lib/query/useDecisions'
 import { useSessions } from '../../lib/query/useSessions'
 import { useCan } from '../../lib/query/useMe'
 import { formatRelativeTime } from '../../lib/format'
-import type { Decision } from '../../types/enums'
+import type { Decision, ThreatType } from '../../types/enums'
 import type { DecisionItem } from '../../types/api'
 
 const FILTERS = [
@@ -29,6 +29,21 @@ const sourceLabel = (s: string) =>
   s.replace(/^sentra\./, '').replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase())
 
 const ALL_SOURCES = '__all__'
+const ALL_THREATS = '__all__'
+// The threat_type facet is a SERVER-side filter (backend `?threat_type=`, routes.py:467)
+// — unlike the winning_source facet (client-side over loaded rows). ThreatType is a fixed
+// enum, so the options are a static list (not derived); an analyst filtering a type gets
+// the WHOLE matching set via the cursor, not just what happens to be loaded.
+const THREAT_TYPES: readonly ThreatType[] = [
+  'PROMPT_INJECTION',
+  'JAILBREAK',
+  'DATA_EXFILTRATION',
+  'PII_LEAK',
+  'POLICY_VIOLATION',
+  'POLICY_DISABLED',
+]
+const threatLabel = (t: string) =>
+  t.toLowerCase().replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase())
 
 export function ThreatsPage() {
   const [filter, setFilter] = useState<(typeof FILTERS)[number]['value']>('DENY')
@@ -37,17 +52,20 @@ export function ThreatsPage() {
   const [search, setSearch] = useState('')
   // FX-3.1: per-detector facet (deciding source), client-side over the loaded rows.
   const [source, setSource] = useState<string>(ALL_SOURCES)
+  // #4: threat_type facet — SERVER-side (whole matching set, not just loaded rows).
+  const [threatType, setThreatType] = useState<string>(ALL_THREATS)
   const decision = filter === 'all' ? undefined : (filter as Decision)
 
-  // Server-side filters page through ALL matching threats via the cursor (Load more); session-id is
-  // a backend filter. limit=100 = fewer round-trips.
+  // Server-side filters page through ALL matching threats via the cursor (Load more); session-id +
+  // threat_type are backend filters. limit=100 = fewer round-trips.
   const serverFilters = useMemo(
     () => ({
       ...(decision ? { decision } : {}),
       ...(sessionId.trim() ? { session_id: sessionId.trim() } : {}),
+      ...(threatType !== ALL_THREATS ? { threat_type: threatType as ThreatType } : {}),
       limit: 100,
     }),
-    [decision, sessionId],
+    [decision, sessionId, threatType],
   )
   const query = useDecisions(serverFilters)
   const quarantine = useQuarantine()
@@ -148,6 +166,21 @@ export function ThreatsPage() {
               </button>
             )}
           </div>
+          {/* #4: threat_type facet — SERVER-side filter (backend ?threat_type=). Static
+              enum options; picking one queries the WHOLE matching set via the cursor,
+              not just the loaded rows (correct for a threat console). */}
+          <select
+            aria-label="Filter by threat type"
+            value={threatType}
+            onChange={(e) => setThreatType(e.target.value)}
+            className="h-9 rounded-xl bg-surface-2 px-3 text-xs font-mono text-white outline-none focus:border-cyan/40"
+            style={{ border: '1px solid var(--color-line)' }}
+          >
+            <option value={ALL_THREATS}>All threat types</option>
+            {THREAT_TYPES.map((t) => (
+              <option key={t} value={t}>{threatLabel(t)}</option>
+            ))}
+          </select>
           {/* FX-3.1: per-detector facet — options DRIVEN from the API's winning_source
               values (never a FE constant). PARTIAL/disabled when the field is absent. */}
           {facetAvailable ? (

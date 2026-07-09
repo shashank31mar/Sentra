@@ -149,7 +149,7 @@ export function AccountMenu() {
             <div>
               <div className="text-[9px] uppercase tracking-wider text-faint mb-0.5">Auth method</div>
               <div className="text-secondary font-mono flex items-center gap-1">
-                <IconFingerprint size={12} className="text-cyan/70" /> Cognito SSO
+                <IconFingerprint size={12} className="text-cyan/70" /> Cognito-hosted
               </div>
             </div>
             <div>
