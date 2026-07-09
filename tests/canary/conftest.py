@@ -542,34 +542,35 @@ def _hosted_ui_login(page, base_url: str, creds: Dict[str, str]) -> None:
     page.goto(f"{base_url.rstrip('/')}/overview", wait_until="domcontentloaded", timeout=20000)
 
     def _fill_field(selector: str, value: str, what: str) -> None:
-        # WAIT for the field (the Cognito classic form is JS-rendered AND arrives after
-        # the org-submit redirect) — a clear TimeoutError → INFRA/LoginFixtureFailed
-        # rather than a confusing None.fill() AttributeError.
+        # The Cognito hosted UI renders the sign-in form TWICE (responsive visible-lg /
+        # visible-md copies), so `name="username"` / `#signInFormUsername` each match 2
+        # elements — one hidden. The `:visible` CSS pseudo (stable across Playwright
+        # versions) filters to the shown instance; `.first` disambiguates any remainder.
+        # A bare selector wait was ambiguous with 2 matches and never settled on the
+        # visible one → the 30s timeout we hit at the Cognito /login page.
+        field = page.locator(selector).first
         try:
-            page.wait_for_selector(selector, state="visible", timeout=30000)
+            field.wait_for(state="visible", timeout=30000)
         except Exception as exc:  # noqa: BLE001 — a missing login field is a precondition fail.
             raise RuntimeError(
-                f"hosted-UI {what} field not found ({selector!r}) after {page.url!r} — "
-                f"the Cognito login page changed or the org-first redirect stalled "
+                f"hosted-UI {what} field not found/visible ({selector!r}) after {page.url!r} "
+                f"— the Cognito login page changed or the redirect stalled "
                 f"(J8 LoginFixtureFailed, INFRA)"
             ) from exc
-        page.fill(selector, value)
+        field.fill(value)
 
     # Real Cognito hosted UI (verified): name="username"/"password" + ids
-    # signInFormUsername/signInFormPassword. Target both for resilience.
-    _fill_field(
-        "input[name='username'], #signInFormUsername, input[type='email']",
-        creds["email"], "username",
-    )
-    # Classic Cognito shows username+password on ONE page; a two-step theme would need
-    # a submit between them. If no password field is present yet, advance then wait.
-    if page.query_selector("input[name='password'], #signInFormPassword, input[type='password']") is None:
-        page.click("input[type='submit'], button[type='submit']")
-    _fill_field(
-        "input[name='password'], #signInFormPassword, input[type='password']",
-        creds["password"], "password",
-    )
-    page.click("input[type='submit'], button[type='submit'], [name='signInSubmitButton']")
+    # signInFormUsername/signInFormPassword, each rendered twice (responsive). The
+    # `:visible` pseudo picks the shown copy.
+    _fill_field("input[name='username']:visible, #signInFormUsername:visible",
+                creds["email"], "username")
+    _fill_field("input[name='password']:visible, #signInFormPassword:visible",
+                creds["password"], "password")
+    # Submit the visible sign-in form (submit is name="signInSubmitButton").
+    page.locator(
+        "input[name='signInSubmitButton']:visible, input[type='submit']:visible, "
+        "button[type='submit']:visible"
+    ).first.click()
     # Land back on the console (ALB completes /oauth2/idpresponse + sets the session
     # cookie). Wait for the URL to return to the console host — not just networkidle,
     # which the Cognito page can also satisfy mid-redirect.
