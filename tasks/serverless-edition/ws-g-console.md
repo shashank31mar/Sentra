@@ -3,7 +3,9 @@
 > **Doc role:** **Phase-2 build-task doc** (granular, zero-ambiguity tasks generated from the approved LLD). It supersedes the earlier scope-only version of this file. The §0 scope-honesty banner + §2 "read before coding" model are the context an implementer must hold; the milestones (M-G0…M-G4) are the buildable tasks. Canonical order: HLD → **LLD ([lld/40](../../lld/40-multi-tenant-console.md))** → these tasks.
 
 **Parent LLD:** [lld/40-multi-tenant-console.md](../../lld/40-multi-tenant-console.md) (v1.6, 2026-07-08 — CODE-VERIFIED canvas-UX gap review + login-model reconciliation). **Parent HLD:** [hld/serverless-edition.md](../../hld/serverless-edition.md) §6.2(f) ("Console sign-in & who-sees-what"), §8 hand-off row 8 (`FR-13.3 console`).
-**Status:** TASKS-DONE (build-ready) · **Owner:** TBD · **Last updated:** 2026-07-08
+**Status:** CODE-DONE + DEPLOYED to prod (2026-07-09) · **Owner:** TBD · **Last updated:** 2026-07-09
+
+> **✅ CODE-DONE + DEPLOYED (2026-07-09).** M-G0..M-G4 built (backend lane `a448bcc` + frontend lane `cc42343`), hardened by a 22-finding deep-review fix pass (`0f9af8b`/`90b81c9`, all code-verified) + 4 post-review residuals (`4d3695c`: #4 server-side threat_type facet + copy/a11y). Console image built from `main@4d3695c` → ECR → `sentra-console` ECS force-new-deploy → **LIVE-VERIFIED in prod** (`/` 200, `/org.html` 200, `GET /public/resolve-org?org=acme` 200; org-first login working; controller resolve_org/D13/platform-rollup all live). Frontend suite **195 pass** (tsc + vitest + lint green). **Still open (NOT blocking, tracked below):** (1) the OPTIONAL `ws-g-fix-backend` field-adds (`winning_source` on `/decisions` rows, `platform_read_consent` on the platform list) — two views ship honest PARTIAL until then; (2) multi-tenant isolation is hermetically tested + deployed but NOT yet exercised with a real second live tenant (pre-two-tenant-demo gate). The PARTIAL/ROADMAP acceptance boxes below are ticked because the degrade behavior IS built + tested (per this doc's rule "the PARTIAL-degrade variant must pass now"), not because the deferred full-fidelity variant shipped.
 **Implements:** FR-13.1 (cosmetic-tenant containment — no cross-tenant leak) · FR-13.2 (exhaustive dashboard set) · FR-13.3 (login/tenancy model + RBAC role model).
 **Decisions:** **ADR-019 / AD-8** (console multi-tenant SSO + RBAC, refined) · **ADR-039 — Accepted (founder) 2026-07-07** (org-first login: an unauthenticated org page → public `resolve_org(org)→tenant_id` → Cognito → tenant fixed per-tab for the session; deletes the in-session tenant-switcher) · **ADR-035** (federation seam, **design-only / deferred-last** — Cognito is kept; SAML/OIDC/SCIM provider swap is NOT built here; the canvas B2 SSO-federation screens are the post-ADR-035 roadmap target, NOT the pilot's as-built).
 
@@ -240,10 +242,10 @@ Pilot-blocking set: **G0.1 (D13)**, **G0.2 / G0.3 / G0.4 (D14)**. Everything els
 ---
 
 **Acceptance (M-G1):**
-- [ ] `tenantOf` no longer an exported symbol; `tenantLabelForDisplay` is; sole callers = `auth.ts` def + `AccountMenu.tsx:12,44` (grep-proven display-only, G1.1).
-- [ ] `eslint.config.js` has a `rules` block failing `npm run lint` when the label is passed into `queryKeys.*` / `http.{get,post,put,patch,del}` / `can`|`rbacCan`|`roleSatisfies` / `setActiveTenant` (G1.2 unit + build-gate integ green).
-- [ ] Backend regression proves `alice@acme.io` + sole `t_globex` membership resolves to `t_globex`, not the domain (G1.3 unit + isolation integ green under `mt_env`).
-- [ ] `npm run build` (tsc-b + vite) and `npm run lint` pass; `pytest tests/test_multitenancy_identity.py tests/test_multitenancy_isolation.py` green.
+- [x] `tenantOf` no longer an exported symbol; `tenantLabelForDisplay` is; sole callers = `auth.ts` def + `AccountMenu.tsx:12,44` (grep-proven display-only, G1.1).
+- [x] `eslint.config.js` has a `rules` block failing `npm run lint` when the label is passed into `queryKeys.*` / `http.{get,post,put,patch,del}` / `can`|`rbacCan`|`roleSatisfies` / `setActiveTenant` (G1.2 unit + build-gate integ green).
+- [x] Backend regression proves `alice@acme.io` + sole `t_globex` membership resolves to `t_globex`, not the domain (G1.3 unit + isolation integ green under `mt_env`).
+- [x] `npm run build` (tsc-b + vite) and `npm run lint` pass; `pytest tests/test_multitenancy_identity.py tests/test_multitenancy_isolation.py` green.
 
 **PREREQUISITES:** none (all touch-points exist at `761bb88`; `resolve_operator_tenant`/`by_operator` already ship — G1.3 is a regression lock, not a build).
 
@@ -792,59 +794,59 @@ A separate `is_platform` route-tree (`PlatformLayout`) gated at the router root,
 Each box ties a major task to its FR + the §15 test (Vitest for the console, pytest for the backend regressions). Backend field-add prereqs gate only the *live* variant; the PARTIAL-degrade variant must pass now.
 
 **M-G0 (prerequisites — owned elsewhere; WS-G lands the guard tests now):**
-- [ ] G0.1 D13 shadow-write verified-tenant bind (PILOT-BLOCKING) — `test_shadow_branch_binds_verified_tenant` + `test_shadow_decision_visible_to_tenant_overview` (WS-N/WS-M-backend).
-- [ ] G0.2 `resolve_org` returns only `tenant_id`, fails-closed 5XX, friendly-404 miss (PILOT-BLOCKING) — `test_resolve_org_returns_only_tenant_id` + `test_resolve_org_reachable_without_cognito` (WS-M/WS-N-backend + CDK).
-- [ ] G0.3 static org page + ALB priority-<5 carve-out + nginx + private-ALB forward (PILOT-BLOCKING) — `test_resolve_org_public_rule_priority_below_5` + `test_org_html_served_unauth`.
-- [ ] G0.4 platform per-tenant rollup on `/platform/tenants` — `test_platform_list_tenants_includes_rollup_fields` (feeds M-G4).
-- [ ] WS-G guard tests that land regardless: `TopologyPage.roadmap` (G0.6), `ResidualAgentsPage.readonly` (G0.7), `PolicyDetailPage cedar_tab_partial` (G0.10) all green.
+- [x] G0.1 D13 shadow-write verified-tenant bind (PILOT-BLOCKING) — `test_shadow_branch_binds_verified_tenant` + `test_shadow_decision_visible_to_tenant_overview` (WS-N/WS-M-backend).
+- [x] G0.2 `resolve_org` returns only `tenant_id`, fails-closed 5XX, friendly-404 miss (PILOT-BLOCKING) — `test_resolve_org_returns_only_tenant_id` + `test_resolve_org_reachable_without_cognito` (WS-M/WS-N-backend + CDK).
+- [x] G0.3 static org page + ALB priority-<5 carve-out + nginx + private-ALB forward (PILOT-BLOCKING) — `test_resolve_org_public_rule_priority_below_5` + `test_org_html_served_unauth`.
+- [x] G0.4 platform per-tenant rollup on `/platform/tenants` — `test_platform_list_tenants_includes_rollup_fields` (feeds M-G4).
+- [x] WS-G guard tests that land regardless: `TopologyPage.roadmap` (G0.6), `ResidualAgentsPage.readonly` (G0.7), `PolicyDetailPage cedar_tab_partial` (G0.10) all green.
 
 **M-G1 (FR-13.1 — cosmetic-tenant containment):**
-- [ ] G1.1 `tenantOf`→`tenantLabelForDisplay` renamed; sole callers `auth.ts` def + `AccountMenu.tsx:12,44` (display-only, grep-proven) — `auth.test.ts` (`tenantOf is no longer exported`).
-- [ ] G1.2 ESLint AST guard fails `npm run lint` on the label into `queryKeys.*`/`http.{get,post,put,patch,del}`/`can|rbacCan|roleSatisfies`/`setActiveTenant` — `lint-tenant-guard.test.ts` + `lint-guard-e2e.test.ts`.
-- [ ] G1.3 resolution uses membership not domain (`alice@acme.io` + sole `t_globex` → `t_globex`) — `test_resolution_uses_membership_not_email_domain` + `test_domain_matching_tenant_never_auto_bound`.
+- [x] G1.1 `tenantOf`→`tenantLabelForDisplay` renamed; sole callers `auth.ts` def + `AccountMenu.tsx:12,44` (display-only, grep-proven) — `auth.test.ts` (`tenantOf is no longer exported`).
+- [x] G1.2 ESLint AST guard fails `npm run lint` on the label into `queryKeys.*`/`http.{get,post,put,patch,del}`/`can|rbacCan|roleSatisfies`/`setActiveTenant` — `lint-tenant-guard.test.ts` + `lint-guard-e2e.test.ts`.
+- [x] G1.3 resolution uses membership not domain (`alice@acme.io` + sole `t_globex` → `t_globex`) — `test_resolution_uses_membership_not_email_domain` + `test_domain_matching_tenant_never_auto_bound`.
 
 **M-G2 (FR-13.3 — RBAC render-gating + org-first login):**
-- [ ] G2.0 Vitest + Testing Library scaffolded; `npm run test` exits 0 — `setup.test.tsx`.
-- [ ] G2.1 `Capability` union + `MIN_ROLE` extended (5 caps) + `PlatformCapability='sigma.retire'` separate; `sigma.retire` NOT in `Capability` — `rbac.test.ts`.
-- [ ] G2.2–G2.7 every mutating control across `features/{agents,policies,connect,import,quarantine,identity}` gated (hide not disable); a `viewer` sees zero mutating controls — per-page `.gate.test.tsx`.
-- [ ] G2.8 fail-secure degrade: 403→toast+`invalidate(['me'])` (no reauth); demoted operator re-fetch hides controls — `http.degrade.test.ts` + `useMe.refetch.test.tsx`.
-- [ ] G2.9 D3 client↔server parity + completeness passes against backend `role-model.json` and fails loud when the fixture is missing / on a seeded mismatch — `rbac.parity.test.ts`.
-- [ ] G2.10 `TenantSwitcher` deleted (file + TopBar mount); no `TenantSwitcher` in DOM — `TopBar.test.tsx`.
-- [ ] G2.11 active-tenant binding on per-tab `sessionStorage['aegion.activeTenant']`; absent + multi-membership → fail-safe redirect to org page (no silent primary bind); logout clears — `tenant.test.ts` + `orgflow.test.tsx`.
-- [ ] G2.12 org-first entry: `resolve_org` hit → stash → Cognito; miss → stay on org page; router guard redirects multi-membership operator with no bound tenant — `orgEntry.test.ts` + `orgflow.test.tsx` (blocked-on D14).
+- [x] G2.0 Vitest + Testing Library scaffolded; `npm run test` exits 0 — `setup.test.tsx`.
+- [x] G2.1 `Capability` union + `MIN_ROLE` extended (5 caps) + `PlatformCapability='sigma.retire'` separate; `sigma.retire` NOT in `Capability` — `rbac.test.ts`.
+- [x] G2.2–G2.7 every mutating control across `features/{agents,policies,connect,import,quarantine,identity}` gated (hide not disable); a `viewer` sees zero mutating controls — per-page `.gate.test.tsx`.
+- [x] G2.8 fail-secure degrade: 403→toast+`invalidate(['me'])` (no reauth); demoted operator re-fetch hides controls — `http.degrade.test.ts` + `useMe.refetch.test.tsx`.
+- [x] G2.9 D3 client↔server parity + completeness passes against backend `role-model.json` and fails loud when the fixture is missing / on a seeded mismatch — `rbac.parity.test.ts`.
+- [x] G2.10 `TenantSwitcher` deleted (file + TopBar mount); no `TenantSwitcher` in DOM — `TopBar.test.tsx`.
+- [x] G2.11 active-tenant binding on per-tab `sessionStorage['aegion.activeTenant']`; absent + multi-membership → fail-safe redirect to org page (no silent primary bind); logout clears — `tenant.test.ts` + `orgflow.test.tsx`.
+- [x] G2.12 org-first entry: `resolve_org` hit → stash → Cognito; miss → stay on org page; router guard redirects multi-membership operator with no bound tenant — `orgEntry.test.ts` + `orgflow.test.tsx` (blocked-on D14).
 
 **M-G3 (FR-13.2 — exhaustive customer dashboard set):**
-- [ ] M-G3.0 routes/nav/lazy for Activity, DecisionDetail (`:sessionId/:requestId`), SessionForensics, Usage — `routes.test.ts` + `router.test.tsx`.
-- [ ] M-G3.1 Overview verified tenant-scoped (no client tenant filter), near-real-time label — `OverviewPage.tenant.test.tsx`.
-- [ ] M-G3.2 Activity feed BUILT (cursor-paginated, rows link to `decisionDetailPath(session_id,request_id)`, ≤15s pull label) — `ActivityPage.test.tsx` + `.pagination.test.tsx`.
-- [ ] M-G3.3 Threats winning_source facet API-driven with fallback (PARTIAL until server field lands); quarantine control admin-gated — `ThreatsPage.facet.test.tsx` + `.gate.test.tsx`.
-- [ ] M-G3.4 Decision-detail binds WS-D `/trail` from both route params; PARTIAL+`DecisionTrace` fallback on 404/501; verdict panel editor-gated — `DecisionDetailPage.test.tsx` + `.partial.test.tsx`.
-- [ ] M-G3.5 Session-forensics BUILT (header + per-request trace); non-member 403 handled not blank — `SessionForensicsPage.test.tsx` + `.tenant.test.tsx`.
-- [ ] M-G3.6 Agent inventory/detail: attach/detach `agents.write`-gated; ECS→canvas activity-status client-mapped (no-traffic→Idle) — `activityStatus.test.ts` + `AgentInventoryPage.gate.test.tsx`.
-- [ ] M-G3.7 Topology ROADMAP-honest (badge + sample marker, no fetch to `/v1/topology`) — `TopologyPage.test.tsx`.
-- [ ] M-G3.8 Policy library delete=`policies.delete` (admin) / create-edit=`policies.write` (editor); Cedar/JSON PARTIAL when compiled body absent, no fabricated body — `PolicyDetailPage.format.test.tsx` + `PolicyLibraryPage.gate.test.tsx`.
-- [ ] M-G3.9 Connect/Import gated (write=admin, operate=editor, import=editor); grant copy-only; GCP coming-soon — `GrantAccessCard.test.tsx` + `ConnectAccountPage.gate.test.tsx` + `ImportAgentsPage.test.tsx`.
-- [ ] M-G3.10 Quarantine release admin-gated; why-trace degrades to `quarantine_status` until origin+signals surface — `QuarantinePage.gate.test.tsx` + `.whytrace.test.tsx`.
-- [ ] M-G3.11 Audit trail verified; verdict panel editor-gated; NO export (FR-6.5 deferred) — `AuditTrailPage.test.tsx`.
-- [ ] M-G3.12 Usage view BUILT; feature-flag OFF or PARTIAL banner without WS-H `/v1/usage` (no dark billing tab, no fabricated totals) — `UsagePage.test.tsx` + `.flag.test.tsx`.
-- [ ] M-G3.13 dead `operator_id` client stubs removed + dropped from `VerdictRequest`/`QuarantineRequest` types; server attributes `ctx.sub` — `DecisionReviewPanel.test.tsx` + `mutations.test.ts` + `test_verdict_quarantine_operator.py`.
-- [ ] M-G3.14 §7.3 dual-mode (`decisions-timeseries` + `platform-distribution`) stays LIVE per-tenant, not re-mislabeled — `timeseries.dualmode.test.tsx`.
-- [ ] M-G3.15 build gate: `npm run build` + `npm run lint` (incl. M-G1 rule) green; all Vitest green; backend regressions green under moto-safe env.
+- [x] M-G3.0 routes/nav/lazy for Activity, DecisionDetail (`:sessionId/:requestId`), SessionForensics, Usage — `routes.test.ts` + `router.test.tsx`.
+- [x] M-G3.1 Overview verified tenant-scoped (no client tenant filter), near-real-time label — `OverviewPage.tenant.test.tsx`.
+- [x] M-G3.2 Activity feed BUILT (cursor-paginated, rows link to `decisionDetailPath(session_id,request_id)`, ≤15s pull label) — `ActivityPage.test.tsx` + `.pagination.test.tsx`.
+- [x] M-G3.3 Threats winning_source facet API-driven with fallback (PARTIAL until server field lands); quarantine control admin-gated — `ThreatsPage.facet.test.tsx` + `.gate.test.tsx`.
+- [x] M-G3.4 Decision-detail binds WS-D `/trail` from both route params; PARTIAL+`DecisionTrace` fallback on 404/501; verdict panel editor-gated — `DecisionDetailPage.test.tsx` + `.partial.test.tsx`.
+- [x] M-G3.5 Session-forensics BUILT (header + per-request trace); non-member 403 handled not blank — `SessionForensicsPage.test.tsx` + `.tenant.test.tsx`.
+- [x] M-G3.6 Agent inventory/detail: attach/detach `agents.write`-gated; ECS→canvas activity-status client-mapped (no-traffic→Idle) — `activityStatus.test.ts` + `AgentInventoryPage.gate.test.tsx`.
+- [x] M-G3.7 Topology ROADMAP-honest (badge + sample marker, no fetch to `/v1/topology`) — `TopologyPage.test.tsx`.
+- [x] M-G3.8 Policy library delete=`policies.delete` (admin) / create-edit=`policies.write` (editor); Cedar/JSON PARTIAL when compiled body absent, no fabricated body — `PolicyDetailPage.format.test.tsx` + `PolicyLibraryPage.gate.test.tsx`.
+- [x] M-G3.9 Connect/Import gated (write=admin, operate=editor, import=editor); grant copy-only; GCP coming-soon — `GrantAccessCard.test.tsx` + `ConnectAccountPage.gate.test.tsx` + `ImportAgentsPage.test.tsx`.
+- [x] M-G3.10 Quarantine release admin-gated; why-trace degrades to `quarantine_status` until origin+signals surface — `QuarantinePage.gate.test.tsx` + `.whytrace.test.tsx`.
+- [x] M-G3.11 Audit trail verified; verdict panel editor-gated; NO export (FR-6.5 deferred) — `AuditTrailPage.test.tsx`.
+- [x] M-G3.12 Usage view BUILT; feature-flag OFF or PARTIAL banner without WS-H `/v1/usage` (no dark billing tab, no fabricated totals) — `UsagePage.test.tsx` + `.flag.test.tsx`.
+- [x] M-G3.13 dead `operator_id` client stubs removed + dropped from `VerdictRequest`/`QuarantineRequest` types; server attributes `ctx.sub` — `DecisionReviewPanel.test.tsx` + `mutations.test.ts` + `test_verdict_quarantine_operator.py`.
+- [x] M-G3.14 §7.3 dual-mode (`decisions-timeseries` + `platform-distribution`) stays LIVE per-tenant, not re-mislabeled — `timeseries.dualmode.test.tsx`.
+- [x] M-G3.15 build gate: `npm run build` + `npm run lint` (incl. M-G1 rule) green; all Vitest green; backend regressions green under moto-safe env.
 
 **M-G4 (§6.11 — platform global-admin console):**
-- [ ] G4.1 router-root `is_platform` split; `RequirePlatform` fail-secure (false AND absent redirect); distinct `PlatformLayout` (no tenant chrome) — `RequirePlatform.test.tsx` + `platformRouter.integration.test.tsx`.
-- [ ] G4.2 `platformApi` + types + hooks; NO `X-Aegion-Tenant` header on platform calls; optional metric fields parse when absent — `platform.test.ts`.
-- [ ] G4.3 Fleet Overview / Tenant Grid: 6-col ranked shape ships first, metric columns light up post PRE-G4-a; read-only (no mutation control); rows link to detail — `TenantGrid.test.tsx` + `FleetOverviewPage.integration.test.tsx`.
-- [ ] G4.4 ranking + quota-headroom derived client-side; missing metric sorts last (not zero) — `fleetRank.test.ts`.
-- [ ] G4.5 fleet KPIs + timeseries reuse `metricsApi`/`decisionsApi` (server auto-fleet, no client scope) + WS-N audit gate green — `fleetMetrics.integration.test.tsx` + `test_ws_n_read_scope.py`.
-- [ ] G4.6 audited per-tenant drill-down: `retry:false`, consent-required 403 empty-state vs 404, no mutation control — `TenantDetailPage.test.tsx` + `test_platform_audit.py`.
-- [ ] G4.7 Fleet-topology + System-health ROADMAP (badge + sample marker, ZERO network calls) — `roadmapPages.test.tsx`.
-- [ ] G4.8 platform nav is_platform-gated + four invariants (no import, no mutation, no tenant-selector, audited fleet reads) enforced structurally — `platformInvariants.test.tsx` + `.integration.test.tsx` + `test_platform_audit.py::test_list_tenants_audits_aggregate`.
+- [x] G4.1 router-root `is_platform` split; `RequirePlatform` fail-secure (false AND absent redirect); distinct `PlatformLayout` (no tenant chrome) — `RequirePlatform.test.tsx` + `platformRouter.integration.test.tsx`.
+- [x] G4.2 `platformApi` + types + hooks; NO `X-Aegion-Tenant` header on platform calls; optional metric fields parse when absent — `platform.test.ts`.
+- [x] G4.3 Fleet Overview / Tenant Grid: 6-col ranked shape ships first, metric columns light up post PRE-G4-a; read-only (no mutation control); rows link to detail — `TenantGrid.test.tsx` + `FleetOverviewPage.integration.test.tsx`.
+- [x] G4.4 ranking + quota-headroom derived client-side; missing metric sorts last (not zero) — `fleetRank.test.ts`.
+- [x] G4.5 fleet KPIs + timeseries reuse `metricsApi`/`decisionsApi` (server auto-fleet, no client scope) + WS-N audit gate green — `fleetMetrics.integration.test.tsx` + `test_ws_n_read_scope.py`.
+- [x] G4.6 audited per-tenant drill-down: `retry:false`, consent-required 403 empty-state vs 404, no mutation control — `TenantDetailPage.test.tsx` + `test_platform_audit.py`.
+- [x] G4.7 Fleet-topology + System-health ROADMAP (badge + sample marker, ZERO network calls) — `roadmapPages.test.tsx`.
+- [x] G4.8 platform nav is_platform-gated + four invariants (no import, no mutation, no tenant-selector, audited fleet reads) enforced structurally — `platformInvariants.test.tsx` + `.integration.test.tsx` + `test_platform_audit.py::test_list_tenants_audits_aggregate`.
 
 **Cross-cutting:**
-- [ ] `npm run build` (tsc-b + vite) + `npm run lint` + `npm run test` green; backend `pytest tests/` green under `env -u AWS_PROFILE ... venv/bin/python` (moto-safe) for the WS-G-owned regressions.
-- [ ] No PARTIAL/ROADMAP view issues a live read to an unbuilt route (§7.2 tests enforce).
-- [ ] The RBAC render-gate never becomes the boundary — every gated mutation has a matching WS-M server `require_role` (asserted by the G2.9 parity walk).
+- [x] `npm run build` (tsc-b + vite) + `npm run lint` + `npm run test` green; backend `pytest tests/` green under `env -u AWS_PROFILE ... venv/bin/python` (moto-safe) for the WS-G-owned regressions.
+- [x] No PARTIAL/ROADMAP view issues a live read to an unbuilt route (§7.2 tests enforce).
+- [x] The RBAC render-gate never becomes the boundary — every gated mutation has a matching WS-M server `require_role` (asserted by the G2.9 parity walk).
 
 ---
 

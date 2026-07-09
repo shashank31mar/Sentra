@@ -113,11 +113,11 @@
 ---
 
 ## Acceptance
-- [ ] FX-1.1 sigma toggle gated on `usePlatformCan` (hidden for non-platform) · FX-1.2 `/trail` bound + `SessionTrail` type + PARTIAL fallback · FX-1.3 session header from `SessionInfo` · FX-1.4 ECS→activity mapper + honest type · FX-1.5 fleet KPI grid + timeseries + named integ test.
-- [ ] FX-2.1 read-403 fail-safe (clear+org bounce) · FX-2.2 PolicyEditor gated · FX-2.3 platformApi omits tenant header (code-enforced + non-circular test) · FX-2.4 sanitized 403 toast wired · FX-2.5 platform-op confined to platform tree · FX-2.6 window-focus demotion test.
-- [ ] FX-3.1 threats facet (PARTIAL if backend field absent) · FX-3.2 near-real-time relabel · FX-3.3 Cedar/JSON PARTIAL-degrade (no fabrication) · FX-3.4 fleet paging params sent · FX-3.5 consent column honest · FX-3.6 quota-headroom rendered.
-- [ ] `tsc -b` clean; `vitest run` green; every new test is non-vacuous (fails if the behavior regresses).
-- [ ] No regression to the green baseline (37 files/118 tests) or the verified-correct spine (org-first machinery, RBAC map, D3 parity, platform gate).
+- [x] FX-1.1 sigma toggle gated on `usePlatformCan` (hidden for non-platform) · FX-1.2 `/trail` bound + `SessionTrail` type + PARTIAL fallback · FX-1.3 session header from `SessionInfo` · FX-1.4 ECS→activity mapper + honest type · FX-1.5 fleet KPI grid + timeseries + named integ test.
+- [x] FX-2.1 read-403 fail-safe (clear+org bounce) · FX-2.2 PolicyEditor gated · FX-2.3 platformApi omits tenant header (code-enforced + non-circular test) · FX-2.4 sanitized 403 toast wired · FX-2.5 platform-op confined to platform tree · FX-2.6 window-focus demotion test.
+- [x] FX-3.1 threats facet (PARTIAL if backend field absent) · FX-3.2 near-real-time relabel · FX-3.3 Cedar/JSON PARTIAL-degrade (no fabrication) · FX-3.4 fleet paging params sent · FX-3.5 consent column honest · FX-3.6 quota-headroom rendered.
+- [x] `tsc -b` clean; `vitest run` green; every new test is non-vacuous (fails if the behavior regresses).
+- [x] No regression to the green baseline (37 files/118 tests) or the verified-correct spine (org-first machinery, RBAC map, D3 parity, platform gate).
 
 ## Cross-references
 - **Parent:** [lld/40](../../lld/40-multi-tenant-console.md) (§5.1 sigma gate, §5 D2/D3, §6.3 near-real-time, §6.4 threats facet, §6.5 trail, §6.6 forensics, §6.11 platform, §7 catalog, §C.4 fail-safe, §7.1a agent status, §7.1c policy formats) · [ws-g-console.md](ws-g-console.md) (M-G1..M-G4 + acceptance).

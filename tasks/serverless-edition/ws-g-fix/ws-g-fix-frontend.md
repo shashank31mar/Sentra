@@ -31,8 +31,8 @@
 - **Unit:** extend `ThreatsPage.facet.test.tsx` — a row with `winning_source:'sentra.ml_classifier'` yields option text 'Ml Classifier' (multi-word title-case verified).
 
 ## Acceptance
-- [ ] FXR-1 — exactly one toast on a mutation 403; PolicyEditor "disabled" banner only for the disabled-policy reason (not role/membership 403). Test green.
-- [ ] FXR-2 — role-403-on-a-read preserves the binding; membership-lost-403 clears it. Test green.
-- [ ] FXR-3 — selecting a `winning_source` filters rows (reverting the predicate turns it red). Test green.
-- [ ] FXR-4 — multi-word sourceLabel verified. Test green.
-- [ ] `tsc -b` clean; `npm test` green; no vacuous tests; round-1 work (170 tests) + the verified spine preserved. Then promote `integration/ws-g-fix` → main.
+- [x] FXR-1 — exactly one toast on a mutation 403; PolicyEditor "disabled" banner only for the disabled-policy reason (not role/membership 403). Test green.
+- [x] FXR-2 — role-403-on-a-read preserves the binding; membership-lost-403 clears it. Test green.
+- [x] FXR-3 — selecting a `winning_source` filters rows (reverting the predicate turns it red). Test green.
+- [x] FXR-4 — multi-word sourceLabel verified. Test green.
+- [x] `tsc -b` clean; `npm test` green; no vacuous tests; round-1 work (170 tests) + the verified spine preserved. Then promote `integration/ws-g-fix` → main.
