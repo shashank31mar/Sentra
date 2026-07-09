@@ -124,6 +124,14 @@ class CanaryClient:
         self._last_correlation_id = cid
         headers = dict(kwargs.pop("headers", {}) or {})
         headers.setdefault("X-Correlation-Id", cid)
+        # drop_api_key (J2.4 "401" axis / J8): actually remove the X-Api-Key for THIS
+        # request so the missing-key→401/403 edge gate is really exercised. In live mode
+        # the key is an httpx.Client DEFAULT header, so a per-request override must send
+        # an empty value (API Gateway treats an empty/absent key as unauthenticated →
+        # 403). Without this the default key would still be sent and the probe would be
+        # a no-op (the dead-param bug the review found).
+        if kwargs.pop("drop_api_key", False):
+            headers["X-Api-Key"] = ""
         t0 = _time.perf_counter()
         if self.mode == "live":
             # A LIVE transport error with NO HTTP response (DNS/conn-reset/timeout) is
@@ -449,8 +457,20 @@ class _ConsoleSession:
     def visit(self, path: str) -> "_ConsoleVisitResult":
         five_xx = []
         uncaught = {"hit": False}
-        self._page.on("response", lambda r: five_xx.append(r.url) if r.status >= 500 else None)
-        self._page.on("pageerror", lambda _e: uncaught.__setitem__("hit", True))
+
+        def _on_response(r):
+            if r.status >= 500:
+                five_xx.append(r.url)
+
+        def _on_pageerror(_e):
+            uncaught["hit"] = True
+
+        # The page is session-scoped (reused across all 25 sweep routes), so listeners
+        # MUST be removed after each visit — else they accumulate (leak + Playwright
+        # listener-limit warnings) AND a late event from an earlier route could attribute
+        # a 5xx / pageerror to the WRONG visit (false RED). Scope them per-visit.
+        self._page.on("response", _on_response)
+        self._page.on("pageerror", _on_pageerror)
         rendered = False
         try:
             self._page.goto(f"{self._base}{path}", wait_until="networkidle", timeout=20000)
@@ -459,6 +479,9 @@ class _ConsoleSession:
             rendered = True
         except Exception:  # noqa: BLE001 — a render/timeout failure is a FAIL, captured below.
             rendered = False
+        finally:
+            self._page.remove_listener("response", _on_response)
+            self._page.remove_listener("pageerror", _on_pageerror)
         return _ConsoleVisitResult(rendered, bool(five_xx), five_xx, uncaught["hit"])
 
     def oidc_client(self):
@@ -502,10 +525,27 @@ def _hosted_ui_login(page, base_url: str, creds: Dict[str, str]) -> None:
     if org_field is not None and org:
         org_field.fill(org)
         page.click("button[type='submit'], [type='submit']")
-    # Cognito hosted UI — stable field semantics (SEC / lld/38 §6.1).
-    page.wait_for_selector("input[name='username'], input[type='email']", timeout=20000)
-    (page.query_selector("input[name='username']") or page.query_selector("input[type='email']")).fill(creds["email"])
-    (page.query_selector("input[name='password']") or page.query_selector("input[type='password']")).fill(creds["password"])
+    # Cognito hosted UI — stable field semantics (SEC / lld/38 §6.1). Each field is
+    # WAIT-guarded before fill: the hosted UI may render the username first and the
+    # password on a SECOND page (two-step flow), so querying password without a wait
+    # would NoneType-deref. wait_for_selector raises a clear TimeoutError (→ INFRA /
+    # LoginFixtureFailed) rather than a confusing `None.fill()` AttributeError.
+    def _fill_field(selector: str, value: str, what: str) -> None:
+        try:
+            page.wait_for_selector(selector, timeout=20000)
+        except Exception as exc:  # noqa: BLE001 — a missing login field is a precondition fail.
+            raise RuntimeError(
+                f"hosted-UI {what} field not found ({selector!r}) — the Cognito login page "
+                f"changed or a two-step flow stalled (J8 LoginFixtureFailed, INFRA)"
+            ) from exc
+        page.fill(selector, value)
+
+    _fill_field("input[name='username'], input[type='email']", creds["email"], "username")
+    # Some hosted-UI themes require submitting the username before the password renders;
+    # if a lone password field isn't present yet, advance then wait for it.
+    if page.query_selector("input[name='password'], input[type='password']") is None:
+        page.click("input[type='submit'], button[type='submit']")
+    _fill_field("input[name='password'], input[type='password']", creds["password"], "password")
     page.click("input[type='submit'], button[type='submit']")
     # Land back on the console (ALB has set the session cookie by now).
     page.wait_for_load_state("networkidle", timeout=20000)

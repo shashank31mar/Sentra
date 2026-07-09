@@ -42,9 +42,15 @@ _OIDC_ROUTES = [s for s in ROUTE_MANIFEST if s.auth_class == "oidc"]
 
 
 def _fill(path: str) -> str:
+    """Substitute a synthetic id for BOTH param styles this module sees: colon-style
+    console routes (``/agents/:agentId``, ``/decisions/:sessionId/:requestId`` — from
+    routes.ts) AND brace-style API routes (``/v1/agents/{agent_id}`` — from the manifest).
+    A colon param runs to the next ``/`` (so multi-param paths fill each segment)."""
     import re
 
-    return re.sub(r"\{[^}]+\}", "canary-probe-id", path)
+    filled = re.sub(r"\{[^}]+\}", "canary-probe-id", path)   # API brace-style
+    filled = re.sub(r":[^/]+", "canary-probe-id", filled)     # console colon-style
+    return filled
 
 
 # --------------------------------------------------------------------------- J8.2

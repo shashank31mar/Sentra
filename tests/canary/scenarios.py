@@ -240,6 +240,10 @@ def _probe(canary_client, path: str, method: str, body, drop_api_key: bool = Fal
     kwargs: Dict = {}
     if body is not None and method not in ("GET", "DELETE"):
         kwargs["json"] = body if isinstance(body, dict) else {}
+    if drop_api_key:
+        # Forward to CanaryClient._call so it actually removes the X-Api-Key for this
+        # request (the "401" negative axis really exercises the missing-key edge gate).
+        kwargs["drop_api_key"] = True
     verb = method.lower()
     return getattr(canary_client, verb)(url, **kwargs)
 
