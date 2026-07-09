@@ -234,11 +234,15 @@ class TenantStore:
         needle = _normalize_org_name(org)
         if not needle:
             return None
-        # Exact-slug fast path (an operator who pasted the id) — a single get_item.
-        if org.strip().startswith("t_"):
-            row = self._table().get_item(Key={"tenant_id": org.strip()}).get("Item")
-            if row and row.get("status") != "purged":
-                return row["tenant_id"]
+        # Exact-slug fast path (an operator who pasted / typed the id) — a single
+        # get_item. Covers BOTH the minted `t_<slug>` form AND a human-readable
+        # tenant_id (e.g. a design-partner slug like "acme"), so an operator who
+        # types the org's own id resolves without needing the full display_name.
+        # Case-insensitive on the id: tenant_ids are lowercase slugs, so we match
+        # the lowercased-trimmed needle. Purged tenants never resolve (fail-secure).
+        row = self._table().get_item(Key={"tenant_id": needle}).get("Item")
+        if row and row.get("status") != "purged":
+            return row["tenant_id"]
         # Name match: scan display_name (small fleet). Deterministic — first row
         # whose normalized display_name equals the needle wins.
         resp = self._table().scan(

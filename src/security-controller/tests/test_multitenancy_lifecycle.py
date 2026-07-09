@@ -107,6 +107,34 @@ def test_resolve_org_excludes_purged_tenant(mt_env):
     )
 
 
+def test_resolve_org_matches_exact_tenant_id_for_non_t_slug(mt_env):
+    """WS-G G0.2 / D14 fix: a human-readable tenant_id (a verified-domain-style
+    slug like ``acme`` — NOT the minted ``t_<...>`` form) must resolve when an
+    operator types the org's own id, even though it does not match the fuller
+    ``display_name``. This is the real prod case: the design-partner tenant is
+    ``tenant_id="acme"`` / ``display_name="Acme (design partner)"``, so typing
+    "Acme" (→ display_name miss) previously 404'd. The exact-id path must fire for
+    ANY slug, not only ``t_``-prefixed ones.
+
+    Non-vacuous: it asserts the id resolves AND that the un-typed-display substring
+    still resolves, and that a genuine non-match still returns None (so a green
+    result can't come from a resolver that matches everything)."""
+    from app.services.tenant_service import get_tenant_store
+
+    store = get_tenant_store()
+    # Seed exactly the prod shape: human-readable id + fuller display name.
+    store.create(display_name="Acme (design partner)", tenant_id="acme")
+
+    # The fix: exact tenant_id resolves for a non-`t_` slug (case-insensitive).
+    assert store.resolve_org_to_tenant_id("acme") == "acme"
+    assert store.resolve_org_to_tenant_id("ACME") == "acme"
+    assert store.resolve_org_to_tenant_id("  acme  ") == "acme"
+    # The full display_name still resolves (name-scan branch unaffected).
+    assert store.resolve_org_to_tenant_id("Acme (design partner)") == "acme"
+    # A genuine non-match still misses (resolver is not matching everything).
+    assert store.resolve_org_to_tenant_id("globex") is None
+
+
 def test_identity_mode_validation(mt_env):
     from app.services.tenant_service import TenantError, get_tenant_store
 
