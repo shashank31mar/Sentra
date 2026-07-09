@@ -106,6 +106,36 @@
     var msg = document.getElementById('msg');
     var submit = document.getElementById('submit');
 
+    // Skip-if-authenticated guard: the org page is the front door for the
+    // NORMAL entry path (splash CTA + post-logout), so a visitor who already
+    // has a live Cognito session must not be made to pick their org again.
+    // /whoami is a same-origin nginx endpoint that echoes the ALB-injected
+    // x-amzn-oidc-identity (empty string when there is no session). A non-empty
+    // email ⇒ already signed in ⇒ bounce straight to the console. This is UX
+    // only: the ALB still Cognito-gates /overview and every /v1/* call, and the
+    // server re-validates tenant membership — the guard can't grant access, only
+    // save an authenticated operator a redundant screen. Fail-open to the org
+    // form on any error (never trap a user who can't be identified).
+    (function skipIfAuthenticated() {
+      try {
+        // /whoami is Cognito-gated at the ALB: with no session it 302s to the
+        // Cognito authorize endpoint. `redirect: 'manual'` makes that come back as
+        // an opaque-redirect (status 0, ok=false) instead of the fetch chasing a
+        // cross-origin login page (which would throw a CORS error into the console) —
+        // matches the app's own http.ts idiom. A live session returns 200 with the
+        // ALB-injected identity. Same-origin fetch sends the session cookie by
+        // default, so an authenticated operator gets their email and is skipped in.
+        fetch('/whoami', { headers: { 'Accept': 'application/json' }, cache: 'no-store', redirect: 'manual' })
+          .then(function (r) { return r.ok ? r.json() : null; })
+          .then(function (who) {
+            if (who && typeof who.email === 'string' && who.email.trim() !== '') {
+              window.location.replace('/overview');
+            }
+          })
+          .catch(function () { /* no session / endpoint error → show the org form */ });
+      } catch (_) { /* fetch unavailable → show the org form */ }
+    })();
+
     form.addEventListener('submit', function (e) {
       e.preventDefault();
       var org = (input.value || '').trim();

@@ -102,10 +102,14 @@
         <p class="tagline">Runtime Control Plane for AI Agents</p>
         <div class="badge"><span class="dot"></span><span>Secure Channel · SOC</span></div>
       </div>
-      <!-- Real authentication happens at Cognito (via the ALB). This button
-           enters the authenticated console; the ALB intercepts and presents the
-           Cognito sign-in, then returns the operator to /overview. -->
-      <a class="cta" href="/overview">
+      <!-- Org-first entry (ADR-039). The CTA goes to the static org page, NOT
+           straight to /overview: the operator identifies their organization
+           first (public resolve_org → tenant_id stashed per-tab), then org.html
+           bounces to /overview where the ALB presents Cognito sign-in and the
+           server re-validates X-Aegion-Tenant ∈ memberships. A visitor who is
+           already authenticated is skipped past the org page by org.html's own
+           /whoami guard, so this lands them straight in the console. -->
+      <a class="cta" href="/org.html">
         <span class="fill"></span>
         <span class="label">Access Control Plane →</span>
       </a>
