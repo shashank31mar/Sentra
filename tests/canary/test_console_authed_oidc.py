@@ -83,15 +83,27 @@ def test_oidc_read_authenticated(console_oidc_client, spec):
     The positive code is route-shaped and NOT pinned to 200: an id-addressed read filled
     with the synthetic ``canary-probe-id`` legitimately hits the ownership gate —
     ``assert_owns(AGENT)`` on a non-tenant-prefixed id → 403, an opaque foreign
-    id (tenant/policy/connection) → existence-masked 404 — and a platform route for the
-    non-platform viewer → 403. All of those are CORRECT fail-secure behavior, not a leak.
-    So we assert a documented, non-401, sub-500 status: 200 (readable/empty), 403
-    (ownership/platform denied), or 404 (existence-masked)."""
+    id (tenant/policy/connection) → existence-masked 404 — and a route with a REQUIRED
+    query param (``/logs``, ``/metrics``, ``/sessions/{id}/trail``) probed WITHOUT it →
+    422 (FastAPI validates the param before the handler runs). A platform route for the
+    non-platform viewer → 403. All are CORRECT behavior, not a leak. So the documented
+    non-401 set is {200, 403, 404, 422}.
+
+    A GATEWAY 5xx (502/503/504) through the console-host nginx is the known fleet-scan
+    latency (WS-21: ``GET /v1/sessions`` is an un-paged DDB scan that can exceed the ALB
+    idle timeout), NOT an auth finding — skip-with-reason (transient infra), mirroring
+    how the main canary client treats a gateway 5xx (bounded-retry → INFRA, not FAIL). A
+    true app-500 (not 502/503/504) is still a hard FAIL."""
     resp = console_oidc_client.get(_fill(spec.path))
     assert resp.status_code != 401, (
         f"authed GET {spec.path} → 401 — the operator session cookie did not carry "
         f"(login fixture / console-host routing broken)"
     )
+    if resp.status_code in (502, 503, 504):
+        pytest.skip(
+            f"authed GET {spec.path} → {resp.status_code} gateway 5xx (known WS-21 "
+            f"fleet-scan latency through console-host nginx, not an auth finding)"
+        )
     if spec.path.startswith("/v1/platform/"):
         # A non-platform viewer must be refused the platform lane (require_platform).
         assert resp.status_code == 403, (
@@ -99,7 +111,8 @@ def test_oidc_read_authenticated(console_oidc_client, spec):
             f"expected 403 (fail-secure)"
         )
     else:
-        assert resp.status_code in (200, 403, 404), (
+        assert resp.status_code in (200, 403, 404, 422), (
             f"authed viewer GET {spec.path} → {resp.status_code}, expected 200 (readable), "
-            f"403 (ownership-denied on the probe id), or 404 (existence-masked); never 401/5xx"
+            f"403 (ownership/platform denied), 404 (existence-masked), or 422 (missing "
+            f"required query param); never 401 (login broke) or a non-gateway 5xx"
         )

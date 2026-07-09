@@ -473,9 +473,15 @@ class _ConsoleSession:
         self._page.on("pageerror", _on_pageerror)
         rendered = False
         try:
-            self._page.goto(f"{self._base}{path}", wait_until="networkidle", timeout=20000)
-            # A landmark element (the console app shell) — explicit wait, never sleep.
-            self._page.wait_for_selector("#root, main, [data-app-shell]", timeout=15000)
+            # domcontentloaded, NOT networkidle: the overview dashboard fires a slow
+            # fleet-scan XHR (WS-21) that can keep the network busy past the timeout, so
+            # networkidle would falsely fail "did it render". We gate render on the SPA
+            # shell mounting CONTENT, not on all XHRs settling.
+            self._page.goto(f"{self._base}{path}", wait_until="domcontentloaded", timeout=20000)
+            # The React root (#root, always in index.html) must have MOUNTED content —
+            # `#root > *` proves the app rendered, not just that the empty div exists. A
+            # nav landmark (<main> from AppLayout) is the stronger signal when present.
+            self._page.wait_for_selector("main, [data-app-shell], #root > *", timeout=15000)
             rendered = True
         except Exception:  # noqa: BLE001 — a render/timeout failure is a FAIL, captured below.
             rendered = False
