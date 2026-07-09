@@ -10,7 +10,7 @@
 | Workstream | Doc | Domain | Scope | Blocking? |
 |---|---|---|---|---|
 | **ws-g-fix-frontend** ✅ **DONE+DEPLOYED** | [ws-g-fix-frontend.md](ws-g-fix-frontend.md) | frontend (React 19 + TS + Tailwind v4 + Vite; Vitest) | FX-1 (5 HIGH: sigma-toggle gate, `/trail` bind, session-forensics header, agent activity-status map, fleet KPI grid) + FX-2 (security/correctness MEDIUMs) + FX-3 (canvas-fidelity MEDIUMs) + FXR-1..4 residuals + #4 server-side `threat_type` facet. All in `web/console/src`. **Merged main `90b81c9`+`4d3695c`, deployed to prod 2026-07-09, 195 tests green.** | ✅ done — 2 items ship PARTIAL until the backend lane |
-| **ws-g-fix-backend** ⬜ **OPTIONAL — NOT RUN** | [ws-g-fix-backend.md](ws-g-fix-backend.md) | backend (Python + pytest, `src/security-controller`) | 2 field-adds only: `winning_source` on `GET /v1/decisions` rows (FX-3.1), `platform_read_consent` on `platform_list_tenants` rows (FX-3.5). No CDK, no deploy. **Verified NOT present in code (2026-07-09) — deliberately deferred; the 2 UI views degrade to honest PARTIAL.** | no — each has a UI-PARTIAL fallback; run to upgrade the two PARTIAL views to full |
+| **ws-g-fix-backend** ⬜ **OPTIONAL — NOT RUN** | [ws-g-fix-backend.md](ws-g-fix-backend.md) | backend (Python + pytest, `src/security-controller`) | 2 field-adds only: `winning_source` on `GET /v1/decisions` rows (FX-3.1), `platform_read_consent` on `platform_list_tenants` rows (FX-3.5). No CDK, no deploy. **Verified NOT present in code (2026-07-09) — DEFERRED pending a design partner (founder 2026-07-09, anti-over-build); the 2 UI views degrade to honest PARTIAL.** | no — each has a UI-PARTIAL fallback; build only when a design partner needs it |
 
 ## Dependency graph
 

@@ -1,5 +1,7 @@
 # ws-g-fix-backend — console review-findings fix lane (backend, OPTIONAL)
 
+> **⏸️ DEFERRED — pending a design partner (founder 2026-07-09).** Not "forgotten" or "TODO": a deliberate anti-over-build decision. The two views this lane would upgrade (Threats detector-facet, platform Consent column) ship **honest PARTIAL** today — nothing looks broken. Build this lane only when a design partner concretely needs the detector-facet filter or the fleet consent-at-a-glance column; not before. The console is sufficiently built for the current stage.
+
 > **Doc role:** code-loop backend build lane — **optional**. Two field-adds that upgrade two frontend PARTIAL states to full fidelity. The frontend lane ships without these (honest PARTIAL), so this lane is **not blocking**. **Full detail in [../ws-g-fix-review-findings.md](../ws-g-fix-review-findings.md)** (FX-3.1, FX-3.5).
 > **Stack:** Python + pytest (`src/security-controller`). **Tests moto-safe:** `env -u AWS_PROFILE` + fake creds + `venv/bin/python`. **No CDK, no `cdk deploy`, no AWS mutation.**
 > **Parent:** [lld/40](../../../lld/40-multi-tenant-console.md) §6.4 (winning_source facet), §6.11 (consent). Owner class = WS-N/WS-M-backend (shared `routes.py`/`tenancy_routes.py`).
