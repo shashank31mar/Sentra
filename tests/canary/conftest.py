@@ -481,7 +481,7 @@ class _ConsoleSession:
             # The React root (#root, always in index.html) must have MOUNTED content —
             # `#root > *` proves the app rendered, not just that the empty div exists. A
             # nav landmark (<main> from AppLayout) is the stronger signal when present.
-            self._page.wait_for_selector("main, [data-app-shell], #root > *", timeout=15000)
+            self._page.wait_for_selector("main, [data-app-shell], #root > *", timeout=25000)
             rendered = True
         except Exception:  # noqa: BLE001 — a render/timeout failure is a FAIL, captured below.
             rendered = False
@@ -584,6 +584,18 @@ def _hosted_ui_login(page, base_url: str, creds: Dict[str, str]) -> None:
         page.wait_for_url(f"{base_url.rstrip('/')}/**", timeout=30000)
     except Exception:  # noqa: BLE001 — fall back to a load-state settle if the glob misses.
         page.wait_for_load_state("networkidle", timeout=20000)
+    # WARM-UP the SPA once, generously (45s): the FIRST authed page-load pays the cold
+    # cost — session-cookie exchange + initial React bundle + the auth-context bootstrap
+    # — on top of the overview's slow WS-21 fleet-scan. Absorbing that here (once) means
+    # the per-route sweep waits can stay tight and the first route (/) isn't a cold-boot
+    # false RED. A warm-up timeout is itself a login/boot precondition failure (INFRA).
+    try:
+        page.wait_for_selector("main, [data-app-shell], #root > *", timeout=45000)
+    except Exception as exc:  # noqa: BLE001 — cold-boot never mounted → precondition fail.
+        raise RuntimeError(
+            f"console SPA shell did not mount within 45s after login at {page.url!r} "
+            f"(cold-boot/auth-context bootstrap stalled — J8 LoginFixtureFailed, INFRA)"
+        ) from exc
 
 
 @pytest.fixture(scope="session")
