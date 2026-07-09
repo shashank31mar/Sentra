@@ -27,6 +27,14 @@ logger = logging.getLogger(__name__)
 # Constants
 AWS_SERVICE_DYNAMODB = 'dynamodb'
 
+# WS-21 latency bound: max DynamoDB scan pages `query_sessions` will accumulate for one
+# request before returning a partial page + resume cursor. Caps the worst-case low-
+# selectivity scan (e.g. status=quarantined in a mostly-active table) so it can't run
+# past the ALB 60s idle timeout → 502. Each page is a full 1MB scan segment; 20 pages
+# (~20MB scanned) is well within the timeout while still surfacing matches deep in the
+# table across successive cursor-paged requests.
+_MAX_SCAN_PAGES = 20
+
 
 class SessionNotFoundError(Exception):
     """Raised when session doesn't exist"""
@@ -603,24 +611,46 @@ class SessionManager:
             # beyond the first page of (mostly active) sessions. Accumulate full scan pages until we
             # have >= cap matches or the table is exhausted; the cursor resumes at the PAGE boundary
             # (LastEvaluatedKey), so paging is gap-free and overlap-free.
-            sessions: List[Dict[str, Any]] = []
-            last_key: Optional[Dict[str, Any]] = None
-            while True:
-                # WS-N N2.1 dual-mode: tenant_id set → query_or_scan (customer,
-                # single-tenant); tenant_id None → fleet_scan (platform fleet view).
-                if tenant_id is not None:
-                    response = tenancy.query_or_scan(self.table, **scan_kwargs)
-                else:
-                    response = tenancy.fleet_scan(self.table, **scan_kwargs)
-                for item in response.get('Items', []):
-                    sessions.append(self._format_session_for_api(item))
-                last_key = response.get('LastEvaluatedKey')
-                if len(sessions) >= cap or not last_key:
-                    break
-                scan_kwargs['ExclusiveStartKey'] = last_key
+            #
+            # WS-21 latency fix (2026-07-09): TWO problems this closes —
+            #   (1) `query_or_scan`/`fleet_scan` are SYNC boto3; running the page loop directly on
+            #       the event loop BLOCKS it (serializes every concurrent request — the /overview
+            #       + console-host 502 the canary surfaced). Offload to a worker thread, matching
+            #       routes.scan_decisions / metrics /overview which already `asyncio.to_thread`.
+            #   (2) with a low-selectivity FilterExpression (e.g. status=quarantined in a mostly-
+            #       active table) the loop scanned the WHOLE table for `cap` matches → exceeded the
+            #       ALB 60s idle timeout → 502. Bound it to _MAX_SCAN_PAGES: on the cap, return the
+            #       partial page + a cursor at the last page boundary (gap-free), so the caller
+            #       pages on instead of the request hanging to a 502.
+            def _accumulate_pages() -> "tuple[List[Dict[str, Any]], Optional[Dict[str, Any]]]":
+                acc: List[Dict[str, Any]] = []
+                lk: Optional[Dict[str, Any]] = None
+                pages = 0
+                while True:
+                    # WS-N N2.1 dual-mode: tenant_id set → query_or_scan (customer,
+                    # single-tenant); tenant_id None → fleet_scan (platform fleet view).
+                    if tenant_id is not None:
+                        response = tenancy.query_or_scan(self.table, **scan_kwargs)
+                    else:
+                        response = tenancy.fleet_scan(self.table, **scan_kwargs)
+                    for item in response.get('Items', []):
+                        acc.append(self._format_session_for_api(item))
+                    lk = response.get('LastEvaluatedKey')
+                    pages += 1
+                    # Stop on enough matches, table exhausted, OR the page budget (bound the
+                    # worst-case low-selectivity scan so it can't run past the ALB timeout).
+                    if len(acc) >= cap or not lk or pages >= _MAX_SCAN_PAGES:
+                        break
+                    scan_kwargs['ExclusiveStartKey'] = lk
+                return acc, lk
 
+            sessions, last_key = await asyncio.to_thread(_accumulate_pages)
+
+            # A next_token is emitted whenever the scan stopped SHORT of table-exhaustion —
+            # either the match cap OR the page budget was hit — so a low-selectivity filter
+            # resumes on the next request instead of hanging this one to a 502.
             next_token = None
-            if last_key and len(sessions) >= cap:
+            if last_key:
                 next_token = base64.b64encode(json.dumps(last_key).encode()).decode()
 
             return {

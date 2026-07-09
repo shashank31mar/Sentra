@@ -101,6 +101,44 @@ async def test_list_quarantined_spans_all_tenants(fleet_env):
 
 
 @pytest.mark.asyncio
+async def test_query_sessions_scan_is_page_bounded(fleet_env, monkeypatch):
+    """WS-21 latency fix: a LOW-SELECTIVITY filter (status=quarantined over a table of
+    all-active sessions) must NOT scan the whole table — it stops at `_MAX_SCAN_PAGES`
+    and returns a resume cursor, so the request can't run past the ALB 60s idle timeout
+    → 502. Non-vacuous: with the page-bound removed the loop scans every page (no cursor,
+    table exhausted) and this cursor assertion fails.
+
+    We shrink `_MAX_SCAN_PAGES` to 2 and force ~1 item/page via `query_or_scan` Limit=1,
+    seeding 6 non-matching (active) sessions so the budget is hit well before exhaustion."""
+    import app.utils.session_manager as sm
+
+    for i in range(6):
+        _put_session(fleet_env, tenant="acme", session_id=f"s-active-{i}",
+                     quarantine_status="active", trust_score=90, agent_id="acme-payments-agent")
+
+    monkeypatch.setattr(sm, "_MAX_SCAN_PAGES", 2)
+    # Force one item per scan page so 6 items → >2 pages (the budget bites before exhaustion).
+    _orig = tenancy.fleet_scan
+    monkeypatch.setattr(tenancy, "fleet_scan",
+                        lambda table, **kw: _orig(table, **{**kw, "Limit": 1}))
+
+    token = tenancy.set_current_tenant("default")
+    try:
+        result = await sm.SessionManager().query_sessions(status="quarantined")
+    finally:
+        tenancy.reset_current_tenant(token)
+
+    # 0 matches after 2 pages (all seeded are active), but the scan STOPPED at the budget
+    # and handed back a cursor to resume — NOT scanned-to-exhaustion (which would 502 at
+    # scale). The cursor being non-null is the proof the scan was bounded, not complete.
+    assert result["total"] == 0
+    assert result["next_token"] is not None, (
+        "bounded scan must return a resume cursor when it hits the page budget short of "
+        "exhaustion (else a low-selectivity filter scans the whole table → ALB-timeout 502)"
+    )
+
+
+@pytest.mark.asyncio
 async def test_agents_below_trust_spans_all_tenants(fleet_env):
     """agents-below-trust aggregates across tenants too."""
     from app.utils.session_manager import SessionManager
