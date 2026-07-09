@@ -67,6 +67,8 @@ class CanaryStack(Stack):
         cluster: ecs.ICluster,
         execution_role: Optional[iam.IRole] = None,
         api_gw_url: str = "",
+        console_url: str = "https://console.aegionai.ai",  # J8 (§5C): the console host the
+        # Playwright login + oidc-authed legs drive (nginx re-emits x-sentra-oidc-data there).
         critical_alerts_topic_arn: Optional[str] = None,
         **kwargs,
     ) -> None:
@@ -187,7 +189,16 @@ class CanaryStack(Stack):
                 },
             )
         )
-        # (NO apigateway:GET, NO product-table write — Increment-1 scope.)
+        # J8 (§5C) delta: apigateway:GET for the console/OIDC gateway reconciliation
+        # (J8.4/J8.5 — verify the deployed method↔manifest lockstep). Read-only, scoped to
+        # this region's REST-API resources. Still NO product-table write, still no _platform
+        # (SEC-4/SEC-7 hold — this is a read of the caller's own gateway config).
+        self.canary_task_role.add_to_policy(
+            iam.PolicyStatement(
+                actions=["apigateway:GET"],
+                resources=[f"arn:aws:apigateway:{self.region}::/restapis*"],
+            )
+        )
 
         # ---- 5) Fargate task def (Ji.4) ------------------------------------------
         self.task_definition = ecs.FargateTaskDefinition(
@@ -211,6 +222,7 @@ class CanaryStack(Stack):
             environment={
                 "CANARY_TARGET": "live",
                 "SENTRA_API_GW_URL": api_gw_url,
+                "SENTRA_CONSOLE_URL": console_url,  # J8: console host for the Playwright lane
                 "CANARY_RESULTS_TABLE": RESULTS_TABLE_NAME,
             },
             # 15-min hard deadline — a wedged task is reaped externally (§12).

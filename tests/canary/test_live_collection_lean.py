@@ -32,7 +32,12 @@ _CANARY_DIR = Path(__file__).resolve().parent
 # The lean container's non-stdlib runtime deps (docker/canary/Dockerfile RUN pip).
 # A live-collected module may import ONLY these third-party roots + the canary package
 # itself + the stdlib. fastapi/pydantic/aegion_guard/moto/app are NOT installed there.
-_LEAN_THIRD_PARTY = frozenset({"httpx", "boto3", "botocore", "pytest", "_pytest"})
+# J8 (§5C): the canary image now also carries Playwright + headless Chromium (the
+# console UI sweep + hosted-UI login run in the SAME hourly container), so `playwright`
+# joins the lean allowlist. The console module still `importorskip`s it so a browserless
+# run (the hermetic PR gate, or a future lean edition without the browser) SKIP-collects
+# rather than errors — belt-and-suspenders on top of the allowlist.
+_LEAN_THIRD_PARTY = frozenset({"httpx", "boto3", "botocore", "pytest", "_pytest", "playwright"})
 _CANARY_ROOTS = frozenset({"canary"})
 # The heavy roots that MUST NOT appear at module level in a live-collected module.
 _FORBIDDEN_LIVE_ROOTS = frozenset({"app", "aegion_guard", "fastapi", "pydantic", "moto"})
@@ -71,10 +76,19 @@ def _top_level_import_roots(py_file: Path) -> Set[str]:
     return roots
 
 
+_LIVE_COLLECTED_EXPECTED = {
+    "test_all_routes.py",           # P0-1 all-route positive/negative sweep (httpx)
+    "test_metrics_live.py",         # requires_live CloudWatch metric checks (httpx)
+    "test_oidc_routes_live.py",     # J8.4 no-identity 401 sweep of the oidc lane (httpx)
+    "test_console_authed_oidc.py",  # J8.1-J8.4 Playwright login + authed legs (browser)
+}
+
+
 def test_live_collected_set_is_exactly_the_black_box_scenarios():
-    """The live-collected set is EXACTLY the two pure-httpx black-box scenario modules.
-    A widening (someone drops a module out of the ignore list) trips this."""
-    assert _live_collected_modules() == {"test_all_routes.py", "test_metrics_live.py"}
+    """The live-collected set is EXACTLY the pure-httpx black-box scenario modules + the
+    J8 console modules (httpx oidc sweep + the Playwright console lane). A widening
+    (someone drops a module out of the ignore list) trips this."""
+    assert _live_collected_modules() == _LIVE_COLLECTED_EXPECTED
 
 
 def _load_conftest_under(target: str):
@@ -111,7 +125,7 @@ def test_conftest_wires_live_collect_ignore_and_leaves_inprocess_full():
     above check intent; THIS checks the real conftest wiring."""
     expected_ignore = {
         p.name for p in _CANARY_DIR.glob("test_*.py")
-    } - {"test_all_routes.py", "test_metrics_live.py"}
+    } - _LIVE_COLLECTED_EXPECTED
 
     live_conftest = _load_conftest_under("live")
     assert set(live_conftest.collect_ignore) == expected_ignore, (
@@ -197,6 +211,39 @@ def test_dockerfile_copies_the_integration_conftest_the_canary_conftest_loads():
     )
     # And the canary suite itself must be copied (sanity).
     assert any("tests/canary/" in ln for ln in copy_lines)
+
+
+def test_dockerfile_has_playwright_chromium_for_j8():
+    """J8.0 — the canary image must carry Playwright + headless Chromium (the console UI
+    sweep + hosted-UI login run in the hourly container). Assert the pip install includes
+    playwright AND `playwright install ... chromium` runs. (The --no-sandbox/headless=new
+    launch flags + SEC-10 no-trace are enforced in conftest._ConsoleSession, asserted by
+    test_console_launch_flags_are_fargate_safe.)"""
+    dockerfile = (_CANARY_DIR.parents[1] / "docker" / "canary" / "Dockerfile").read_text()
+    assert "playwright" in dockerfile, (
+        "docker/canary/Dockerfile must pip-install playwright — the J8 console lane needs it"
+    )
+    assert "playwright install" in dockerfile and "chromium" in dockerfile, (
+        "docker/canary/Dockerfile must run `playwright install ... chromium` — pip alone "
+        "does not fetch the browser binary"
+    )
+
+
+def test_console_launch_flags_are_fargate_safe():
+    """J8.0/SEC-10 — Chromium under Fargate has no user namespaces, so the console session
+    MUST launch with --no-sandbox, and MUST NOT capture a trace/screenshot (prod cookies +
+    authed DOM). Static-check the conftest source (no browser import needed)."""
+    src = (_CANARY_DIR / "conftest.py").read_text()
+    assert "--no-sandbox" in src, "console Chromium must launch --no-sandbox under Fargate"
+    # SEC-10: no capture CALL in the console session. Match the actual API *invocations*
+    # (kwarg assignment / method call), not the bare word — a descriptive comment that
+    # names the prohibition ("no record_video / no tracing") must NOT trip this.
+    for forbidden in ("record_video=", "record_video_dir=", ".screenshot(",
+                      "tracing.start(", ".start_tracing("):
+        assert forbidden not in src, (
+            f"SEC-10 violated: console session must never invoke {forbidden!r} "
+            f"(real prod cookies + authed DOM must not hit an artifact)"
+        )
 
 
 def test_pythonunbuffered_set_so_prod_logs_flush():

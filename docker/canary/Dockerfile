@@ -1,27 +1,38 @@
 # WS-J canary — the 8th image (ECS synthetic monitor, Runner B). lld/38 §9, Ji.1.
 #
-# Increment 1: httpx + boto3 ONLY — NO Playwright/Chromium (that is Increment-2,
-# the console increment §8.4). The container runs the transport-parameterized
-# scenario library against the LIVE deployed API Gateway (CANARY_TARGET=live) and
-# writes results via the reporting plugin.
+# Increment 2 (J8, §5C): httpx + boto3 + **Playwright/headless Chromium**. The console
+# UI sweep + the real Cognito hosted-UI login (D-4) run in the SAME hourly container as
+# the httpx black-box scenarios. The console/oidc-authed modules are requires_live AND
+# import-guard playwright, so a browserless run (a lean edition / the PR gate) SKIP-
+# collects them rather than erroring collection (the lean-alarm-blanking invariant).
+# The container runs the transport-parameterized scenario library against the LIVE
+# deployed API Gateway + console (CANARY_TARGET=live) and writes results via the plugin.
 #
 # Build from Sentra root:
 #   docker build -f docker/canary/Dockerfile -t sentra/canary:latest .
 #
 # Run (hourly, via EventBridge Scheduler → ecs:RunTask):
-#   docker run -e CANARY_TARGET=live -e SENTRA_API_GW_URL=... \
+#   docker run -e CANARY_TARGET=live -e SENTRA_API_GW_URL=... -e SENTRA_CONSOLE_URL=... \
 #              -e CANARY_RESULTS_TABLE=sentra-canary-results sentra/canary:latest
 
 FROM python:3.11-slim
 
 WORKDIR /app
 
-# Lean runtime deps only (§12 cost) — no Playwright/Chromium in Increment 1.
+# Runtime deps. J8 adds Playwright; httpx/boto3 remain for the pure-httpx scenario lane.
+# Chromium ~doubles image size vs Increment-1 (§12 cost, accepted for the console lane).
 RUN pip install --no-cache-dir \
     "httpx>=0.27,<1" \
     "boto3>=1.34" \
     "pytest>=8" \
-    "pytest-cov>=5"
+    "pytest-cov>=5" \
+    "playwright>=1.44,<2"
+
+# Install headless Chromium + its OS deps. --with-deps runs apt-get for the shared libs
+# (fonts, nss, etc.) headless Chromium needs on slim. Under Fargate there are no user
+# namespaces, so scenarios launch Chromium with --no-sandbox --headless=new (see
+# conftest._ConsoleSession). SEC-10: NO trace/screenshot is ever captured (prod cookies).
+RUN playwright install --with-deps chromium
 
 # The scenario library + the controller app. In the LIVE container only the two
 # black-box httpx scenario modules (test_all_routes.py + test_metrics_live.py) are

@@ -83,6 +83,11 @@ _MUT = ("401", "403", "422")    # gated mutation (403 once authz lands)
 ROUTE_MANIFEST: List[RouteSpec] = [
     # --- public --------------------------------------------------------------
     RouteSpec("/v1/health", "GET", "public", "WS-J", (), True, False),
+    # WS-G org-first login: org NAME -> {tenant_id}, reachable BEFORE Cognito (non-/v1,
+    # public, per-IP + global rate-limited, fail-closed). 422 on a bad/missing org body;
+    # 429 only against the canary's own plan (SEC-6, live-only). landed_flag=False:
+    # it's a live-only public route (needs the deployed rate-limiter; no hermetic form).
+    RouteSpec("/public/resolve-org", "GET", "public", "WS-G", ("422",), False, False),
 
     # --- /v1/validate (WS-B/D) ----------------------------------------------
     _key("/v1/validate", "POST", "WS-B", ("401", "422", "DENY"), landed=True),
@@ -166,8 +171,10 @@ ROUTE_MANIFEST: List[RouteSpec] = [
               "WS-M", ("401", "403", "404"), False, True),
 
     # --- OIDC (16 — the 2 tenancy_routes.py sets; Increment-2 console/auth) ---
-    _oidc("/v1/me", "GET", "WS-G"),
-    _oidc("/v1/identity/residual-agents", "GET", "WS-M"),
+    # J8: both are operator-gated (resolve_operator_tenant) — a tokenless call 401s,
+    # so they carry the 401 axis the no-identity live probe (test_oidc_routes_live) asserts.
+    _oidc("/v1/me", "GET", "WS-G", ("401",)),
+    _oidc("/v1/identity/residual-agents", "GET", "WS-M", ("401",)),
     _oidc("/v1/agents/{agent_id}/credentials", "GET", "WS-M", _NA404),
     _oidc("/v1/agents/{agent_id}/credentials", "POST", "WS-M", ("401", "403", "422"), gap=True),
     _oidc("/v1/agents/{agent_id}/credentials/{kid}/rotate", "POST", "WS-M", ("401", "403", "404"), gap=True),
@@ -200,7 +207,7 @@ REQUIRED_SCENARIOS: Dict[str, bool] = {
     "J3": False,   # differential conformance — WS-A local-floor + WS-I emitter
     "J5": False,   # metering no-miss/dedup — WS-H
     "J7": True,    # server authz gate — WS-M LANDED 2026-07-07 (§5A); console UI = J8
-    "J8": False,   # console UI sweep + OIDC routes — WS-G/WS-M (Increment 2)
+    "J8": True,    # console UI sweep + OIDC-route coverage — WS-G LANDED 2026-07-09 (§5C)
 }
 
 

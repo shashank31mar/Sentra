@@ -91,33 +91,42 @@ def test_canary_sns_email_p0_3():
 
 
 def test_canary_task_def_least_privilege():
-    """Ji.4 — a sentra-canary Fargate task def (512/1024) with CANARY_TARGET=live and
-    a task role scoped to the SEC-4 actions (no product-table write, no apigateway:GET)."""
+    """Ji.4 / J8.5 — a sentra-canary Fargate task def (512/1024) with CANARY_TARGET=live,
+    SENTRA_CONSOLE_URL (the J8 console lane), and a task role scoped to the SEC-4 actions.
+    J8 adds a read-only apigateway:GET (gateway reconciliation) — still NO product-table
+    write, still no _platform."""
     t = _canary_template()
     t.has_resource_properties("AWS::ECS::TaskDefinition", {
         "Family": "sentra-canary",
         "Cpu": "512",
         "Memory": "1024",
     })
-    # The container carries CANARY_TARGET=live.
+    # The container carries CANARY_TARGET=live + the J8 console URL.
     t.has_resource_properties("AWS::ECS::TaskDefinition", {
         "ContainerDefinitions": Match.array_with([
             Match.object_like({
                 "Environment": Match.array_with([
                     {"Name": "CANARY_TARGET", "Value": "live"},
+                    {"Name": "SENTRA_CONSOLE_URL", "Value": "https://console.aegionai.ai"},
                 ]),
             }),
         ]),
     })
-    # The task role must NOT grant apigateway:GET (Increment-1 negative contract).
     policies = t.find_resources("AWS::IAM::Policy")
     all_actions = []
     for p in policies.values():
         for stmt in p["Properties"]["PolicyDocument"]["Statement"]:
             act = stmt.get("Action")
             all_actions.extend(act if isinstance(act, list) else [act])
-    assert not any("apigateway" in str(a).lower() for a in all_actions), \
-        "canary role must not carry apigateway:* in Increment 1"
+    # J8.5: apigateway:GET is now PRESENT (read-only gateway reconciliation), but still
+    # NO write verb (POST/PUT/DELETE/PATCH) on apigateway and NO product-table write.
+    assert any("apigateway:GET" == a for a in all_actions), \
+        "J8 needs apigateway:GET for the gateway reconciliation"
+    assert not any(
+        isinstance(a, str) and a.lower().startswith("apigateway:")
+        and a.split(":", 1)[1] not in ("GET",)
+        for a in all_actions
+    ), "canary apigateway grant must be GET-only (read), never a write verb"
     assert any("ecs:ListTasks" == a for a in all_actions), "overlap guard needs ecs:ListTasks"
     assert any("cloudwatch:PutMetricData" == a for a in all_actions)
     assert any("dynamodb:PutItem" == a for a in all_actions)

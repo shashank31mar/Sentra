@@ -54,8 +54,11 @@ CANARY_SENTINEL = "CANARY-PII-7F3A"  # Invariant 6 — the only sensitive marker
 # live-collected set imports only the lean allowlist, so a future app-importing test
 # added to the live set is caught in the PR gate, not in prod.
 _LIVE_SAFE_MODULES = frozenset({
-    "test_all_routes.py",     # P0-1 all-route positive/negative sweep (pure httpx)
-    "test_metrics_live.py",   # requires_live metric checks (pure httpx)
+    "test_all_routes.py",         # P0-1 all-route positive/negative sweep (pure httpx)
+    "test_metrics_live.py",       # requires_live metric checks (pure httpx)
+    "test_oidc_routes_live.py",   # J8.4 no-identity 401 sweep of the oidc lane (pure httpx)
+    "test_console_authed_oidc.py",  # J8.1-J8.4 Playwright login + authed legs (browser;
+                                     # import-guarded so a browserless run skips, not errors)
 })
 
 
@@ -408,3 +411,144 @@ def canary_operator(request):
         yield minter
     finally:
         minter.teardown()
+
+
+# ------------------------------------------------------------------ J8 console login
+# The live hosted-UI login fixture (D-4). ALL Playwright imports are LAZY (inside the
+# fixture body) so importing this conftest in the hermetic PR gate / lean image never
+# needs the browser lib. The console scenarios themselves import-guard playwright at
+# module level (test_console_authed_oidc.py) so a browserless collection skips, not errors.
+_CONSOLE_USER_SECRET = "sentra/canary/console-user"  # founder-provisioned (email/password/tenant_id)
+
+
+class _ConsoleVisitResult:
+    """What a single authed console-page visit observed (J8.2)."""
+
+    def __init__(self, rendered: bool, saw_5xx: bool, five_xx_urls, uncaught_error: bool) -> None:
+        self.rendered = rendered
+        self.saw_5xx = saw_5xx
+        self.five_xx_urls = five_xx_urls
+        self.uncaught_error = uncaught_error
+
+
+class _ConsoleSession:
+    """An authenticated Playwright browser context (J8.1) + helpers for J8.2/J8.4.
+
+    Holds ONE logged-in context for the whole run. ``visit(path)`` drives the authed
+    ``page`` and captures its network trace (render + no-5xx + no uncaught error).
+    ``oidc_client()`` returns an httpx client seeded with the ALB session cookie for
+    OIDC ``/v1`` calls THROUGH the console host (where nginx re-emits x-sentra-oidc-data
+    + injects the api-key). SEC-10: NO trace/screenshot is ever captured (real prod
+    cookies + authed DOM must never hit an artifact)."""
+
+    def __init__(self, page, context, base_url: str) -> None:
+        self._page = page
+        self._context = context
+        self._base = base_url.rstrip("/")
+
+    def visit(self, path: str) -> "_ConsoleVisitResult":
+        five_xx = []
+        uncaught = {"hit": False}
+        self._page.on("response", lambda r: five_xx.append(r.url) if r.status >= 500 else None)
+        self._page.on("pageerror", lambda _e: uncaught.__setitem__("hit", True))
+        rendered = False
+        try:
+            self._page.goto(f"{self._base}{path}", wait_until="networkidle", timeout=20000)
+            # A landmark element (the console app shell) — explicit wait, never sleep.
+            self._page.wait_for_selector("#root, main, [data-app-shell]", timeout=15000)
+            rendered = True
+        except Exception:  # noqa: BLE001 — a render/timeout failure is a FAIL, captured below.
+            rendered = False
+        return _ConsoleVisitResult(rendered, bool(five_xx), five_xx, uncaught["hit"])
+
+    def oidc_client(self):
+        """An httpx client carrying the ALB session cookies, based at the console host."""
+        import httpx
+
+        cookies = {c["name"]: c["value"] for c in self._context.cookies()}
+        return httpx.Client(base_url=self._base, cookies=cookies, timeout=15.0,
+                            follow_redirects=False)
+
+
+def _load_console_user() -> Dict[str, str]:
+    """Read the founder-provisioned canary console user (email/password/tenant_id).
+
+    A precondition failure (secret absent / malformed) is RAISED — the reporting plugin
+    records INFRA, never a silent skip (a skipped security canary is an ungated claim)."""
+    import json
+
+    raw = _load_secret(_CONSOLE_USER_SECRET)
+    try:
+        data = json.loads(raw)
+        # Validate + narrow external data before use (never trust the secret blob shape).
+        email, password = data["email"], data["password"]
+    except (ValueError, KeyError, TypeError) as exc:
+        raise RuntimeError(
+            f"canary console-user secret {_CONSOLE_USER_SECRET!r} is missing/malformed "
+            f"(need JSON with email+password) — J8 login precondition FAIL (INFRA, not skip)"
+        ) from exc
+    return {"email": email, "password": password, "tenant_id": data.get("tenant_id", "")}
+
+
+def _hosted_ui_login(page, base_url: str, creds: Dict[str, str]) -> None:
+    """Drive the real ALB authenticate-cognito hosted-UI form-fill (D-4). Org-first:
+    land on org.html, submit the org, follow to the Cognito hosted UI, fill the
+    canary user's email+password by STABLE field semantics (never css/nth-child), and
+    let the ALB set AWSELBAuthSessionCookie-*."""
+    page.goto(base_url, wait_until="domcontentloaded", timeout=20000)
+    # Org-first entry (WS-G): if the org page is shown, submit the canary tenant/org.
+    org = creds.get("tenant_id") or ""
+    org_field = page.query_selector("input[name='org'], input[name='organization'], #org")
+    if org_field is not None and org:
+        org_field.fill(org)
+        page.click("button[type='submit'], [type='submit']")
+    # Cognito hosted UI — stable field semantics (SEC / lld/38 §6.1).
+    page.wait_for_selector("input[name='username'], input[type='email']", timeout=20000)
+    (page.query_selector("input[name='username']") or page.query_selector("input[type='email']")).fill(creds["email"])
+    (page.query_selector("input[name='password']") or page.query_selector("input[type='password']")).fill(creds["password"])
+    page.click("input[type='submit'], button[type='submit']")
+    # Land back on the console (ALB has set the session cookie by now).
+    page.wait_for_load_state("networkidle", timeout=20000)
+
+
+@pytest.fixture(scope="session")
+def console_session():
+    """J8.1 — one authenticated console browser context for the whole run (live only).
+
+    A login failure is its OWN concern (``LoginFixtureFailed`` alarm class, lld/38 §6.1) —
+    a precondition/login error is RAISED here so the reporting plugin records it distinctly
+    (page on a 2-run streak), never folded into a route ChecksFailed count or a silent skip."""
+    if os.environ.get(CANARY_TARGET_ENV, "inprocess") != "live":
+        pytest.skip("console session is live-only (real hosted-UI login)")
+    from playwright.sync_api import sync_playwright
+
+    base_url = os.environ.get("SENTRA_CONSOLE_URL", "https://console.aegionai.ai")
+    creds = _load_console_user()  # raises → INFRA if the secret isn't provisioned yet
+    with sync_playwright() as pw:
+        # Chromium under Fargate: no user namespaces → --no-sandbox; headless=new.
+        browser = pw.chromium.launch(headless=True, args=["--no-sandbox", "--headless=new"])
+        context = browser.new_context()  # SEC-10: no record_video / no tracing
+        page = context.new_page()
+        try:
+            _hosted_ui_login(page, base_url, creds)
+            yield _ConsoleSession(page, context, base_url)
+        finally:
+            context.close()
+            browser.close()
+
+
+@pytest.fixture
+def console_page(console_session):
+    """J8.2 — the authed console session (exposes ``.visit(path)``)."""
+    return console_session
+
+
+@pytest.fixture
+def console_oidc_client(console_session):
+    """J8.4 — an httpx client carrying the ALB session cookie, based at the console host
+    (nginx re-emits x-sentra-oidc-data + injects the api-key there)."""
+    client = console_session.oidc_client()
+    try:
+        yield client
+    finally:
+        client.close()

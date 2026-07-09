@@ -213,6 +213,8 @@ def main():
     # Create Canary Stack (WS-J — hourly ECS synthetic monitor, lld/38).
     from stacks.canary_stack import CanaryStack
 
+    # J8 (§5C): the console host the Playwright login + oidc-authed legs drive.
+    _console_host = config.get("alb", {}).get("console_host", "console.aegionai.ai")
     canary_stack = CanaryStack(
         app,
         f"{stack_prefix}-Canary-Stack",
@@ -220,6 +222,7 @@ def main():
         vpc=network_stack.vpc,
         cluster=compute_stack.ecs_cluster,
         api_gw_url=api_stack.api.url,
+        console_url=f"https://{_console_host}",
         critical_alerts_topic_arn=monitoring_stack.critical_alerts_topic.topic_arn,
         env=env,
         description=f"Sentra MVP ({environment}) - WS-J synthetic canary (hourly ECS monitor + P0-3 alerts)",

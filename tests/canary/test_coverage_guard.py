@@ -109,8 +109,9 @@ def test_required_scenarios_present():
     assert REQUIRED_SCENARIOS["J4"] is True
     assert REQUIRED_SCENARIOS["J6"] is True
     assert REQUIRED_SCENARIOS["J7"] is True  # WS-M LANDED 2026-07-07 (§5A)
+    assert REQUIRED_SCENARIOS["J8"] is True  # WS-G LANDED 2026-07-09 (§5C)
     # Deferred WS stay non-required until their landed_flag flips.
-    for letter in ("J3", "J5", "J8"):
+    for letter in ("J3", "J5"):
         assert REQUIRED_SCENARIOS[letter] is False
 
 

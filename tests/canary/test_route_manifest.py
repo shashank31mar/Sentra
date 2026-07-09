@@ -13,24 +13,26 @@ from canary.route_manifest import (
 
 
 def test_manifest_row_count():
-    """(a) exactly 65 rows (61 in-code /v1 + 4 demo-proxy)."""
-    assert len(ROUTE_MANIFEST) == 65
+    """(a) 66 rows: 61 in-code /v1 + 4 demo-proxy + 1 public non-/v1 (/public/resolve-org,
+    the WS-G org-first login route — added J8 §5C when the coverage guard flagged it as a
+    wired-but-unmanifested route)."""
+    assert len(ROUTE_MANIFEST) == 66
 
 
 def test_manifest_auth_class_split():
-    """(b) exactly 1 public, 39 oidc, 4 demo_proxy, rest key/key_gated.
+    """(b) exactly 2 public, 39 oidc, 4 demo_proxy, rest key/key_gated.
 
     WS-N N8 reclassified the 21 read routes key->oidc (16 original + 21 = 37); WS-N D10
     (ADR-038) then reclassified the 2 remaining agent-lane GET reads (/trail + /signals)
-    key->oidc → 39. All in lockstep with the in-app resolve_operator_tenant gate. Total
-    rows unchanged (65); key+key_gated drops by 2 accordingly."""
+    key->oidc → 39. All in lockstep with the in-app resolve_operator_tenant gate. J8 §5C
+    added /public/resolve-org (public, non-/v1) → 2 public rows, total 66."""
     from collections import Counter
 
     c = Counter(s.auth_class for s in ROUTE_MANIFEST)
-    assert c["public"] == 1
+    assert c["public"] == 2
     assert c["oidc"] == 39
     assert c["demo_proxy"] == 4
-    assert c["key"] + c["key_gated"] == 65 - 1 - 39 - 4
+    assert c["key"] + c["key_gated"] == 66 - 2 - 39 - 4
 
 
 def test_authz_gap_rows_are_mutations():
