@@ -257,6 +257,21 @@ def test_makereport_clean_setup_is_not_counted(_active_plugin):
     assert c.get("PASS", 0) == 0 and c.get("INFRA", 0) == 0
 
 
+def test_makereport_call_phase_skip_is_not_a_fail(_active_plugin):
+    """A CALL-phase pytest.skip(...) (J8's known-WS-21 overview render-timeout / a
+    gateway-5xx authed read / a requires_live skip) raises Skipped, which sets
+    call.excinfo — it must be counted SKIPPED, NOT FAIL. Non-vacuous: before the fix this
+    fell through to classify_outcome(passed=False)→FAIL and lit the ChecksFailed alarm on
+    a deliberate skip (observed live on the J8 overview)."""
+    reporting_plugin.pytest_runtest_makereport(
+        _FakeItem("t::overview_render"),
+        _FakeCall(when="call", exc=Exception("known WS-21 latency"), typename="Skipped"),
+    )
+    c = run_counts()
+    assert c.get("FAIL", 0) == 0, "a call-phase skip must NOT count as a FAIL (would page)"
+    assert c.get("SKIPPED", 0) == 1, "a call-phase skip must be recorded as SKIPPED (visible)"
+
+
 def test_makereport_service_5xx_is_fail_and_counts_product_5xx(_active_plugin):
     """A live client that recorded a product 5xx (record_service_5xx) makes the check a
     FAIL that ALSO increments SERVICE_5XX (drives ProductFivexxFail escalation) — the

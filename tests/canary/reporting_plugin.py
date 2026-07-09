@@ -277,6 +277,22 @@ def pytest_runtest_makereport(item, call):  # pragma: no cover - ECS entrypoint 
         return
     if call.when != "call":
         return
+    # A call-phase SKIP/XFAIL (pytest.skip(...) inside a scenario — e.g. J8's known-WS-21
+    # overview render-timeout or a gateway-5xx authed read, and the requires_live skips in
+    # a non-live run) raises Skipped/XFailed, which sets call.excinfo. It is NOT a failure:
+    # counting it would make ChecksFailed++ and page on a documented, deliberate skip
+    # (observed: the overview skip lit the alarm). Record it as SKIPPED (visible, never a
+    # silent pass) and return — do NOT fall through to the FAIL classification.
+    if call.excinfo is not None and call.excinfo.typename in ("Skipped", "XFailed"):
+        _RUN_STATE["counts"]["SKIPPED"] = _RUN_STATE["counts"].get("SKIPPED", 0) + 1
+        sink.write(CanaryResult(
+            run_id=_RUN_STATE["run_id"],
+            check_id=item.nodeid,
+            status="SKIPPED",
+            route=item.nodeid,
+            failure_reason=f"skipped: {call.excinfo.value!r}",
+        ))
+        return
     exc = call.excinfo.value if call.excinfo else None
     infra = isinstance(exc, InfraError)
     passed = call.excinfo is None
