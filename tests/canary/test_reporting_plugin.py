@@ -180,14 +180,20 @@ class _FakeItem:
 
 
 class _FakeCall:
-    def __init__(self, when="call", exc=None):
+    def __init__(self, when="call", exc=None, typename=None):
         self.when = when
 
         class _ExcInfo:
-            def __init__(self, value):
+            def __init__(self, value, typename):
                 self.value = value
+                # pytest's CallInfo.excinfo carries .typename (the exception class name);
+                # the plugin reads it to detect Skipped/XFailed without importing pytest.
+                self.typename = typename or type(value).__name__
 
-        self.excinfo = _ExcInfo(exc) if exc is not None else None
+            def errisinstance(self, cls):
+                return isinstance(self.value, cls)
+
+        self.excinfo = _ExcInfo(exc, typename) if exc is not None else None
 
 
 @pytest.fixture
@@ -218,6 +224,37 @@ def test_makereport_counts_pass_fail_infra(_active_plugin):
     assert c["PASS"] == 1
     assert c["FAIL"] == 1
     assert c["INFRA"] == 1
+
+
+def test_makereport_setup_failure_counts_as_infra(_active_plugin):
+    """A fixture SETUP-phase failure (e.g. the J8 console_session login fixture raising
+    when the Cognito secret is unprovisioned / login fails) is recorded as INFRA — NOT
+    silently dropped. Without this, a whole security lane errors at setup, reaches 'call'
+    for none of its tests, contributes ZERO checks, and the run looks green while testing
+    nothing. Non-vacuous: reverting the setup branch drops this to INFRA==0."""
+    reporting_plugin.pytest_runtest_makereport(
+        _FakeItem("t::console_login"), _FakeCall(when="setup", exc=RuntimeError("secret absent")),
+    )
+    assert run_counts()["INFRA"] == 1, "a setup-phase fixture error must count as INFRA"
+
+
+def test_makereport_setup_skip_is_not_counted(_active_plugin):
+    """A legitimate SKIP at setup (importorskip: no browser installed) is NOT an error —
+    it must not inflate INFRA/FAIL (the console module skip-collects in a browserless run)."""
+    reporting_plugin.pytest_runtest_makereport(
+        _FakeItem("t::console_skip"),
+        _FakeCall(when="setup", exc=Exception("no browser"), typename="Skipped"),
+    )
+    c = run_counts()
+    assert c["INFRA"] == 0 and c["FAIL"] == 0, "a setup skip must not be counted as a failure"
+
+
+def test_makereport_clean_setup_is_not_counted(_active_plugin):
+    """A clean setup (no exc) at the 'setup' phase records nothing — the 'call' phase
+    tallies the actual PASS/FAIL. (Guards against double-counting every test.)"""
+    reporting_plugin.pytest_runtest_makereport(_FakeItem("t::x"), _FakeCall(when="setup"))
+    c = run_counts()
+    assert c.get("PASS", 0) == 0 and c.get("INFRA", 0) == 0
 
 
 def test_makereport_service_5xx_is_fail_and_counts_product_5xx(_active_plugin):

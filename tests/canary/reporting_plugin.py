@@ -247,10 +247,35 @@ def pytest_runtest_setup(item):  # pragma: no cover - ECS entrypoint path
 
 
 def pytest_runtest_makereport(item, call):  # pragma: no cover - ECS entrypoint path
-    if call.when != "call":
-        return
     sink: ResultSink = _RUN_STATE.get("sink")
     if sink is None:
+        return
+    # A SETUP-phase failure (a fixture raising — e.g. the J8 console_session login
+    # fixture when sentra/canary/console-user is unprovisioned or the hosted-UI login
+    # fails) must NOT be silently dropped: without this, every console/authed-oidc test
+    # errors at setup, reaches 'call' for none of them, and contributes ZERO checks — the
+    # run looks green (ChecksFailed=0) while a whole security lane tested nothing. A
+    # setup error is recorded as INFRA (a precondition/environment failure, not a product
+    # FAIL) so ChecksExpected>counted trips the anti-false-PASS composite alarm and the
+    # per-check row carries the reason. A skip (importorskip: no browser) is NOT an error,
+    # so it is not counted here.
+    if call.when == "setup":
+        # Clean setup, or a legitimate skip (importorskip: no browser installed) → not an
+        # error; let the run proceed (a skip is not a dropped check). Detect Skipped by
+        # class name to avoid a module-level pytest import (lean discipline, §J-report).
+        if call.excinfo is None or call.excinfo.typename in ("Skipped", "XFailed"):
+            return
+        exc = call.excinfo.value
+        _RUN_STATE["counts"]["INFRA"] = _RUN_STATE["counts"].get("INFRA", 0) + 1
+        sink.write(CanaryResult(
+            run_id=_RUN_STATE["run_id"],
+            check_id=item.nodeid,
+            status="INFRA",
+            route=item.nodeid,
+            failure_reason=f"setup-phase failure (fixture): {exc!r}",
+        ))
+        return
+    if call.when != "call":
         return
     exc = call.excinfo.value if call.excinfo else None
     infra = isinstance(exc, InfraError)
