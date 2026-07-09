@@ -14,6 +14,17 @@ const IDENTITY_MODE_COLOR: Record<string, string> = {
 }
 
 function ConsentPill({ granted }: { granted?: boolean }) {
+  // FX-3.5: the list route (`platform_list_tenants`) does NOT project
+  // `platform_read_consent` today — it's on the DETAIL route only. So `undefined`
+  // means UNKNOWN, not "required": a governance console must NOT falsely show
+  // "consent required" for every tenant. Only an explicit `false` is "required".
+  if (granted === undefined) {
+    return (
+      <span className="text-[11px] font-mono text-muted" title="consent state not in the list — open the tenant to see it">
+        unknown
+      </span>
+    )
+  }
   if (granted) {
     return <span className="text-[11px] font-mono text-green">granted</span>
   }

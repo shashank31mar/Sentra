@@ -23,11 +23,20 @@ const FILTERS = [
   { value: 'ALLOW', label: 'Allowed' },
 ] as const
 
+/** Cosmetic label for a deciding source (FX-3.1). Purely display — the raw
+ *  `winning_source` value stays the source of truth for the facet + filtering. */
+const sourceLabel = (s: string) =>
+  s.replace(/^sentra\./, '').replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase())
+
+const ALL_SOURCES = '__all__'
+
 export function ThreatsPage() {
   const [filter, setFilter] = useState<(typeof FILTERS)[number]['value']>('DENY')
   const [expanded, setExpanded] = useState<string | null>(null)
   const [sessionId, setSessionId] = useState('')
   const [search, setSearch] = useState('')
+  // FX-3.1: per-detector facet (deciding source), client-side over the loaded rows.
+  const [source, setSource] = useState<string>(ALL_SOURCES)
   const decision = filter === 'all' ? undefined : (filter as Decision)
 
   // Server-side filters page through ALL matching threats via the cursor (Load more); session-id is
@@ -71,15 +80,37 @@ export function ThreatsPage() {
     return out
   }, [query.data])
 
+  // FX-3.1: facet options DERIVED from the API's `winning_source` values on the
+  // loaded rows — never a FE constant. If NO row carries the field (the backend
+  // field-add is absent), `sourceOptions` is empty and the facet ships PARTIAL/
+  // disabled with a note; the rows still render (no crash, no fabricated list).
+  const sourceOptions = useMemo(() => {
+    const set = new Set<string>()
+    for (const d of allItems) {
+      if (d.winning_source) set.add(d.winning_source)
+    }
+    return Array.from(set).sort()
+  }, [allItems])
+  const facetAvailable = sourceOptions.length > 0
+
   // Free-text search over the loaded rows (agent, reason, tool, threat, session, id).
   const needle = search.trim().toLowerCase()
-  const items = needle
-    ? allItems.filter((d) =>
+  const items = useMemo(() => {
+    let out = allItems
+    // Apply the deciding-source facet only when a specific source is chosen AND the
+    // field is present (otherwise the facet is inert — never silently empties the list).
+    if (facetAvailable && source !== ALL_SOURCES) {
+      out = out.filter((d) => d.winning_source === source)
+    }
+    if (needle) {
+      out = out.filter((d) =>
         [d.agent_name, d.reason, d.tool_name, d.threat_type, d.session_id, d.decision_id]
           .filter(Boolean)
           .some((v) => String(v).toLowerCase().includes(needle)),
       )
-    : allItems
+    }
+    return out
+  }, [allItems, facetAvailable, source, needle])
   const total = query.data?.pages[0]?.total ?? 0
 
   return (
@@ -117,6 +148,31 @@ export function ThreatsPage() {
               </button>
             )}
           </div>
+          {/* FX-3.1: per-detector facet — options DRIVEN from the API's winning_source
+              values (never a FE constant). PARTIAL/disabled when the field is absent. */}
+          {facetAvailable ? (
+            <select
+              aria-label="Filter by deciding source"
+              value={source}
+              onChange={(e) => setSource(e.target.value)}
+              className="h-9 rounded-xl bg-surface-2 px-3 text-xs font-mono text-white outline-none focus:border-cyan/40"
+              style={{ border: '1px solid var(--color-line)' }}
+            >
+              <option value={ALL_SOURCES}>All detectors</option>
+              {sourceOptions.map((s) => (
+                <option key={s} value={s}>{sourceLabel(s)}</option>
+              ))}
+            </select>
+          ) : (
+            <span
+              data-testid="source-facet-partial"
+              title="Per-detector filtering needs the winning_source field on /decisions rows (backend field-add pending)."
+              className="h-9 inline-flex items-center rounded-xl bg-surface-2 px-3 text-xs font-mono text-faint"
+              style={{ border: '1px solid var(--color-line)' }}
+            >
+              Detector facet — pending
+            </span>
+          )}
           <span className="ml-auto text-xs font-mono text-muted">
             {items.length} loaded{needle ? ' (matched)' : ''} · {total}+ in window
           </span>

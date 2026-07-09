@@ -27,3 +27,24 @@ export function useDecisionsTimeseries(
     queryFn: () => metricsApi.decisionsTimeseries(range, bucket),
   })
 }
+
+/** FX-1.5 — fleet-aggregate overview KPIs for the platform console. Sends NO
+ *  `X-Aegion-Tenant` (code-enforced) so the server auto-aggregates for `is_platform`. */
+export function useFleetOverview(range: MetricsRange = '24h') {
+  return useQuery({
+    queryKey: queryKeys.metrics.fleetOverview(range),
+    queryFn: () => metricsApi.fleetOverview(range),
+    refetchInterval: 30_000,
+  })
+}
+
+/** FX-1.5 — fleet-aggregate allowed/blocked timeseries for the platform console. */
+export function useFleetDecisionsTimeseries(
+  range: MetricsRange = '24h',
+  bucket: TimeseriesBucket = '1h',
+) {
+  return useQuery({
+    queryKey: queryKeys.metrics.fleetDecisionsTimeseries(range, bucket),
+    queryFn: () => metricsApi.fleetDecisionsTimeseries(range, bucket),
+  })
+}

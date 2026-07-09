@@ -10,18 +10,12 @@ import { ConfirmDialog } from '../../components/ui/ConfirmDialog'
 import { useToast } from '../../components/ui/Toast'
 import { useAgents, useDetachPolicy } from '../../lib/query/useAgents'
 import { useCan } from '../../lib/query/useMe'
+import { isAuthDegrade403 } from '../../lib/degrade'
 import { AttachPolicyModal } from './AttachPolicyModal'
 import { agentDetailPath, policyDetailPath, policyEditPath } from '../../app/routes'
 import { formatNumber, formatRelativeTime } from '../../lib/format'
+import { activityStatus, ACTIVITY_COLOR } from './activityStatus'
 import type { AgentListItem } from '../../types/api'
-import type { AgentStatus } from '../../types/enums'
-
-const STATUS_COLOR: Partial<Record<AgentStatus, string>> = {
-  active: '#22E58B',
-  idle: '#8DA2AE',
-  quarantined: '#FF0080',
-  inactive: '#51636E',
-}
 
 export function AgentInventoryPage() {
   const navigate = useNavigate()
@@ -45,7 +39,8 @@ export function AgentInventoryPage() {
         success(`Policy detached from ${detachFor.name}. Its tool calls are now blocked until a policy is attached.`)
         setDetachFor(null)
       },
-      onError: () => error('Could not detach the policy. Please try again.'),
+      // FXR-1: a 403 is surfaced once by the global bridge — skip the page toast.
+      onError: (e) => { if (!isAuthDegrade403(e)) error('Could not detach the policy. Please try again.') },
     })
   }
 
@@ -90,9 +85,17 @@ export function AgentInventoryPage() {
                     </Td>
                     <Td><CloudBadge provider={a.cloud_provider} /></Td>
                     <Td>
-                      <span className="inline-flex items-center gap-2 text-xs font-mono capitalize text-secondary">
-                        <StatusDot color={STATUS_COLOR[a.status] ?? '#8DA2AE'} /> {a.status ?? '—'}
-                      </span>
+                      {/* FX-1.4: map the RAW ECS status → canvas Active/Idle/Offline/Unknown.
+                          The server emits ECS states, not the canvas enum — never render the
+                          raw value, never show an unknown status as Active. */}
+                      {(() => {
+                        const activity = activityStatus(a.status, a.last_seen ?? a.last_active)
+                        return (
+                          <span className="inline-flex items-center gap-2 text-xs font-mono text-secondary">
+                            <StatusDot color={ACTIVITY_COLOR[activity]} /> {activity}
+                          </span>
+                        )
+                      })()}
                     </Td>
                     <Td>
                       {activePolicyId ? (

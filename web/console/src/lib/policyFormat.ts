@@ -107,6 +107,20 @@ function entityValuesComment(policy: PolicyDetailView): string {
   return lines.join('\n')
 }
 
+/**
+ * FX-3.3 — whether the backend handed us a REAL compiled Cedar body (or the raw
+ * content already IS Cedar). Only then is the CEDAR view on the DETAIL page
+ * authoritative-for-enforcement. When false, `renderCedar` would only PROJECT a
+ * synthetic `permit/forbid` from the structured fields — fine as a labeled authoring
+ * PREVIEW (PolicyEditor), but the read-only detail page must NOT present that
+ * projection as the enforced policy; it degrades to a PARTIAL state instead.
+ */
+export function hasCompiledCedar(policy: Pick<PolicyDetailView, 'cedar_content' | 'content'>): boolean {
+  if (policy.cedar_content && policy.cedar_content.trim()) return true
+  const raw = policy.content
+  return typeof raw === 'string' && /\b(permit|forbid)\s*\(/i.test(raw)
+}
+
 export function renderCedar(policy: PolicyDetailView): string {
   // cedar-policy CT13/CT13a: when the backend has compiled Cedar, the RULES it
   // evaluates are the universal baseline — so we prepend THIS agent's entity

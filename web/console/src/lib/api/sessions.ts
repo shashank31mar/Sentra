@@ -6,6 +6,7 @@ import type {
   SessionDecisionsResponse,
   SessionInfo,
   SessionsResponse,
+  SessionTrail,
 } from '../../types/api'
 
 export interface SessionsFilters {
@@ -44,6 +45,19 @@ export const sessionsApi = {
       requestId ? { request_id: requestId } : undefined,
     )
     return { ...res, decisions: res.decisions ?? [] }
+  },
+
+  /** WS-D server-recomputed decision trail for ONE request (FX-1.2) —
+   *  `GET /v1/sessions/{id}/trail?request_id=` (`routes.py:583`). Returns the four
+   *  coverage buckets + recomputed `winning_source`/`block_point`. `request_id` is
+   *  REQUIRED (the DDB PK is session-scoped — §9A.1). Guard `coverage` to `[]` so a
+   *  malformed body never crashes the consumer. */
+  trail: async (sessionId: string, requestId: string): Promise<SessionTrail> => {
+    const res = await http.get<SessionTrail>(
+      `/sessions/${encodeURIComponent(sessionId)}/trail`,
+      { request_id: requestId },
+    )
+    return { ...res, coverage: res.coverage ?? [] }
   },
 }
 

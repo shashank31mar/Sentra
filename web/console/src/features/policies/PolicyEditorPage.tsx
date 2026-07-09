@@ -6,10 +6,12 @@ import { Button } from '../../components/ui/Button'
 import { LoadingState } from '../../components/ui/states'
 import { useToast } from '../../components/ui/Toast'
 import { usePolicyDetail, useCreatePolicy, useUpdatePolicy } from '../../lib/query/usePolicies'
+import { useCan } from '../../lib/query/useMe'
 import { agentsApi } from '../../lib/api/agents'
 import { policyDetailPath } from '../../app/routes'
 import { renderCedar, toYaml } from '../../lib/policyFormat'
 import { ApiException } from '../../lib/http'
+import { isDisabledPolicyState403 } from '../../lib/degrade'
 import type { PolicyCreateRequest, PolicyDetailView, PolicyRuleRequest } from '../../types/api'
 
 /** A valid starter document so a new policy is editable immediately. */
@@ -24,6 +26,16 @@ const CREATE_SKELETON = JSON.stringify(
   null,
   2,
 )
+
+/**
+ * FXR-1 — the "disabled policy" 403 reason lives in ONE place: `isDisabledPolicyState403`
+ * (lib/degrade.ts). Both this page's actionable "Enable it first" banner AND the global
+ * `MutationCache` auth-degrade bridge key off that single predicate, so the disabled-policy
+ * 403 shows exactly ONE surface (this banner) — the bridge neither double-toasts it nor
+ * spuriously invalidates the operator context (it is a resource-state refusal, not a
+ * demotion). A role/membership 403 does NOT match → this page shows no banner and the
+ * bridge surfaces its one sanitized toast.
+ */
 
 /** Reconstruct the editable document body from a loaded policy (strip the
  *  server-owned envelope — agent-policy-management §6.3). */
@@ -45,6 +57,11 @@ export function PolicyEditorPage() {
   const [params] = useSearchParams()
   const { success } = useToast()
   const isEdit = Boolean(policyId)
+
+  // FX-2.2: editor-class write gate (server POST/PUT /policies is `require_role`
+  // editor). Defense-in-depth WITH the RequireCan route guard — even if the route
+  // ever mounts, the submit hides for a non-editor. UX-only; the server is the boundary.
+  const canWrite = useCan()('policies.write')
 
   const detail = usePolicyDetail(policyId ?? '')
   const create = useCreatePolicy()
@@ -143,7 +160,18 @@ export function PolicyEditorPage() {
         return
       }
       if (e.status === 403) {
-        setBanner({ kind: 'error', msg: 'This policy is disabled. Enable it first.' })
+        // FXR-1: a bare status===403 conflates THREE distinct causes — the
+        // disabled-policy 403 ("Cannot update disabled policy. Enable it first.",
+        // policy_service.py:521), a role-403 ("requires role >= editor",
+        // deps.py:509), and a membership-403 — and the old blanket banner wrongly
+        // told a demoted/role-gated operator their policy was disabled. Show the
+        // actionable "disabled" banner ONLY for the genuine disabled-policy reason
+        // (server message names it); for a role/membership 403 the global
+        // MutationCache bridge already surfaces the one sanitized toast, so the page
+        // adds NO second surface (no duplicate toast/banner).
+        if (isDisabledPolicyState403(e)) {
+          setBanner({ kind: 'error', msg: 'This policy is disabled. Enable it first.' })
+        }
         return
       }
       setBanner({ kind: 'error', msg: e.message || 'The server rejected the policy.' })
@@ -240,9 +268,12 @@ export function PolicyEditorPage() {
           </Field>
 
           <div className="flex items-center gap-2 pt-1">
-            <Button variant="primary" onClick={onSubmit} disabled={busy || isDisabledPolicy || !parsed.ok}>
-              {busy ? 'Saving…' : isEdit ? 'Save changes' : 'Create policy'}
-            </Button>
+            {/* FX-2.2: Save/Create hidden for a non-editor (server require_role). */}
+            {canWrite && (
+              <Button variant="primary" onClick={onSubmit} disabled={busy || isDisabledPolicy || !parsed.ok}>
+                {busy ? 'Saving…' : isEdit ? 'Save changes' : 'Create policy'}
+              </Button>
+            )}
             <Button variant="ghost" onClick={() => navigate(-1)} disabled={busy}>Cancel</Button>
           </div>
         </Card>

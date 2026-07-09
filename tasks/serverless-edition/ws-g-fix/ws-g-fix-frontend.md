@@ -1,40 +1,38 @@
-# ws-g-fix-frontend — console review-findings fix lane (frontend)
+# ws-g-fix-frontend — console review-findings fix lane (frontend) — ROUND 2 (residuals)
 
-> **Doc role:** code-loop frontend build lane. Closes 20 of the 22 review findings in `web/console/src`. **Full detail (evidence file:line + exact fix + test) lives in [../ws-g-fix-review-findings.md](../ws-g-fix-review-findings.md)** — this lane doc is the buildable checklist keyed by FX-id; the coder reads the findings doc for each task's specifics.
-> **Stack:** React 19 + TypeScript + Tailwind v4 + Vite + React Router + TanStack Query. **Tests:** Vitest + Testing Library (`web/console`, `npm test`). **Design-of-record:** [../../../docs/console-design-spec.md](../../../docs/console-design-spec.md) + the canvas mockups.
-> **Parent:** [lld/40](../../../lld/40-multi-tenant-console.md) · [ws-g-console.md](../ws-g-console.md) (M-G1..M-G4).
+> **Doc role:** code-loop frontend build lane, **round 2**. Round 1 closed 20 of 22 review findings + 4 integration-sentinel green≠correct gaps; the suite is GREEN on `integration/ws-g-fix` (53 files / 170 tests). This round closes the **4 residual findings** the sentinel raised at the round-cap. **Full round-1 detail:** [../ws-g-fix-review-findings.md](../ws-g-fix-review-findings.md). **DO NOT re-do round-1 work** — only the FXR items below are open (each verified against the current `integration/ws-g-fix` tip 2026-07-09).
+> **Stack:** React 19 + TS + Tailwind v4 + Vite + TanStack Query. **Tests:** Vitest (`web/console`, `npm test`). **Build ON `integration/ws-g-fix`** (not fresh off main) so round-1 work is preserved.
 
 ## Invariants (do NOT regress)
-- Client RBAC render-gate is **UX-only**; server `require_role`/`require_platform` is the boundary. Missing role **HIDES** a control (fail-secure).
-- Tenant is **server-derived** (never a client filter); near-real-time **POLL**, never streaming.
-- An absent dep API **DEGRADES to PARTIAL/roadmap**, never a dead control or a **fabricated body**.
-- Keep `tsc -b` + `npm test` green (baseline 37 files / 118 tests). Every behavior change gets a **non-vacuous** test (fails if the behavior regresses). Do not touch the verified-correct spine (org-first machinery, RBAC map, D3 parity, platform gate).
+- Client RBAC render-gate is UX-only; server is the boundary. Missing role HIDES a control. Tenant server-derived. Near-real-time POLL. Absent dep → PARTIAL, never a dead control or fabricated body.
+- Keep `tsc -b` + `npm test` green (baseline 53 files / 170 tests). Every fix gets a **non-vacuous** test (fails if reverted). Do not touch the verified-correct spine.
 
-## Milestone FX-1 — HIGH (5)
-- **FX-1.1** — Gate the Sigma enable/disable toggle on `usePlatformCan('sigma.retire')` (dead machinery today; `PolicyLibraryPage.tsx:286-317`). Hide for non-platform ops. UT `PolicyLibraryPage.sigmaGate.test.tsx`.
-- **FX-1.2** — Bind Decision-detail to WS-D `GET /sessions/{id}/trail` (not legacy `/decisions`); add `sessionsApi.trail` + `SessionTrail` type; PARTIAL fallback on 404. UT `DecisionDetailPage.trail.test.tsx`.
-- **FX-1.3** — Session-forensics summary header from `SessionInfo` (trust/deny counts/quarantine/timeline); Release gated on `quarantine.manage`. UT `SessionForensicsPage.test.tsx`.
-- **FX-1.4** — Client-map agent ECS status → Active/Idle/Offline (`activityStatus.ts`); fix the lying `AgentStatus` type. UT `agents/__tests__/activityStatus.test.ts` (real ECS fixtures).
-- **FX-1.5** — Platform Fleet Overview: bind `useOverview`/`useDecisionsTimeseries` (fleet mode) + `KpiGrid`/`AllowedVsBlockedChart`. Integ `features/platform/__tests__/fleetMetrics.integration.test.tsx`.
+## Milestone FXR — the 4 residuals
 
-## Milestone FX-2 — MEDIUM: security-adjacent + correctness
-- **FX-2.1** — Read/bootstrap 403 fail-safe: on a bound-tenant 403 (esp. `/v1/me`), `clearActiveTenant()` + bounce to `ORG_PAGE_PATH`; do NOT clear on a mutation role-403. UT `http.membership403.test.ts`.
-- **FX-2.2** — Gate `PolicyEditorPage` Save/Create on `useCan('policies.write')` + guard the route. UT `PolicyEditorPage.gate.test.tsx`.
-- **FX-2.3** — platformApi MUST NOT attach `X-Aegion-Tenant` (code-enforced `{omitTenant:true}`, not environmental); rewrite the circular test. UT `platform.tenantHeader.test.ts`.
-- **FX-2.4** — Wire the sanitized-403 toast through the central `MutationCache` (no-op today at `queryClient.ts:29`). UT `queryClient.degrade.test.ts` (assert against the WIRED cache).
-- **FX-2.5** — Confine a platform op to the platform tree (landing redirect `is_platform` → `/platform`). UT `app/__tests__/platformConfinement.test.tsx`.
-- **FX-2.6** — Add the G2.8 window-focus demotion test (mechanism at `useMe.ts:26` exists, test missing). UT `useMe.refetch.test.tsx`.
+### FXR-1 — 403 double-toast: page handler must not toast when the global 403 bridge handled it (MEDIUM)
+- **Evidence:** `app/queryClient.ts:33` wires `handleAuthDegrade(error, queryClient, emitErrorToast)` which **returns true + toasts a sanitized message on a 403**. But page-level mutation `onError` handlers ALSO surface their own message on a 403 → **two toasts/banners**. Worse, `PolicyEditorPage.tsx:151` maps *any* 403 to the misleading banner *"This policy is disabled. Enable it first."* — which also fires for a membership/role 403.
+- **Fix:** page-level mutation error handlers must **skip their own toast/banner when the error is a 403 that the global bridge handles** — either check `e.status === 403` and defer to the global sanitized toast, or have `handleAuthDegrade` expose "was handled" and skip on true. In `PolicyEditorPage.tsx:151`, only show the "policy is disabled" banner for the **specific** disabled-policy reason (key off the error body reason/code), NOT a bare `status === 403` (which conflates disabled-policy, role-403, and membership-403). Check `SessionForensicsPage.tsx:54` release `onError` and any other mutation `onError` for the same double-toast.
+- **Footgun:** do NOT drop the global bridge (it's the fail-secure sanitized-message path FX-2.4 wired) — suppress the *page* duplicate, keep the global one.
+- **Unit:** `queryClient.doubleToast.test.tsx` (or extend the degrade test) — a mutation 403 through the wired cache produces **exactly one** sanitized toast, not two; `PolicyEditorPage` shows the "disabled" banner ONLY for the disabled-policy reason, and NOT for a role/membership 403.
 
-## Milestone FX-3 — MEDIUM: canvas-fidelity + honest-degrade
-- **FX-3.1** — Threats per-detector `winning_source` facet, **driven from API values** (not a FE constant). If the backend `winning_source`-on-`/decisions` field-add (ws-g-fix-backend) is absent → ship the facet **PARTIAL/disabled**, no crash, no hardcoded list. UT `ThreatsPage.facet.test.tsx`.
-- **FX-3.2** — Relabel 'Live'/'Streaming'/'Real-time telemetry' → 'near-real-time (≤15s pull)' (`LiveActivity.tsx:52,55`, `OverviewPage.tsx:49,80`). UT `OverviewPage.label.test.tsx`.
-- **FX-3.3** — Policy Detail: Cedar/JSON tabs render compiled body ONLY when present; else PARTIAL — **never fabricate** a `permit/forbid` body (`policyFormat.ts:110-163`). UT `PolicyDetailPage.format.test.tsx`.
-- **FX-3.4** — Platform fleet grid: send `limit/cursor/sort/filter` (backend paging landed but unreachable); at minimum advance the cursor. UT `FleetOverviewPage.paging.test.tsx`.
-- **FX-3.5** — Consent column: render "unknown"/neutral when `platform_read_consent` absent from the list row — NOT a universal amber "required". (ws-g-fix-backend can add the field to upgrade it.) UT `TenantGrid.consent.test.tsx`.
-- **FX-3.6** — Render `quotaHeadroom()` (computed + unit-tested but shown nowhere) in the platform view. UT `TenantDetailPage.quota.test.tsx`.
+### FXR-2 — read-403 role-vs-membership: add the role-403-on-a-read test (MOSTLY DONE — lock it) (MEDIUM)
+- **Evidence:** `lib/http.ts:257-264` ALREADY keys the tenant-eject on `isLostTenantBinding403(body)` (the server's reason, `http.ts:101`), NOT on "GET+403" — so a role-gated read (e.g. admin-gated `GET /tenants/{id}/members`) does NOT wrongly eject the operator. The mechanism is correct; the gap is **test coverage** of the role-403-on-a-read branch.
+- **Fix:** no source change expected (verify the predicate is right). Add the missing test case: a **role-403 on a READ** (body reason = "requires role", NOT a lost-membership code) does **NOT** call `bounceToOrgOnLostTenant()` / does NOT clear `aegion.activeTenant`; a **membership-lost 403 on a read** DOES. If `isLostTenantBinding403` mis-classifies, fix its body-reason matching.
+- **Unit:** extend `lib/__tests__/http.membership403.test.ts` — `role-403 on a read → binding preserved, no org bounce`; `membership-lost 403 on a read → binding cleared + org bounce`.
+
+### FXR-3 — FX-3.1 facet FILTERING is untested (green≠correct gap) (MEDIUM)
+- **Evidence:** `ThreatsPage.tsx:102-104` filters rows by the selected `winning_source` (`if (facetAvailable && source !== ALL_SOURCES) out = out.filter(d => d.winning_source === source)`), but `ThreatsPage.facet.test.tsx` only asserts (a) options are DERIVED from the values (`:61`) and (b) PARTIAL degrade when absent (`:78`) — it **never selects a source and asserts rows filter**. Reverting/inverting the predicate stays green.
+- **Fix:** no source change expected — add the behavioral test.
+- **Unit:** extend `ThreatsPage.facet.test.tsx` — seed rows with mixed `winning_source` (sigma×2, policy×1), `userEvent.selectOptions(facet, 'sentra.sigma')`, assert **only the sigma rows render** (policy row absent) and the loaded-count label updates. A revert of the filter predicate must turn this test red.
+
+### FXR-4 — sourceLabel multi-word formatter unverified (LOW, cosmetic)
+- **Evidence:** `ThreatsPage.tsx:28` `sourceLabel` strips `sentra.`, underscores→spaces, title-cases via a `\b\w` regex; the facet test only checks single-word 'Sigma'/'Policy'. Multi-token (`sentra.ml_classifier` → 'Ml Classifier') is unverified.
+- **Fix:** none expected — add the formatter assertion.
+- **Unit:** extend `ThreatsPage.facet.test.tsx` — a row with `winning_source:'sentra.ml_classifier'` yields option text 'Ml Classifier' (multi-word title-case verified).
 
 ## Acceptance
-- [ ] All FX-1 (5 HIGH) closed with the named tests green.
-- [ ] All FX-2 (6 security/correctness MED) closed; FX-2.3/FX-2.4 tests are non-circular (assert against the wired path).
-- [ ] All FX-3 (6 canvas/degrade MED) closed; FX-3.1 + FX-3.5 correctly PARTIAL-degrade when the backend field is absent (no crash, no fabrication).
-- [ ] `tsc -b` clean; `npm test` green; no vacuous tests; green baseline + verified spine preserved.
+- [ ] FXR-1 — exactly one toast on a mutation 403; PolicyEditor "disabled" banner only for the disabled-policy reason (not role/membership 403). Test green.
+- [ ] FXR-2 — role-403-on-a-read preserves the binding; membership-lost-403 clears it. Test green.
+- [ ] FXR-3 — selecting a `winning_source` filters rows (reverting the predicate turns it red). Test green.
+- [ ] FXR-4 — multi-word sourceLabel verified. Test green.
+- [ ] `tsc -b` clean; `npm test` green; no vacuous tests; round-1 work (170 tests) + the verified spine preserved. Then promote `integration/ws-g-fix` → main.

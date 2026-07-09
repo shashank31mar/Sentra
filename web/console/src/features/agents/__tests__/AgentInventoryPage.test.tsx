@@ -14,7 +14,7 @@ const UNBOUND: AgentListItem = {
   name: 'Payments Agent',
   platform: 'bedrock',
   cloud_provider: 'aws',
-  status: 'active',
+  status: 'running',
   trust_score_avg: 88,
   requests_total: 100,
   requests_allowed: 90,

@@ -1,20 +1,18 @@
 import { useParams } from 'react-router-dom'
 import { Card } from '../../components/ui/Card'
 import { PageHeader } from '../../components/ui/PageHeader'
-import { DecisionTrace } from '../../components/decisions/DecisionTrace'
+import { SessionTrailView } from '../../components/decisions/SessionTrailView'
 import { EmptyState } from '../../components/ui/states'
 
 /**
- * Decision detail (M-G3.4). Keyed on the COMPOSITE PK `:sessionId/:requestId` (both
- * route params) — a request_id-only route can't key the trail query (routes.py:554
- * keys `{session_id}#{request_id}`). Renders the per-validator forensic trace via
- * the shared `DecisionTrace` bound to the LIVE `/sessions/{id}/decisions` slice
- * narrowed to this request. No fabricated data — if the store has no trace,
- * `DecisionTrace` shows its own honest "no stored trace" state.
- *
- * (The dedicated WS-D `/trail` four-bucket view binds here once its shape is
- * confirmed; until then this uses the live per-request trace — the same forensic
- * content, no fabrication.)
+ * Decision detail (M-G3.4 / FX-1.2). Keyed on the COMPOSITE PK
+ * `:sessionId/:requestId` (both route params) — `request_id` is REQUIRED for the
+ * trail query (the DDB PK is session-scoped, §9A.1). Binds the WS-D SERVER-recomputed
+ * trail (`GET /v1/sessions/{id}/trail`) — the four coverage buckets + recomputed
+ * `winning_source`/`block_point` — NOT the legacy client-side `/decisions`
+ * reconstruction. `SessionTrailView` degrades to a PARTIAL banner + the legacy
+ * per-request trace on a 404/501 (endpoint absent on an older stack); never blank,
+ * never fabricated.
  */
 export function DecisionDetailPage() {
   const { sessionId = '', requestId = '' } = useParams()
@@ -34,7 +32,7 @@ export function DecisionDetailPage() {
         subtitle={`session ${sessionId} · request ${requestId}`}
       />
       <Card className="overflow-hidden">
-        <DecisionTrace sessionId={sessionId} requestId={requestId} />
+        <SessionTrailView sessionId={sessionId} requestId={requestId} />
       </Card>
     </div>
   )

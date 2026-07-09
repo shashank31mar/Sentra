@@ -13,12 +13,20 @@ export const queryKeys = {
     platformDistribution: () => ['metrics', 'platform-distribution'] as const,
     decisionsTimeseries: (range: MetricsRange, bucket: TimeseriesBucket) =>
       ['metrics', 'decisions-timeseries', range, bucket] as const,
+    // FX-1.5 fleet-mode aggregates (distinct keys so the fleet cache never collides
+    // with the customer-scoped read).
+    fleetOverview: (range: MetricsRange) => ['metrics', 'fleet', 'overview', range] as const,
+    fleetDecisionsTimeseries: (range: MetricsRange, bucket: TimeseriesBucket) =>
+      ['metrics', 'fleet', 'decisions-timeseries', range, bucket] as const,
   },
   decisions: {
     list: (filters: Record<string, unknown>) => ['decisions', filters] as const,
   },
   sessions: {
     list: (filters: Record<string, unknown>) => ['sessions', filters] as const,
+    // WS-D recomputed decision trail for one request (FX-1.2).
+    trail: (sessionId: string, requestId: string) =>
+      ['sessions', 'trail', sessionId, requestId] as const,
   },
   logs: {
     list: (filters: Record<string, unknown>) => ['logs', filters] as const,

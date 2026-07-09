@@ -46,7 +46,8 @@ export function OverviewPage() {
         actions={
           <>
             <span className="text-xs font-mono flex items-center gap-1.5 text-muted">
-              <IconRefresh size={14} /> {overview.isFetching ? 'Syncing…' : 'Live'}
+              {/* FX-3.2: 15s TanStack poll, not push — never claim "Live". */}
+              <IconRefresh size={14} /> {overview.isFetching ? 'Syncing…' : 'near-real-time (≤15s pull)'}
             </span>
             <SegmentedControl options={RANGES} value={range} onChange={setRange} />
           </>
@@ -77,7 +78,7 @@ export function OverviewPage() {
           <div className="flex items-center justify-between mb-8">
             <div>
               <h3 className="font-display text-lg font-bold tracking-tight">Allowed vs Blocked</h3>
-              <p className="text-xs mt-1 text-muted">Real-time request decision telemetry · {range}</p>
+              <p className="text-xs mt-1 text-muted">near-real-time (≤15s pull) request decisions · {range}</p>
             </div>
             <div className="flex items-center gap-6 text-xs font-mono">
               <span className="flex items-center gap-2.5 text-secondary"><span className="w-3.5 h-3.5 rounded-sm" style={{ background: '#0FFFFF' }} /> Allowed</span>

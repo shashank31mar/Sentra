@@ -4,18 +4,25 @@ import type { PlatformTenantsResponse, PlatformTenantDetail } from '../../types/
 /**
  * Platform (cross-tenant) API client — M-G4.
  *
- * INVARIANT: these calls MUST NOT attach `X-Aegion-Tenant`. `http.request` adds
- * `tenantHeader()` automatically, but a platform operator has NO active tenant
- * (org-first, M-G2) so the header is absent and the server's `_operator_read_scope`
- * takes the fleet path (`tenant_id=None`) + server-side audit. Never set an active
- * tenant in the platform tree, and never reach a tenant's data via the break-glass
+ * INVARIANT (FX-2.3): these calls MUST NOT attach `X-Aegion-Tenant`. Enforced by
+ * CODE — every call passes `{ omitTenant: true }`, so the http layer drops the
+ * header even if a tenant is ambiently bound. The server's `_operator_read_scope`
+ * then takes the fleet path (`tenant_id=None`) + server-side audit. (Previously the
+ * invariant held only *because* a platform operator happened to have no active
+ * tenant — luck, not enforcement.) Never reach a tenant's data via the break-glass
  * `X-Aegion-Tenant` header — metadata drill-down uses the `/platform/tenants/{id}`
  * path param only (a different, non-forensic contract).
  */
+const PLATFORM_OPTS = { omitTenant: true } as const
+
 export const platformApi = {
   listTenants: (params?: { limit?: number; cursor?: string; sort?: string; filter?: string }) =>
-    http.get<PlatformTenantsResponse>('/platform/tenants', params),
+    http.get<PlatformTenantsResponse>('/platform/tenants', params, PLATFORM_OPTS),
 
   tenantDetail: (id: string) =>
-    http.get<PlatformTenantDetail>(`/platform/tenants/${encodeURIComponent(id)}`),
+    http.get<PlatformTenantDetail>(
+      `/platform/tenants/${encodeURIComponent(id)}`,
+      undefined,
+      PLATFORM_OPTS,
+    ),
 }
