@@ -518,19 +518,28 @@ def _hosted_ui_login(page, base_url: str, creds: Dict[str, str]) -> None:
     land on org.html, submit the org, follow to the Cognito hosted UI, fill the
     canary user's email+password by STABLE field semantics (never css/nth-child), and
     let the ALB set AWSELBAuthSessionCookie-*."""
-    page.goto(base_url, wait_until="domcontentloaded", timeout=20000)
-    # Org-first entry (WS-G): the console root serves org.html — `<input id="org"
-    # name="org">` + `<button id="submit" type="submit">` (verified against the live
-    # page). Fill the org and submit; then WAIT for the redirect to the Cognito hosted
-    # UI (the classic form is JS-rendered, so we must wait for its field, not query
-    # immediately — the org-submit→Cognito navigation is async). If org.html isn't the
-    # page (a direct-to-Cognito ALB redirect), the org field is simply absent and we
-    # proceed straight to the Cognito fill.
+    # Org-first entry (WS-G, verified against the live pages): org.html's submit does
+    # `fetch(/public/resolve-org)` → `sessionStorage[aegion_tenant]=<tid>` → `window.
+    # location='/overview'`; `/overview` is behind the ALB authenticate-cognito action,
+    # so it 302s to the Cognito hosted UI. Rather than replay org.html's async JS (fetch
+    # + navigate — flaky to wait on headless), we do the SAME two effects directly and
+    # deterministically: land on the console origin, stash the resolved tenant in
+    # sessionStorage (what the server re-validates X-Aegion-Tenant against), then goto
+    # /overview to trigger the Cognito redirect. This is the robust login path — the
+    # earlier "username field not found after console root" failures were the org.html
+    # JS not advancing to /overview in headless.
     org = creds.get("tenant_id") or ""
-    org_field = page.query_selector("#org, input[name='org'], input[name='organization']")
-    if org_field is not None and org:
-        org_field.fill(org)
-        page.click("#submit, button[type='submit'], [type='submit']")
+    page.goto(base_url, wait_until="domcontentloaded", timeout=20000)
+    if org:
+        # Mirror org.html's stash under the EXACT ADR-039 key it uses
+        # ('aegion.activeTenant', verified against the live page) so the post-login
+        # server-side X-Aegion-Tenant re-validation binds this tenant.
+        page.evaluate(
+            "(tid) => { try { sessionStorage.setItem('aegion.activeTenant', tid); } catch (e) {} }",
+            org,
+        )
+    # Directly hit the ALB-gated route → deterministic 302 to Cognito.
+    page.goto(f"{base_url.rstrip('/')}/overview", wait_until="domcontentloaded", timeout=20000)
 
     def _fill_field(selector: str, value: str, what: str) -> None:
         # WAIT for the field (the Cognito classic form is JS-rendered AND arrives after
