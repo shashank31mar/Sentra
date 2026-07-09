@@ -6,6 +6,7 @@ import { CodeBlock } from '../../components/ui/CodeBlock'
 import { buildAzureSetup } from './cloudCatalog'
 import { useSetAzureCredentials, useTestConnection } from '../../lib/query/useConnections'
 import { ApiException } from '../../lib/http'
+import { isAuthDegrade403 } from '../../lib/degrade'
 import { useToast } from '../../components/ui/Toast'
 import type { CloudConnection } from '../../types/api'
 
@@ -95,8 +96,11 @@ export function GrantAzureAccessCard({ connection, canOperate = true }: GrantAzu
       },
       {
         onSuccess: () => test.mutate(undefined),
-        onError: (err) =>
-          toastError(err instanceof ApiException ? err.message : 'Could not attach the service principal.'),
+        // FXR-1: a 403 is surfaced once by the global bridge — skip the page toast.
+        onError: (err) => {
+          if (isAuthDegrade403(err)) return
+          toastError(err instanceof ApiException ? err.message : 'Could not attach the service principal.')
+        },
       },
     )
   }

@@ -1,5 +1,6 @@
 import { MutationCache, QueryClient } from '@tanstack/react-query'
 import { handleAuthDegrade } from '../lib/degrade'
+import { emitErrorToast } from '../lib/toastBridge'
 
 /**
  * G2.8 / D6 — fail-secure auth-degrade wiring (ws-g-console.md §2.5, §5.4).
@@ -15,18 +16,21 @@ import { handleAuthDegrade } from '../lib/degrade'
  * out — that is the 401/opaque-redirect path in `http.ts:reauthenticate`,
  * deliberately kept separate (§2.5: a 403 is forbidden, not expired).
  *
- * Division of labor: the centralized handler owns only the fail-secure
- * invalidation; user-facing messaging stays with the page-level `onError` toasts
- * (UX lane), so the toast callback passed here is intentionally a no-op. The
- * 404/501 PARTIAL path and the 401 reauth path are unaffected — a non-403 status
- * makes `handleAuthDegrade` return without touching the cache.
+ * FX-2.4: the centralized handler ALSO surfaces the SANITIZED, customer-safe 403
+ * message (`ApiException.message` = `normalizeErrorBody` output — never a raw
+ * server exception/stack/host) via the `toastBridge`, so a demoted operator sees
+ * *why* the action was refused, not just a silently vanishing control. The bridge
+ * forwards to the mounted `ToastProvider`; before mount (or in a provider-less
+ * test) it is a safe no-op. The 404/501 PARTIAL path and the 401 reauth path are
+ * unaffected — a non-403 status makes `handleAuthDegrade` return without touching
+ * the cache or firing a toast.
  */
 const mutationCache = new MutationCache({
   onError: (error) => {
     // `queryClient` is referenced before its declaration, but this closure only
     // runs at mutation time (long after module init) — the standard TanStack
     // pattern for a cache↔client back-reference.
-    handleAuthDegrade(error, queryClient, () => {})
+    handleAuthDegrade(error, queryClient, emitErrorToast)
   },
 })
 

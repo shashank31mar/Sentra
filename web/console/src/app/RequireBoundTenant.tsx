@@ -1,11 +1,13 @@
 import { useEffect, type ReactNode } from 'react'
 import { useMe } from '../lib/query/useMe'
 import { getActiveTenant } from '../lib/tenant'
-import { needsOrgRedirect } from '../lib/orgEntry'
+import { needsOrgRedirect, ORG_PAGE_PATH } from '../lib/orgEntry'
 import { LoadingState } from '../components/ui/states'
 
-/** The static org-first page (NOT an SPA route — full-page navigation). */
-export const ORG_PAGE_PATH = '/org.html'
+// The org-first page path is canonical in `orgEntry.ts` (a non-component module the
+// http layer can import for the FX-2.1 read-403 fail-safe). Re-exported here so the
+// existing router-guard callers/tests keep importing it from this module.
+export { ORG_PAGE_PATH }
 
 /**
  * G2.12 router guard: a signed-in MULTI-membership operator with no bound tenant

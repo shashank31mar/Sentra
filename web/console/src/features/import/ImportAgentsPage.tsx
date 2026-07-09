@@ -21,6 +21,7 @@ import { useCan } from '../../lib/query/useMe'
 import { ImportResultDrawer } from './ImportResultDrawer'
 import { agentDetailPath, ROUTES } from '../../app/routes'
 import { ApiException } from '../../lib/http'
+import { isAuthDegrade403 } from '../../lib/degrade'
 import { formatNumber, formatRelativeTime } from '../../lib/format'
 import type { EnforcementMode } from '../../types/enums'
 import type { ImportResponse } from '../../types/api'
@@ -91,7 +92,11 @@ export function ImportAgentsPage() {
           setDrawerOpen(true)
           success(`Imported ${res.imported} agent${res.imported === 1 ? '' : 's'}`)
         },
-        onError: (err) => toastError(err instanceof ApiException ? err.message : 'Import failed.'),
+        // FXR-1: a 403 is surfaced once by the global bridge — skip the page toast.
+        onError: (err) => {
+          if (isAuthDegrade403(err)) return
+          toastError(err instanceof ApiException ? err.message : 'Import failed.')
+        },
       },
     )
   }

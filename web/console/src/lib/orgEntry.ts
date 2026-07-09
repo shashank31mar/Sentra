@@ -30,6 +30,14 @@ export const RESOLVE_ORG_PATH = '/public/resolve-org'
 /** Where to bounce after a successful bind — the ALB Cognito-gates this route. */
 export const POST_BIND_REDIRECT = '/overview'
 
+/**
+ * The static org-first page (NOT an SPA route — full-page navigation). Canonical
+ * here (a non-component module) so both the router guard (`RequireBoundTenant`,
+ * which re-exports it) and the http layer's read-403 fail-safe (FX-2.1) can import
+ * it without pulling a React component into the fetch bundle.
+ */
+export const ORG_PAGE_PATH = '/org.html'
+
 /** Only `tenant_id` is echoed by the resolver — never the typed name or any counts. */
 export interface ResolveOrgResponse {
   tenant_id: string

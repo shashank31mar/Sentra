@@ -5,6 +5,8 @@ import { PageHeader } from '../../components/ui/PageHeader'
 import { Table, TBody, Td, Th, THead, Tr } from '../../components/ui/Table'
 import { ErrorState, LoadingState } from '../../components/ui/states'
 import { useTenantDetail } from '../../lib/query/usePlatform'
+import { quotaHeadroom } from './fleetRank'
+import { formatNumber, formatPercent } from '../../lib/format'
 import { ApiException } from '../../lib/http'
 
 /**
@@ -84,10 +86,34 @@ export function TenantDetailPage() {
         </Card>
 
         <Card className="p-5">
-          <div className="text-[10px] uppercase tracking-[0.18em] text-muted mb-3">Quota</div>
-          <pre className="text-[11px] font-mono text-secondary whitespace-pre-wrap break-words">
-            {JSON.stringify(t.quota ?? {}, null, 2)}
-          </pre>
+          <div className="text-[10px] uppercase tracking-[0.18em] text-muted mb-3">Quota &amp; headroom</div>
+          {(() => {
+            // FX-3.6: surface the computed headroom (used vs limit) instead of dumping
+            // raw JSON. `quotaHeadroom` narrows the one quota key it reads and treats
+            // anything non-numeric/absent as "unknown" — never fabricates a number.
+            const hr = quotaHeadroom({ decisions_24h: t.decisions_24h }, t.quota)
+            return (
+              <dl className="flex flex-col gap-3 text-sm">
+                <div className="flex items-center justify-between gap-3">
+                  <dt className="text-xs uppercase tracking-wider text-muted">Validations (24h)</dt>
+                  <dd className="font-mono text-secondary">{hr.used === null ? '—' : formatNumber(hr.used)}</dd>
+                </div>
+                <div className="flex items-center justify-between gap-3">
+                  <dt className="text-xs uppercase tracking-wider text-muted">Monthly limit</dt>
+                  <dd className="font-mono text-secondary">{hr.limit === null ? '—' : formatNumber(hr.limit)}</dd>
+                </div>
+                <div className="flex items-center justify-between gap-3">
+                  <dt className="text-xs uppercase tracking-wider text-muted">Headroom used</dt>
+                  <dd
+                    className="font-mono"
+                    style={{ color: hr.known && hr.usedPct! >= 80 ? '#FF0080' : '#8DA2AE' }}
+                  >
+                    {hr.known ? formatPercent(hr.usedPct) : 'unknown'}
+                  </dd>
+                </div>
+              </dl>
+            )
+          })()}
         </Card>
       </div>
 

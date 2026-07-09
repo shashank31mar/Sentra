@@ -18,7 +18,20 @@ export type Risk = 'high' | 'med' | 'low'
 
 export type TrustStatus = 'healthy' | 'degraded' | 'critical' | 'unknown'
 
-export type AgentStatus = 'active' | 'idle' | 'quarantined' | 'inactive'
+/**
+ * RAW ECS service status the server emits for an agent (`agent_service.py:636/666/
+ * 680/691-696`) — NOT the canvas activity label. `running` = has ≥1 running task;
+ * `starting` = desired but not yet running; `stopped` = 0 running; `not_found` = no
+ * ECS service; `unknown` = the status probe failed. FX-1.4: the type must reflect
+ * the real server contract; the canvas Active/Idle/Offline label is DERIVED from
+ * this + recent traffic by `features/agents/activityStatus.ts` (never asserted as
+ * if the server returned it).
+ */
+export type AgentStatus = 'running' | 'starting' | 'stopped' | 'not_found' | 'unknown'
+
+/** The derived, canvas-facing activity label (FX-1.4). Mapped from `AgentStatus`
+ *  + recent traffic — never a raw server value. */
+export type AgentActivity = 'Active' | 'Idle' | 'Offline' | 'Unknown'
 
 export type QuarantineStatus = 'active' | 'quarantined' | 'suspended'
 

@@ -11,6 +11,21 @@ export function useSessions(filters: SessionsFilters = {}) {
   })
 }
 
+/**
+ * A single session's `SessionInfo` for the forensics summary header (FX-1.3).
+ *
+ * There is NO single-session GET (`GET /v1/sessions/{id}` does not exist — do not
+ * invent it), so this reuses the tenant-scoped `sessionsApi.list` and selects the
+ * matching row client-side. Returns `{ session, isLoading, isError }`; `session` is
+ * `null` when the id is not in the returned window (the header then honestly renders
+ * a "session not in the current window" note rather than fabricating counts).
+ */
+export function useSessionInfo(sessionId: string) {
+  const q = useSessions({ limit: 200 })
+  const session = (q.data?.sessions ?? []).find((s) => s.session_id === sessionId) ?? null
+  return { session, isLoading: q.isLoading, isError: q.isError, error: q.error }
+}
+
 /** Infinite (cursor) sessions — the Quarantine console pages through all matching sessions. */
 export function useInfiniteSessions(filters: Omit<SessionsFilters, 'cursor'> = {}) {
   return useInfiniteQuery({
@@ -30,6 +45,19 @@ export function useSessionDecisions(sessionId: string, requestId?: string, enabl
     queryFn: () => sessionsApi.decisions(sessionId, requestId),
     enabled: enabled && !!sessionId,
     staleTime: 30_000,
+  })
+}
+
+/** WS-D server-recomputed decision trail for one request (FX-1.2) —
+ *  `GET /v1/sessions/{id}/trail`. `retry:false` so a 404/501 (endpoint absent on an
+ *  older stack) surfaces immediately as the PARTIAL fallback instead of retry-storming. */
+export function useSessionTrail(sessionId: string, requestId: string, enabled = true) {
+  return useQuery({
+    queryKey: queryKeys.sessions.trail(sessionId, requestId),
+    queryFn: () => sessionsApi.trail(sessionId, requestId),
+    enabled: enabled && !!sessionId && !!requestId,
+    staleTime: 30_000,
+    retry: false,
   })
 }
 

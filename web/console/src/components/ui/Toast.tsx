@@ -1,4 +1,5 @@
-import { createContext, useCallback, useContext, useRef, useState, type ReactNode } from 'react'
+import { createContext, useCallback, useContext, useEffect, useRef, useState, type ReactNode } from 'react'
+import { registerErrorToast } from '../../lib/toastBridge'
 
 type ToastKind = 'success' | 'error' | 'info'
 
@@ -54,6 +55,11 @@ export function ToastProvider({ children }: { children: ReactNode }) {
     success: (m) => toast(m, 'success'),
     error: (m) => toast(m, 'error'),
   }
+
+  // FX-2.4: expose the imperative error toast to the module-level toastBridge so the
+  // singleton queryClient's MutationCache (outside the React tree) can surface a
+  // sanitized 403 message. Unregisters on unmount so no stale closure survives.
+  useEffect(() => registerErrorToast((m) => toast(m, 'error')), [toast])
 
   return (
     <ToastContext.Provider value={api}>

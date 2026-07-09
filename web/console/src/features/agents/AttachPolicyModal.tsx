@@ -5,6 +5,7 @@ import { Button } from '../../components/ui/Button'
 import { usePolicies } from '../../lib/query/usePolicies'
 import { useAttachPolicy } from '../../lib/query/useAgents'
 import { useToast } from '../../components/ui/Toast'
+import { isAuthDegrade403 } from '../../lib/degrade'
 import { policyNewPath } from '../../app/routes'
 import type { PolicySummary } from '../../types/api'
 
@@ -53,7 +54,8 @@ export function AttachPolicyModal({ open, agentId, agentName, onClose }: AttachP
         success(`${agentName} is now governed by ${chosen?.name ?? effectiveSelected}.`)
         onClose()
       },
-      onError: () => error('Could not attach the policy. Please try again.'),
+      // FXR-1: a 403 is surfaced once by the global bridge — skip the page toast.
+      onError: (e) => { if (!isAuthDegrade403(e)) error('Could not attach the policy. Please try again.') },
     })
   }
 

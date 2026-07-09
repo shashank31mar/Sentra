@@ -26,6 +26,7 @@ import {
 } from '../../lib/query/useConnections'
 import { useCan } from '../../lib/query/useMe'
 import { ApiException } from '../../lib/http'
+import { isAuthDegrade403 } from '../../lib/degrade'
 import { importPath } from '../../app/routes'
 import type { CloudProvider } from '../../types/enums'
 import type { CloudConnection } from '../../types/api'
@@ -127,8 +128,11 @@ export function ConnectAccountPage() {
     if (abandoned && !wasConnected) remove.mutate(abandoned)
     create.mutate(provider, {
       onSuccess: (conn) => setConnectionId(conn.id),
-      onError: (err) =>
-        toastError(err instanceof ApiException ? err.message : 'Could not start a connection.'),
+      // FXR-1: a 403 is surfaced once by the global bridge — skip the page toast.
+      onError: (err) => {
+        if (isAuthDegrade403(err)) return
+        toastError(err instanceof ApiException ? err.message : 'Could not start a connection.')
+      },
     })
   }
 
@@ -147,8 +151,11 @@ export function ConnectAccountPage() {
     if (!connection || connection.status !== 'connected') return
     scan.mutate(undefined, {
       onSuccess: () => navigate(importPath(connection.id)),
-      onError: (err) =>
-        toastError(err instanceof ApiException ? err.message : 'Scan could not be started.'),
+      // FXR-1: a 403 is surfaced once by the global bridge — skip the page toast.
+      onError: (err) => {
+        if (isAuthDegrade403(err)) return
+        toastError(err instanceof ApiException ? err.message : 'Scan could not be started.')
+      },
     })
   }
 

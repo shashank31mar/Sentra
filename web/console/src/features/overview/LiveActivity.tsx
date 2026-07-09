@@ -49,10 +49,11 @@ export function LiveActivity({
     <Card className="flex flex-col overflow-hidden" style={{ maxHeight: 420 }}>
       <div className="flex items-center justify-between px-6 py-5 bg-white/[0.01]" style={{ borderBottom: '1px solid var(--color-line)' }}>
         <h3 className="font-display text-lg font-bold tracking-tight flex items-center gap-2.5">
-          Live Activity <StatusDot color="#0FFFFF" pulse />
+          Recent Activity <StatusDot color="#0FFFFF" pulse />
         </h3>
         <div className="flex items-center gap-3">
-          <span className="text-[10px] font-mono uppercase tracking-[0.2em] text-muted">Streaming</span>
+          {/* FX-3.2: data is a 15s TanStack poll, not a push stream — label it honestly. */}
+          <span className="text-[10px] font-mono uppercase tracking-[0.2em] text-muted">near-real-time (≤15s pull)</span>
           {onRefresh && (
             <button
               type="button"

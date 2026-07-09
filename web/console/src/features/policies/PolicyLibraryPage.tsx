@@ -13,7 +13,8 @@ import {
   usePolicies, useSigmaRules, useSigmaRuleContent, useToggleSigmaRule,
   useSetPolicyStatus, useDeletePolicy,
 } from '../../lib/query/usePolicies'
-import { useCan } from '../../lib/query/useMe'
+import { useCan, usePlatformCan } from '../../lib/query/useMe'
+import { isAuthDegrade403 } from '../../lib/degrade'
 import { policyDetailPath, policyEditPath, policyNewPath } from '../../app/routes'
 import { formatDateTime, formatNumber } from '../../lib/format'
 import type { PolicySummary } from '../../types/api'
@@ -45,6 +46,12 @@ export function PolicyLibraryPage() {
   // controls. The server still authorizes every mutation (require_role) — this
   // gate is UX only, so a tampered client gains nothing.
   const can = useCan()
+  // FX-1.1: the Sigma enable/disable toggle is a FLEET-GLOBAL kill-switch — the
+  // server gates `PATCH /sigma-rules/{id}` on `require_platform`, so a tenant admin
+  // must NOT see a control they can't use. Gated on `is_platform` (a PlatformCapability),
+  // NOT a TenantRole — hence `usePlatformCan`, never `useCan`.
+  const platformCan = usePlatformCan()
+  const canRetireSigma = platformCan('sigma.retire')
   const policies = usePolicies()
   const [range, setRange] = useState<MetricsRange>('24h')
   const sigma = useSigmaRules({ range })
@@ -62,7 +69,11 @@ export function PolicyLibraryPage() {
     }
     setStatus.mutate(
       { policyId: p.policy_id, status: 'active' },
-      { onSuccess: () => success(`${p.name} enabled.`), onError: () => error('Could not enable the policy.') },
+      {
+        onSuccess: () => success(`${p.name} enabled.`),
+        // FXR-1: a 403 is surfaced once by the global bridge — skip the page toast.
+        onError: (e) => { if (!isAuthDegrade403(e)) error('Could not enable the policy.') },
+      },
     )
   }
   const confirmDisable = () => {
@@ -71,7 +82,7 @@ export function PolicyLibraryPage() {
       { policyId: disableFor.policy_id, status: 'disabled' },
       {
         onSuccess: () => { success(`${disableFor.name} disabled.`); setDisableFor(null) },
-        onError: () => error('Could not disable the policy.'),
+        onError: (e) => { if (!isAuthDegrade403(e)) error('Could not disable the policy.') },
       },
     )
   }
@@ -79,7 +90,7 @@ export function PolicyLibraryPage() {
     if (!deleteFor) return
     del.mutate(deleteFor.policy_id, {
       onSuccess: () => { success(`${deleteFor.name} deleted (soft-disabled).`); setDeleteFor(null) },
-      onError: () => error('System policies can’t be deleted — disable instead.'),
+      onError: (e) => { if (!isAuthDegrade403(e)) error('System policies can’t be deleted — disable instead.') },
     })
   }
 
@@ -236,11 +247,11 @@ export function PolicyLibraryPage() {
               <Th>Category</Th>
               <Th>Severity</Th>
               <Th className="text-right">Matches ({range})</Th>
-              <Th className="text-right">Enabled</Th>
+              {canRetireSigma && <Th className="text-right">Enabled</Th>}
             </THead>
             <TBody>
               {ruleItems.map((r) => (
-                <SigmaRuleRow key={r.rule_id} rule={r} />
+                <SigmaRuleRow key={r.rule_id} rule={r} canRetire={canRetireSigma} />
               ))}
             </TBody>
           </Table>
@@ -283,11 +294,16 @@ export function PolicyLibraryPage() {
   )
 }
 
-function SigmaRuleRow({ rule }: { rule: import('../../types/api').SigmaRule }) {
+function SigmaRuleRow({ rule, canRetire }: { rule: import('../../types/api').SigmaRule; canRetire: boolean }) {
   const [open, setOpen] = useState(false)
   const toggle = useToggleSigmaRule()
   const content = useSigmaRuleContent(open ? rule.rule_id : null)
   const enabled = rule.status === 'enabled'
+  // FX-1.1: the Enabled toggle column only renders for a platform operator
+  // (`sigma.retire`). Non-platform operators see the read-only rule row without a
+  // fleet-global kill-switch they can't use — so the expanded detail spans one
+  // fewer column.
+  const colCount = canRetire ? 6 : 5
 
   return (
     <>
@@ -301,24 +317,26 @@ function SigmaRuleRow({ rule }: { rule: import('../../types/api').SigmaRule }) {
           <span className="text-xs font-mono uppercase" style={{ color: SEVERITY_COLOR[rule.severity] ?? '#8DA2AE' }}>{rule.severity}</span>
         </Td>
         <Td className="text-right font-mono text-secondary">{formatNumber(rule.match_count)}</Td>
-        <Td className="text-right">
-          <button
-            type="button"
-            className="cursor-pointer disabled:opacity-40"
-            disabled={toggle.isPending}
-            onClick={(e) => {
-              e.stopPropagation()
-              toggle.mutate({ ruleId: rule.rule_id, status: enabled ? 'disabled' : 'enabled' })
-            }}
-            title={enabled ? 'Disable rule' : 'Enable rule'}
-          >
-            {enabled ? <IconToggleRight size={26} className="text-cyan" /> : <IconToggleLeft size={26} className="text-muted" />}
-          </button>
-        </Td>
+        {canRetire && (
+          <Td className="text-right">
+            <button
+              type="button"
+              className="cursor-pointer disabled:opacity-40"
+              disabled={toggle.isPending}
+              onClick={(e) => {
+                e.stopPropagation()
+                toggle.mutate({ ruleId: rule.rule_id, status: enabled ? 'disabled' : 'enabled' })
+              }}
+              title={enabled ? 'Disable rule' : 'Enable rule'}
+            >
+              {enabled ? <IconToggleRight size={26} className="text-cyan" /> : <IconToggleLeft size={26} className="text-muted" />}
+            </button>
+          </Td>
+        )}
       </Tr>
       {open && (
         <Tr>
-          <Td colSpan={6} style={{ background: 'rgba(0,0,0,0.25)' }}>
+          <Td colSpan={colCount} style={{ background: 'rgba(0,0,0,0.25)' }}>
             {content.isLoading ? (
               <LoadingState label="Loading patterns…" />
             ) : content.isError ? (

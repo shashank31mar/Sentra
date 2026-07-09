@@ -16,7 +16,7 @@ import { ErrorState, LoadingState } from '../../components/ui/states'
 import { usePolicyDetail } from '../../lib/query/usePolicies'
 import { ROUTES, policyEditPath } from '../../app/routes'
 import { formatDateTime } from '../../lib/format'
-import { policyFilename, renderCedar, renderContent, type PolicyLang } from '../../lib/policyFormat'
+import { hasCompiledCedar, policyFilename, renderCedar, renderContent, type PolicyLang } from '../../lib/policyFormat'
 import type { PolicyStatus } from '../../types/enums'
 
 const POLICY_STATUS_COLOR: Partial<Record<PolicyStatus, string>> = {
@@ -71,14 +71,20 @@ function MetaRow({ label, children }: { label: string; children: React.ReactNode
 export function PolicyDetailPage() {
   const { policyId = '' } = useParams()
   const navigate = useNavigate()
-  const [lang, setLang] = useState<PolicyLang>('cedar')
+  // FX-3.3: DEFAULT to YAML (always LIVE — the authored content). Cedar is only
+  // authoritative when the backend compiled it; do NOT open on a synthetic Cedar body.
+  const [lang, setLang] = useState<PolicyLang>('yaml')
   const detail = usePolicyDetail(policyId)
 
   const policy = detail.data
-  const code = useMemo(
-    () => (policy ? (lang === 'cedar' ? renderCedar(policy) : renderContent(policy.content, lang)) : ''),
-    [policy, lang],
-  )
+  // FX-3.3: the CEDAR tab renders the COMPILED body ONLY when present; otherwise it
+  // degrades to a PARTIAL panel below — NEVER a client-fabricated permit/forbid.
+  const cedarCompiled = policy ? hasCompiledCedar(policy) : false
+  const code = useMemo(() => {
+    if (!policy) return ''
+    if (lang === 'cedar') return cedarCompiled ? renderCedar(policy) : ''
+    return renderContent(policy.content, lang)
+  }, [policy, lang, cedarCompiled])
 
   if (detail.isLoading) return <div className="p-8"><Card className="p-6"><LoadingState /></Card></div>
   if (detail.isError || !policy)
@@ -130,28 +136,29 @@ export function PolicyDetailPage() {
       />
 
       <div className="grid gap-5 grid-cols-1 lg:grid-cols-3">
-        {/* Source viewer (YAML / JSON of the real policy content) */}
+        {/* Source viewer (YAML / JSON of the real policy content; CEDAR only when compiled) */}
         <div className="lg:col-span-2 flex flex-col gap-5">
-          <CodeBlock
-            code={code}
-            filename={policyFilename(policy.name, lang)}
-            toolbar={
-              <div className="ml-2 flex rounded-md p-0.5" style={{ background: 'rgba(0,0,0,0.4)' }}>
-                {LANGS.map((l) => (
-                  <button
-                    key={l.id}
-                    type="button"
-                    onClick={() => setLang(l.id)}
-                    className={`px-3 py-1 rounded text-[10px] font-bold tracking-wide cursor-pointer transition-colors ${
-                      l.id === lang ? 'text-cyan bg-white/10' : 'text-muted hover:text-white'
-                    }`}
-                  >
-                    {l.label}
-                  </button>
-                ))}
+          {lang === 'cedar' && !cedarCompiled ? (
+            <Card className="p-6 flex flex-col gap-2" data-testid="cedar-partial">
+              <div className="flex items-center gap-2 text-secondary">
+                <IconCode size={16} className="text-amber" />
+                <span className="text-sm font-medium uppercase tracking-[0.2em]">Cedar — not compiled</span>
               </div>
-            }
-          />
+              <p className="text-xs text-muted leading-relaxed max-w-prose">
+                This policy has no compiled Cedar artifact yet, so there is no authoritative
+                Cedar body to show. It is enforced from its structured (YAML) definition — see the
+                <button type="button" onClick={() => setLang('yaml')} className="mx-1 text-cyan hover:underline">YAML</button>
+                tab. (A Cedar body appears here once the backend compiles this policy.)
+              </p>
+              <PolicyLangTabs langs={LANGS} lang={lang} setLang={setLang} />
+            </Card>
+          ) : (
+            <CodeBlock
+              code={code}
+              filename={policyFilename(policy.name, lang)}
+              toolbar={<PolicyLangTabs langs={LANGS} lang={lang} setLang={setLang} />}
+            />
+          )}
 
           {/* Cross-cloud dependencies — the marquee enforcement */}
           {policy.cross_cloud_dependencies.length > 0 && (
@@ -262,6 +269,35 @@ export function PolicyDetailPage() {
           </Card>
         </div>
       </div>
+    </div>
+  )
+}
+
+/** The CEDAR / YAML / JSON language switcher — shared by the CodeBlock toolbar and
+ *  the FX-3.3 Cedar-not-compiled PARTIAL panel so both stay in lockstep. */
+function PolicyLangTabs({
+  langs,
+  lang,
+  setLang,
+}: {
+  langs: { id: PolicyLang; label: string }[]
+  lang: PolicyLang
+  setLang: (l: PolicyLang) => void
+}) {
+  return (
+    <div className="mt-2 flex rounded-md p-0.5 w-fit" style={{ background: 'rgba(0,0,0,0.4)' }}>
+      {langs.map((l) => (
+        <button
+          key={l.id}
+          type="button"
+          onClick={() => setLang(l.id)}
+          className={`px-3 py-1 rounded text-[10px] font-bold tracking-wide cursor-pointer transition-colors ${
+            l.id === lang ? 'text-cyan bg-white/10' : 'text-muted hover:text-white'
+          }`}
+        >
+          {l.label}
+        </button>
+      ))}
     </div>
   )
 }

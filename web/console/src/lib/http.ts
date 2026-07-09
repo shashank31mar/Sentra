@@ -1,5 +1,6 @@
 import type { ApiErrorBody } from '../types/api'
-import { clearActiveTenant, tenantHeader } from './tenant'
+import { clearActiveTenant, getActiveTenant, tenantHeader } from './tenant'
+import { ORG_PAGE_PATH } from './orgEntry'
 
 /**
  * Thin fetch wrapper for the SOC console.
@@ -55,6 +56,61 @@ function reauthenticate(): never {
     error: 'Your session has expired. Redirecting to sign in…',
     error_code: 'AUTH_EXPIRED',
   })
+}
+
+/**
+ * FX-2.1 — lost-tenant-binding 403 fail-safe (lld/40 §C.4).
+ *
+ * When the active `X-Aegion-Tenant` preference no longer resolves to a membership
+ * (a stale/corrupted `sessionStorage['aegion.activeTenant']` fails the
+ * `resolve_operator_tenant` membership check — `deps.py:440`), fail SAFE: drop the
+ * bad binding and bounce to the org-first page so the operator re-picks — never
+ * leave them staring at a 403 they can't clear. This is DISTINCT from:
+ *   - a role-403 ("you lack the role", `require_role` → "requires role >= …",
+ *     `deps.py:508`), which must NOT clear the binding — it can hit a role-gated
+ *     READ too (e.g. the admin-gated `GET /tenants/{id}/members`, rbac.ts:44), so the
+ *     HTTP method is NOT a reliable discriminator; and
+ *   - a 401/expired session (reauthenticate()).
+ * We therefore key the bounce on the SERVER'S REASON (see isLostTenantBinding403),
+ * gated on an active tenant being bound so a platform read (no tenant) and a
+ * no-tenant read never trip it.
+ */
+function bounceToOrgOnLostTenant(): never {
+  clearActiveTenant()
+  window.location.assign(ORG_PAGE_PATH)
+  throw new ApiException(403, {
+    error: 'Your organization selection is no longer valid. Returning to organization selection…',
+    error_code: 'TENANT_BINDING_LOST',
+  })
+}
+
+/**
+ * Positively identify a *lost-tenant-binding* 403 from the server's reason so the
+ * binding is wiped ONLY when we're confident the active tenant is the problem.
+ * `resolve_operator_tenant` raises "not a member of requested tenant" (deps.py:440)
+ * / "operator has no tenant membership" (deps.py:446) when the bound `X-Aegion-Tenant`
+ * no longer resolves to a membership. A role-403 ("requires role >= …", deps.py:508)
+ * — which ALSO occurs on role-gated READs (rbac.ts:44) — deliberately does NOT match,
+ * so it is surfaced as an honest 403 and never ejects an operator with a valid binding.
+ *
+ * Fail-safe by construction: an unrecognized 403 does NOT match → the binding is
+ * preserved and the caller sees the real 403, never a wrongful eject to org selection.
+ */
+const LOST_TENANT_403_RE = /not a member of requested tenant|no tenant membership/i
+
+function isLostTenantBinding403(body: Partial<ApiErrorBody>): boolean {
+  return LOST_TENANT_403_RE.test(body.error ?? '')
+}
+
+/** Per-request http options that are NOT part of the fetch `RequestInit`. */
+export interface RequestOptions {
+  /**
+   * FX-2.3 — code-enforce that this request never attaches `X-Aegion-Tenant`, even
+   * if a tenant is ambiently bound. Platform (cross-tenant) calls set this so the
+   * fleet-scope invariant holds by construction, not by the luck of a platform
+   * operator happening to have no active tenant.
+   */
+  omitTenant?: boolean
 }
 
 export type QueryValue = string | number | boolean | null | undefined
@@ -126,7 +182,7 @@ export function normalizeErrorBody(raw: unknown): Partial<ApiErrorBody> {
   return {}
 }
 
-async function request<T>(path: string, init?: RequestInit): Promise<T> {
+async function request<T>(path: string, init?: RequestInit, opts?: RequestOptions): Promise<T> {
   // Code-level mock adapter (no service worker). In prod, VITE_DATA_SOURCE is
   // unset so USE_MOCKS is false and this branch never runs — the mockRouter is
   // emitted as a lazy chunk but never fetched (no fixtures reach users).
@@ -158,7 +214,10 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
         ...(init?.body ? { 'Content-Type': 'application/json' } : {}),
         // Active-tenant switch for multi-membership operators (LLD-26 WS-C).
         // Server-validated against membership; omitted when no explicit tenant.
-        ...tenantHeader(),
+        // FX-2.3: a platform (cross-tenant) call passes `omitTenant` so the header
+        // is dropped by CODE even when a tenant is ambiently bound — the fleet-scope
+        // invariant no longer relies on the operator happening to have no tenant.
+        ...(opts?.omitTenant ? {} : tenantHeader()),
         ...init?.headers,
       },
     })
@@ -185,7 +244,25 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     } catch {
       /* non-JSON error body */
     }
-    throw new ApiException(res.status, normalizeErrorBody(raw))
+    const body = normalizeErrorBody(raw)
+
+    // FX-2.1: a *lost-tenant-binding* 403 — the bound `X-Aegion-Tenant` no longer
+    // resolves to a membership (deps.py:440/446) — fails SAFE: drop the stale binding
+    // + bounce to the org page. We key on the SERVER'S REASON, not the HTTP method: a
+    // role-403 ("requires role >= …") can hit a role-gated READ too (e.g. the
+    // admin-gated `GET /tenants/{id}/members`, rbac.ts:44), and wiping a valid binding
+    // there would wrongly eject the operator — so a role-403 stays an honest 403
+    // (handled by the MutationCache degrade for writes). Gated on an active tenant
+    // being bound; `omitTenant` (platform reads) and no-tenant reads never trip this.
+    if (
+      res.status === 403 &&
+      !opts?.omitTenant &&
+      getActiveTenant() &&
+      isLostTenantBinding403(body)
+    ) {
+      bounceToOrgOnLostTenant()
+    }
+    throw new ApiException(res.status, body)
   }
 
   if (res.status === 204) return undefined as T
@@ -193,16 +270,16 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 }
 
 export const http = {
-  get: <T>(path: string, params?: Record<string, QueryValue>) =>
-    request<T>(`${path}${buildQuery(params)}`),
-  post: <T>(path: string, body?: unknown, headers?: Record<string, string>) =>
-    request<T>(path, { method: 'POST', body: body ? JSON.stringify(body) : undefined, headers }),
-  put: <T>(path: string, body?: unknown, headers?: Record<string, string>) =>
-    request<T>(path, { method: 'PUT', body: body ? JSON.stringify(body) : undefined, headers }),
-  patch: <T>(path: string, body?: unknown, headers?: Record<string, string>) =>
-    request<T>(path, { method: 'PATCH', body: body ? JSON.stringify(body) : undefined, headers }),
-  del: <T>(path: string, headers?: Record<string, string>) =>
-    request<T>(path, { method: 'DELETE', headers }),
+  get: <T>(path: string, params?: Record<string, QueryValue>, opts?: RequestOptions) =>
+    request<T>(`${path}${buildQuery(params)}`, undefined, opts),
+  post: <T>(path: string, body?: unknown, headers?: Record<string, string>, opts?: RequestOptions) =>
+    request<T>(path, { method: 'POST', body: body ? JSON.stringify(body) : undefined, headers }, opts),
+  put: <T>(path: string, body?: unknown, headers?: Record<string, string>, opts?: RequestOptions) =>
+    request<T>(path, { method: 'PUT', body: body ? JSON.stringify(body) : undefined, headers }, opts),
+  patch: <T>(path: string, body?: unknown, headers?: Record<string, string>, opts?: RequestOptions) =>
+    request<T>(path, { method: 'PATCH', body: body ? JSON.stringify(body) : undefined, headers }, opts),
+  del: <T>(path: string, headers?: Record<string, string>, opts?: RequestOptions) =>
+    request<T>(path, { method: 'DELETE', headers }, opts),
 }
 
 /** Build an `X-Operator-Email` header map (omitted when no operator is known).

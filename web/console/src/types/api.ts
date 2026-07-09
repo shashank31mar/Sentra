@@ -162,6 +162,14 @@ export interface DecisionItem {
   reason: string | null
   trust_score: number | null
   timestamp: string
+  /**
+   * FX-3.1: the deciding validator (e.g. `sentra.sigma`, `sentra.policy`) for the
+   * per-detector facet. OPTIONAL — the field is a backend field-add on `/decisions`
+   * rows (ws-g-fix-backend, `winning_source` exists on `SessionDecision.combined`
+   * but not yet the list shape). Absent ⇒ the facet ships PARTIAL/disabled; NEVER
+   * derive the source list from a FE constant.
+   */
+  winning_source?: string | null
 }
 
 export interface LogEntry {
@@ -268,6 +276,48 @@ export interface SessionDecisionsResponse {
   session_id: string
   decisions: SessionDecision[]
   total: number
+  next_token: string | null
+}
+
+/* ------------- Session trail (WS-D recomputed coverage) ------------- */
+
+/** One validator's coverage bucket in the WS-D trail (`GET /v1/sessions/{id}/trail`
+ *  → coverage[]). The four states mirror the writer's classifier (§7.2):
+ *  `ran` (emitted a verdict) / `ran_abstain` / `ran_error` / `not_run` (pipeline
+ *  short-circuited before it). `display_name`/`state_label` are server-derived on
+ *  READ (never stored) — raw `source`/`state` stay machine values. */
+export interface SessionTrailEntry {
+  source: string
+  state: 'ran' | 'ran_abstain' | 'ran_error' | 'not_run'
+  decision: Decision | null
+  reason: string | null
+  latency_ms: number | null
+  display_name: string
+  state_label: string
+}
+
+/**
+ * The WS-D server-recomputed decision trail for ONE request
+ * (`GET /v1/sessions/{id}/trail?request_id=`, `routes.py:583`, LIVE per lld/40 v1.4).
+ * The server recomputes `winning_source`/`block_point` on read from the ran DENY
+ * rows (the durable copy lives on the CloudWatch `sentra.combined` event, not DDB)
+ * and classifies every validator into the four coverage buckets. Distinct from the
+ * client-reconstructed `SessionDecisionsResponse` — this is the authoritative trail.
+ */
+export interface SessionTrail {
+  session_id: string
+  request_id: string
+  phase: string
+  winning_source: string | null
+  winning_source_display: string | null
+  block_point: string | null
+  decision: Decision
+  coverage: SessionTrailEntry[]
+  coverage_total: number
+  ran_count: number
+  abstain_count: number
+  ran_error_count: number
+  not_run_count: number
   next_token: string | null
 }
 
@@ -633,7 +683,11 @@ export interface PlatformTenantDetail {
   status: string
   plan: string
   identity_mode: string
+  /** Loose quota bag — narrow the specific key you read (never assume presence). */
   quota: Record<string, unknown>
   platform_read_consent: boolean
   members: PlatformMemberRow[]
+  /** Optional 24h usage for the FX-3.6 quota-headroom readout (absent ⇒ headroom
+   *  shows "unknown"). */
+  decisions_24h?: number
 }

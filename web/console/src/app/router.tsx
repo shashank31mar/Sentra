@@ -4,6 +4,7 @@ import { ROUTES } from './routes'
 import { AppLayout } from './AppLayout'
 import { PlatformLayout } from './PlatformLayout'
 import { RequirePlatform } from './RequirePlatform'
+import { RequireCan } from './RequireCan'
 import { RouteErrorBoundary } from './RouteErrorBoundary'
 import { PlaceholderPage } from '../components/ui/PlaceholderPage'
 import { LoadingState } from '../components/ui/states'
@@ -60,8 +61,16 @@ export const router = createBrowserRouter([
       { path: ROUTES.deploy, element: <PlaceholderPage title="Deploy Agent" /> },
       { path: ROUTES.policies, element: withSuspense(<PolicyLibraryPage />) },
       // Static /policies/new MUST precede the /policies/:policyId param route.
-      { path: ROUTES.policyNew, element: withSuspense(<PolicyEditorPage />) },
-      { path: ROUTES.policyEdit, element: withSuspense(<PolicyEditorPage />) },
+      // FX-2.2: PolicyEditor create/edit are deep-linkable write routes — guard on
+      // `policies.write` so a viewer can't reach the editor form by URL.
+      {
+        path: ROUTES.policyNew,
+        element: <RequireCan cap="policies.write">{withSuspense(<PolicyEditorPage />)}</RequireCan>,
+      },
+      {
+        path: ROUTES.policyEdit,
+        element: <RequireCan cap="policies.write">{withSuspense(<PolicyEditorPage />)}</RequireCan>,
+      },
       { path: ROUTES.policyDetail, element: withSuspense(<PolicyDetailPage />) },
       { path: ROUTES.quarantine, element: withSuspense(<QuarantinePage />) },
       { path: ROUTES.residualAgents, element: withSuspense(<ResidualAgentsPage />) },

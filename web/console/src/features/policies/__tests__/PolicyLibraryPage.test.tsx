@@ -5,10 +5,14 @@ import { can } from '../../../lib/rbac'
 import type { TenantRole } from '../../../types/api'
 import type { PolicySummary } from '../../../types/api'
 
-// Drive useCan() off a settable role using the REAL capability map.
+// Drive useCan() off a settable role using the REAL capability map. The page also
+// calls usePlatformCan() (FX-1.1 Sigma gate); stub it non-platform here — these cases
+// assert the tenant-role controls, not the platform kill-switch (covered in
+// PolicyLibraryPage.sigmaGate.test.tsx).
 let role: TenantRole = 'viewer'
 vi.mock('../../../lib/query/useMe', () => ({
   useCan: () => (cap: Parameters<typeof can>[1]) => can(role, cap),
+  usePlatformCan: () => () => false,
 }))
 
 const POLICY: PolicySummary = {
