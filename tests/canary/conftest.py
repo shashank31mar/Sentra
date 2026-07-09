@@ -519,36 +519,55 @@ def _hosted_ui_login(page, base_url: str, creds: Dict[str, str]) -> None:
     canary user's email+password by STABLE field semantics (never css/nth-child), and
     let the ALB set AWSELBAuthSessionCookie-*."""
     page.goto(base_url, wait_until="domcontentloaded", timeout=20000)
-    # Org-first entry (WS-G): if the org page is shown, submit the canary tenant/org.
+    # Org-first entry (WS-G): the console root serves org.html — `<input id="org"
+    # name="org">` + `<button id="submit" type="submit">` (verified against the live
+    # page). Fill the org and submit; then WAIT for the redirect to the Cognito hosted
+    # UI (the classic form is JS-rendered, so we must wait for its field, not query
+    # immediately — the org-submit→Cognito navigation is async). If org.html isn't the
+    # page (a direct-to-Cognito ALB redirect), the org field is simply absent and we
+    # proceed straight to the Cognito fill.
     org = creds.get("tenant_id") or ""
-    org_field = page.query_selector("input[name='org'], input[name='organization'], #org")
+    org_field = page.query_selector("#org, input[name='org'], input[name='organization']")
     if org_field is not None and org:
         org_field.fill(org)
-        page.click("button[type='submit'], [type='submit']")
-    # Cognito hosted UI — stable field semantics (SEC / lld/38 §6.1). Each field is
-    # WAIT-guarded before fill: the hosted UI may render the username first and the
-    # password on a SECOND page (two-step flow), so querying password without a wait
-    # would NoneType-deref. wait_for_selector raises a clear TimeoutError (→ INFRA /
-    # LoginFixtureFailed) rather than a confusing `None.fill()` AttributeError.
+        page.click("#submit, button[type='submit'], [type='submit']")
+
     def _fill_field(selector: str, value: str, what: str) -> None:
+        # WAIT for the field (the Cognito classic form is JS-rendered AND arrives after
+        # the org-submit redirect) — a clear TimeoutError → INFRA/LoginFixtureFailed
+        # rather than a confusing None.fill() AttributeError.
         try:
-            page.wait_for_selector(selector, timeout=20000)
+            page.wait_for_selector(selector, state="visible", timeout=30000)
         except Exception as exc:  # noqa: BLE001 — a missing login field is a precondition fail.
             raise RuntimeError(
-                f"hosted-UI {what} field not found ({selector!r}) — the Cognito login page "
-                f"changed or a two-step flow stalled (J8 LoginFixtureFailed, INFRA)"
+                f"hosted-UI {what} field not found ({selector!r}) after {page.url!r} — "
+                f"the Cognito login page changed or the org-first redirect stalled "
+                f"(J8 LoginFixtureFailed, INFRA)"
             ) from exc
         page.fill(selector, value)
 
-    _fill_field("input[name='username'], input[type='email']", creds["email"], "username")
-    # Some hosted-UI themes require submitting the username before the password renders;
-    # if a lone password field isn't present yet, advance then wait for it.
-    if page.query_selector("input[name='password'], input[type='password']") is None:
+    # Real Cognito hosted UI (verified): name="username"/"password" + ids
+    # signInFormUsername/signInFormPassword. Target both for resilience.
+    _fill_field(
+        "input[name='username'], #signInFormUsername, input[type='email']",
+        creds["email"], "username",
+    )
+    # Classic Cognito shows username+password on ONE page; a two-step theme would need
+    # a submit between them. If no password field is present yet, advance then wait.
+    if page.query_selector("input[name='password'], #signInFormPassword, input[type='password']") is None:
         page.click("input[type='submit'], button[type='submit']")
-    _fill_field("input[name='password'], input[type='password']", creds["password"], "password")
-    page.click("input[type='submit'], button[type='submit']")
-    # Land back on the console (ALB has set the session cookie by now).
-    page.wait_for_load_state("networkidle", timeout=20000)
+    _fill_field(
+        "input[name='password'], #signInFormPassword, input[type='password']",
+        creds["password"], "password",
+    )
+    page.click("input[type='submit'], button[type='submit'], [name='signInSubmitButton']")
+    # Land back on the console (ALB completes /oauth2/idpresponse + sets the session
+    # cookie). Wait for the URL to return to the console host — not just networkidle,
+    # which the Cognito page can also satisfy mid-redirect.
+    try:
+        page.wait_for_url(f"{base_url.rstrip('/')}/**", timeout=30000)
+    except Exception:  # noqa: BLE001 — fall back to a load-state settle if the glob misses.
+        page.wait_for_load_state("networkidle", timeout=20000)
 
 
 @pytest.fixture(scope="session")

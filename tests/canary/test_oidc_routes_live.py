@@ -58,9 +58,26 @@ def test_oidc_route_no_identity_refused(canary_client, spec):
     body = _positive_body(spec.path, spec.method)
     kwargs = {"json": body} if body is not None and spec.method not in ("GET", "DELETE") else {}
     resp = getattr(canary_client, spec.method.lower())(url, **kwargs)
-    assert resp.status_code in (401, 403), (
+    # The load-bearing invariant: the operator route must NOT EXECUTE for a caller with
+    # no OIDC session → NEVER a 2xx (a 2xx = the resolve_operator_tenant/require_role/
+    # require_platform lock leaked → RED CRITICAL) and never a 5xx. The refusal is an
+    # honest 4xx: 401/403 (auth gate) OR 422/400 for a POST whose Pydantic BODY model
+    # validates before the auth dependency fires (FastAPI resolves a body param first —
+    # e.g. POST /v1/tenants + /v1/invites/redeem take a body model, so an empty probe
+    # body 422s pre-auth; both declare "422" in failure_axis). GET reads have no body,
+    # so they land squarely on 401/403. The specific gate proof is the authed leg
+    # (test_console_authed_oidc) — this live leg is the "no anonymous 2xx" monitor,
+    # matching the J7.1 gated-mutation contract (a body-first 4xx is still a refusal)."""
+    assert 400 <= resp.status_code < 500, (
         f"{spec.method} {spec.path} with NO operator session → {resp.status_code}, "
-        f"expected 401/403 (operator gate must refuse an un-authenticated caller; a 2xx "
-        f"= the resolve_operator_tenant/require_role lock leaked → RED CRITICAL)"
+        f"expected a 4xx refusal (401/403 auth, or 422/400 body-first); a 2xx = the "
+        f"operator gate leaked → RED CRITICAL, a 5xx = a server error"
     )
+    # A GET read has no body model to validate first, so it MUST hit the auth gate
+    # directly — pin it to 401/403 (a GET returning 422/400 would be anomalous).
+    if spec.method == "GET":
+        assert resp.status_code in (401, 403), (
+            f"GET {spec.path} with no operator session → {resp.status_code}, expected "
+            f"401/403 (a read has no body to validate before the auth gate)"
+        )
 
