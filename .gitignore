@@ -189,3 +189,8 @@ training/distilled-classifier/venv/
 training/distilled-classifier/artifacts/
 training/distilled-classifier/model_bundle/
 training/distilled-classifier/data/
+
+# drift-check Lambda vendors ml_classifier_prompts/schema at package time (copies of
+# the controller source); track only the handler, not the vendored copies.
+lambda/distilled_drift_check/ml_classifier_prompts.py
+lambda/distilled_drift_check/ml_classifier_schema.py
