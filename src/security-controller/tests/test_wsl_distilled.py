@@ -37,33 +37,64 @@ def _svc(distilled=None):
 
 # ------------------------------------------------------------------ M6.0
 def test_distilled_config_defaults():
-    """distilled_enabled defaults True (LIVE front-runner); threshold 0.9; timeout
-    100ms; there is NO `distilled_shortcircuit_enabled` field (intrinsic short-circuit)."""
+    """The trained-v1 SIDECAR config (2026-07-10): DENY short-circuit ON at 0.95;
+    ALLOW short-circuit gated OFF (fail-open until shadow-proven); service url empty
+    (interim escalate path). NO `distilled_shortcircuit_enabled` field."""
     s = Settings()
     assert s.distilled_enabled is True
-    assert s.distilled_confidence_trust_threshold == 0.9
     assert s.distilled_timeout_ms == 100
+    assert s.distilled_service_url == ""                         # unset → escalate path
+    assert s.distilled_deny_shortcircuit_min_confidence == 0.95  # DENY safe direction
+    assert s.distilled_allow_shortcircuit_min_confidence == 0.95
+    assert s.distilled_allow_shortcircuit_enabled is False       # fast-ALLOW gated OFF
     assert not hasattr(s, "distilled_shortcircuit_enabled")
-    # each field reads its validation_alias.
-    with patch.dict("os.environ", {"DISTILLED_ENABLED": "false",
-                                   "DISTILLED_CONFIDENCE_TRUST_THRESHOLD": "0.75",
-                                   "DISTILLED_TIMEOUT_MS": "50"}):
+    with patch.dict("os.environ", {"DISTILLED_SERVICE_URL": "http://d.sentra.internal:8080",
+                                   "DISTILLED_ALLOW_SHORTCIRCUIT_ENABLED": "true",
+                                   "DISTILLED_TIMEOUT_MS": "80"}):
         s2 = Settings()
-        assert s2.distilled_enabled is False
-        assert s2.distilled_confidence_trust_threshold == 0.75
-        assert s2.distilled_timeout_ms == 50
+        assert s2.distilled_service_url == "http://d.sentra.internal:8080"
+        assert s2.distilled_allow_shortcircuit_enabled is True
+        assert s2.distilled_timeout_ms == 80
 
 
 @pytest.mark.asyncio
-async def test_distilled_interim_is_escalate_not_abstain():
-    """The interim classify() returns a CONCRETE escalate verdict (should_deny=False,
-    confidence 0.0, metadata escalate True) and is NOT an abstain (so run_chain does
-    not abort; Haiku runs)."""
-    result = await DistilledClassifier().classify(_req())
+async def test_distilled_client_escalates_when_service_unset():
+    """The CLIENT (no service url wired) returns a CONCRETE escalate verdict
+    (should_deny=False, confidence 0.0, metadata escalate True), NOT an abstain — so
+    run_chain does not abort and Haiku runs. The pre-deploy / fail-secure steady state."""
+    with patch.object(settings, "distilled_service_url", ""):
+        result = await DistilledClassifier().classify(_req())
     assert result.should_deny is False
     assert result.confidence == 0.0
     assert result.metadata["escalate"] is True
     assert result.is_abstain is False
+
+
+@pytest.mark.asyncio
+async def test_distilled_client_fail_secure_on_service_error():
+    """If the model service errors/times out, the client escalates to Haiku (never a
+    silent ALLOW-and-stop). Fail-secure: a concrete escalate, not an abstain."""
+    with patch.object(settings, "distilled_service_url", "http://unreachable.invalid:8080"), \
+         patch.object(settings, "distilled_timeout_ms", 50):
+        result = await DistilledClassifier().classify(_req())
+    assert result.metadata["escalate"] is True
+    assert result.is_abstain is False
+    assert result.should_deny is False
+
+
+@pytest.mark.asyncio
+async def test_distilled_client_maps_service_verdict():
+    """A well-formed service response maps to a concrete ValidationResult carrying the
+    decision + confidence (no escalate key), so the gate can apply the thresholds."""
+    from unittest.mock import MagicMock
+    fake = {"decision": "DENY", "confidence": 0.97, "model": "distilled_v1_multilingual"}
+    dc = DistilledClassifier()
+    with patch.object(settings, "distilled_service_url", "http://d.sentra.internal:8080"), \
+         patch.object(dc, "_post_sync", return_value=fake):
+        r = await dc.classify(_req())
+    assert r.decision == "DENY" and r.should_deny is True
+    assert r.confidence == 0.97
+    assert not (r.metadata or {}).get("escalate")   # concrete verdict → gate decides
 
 
 # ------------------------------------------------------------------ M6.1
@@ -150,19 +181,46 @@ def _ml_node(svc):
 
 
 @pytest.mark.asyncio
-async def test_confident_distilled_shortcircuits_haiku():
-    """A CONFIDENT distilled result in sess → _run_ml returns abstain(distilled_
-    shortcircuit) and ml_classifier.validate is NOT called (both ALLOW and DENY)."""
-    for decision, deny in (("ALLOW", False), ("DENY", True)):
-        svc = _svc()
-        confident = ValidationResult(
-            decision=decision, reason="confident", should_deny=deny, confidence=0.95,
-            source=Source.SENTRA_DISTILLED, metadata={})
-        node = _ml_node(svc)
-        result = await node.run(_req(), {Source.SENTRA_DISTILLED: confident})
-        assert result.is_abstain
-        assert result.reason == "distilled_shortcircuit"
-        svc.ml_classifier.validate.assert_not_called()
+async def test_confident_distilled_DENY_shortcircuits_haiku():
+    """ASYMMETRIC gate (2026-07-10): a CONFIDENT distilled DENY (>= deny threshold)
+    ALWAYS short-circuits — _run_ml abstains, Haiku is NOT called. DENY precision was
+    measured 1.0 (0 false-blocks) so a DENY short-circuit is fail-secure."""
+    svc = _svc()
+    confident_deny = ValidationResult(
+        decision="DENY", reason="confident", should_deny=True, confidence=0.96,
+        source=Source.SENTRA_DISTILLED, metadata={})
+    node = _ml_node(svc)
+    result = await node.run(_req(), {Source.SENTRA_DISTILLED: confident_deny})
+    assert result.is_abstain
+    assert result.reason == "distilled_shortcircuit"
+    svc.ml_classifier.validate.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_confident_distilled_ALLOW_gated_off_runs_haiku():
+    """ASYMMETRIC gate: a CONFIDENT distilled ALLOW does NOT short-circuit by default
+    (distilled_allow_shortcircuit_enabled=False) — a false-ALLOW is fail-OPEN, gated
+    until shadow-proven. Haiku RUNS. Flipping the flag on makes it short-circuit."""
+    confident_allow = ValidationResult(
+        decision="ALLOW", reason="confident", should_deny=False, confidence=0.96,
+        source=Source.SENTRA_DISTILLED, metadata={})
+
+    # default: gate OFF → Haiku runs (the mock Haiku returns abstain, so we assert
+    # the CALL happened rather than the result shape — Haiku ran, not short-circuited).
+    svc = _svc()
+    node = _ml_node(svc)
+    with patch.object(settings, "distilled_allow_shortcircuit_enabled", False):
+        await node.run(_req(), {Source.SENTRA_DISTILLED: confident_allow})
+    svc.ml_classifier.validate.assert_called_once()
+
+    # gate ON (post-shadow) → confident ALLOW short-circuits, Haiku skipped
+    svc2 = _svc()
+    node2 = _ml_node(svc2)
+    with patch.object(settings, "distilled_allow_shortcircuit_enabled", True), \
+         patch.object(settings, "distilled_allow_shortcircuit_min_confidence", 0.95):
+        result2 = await node2.run(_req(), {Source.SENTRA_DISTILLED: confident_allow})
+    assert result2.is_abstain
+    svc2.ml_classifier.validate.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -274,22 +332,23 @@ async def test_confident_distilled_deny_blocks_full_pipeline():
 
 
 @pytest.mark.asyncio
-async def test_interim_distilled_runs_haiku():
-    """The interim distilled result (escalate True, confidence 0.0) → Haiku runs."""
+async def test_escalate_distilled_runs_haiku():
+    """An escalate verdict (escalate True, confidence 0.0 — service unset/error) → Haiku runs."""
     svc = _svc()
-    interim = ValidationResult(decision="ALLOW", reason="interim", should_deny=False,
-                               confidence=0.0, source=Source.SENTRA_DISTILLED,
-                               metadata={"escalate": True})
+    escalate = ValidationResult(decision="ALLOW", reason="escalate", should_deny=False,
+                                confidence=0.0, source=Source.SENTRA_DISTILLED,
+                                metadata={"escalate": True})
     node = _ml_node(svc)
-    await node.run(_req(), {Source.SENTRA_DISTILLED: interim})
+    await node.run(_req(), {Source.SENTRA_DISTILLED: escalate})
     svc.ml_classifier.validate.assert_awaited_once()
 
 
 @pytest.mark.asyncio
-async def test_lowconf_distilled_runs_haiku():
-    """A real-but-low-confidence distilled verdict (confidence < threshold) → Haiku runs."""
+async def test_lowconf_distilled_DENY_runs_haiku():
+    """A low-confidence distilled DENY (< deny threshold) → Haiku runs (does not
+    short-circuit; the confident-DENY floor is 0.95)."""
     svc = _svc()
-    lowconf = ValidationResult(decision="ALLOW", reason="lowconf", should_deny=False,
+    lowconf = ValidationResult(decision="DENY", reason="lowconf", should_deny=True,
                                confidence=0.5, source=Source.SENTRA_DISTILLED, metadata={})
     node = _ml_node(svc)
     await node.run(_req(), {Source.SENTRA_DISTILLED: lowconf})
@@ -297,20 +356,17 @@ async def test_lowconf_distilled_runs_haiku():
 
 
 @pytest.mark.asyncio
-async def test_distilled_own_threshold():
-    """FIX-A3: the short-circuit gate compares against distilled_confidence_trust_
-    threshold, NOT ml_confidence_trust_threshold. Construct a confidence BETWEEN the
-    two and assert the distilled threshold governs."""
-    # distilled threshold 0.8, ml threshold 0.95 → a 0.85 confidence is confident for
-    # distilled (short-circuits) but would be below the ml threshold.
-    with patch.object(settings, "distilled_confidence_trust_threshold", 0.8), \
-         patch.object(settings, "ml_confidence_trust_threshold", 0.95):
+async def test_deny_uses_deny_threshold_not_ml_threshold():
+    """The DENY short-circuit gate compares against distilled_deny_shortcircuit_min_
+    confidence (0.95), NOT ml_confidence_trust_threshold. A 0.96 DENY short-circuits."""
+    with patch.object(settings, "distilled_deny_shortcircuit_min_confidence", 0.95), \
+         patch.object(settings, "ml_confidence_trust_threshold", 0.99):
         svc = _svc()
-        mid = ValidationResult(decision="ALLOW", reason="mid", should_deny=False,
-                               confidence=0.85, source=Source.SENTRA_DISTILLED, metadata={})
+        deny = ValidationResult(decision="DENY", reason="conf", should_deny=True,
+                                confidence=0.96, source=Source.SENTRA_DISTILLED, metadata={})
         node = _ml_node(svc)
-        result = await node.run(_req(), {Source.SENTRA_DISTILLED: mid})
-        assert result.is_abstain   # short-circuited on the DISTILLED threshold (0.8), not ml's 0.95
+        result = await node.run(_req(), {Source.SENTRA_DISTILLED: deny})
+        assert result.is_abstain   # short-circuited on the DENY threshold (0.95)
         svc.ml_classifier.validate.assert_not_called()
 
 

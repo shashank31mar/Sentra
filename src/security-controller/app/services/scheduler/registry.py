@@ -615,25 +615,46 @@ def _apply_ml_enforce_wrapper(result: ValidationResult) -> ValidationResult:
     return wrapped
 
 
-def _is_confident_distilled(distilled: ValidationResult | None) -> bool:
-    """Does the upstream distilled verdict short-circuit Haiku? — WS-L M6.2 (LLD 32 §4.1).
-
-    The ONE shared gate for the intrinsic short-circuit (integration-sentinel FIX-B
-    HIGH). It is read on BOTH sides so they can never drift:
-      * `_run_ml` — abstains (skips Haiku) exactly when this is True; and
-      * `_run_distilled` — enforce-stamps a DENY exactly when this is True, so the
-        confident DENY can DECIDE (`_is_hard_deny`) after Haiku is suppressed.
-    A confident verdict = a CONCRETE (non-escalate, non-error) distilled result whose
-    `confidence` meets the distilled OWN trust threshold (NOT `ml_confidence_trust_
-    threshold`; FIX-A3). Guards `metadata` None and `confidence` None (models.py
-    Optional) fail-safe to "NOT confident" → escalate to Haiku.
-    """
+def _distilled_is_concrete(distilled: ValidationResult | None) -> bool:
+    """A usable, concrete distilled verdict (not escalate/error/None, has confidence)."""
     return bool(
         distilled is not None
         and not (distilled.metadata or {}).get("escalate")
         and distilled.confidence is not None
-        and distilled.confidence >= settings.distilled_confidence_trust_threshold
     )
+
+
+def _is_confident_distilled(distilled: ValidationResult | None) -> bool:
+    """Does the upstream distilled verdict short-circuit Haiku? — WS-L M6.2, ASYMMETRIC
+    (2026-07-10: the trained v1 model + measured-safe thresholds).
+
+    The ONE shared gate, read on BOTH sides so they can never drift:
+      * `_run_ml` — abstains (skips Haiku) exactly when this is True; and
+      * `_run_distilled` — enforce-stamps a DENY exactly when this is True.
+
+    ASYMMETRIC because the two directions have different safety:
+      * confident DENY  (confidence >= distilled_deny_shortcircuit_min_confidence):
+        ALWAYS short-circuits. Measured precision 1.0 → worst case is a fail-SECURE
+        over-block (caught by the drift monitor), never a missed attack.
+      * confident ALLOW (confidence >= distilled_allow_shortcircuit_min_confidence):
+        short-circuits ONLY when `distilled_allow_shortcircuit_enabled` is True. A
+        false-ALLOW skips the strong tier (fail-OPEN), so fast-ALLOW stays gated until
+        a live shadow soak proves it safe. Default OFF → a confident ALLOW falls
+        through to Haiku (verdict-unchanged from today).
+
+    `confidence` is P(the returned decision) (the service returns P(DENY) for a DENY,
+    P(ALLOW) for an ALLOW), so the same `>=` compare works for both directions.
+    Guards None fail-safe to "NOT confident" → Haiku.
+    """
+    if not _distilled_is_concrete(distilled):
+        return False
+    conf = distilled.confidence
+    if distilled.should_deny:
+        return conf >= settings.distilled_deny_shortcircuit_min_confidence
+    # ALLOW direction — gated OFF by default (fail-open risk until shadow-proven).
+    if not settings.distilled_allow_shortcircuit_enabled:
+        return False
+    return conf >= settings.distilled_allow_shortcircuit_min_confidence
 
 
 def _apply_distilled_enforce(result: ValidationResult) -> ValidationResult:

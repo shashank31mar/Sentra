@@ -1,70 +1,122 @@
-"""Distilled classifier — WS-L / LLD 32 §4.1, §4.3, FR-3.12.
+"""Distilled classifier CLIENT — the request-phase tier-1 front-runner (FR-3.12).
 
-The distilled model is the LIVE cheap tier-1 chain-HEAD in front of the Haiku ML
-classifier. Its confident verdict DECIDES and short-circuits Haiku (confident-DENY
-→ block; confident-ALLOW → allow; low-conf/error/timeout → Haiku, fail-secure).
-The short-circuit is INTRINSIC — there is no OFF gate and no shadow window (LLD 32
-§4.1, R5-B; founder 2026-07-03).
+The distilled student model runs as a SEPARATE Fargate service
+(app/distilled/server.py, CloudMap `distilled-classifier.sentra.internal`) because
+its serving stack (torch + a ~465MB multilingual embedder) is too heavy for the
+stdlib-lean controller — same sidecar pattern as phi-ner. This module is the thin
+CLIENT the tier-1 chain-head calls: it POSTs {tool_name, operation_type, user_input}
+to the model service and maps the response into a ValidationResult that drives the
+`_run_ml` short-circuit.
 
-The MECHANISM (node + chain + short-circuit) is built and LIVE now (M6.0–M6.2).
-Only the real distilled ARTIFACT is deferred: it comes from the §8 offline distill
-loop → WS-E feedback store (not built). Until it ships, `classify` returns an
-INTERIM escalate verdict (concrete ALLOW, `confidence=0.0`, `metadata['escalate']
-= True`) so the short-circuit — though LIVE — never fires (nothing confident to
-say) and Haiku always runs → verdict-equivalent to today (T-EQUIV). When the real
-artifact swaps in behind this SAME interface, confident verdicts begin
-short-circuiting Haiku live with zero wiring/config change (M6.3).
+THE ASYMMETRIC SHORT-CIRCUIT (measured-safe, 2026-07-10 eval + founder call):
+  * confident DENY  (P(DENY)  >= distilled_deny_shortcircuit_min_confidence, 0.95)
+      → short-circuit: BLOCK, skip Haiku. Measured precision 1.0 / 0 false-blocks —
+        always safe (worst case is a fail-SECURE over-block, caught by drift metrics).
+  * confident ALLOW (P(ALLOW) >= distilled_allow_shortcircuit_min_confidence, 0.95)
+      → short-circuit: skip Haiku — BUT ONLY when distilled_allow_shortcircuit_enabled
+        is True. Default OFF: a false-ALLOW skips the strong tier (fail-OPEN), so it is
+        gated until a live SHADOW soak proves floor∪model leaves no hole (a confident-
+        wrong ALLOW would let an attack through). The multilingual model scores the
+        German/role injections it used to miss at LOW confidence (~0.53), so they fall
+        through to Haiku — but shadow verifies this on real traffic before we trust it.
+  * anything else (low confidence, service error/timeout, unset URL, interim)
+      → escalate to Haiku (fail-secure). NEVER an abstain (an abstain aborts the chain
+        and skips Haiku — the exact fail-open to avoid); always a concrete escalate.
+
+The gate itself lives in registry._is_confident_distilled — this module returns the
+raw {decision, confidence} and an `escalate` marker; the gate applies the thresholds.
 """
-
 from __future__ import annotations
 
+import asyncio
+import json
 import logging
+import urllib.error
+import urllib.request
 
 from app.api.models import ValidationRequest, ValidationResult
 from app.combiners import Source
+from app.config import settings
 
 logger = logging.getLogger(__name__)
 
 # The metadata flag the tier-1 chain-tail (`_run_ml`) reads to detect the
-# non-confident/escalate path (LLD 32 §4.1). A truthy `escalate` means "distilled
-# had nothing confident to say — run Haiku". Kept as a module constant so the node
-# and the classifier name the same string.
+# non-confident/escalate path. A truthy `escalate` means "distilled had nothing
+# confident to say (or could not be reached) — run Haiku".
 ESCALATE_KEY = "escalate"
 
 
+def _escalate(reason: str, **meta) -> ValidationResult:
+    """A CONCRETE escalate verdict → Haiku runs. NEVER an abstain (would abort the
+    chain and skip Haiku). Fail-secure: any inability to get a confident verdict
+    lands here, so the strong tier always runs."""
+    return ValidationResult(
+        decision="ALLOW",
+        reason=f"distilled: {reason}",
+        should_deny=False,
+        confidence=0.0,
+        source=Source.SENTRA_DISTILLED,
+        metadata={ESCALATE_KEY: True, "model": "distilled_v1", **meta},
+    )
+
+
 class DistilledClassifier:
-    """LIVE cheap tier-1 chain-HEAD. The short-circuit is intrinsic (M6.2):
-    a confident verdict decides + skips Haiku. Until the real §8-distilled
-    artifact swaps in, `classify` returns an INTERIM escalate verdict (no
-    confident short-circuit fires — Haiku runs). Same interface either way.
-    """
+    """Thin fail-secure HTTP client to the distilled model service. Same interface
+    the interim stub had (`async def classify(req) -> ValidationResult`), so the
+    scheduler wiring is unchanged."""
+
+    def _post_sync(self, url: str, payload: dict, timeout: float) -> dict:
+        data = json.dumps(payload).encode("utf-8")
+        req = urllib.request.Request(
+            url, data=data, headers={"Content-Type": "application/json"}, method="POST"
+        )
+        with urllib.request.urlopen(req, timeout=timeout) as resp:  # noqa: S310 — fixed in-VPC host
+            if resp.status != 200:
+                raise urllib.error.HTTPError(url, resp.status, "non-200", resp.headers, None)
+            return json.loads(resp.read().decode("utf-8"))
 
     async def classify(self, req: ValidationRequest) -> ValidationResult:
-        """Return the distilled verdict driving the M6.2 short-circuit.
+        """Call the model service; map its verdict to a ValidationResult. Every
+        failure path returns a concrete escalate (→ Haiku), never an abstain."""
+        base = settings.distilled_service_url
+        if not base:
+            # No service wired → escalate to Haiku (the pre-deploy steady state).
+            return _escalate("service url unset → escalate to Haiku", model="unset")
 
-        INTERIM (until the §8 artifact, M6.3): a CONCRETE non-confident escalate
-        verdict — `decision="ALLOW"`, `should_deny=False`, `confidence=0.0`,
-        `metadata={"escalate": True, ...}`. `confidence 0.0 < threshold` ⇒ NOT
-        confident ⇒ `_run_ml` takes the escalate branch ⇒ Haiku runs ⇒
-        verdict-equivalent to today (T-EQUIV). The short-circuit is LIVE but never
-        fires because the interim never returns a confident verdict.
+        url = base.rstrip("/") + "/classify"
+        payload = {
+            "tool_name": req.tool_name or "",
+            "operation_type": req.operation_type or "",
+            "user_input": req.user_input or "",
+        }
+        timeout = settings.distilled_timeout_ms / 1000.0
+        try:
+            result = await asyncio.wait_for(
+                asyncio.to_thread(self._post_sync, url, payload, timeout),
+                timeout=timeout,
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:  # noqa: BLE001 — timeout/HTTP/transport → escalate (fail-secure)
+            logger.warning("distilled service call failed; escalating to Haiku: %s", exc)
+            return _escalate("service error/timeout → escalate to Haiku", distilled_error=True)
 
-        This is NOT `ValidationResult.abstain(...)`: an abstain would abort the
-        chain and SKIP Haiku (`run_chain`, run.py) — the exact fail-open the
-        interim must avoid. A concrete ALLOW keeps the chain alive so Haiku runs.
+        # Map the service verdict. The service returns confidence = P(the returned
+        # decision). We carry decision + confidence; the gate in registry applies the
+        # asymmetric thresholds. `escalate` is NOT set here for a concrete verdict —
+        # the gate decides whether the confidence clears the bar; if it doesn't, the
+        # gate itself falls through to Haiku.
+        decision = result.get("decision")
+        confidence = result.get("confidence")
+        model_tag = result.get("model", "distilled_v1")
+        if decision not in ("ALLOW", "DENY") or not isinstance(confidence, (int, float)):
+            return _escalate("malformed service response → escalate to Haiku", model=model_tag)
 
-        REAL (§8 artifact, M6.3): load the distilled model and return a real
-        `{decision, should_deny, confidence}`; a confident verdict then
-        short-circuits Haiku live. SAME return contract — no wiring/config change.
-        """
-        # INTERIM — the real artifact is deferred (WS-L §8 / M6.3). A concrete,
-        # non-confident escalate verdict so the LIVE short-circuit never fires and
-        # Haiku decides (T-EQUIV). NEVER an abstain (would abort the chain).
         return ValidationResult(
-            decision="ALLOW",
-            reason="distilled_interim: escalate to Haiku (real artifact not yet loaded)",
-            should_deny=False,
-            confidence=0.0,
+            decision=decision,
+            reason=f"distilled_v1: {decision} (confidence {confidence:.3f})",
+            should_deny=(decision == "DENY"),
+            confidence=float(confidence),
             source=Source.SENTRA_DISTILLED,
-            metadata={ESCALATE_KEY: True, "model": "distilled_interim"},
+            metadata={"model": model_tag},  # NO escalate key — a concrete verdict
         )

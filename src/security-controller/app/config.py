@@ -444,6 +444,33 @@ class Settings(BaseSettings):
     # NEVER an abstain (an abstain aborts the chain and skips Haiku — M6.1 footgun).
     distilled_timeout_ms: int = Field(default=100, validation_alias="DISTILLED_TIMEOUT_MS")
 
+    # --- distilled model SERVICE (the trained v1 sidecar; FR-3.12) ------------------
+    # The trained student runs as a SEPARATE Fargate service (torch+embedder ~1.3GB —
+    # too heavy for the stdlib-lean controller; same sidecar pattern as phi-ner).
+    # `DistilledClassifier.classify()` calls POST {url}/classify. Empty url → the
+    # interim heuristic path (no service wired yet); set to the CloudMap DNS when the
+    # service is deployed. Fail-secure: any error/timeout → escalate to Haiku.
+    distilled_service_url: str = Field(
+        default="", validation_alias="DISTILLED_SERVICE_URL"
+    )
+    # The ASYMMETRIC short-circuit gates (measured-safe, 2026-07-10 eval):
+    #   * a confident-DENY (P(DENY) >= this) short-circuits → block. Measured
+    #     precision 1.0 / 0 false-blocks → always safe (fail-secure over-block).
+    distilled_deny_shortcircuit_min_confidence: float = Field(
+        default=0.95, validation_alias="DISTILLED_DENY_SHORTCIRCUIT_MIN_CONFIDENCE"
+    )
+    #   * a confident-ALLOW (P(ALLOW) >= this) short-circuits → skip Haiku. X=0.95 was
+    #     the measured 0-missed-attack point on the multilingual model, BUT fast-ALLOW
+    #     is gated OFF by default (distilled_allow_shortcircuit_enabled) until a live
+    #     shadow soak proves floor∪model leaves no hole — a false-ALLOW skips the net
+    #     (fail-OPEN), unlike a DENY. Flip on only on shadow evidence.
+    distilled_allow_shortcircuit_min_confidence: float = Field(
+        default=0.95, validation_alias="DISTILLED_ALLOW_SHORTCIRCUIT_MIN_CONFIDENCE"
+    )
+    distilled_allow_shortcircuit_enabled: bool = Field(
+        default=False, validation_alias="DISTILLED_ALLOW_SHORTCIRCUIT_ENABLED"
+    )
+
     # --- D2/D3 live-enforce FP/precision gate (WS-L M2.4/M3.3, R5-C) ---
     # D2 (indirect injection) and D3 (memory integrity) are LIVE-ENFORCE, gated on a
     # measured FP/precision budget: their DENYs are turned ON (`enforce=True` →
