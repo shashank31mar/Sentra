@@ -654,7 +654,9 @@ export interface PlatformTenantRow {
   status: string
   identity_mode: string
   created_at: string
-  /** Whether this tenant has granted platform-read consent (drill-down gating). */
+  /** Whether this tenant has granted platform-read consent (drill-down gating).
+   *  Projected onto the list row by the backend (ws-g-fix-backend FXB-1.2); optional
+   *  only to stay compatible with a pre-FXB-1.2 controller (ConsentPill → "unknown"). */
   platform_read_consent?: boolean
   blocks_24h?: number
   deny_rate?: number

@@ -236,6 +236,30 @@ def test_platform_aggregate_read_ignores_consent(mt_env):
     run(scenario())
 
 
+def test_platform_list_projects_consent(mt_env):
+    """FXB-1.2: the tenant-LIST rows carry `platform_read_consent` (previously only
+    on the detail route) so the platform console's Consent column shows the real
+    state per tenant, not a false universal 'unknown'. Consented → True,
+    unconsented → False (never absent)."""
+    from app.api import tenancy_routes as tr
+    from app.services.tenant_service import get_tenant_store
+
+    async def scenario():
+        store = get_tenant_store()
+        store.create(display_name="Consented", tenant_id="t_yes")
+        store.set_platform_read_consent("t_yes", True)
+        store.create(display_name="NotConsented", tenant_id="t_no")  # default: no consent
+        out = await tr.platform_list_tenants(ctx=_platform_ctx())
+        by_id = {r["tenant_id"]: r for r in out["tenants"]}
+        # The field is PRESENT on every row (not absent → the UI can't fall back to a
+        # false "required"), and reflects the real per-tenant state.
+        assert "platform_read_consent" in by_id["t_yes"]
+        assert by_id["t_yes"]["platform_read_consent"] is True
+        assert by_id["t_no"]["platform_read_consent"] is False
+
+    run(scenario())
+
+
 def test_set_platform_read_consent_requires_owner(mt_env):
     """platform_read_consent is owner/platform-only — an admin can't self-serve it."""
     from app.api import tenancy_routes as tr

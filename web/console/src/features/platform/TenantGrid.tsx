@@ -14,10 +14,11 @@ const IDENTITY_MODE_COLOR: Record<string, string> = {
 }
 
 function ConsentPill({ granted }: { granted?: boolean }) {
-  // FX-3.5: the list route (`platform_list_tenants`) does NOT project
-  // `platform_read_consent` today — it's on the DETAIL route only. So `undefined`
-  // means UNKNOWN, not "required": a governance console must NOT falsely show
-  // "consent required" for every tenant. Only an explicit `false` is "required".
+  // FX-3.5 → ws-g-fix-backend FXB-1.2: the list route (`platform_list_tenants`) now
+  // PROJECTS `platform_read_consent` per row, so `granted` is normally a real
+  // true/false. The `undefined`→"unknown" branch is retained as defense-in-depth
+  // (an older controller that predates FXB-1.2) — a governance console must never
+  // falsely show "required" for a tenant whose state it doesn't actually know.
   if (granted === undefined) {
     return (
       <span className="text-[11px] font-mono text-muted" title="consent state not in the list — open the tenant to see it">

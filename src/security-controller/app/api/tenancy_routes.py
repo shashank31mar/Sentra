@@ -672,6 +672,11 @@ async def platform_list_tenants(
             "trust": sr.get("trust"),
             "agents": sr.get("agents", 0),
             "quarantined": sr.get("quarantined", 0),
+            # ws-g-fix-backend FXB-1.2: project the tenant's cross-tenant read-consent
+            # onto the LIST row (it already lives on the detail route) so the platform
+            # console's Consent column shows the real state, not a false universal
+            # "required"/"unknown". No new query — `t` already carries it.
+            "platform_read_consent": t.platform_read_consent,
         })
 
     # G0.5 filter: case-insensitive substring on display_name OR tenant_id.
