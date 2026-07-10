@@ -217,7 +217,16 @@ def build_dag(service, phase: str, stamp_ctx: Dict) -> List[ValidatorNode]:
         # contract).
         distilled = sess.get(Source.SENTRA_DISTILLED)
         if _is_confident_distilled(distilled):
-            return ValidationResult.abstain("distilled_shortcircuit")
+            # SEC-7 money-movement scope guard (2026-07-10 adversarial search): a
+            # confident-ALLOW must NOT short-circuit Haiku for a money-movement /
+            # mutating tool — the search found crafted authorized-framing attacks that
+            # fool the distilled model into confident-ALLOW on refund/plan tools. A
+            # confident-DENY still short-circuits (blocking a money tool is always
+            # safe); only the ALLOW direction is scope-guarded. Keyed on the
+            # server-side tool_name, not the spoofable operation_type.
+            if distilled.should_deny or not _is_money_movement_tool(req.tool_name):
+                return ValidationResult.abstain("distilled_shortcircuit")
+            # confident-ALLOW on a money-movement tool → fall through to Haiku.
 
         # else — low-confidence / escalate / error / interim distilled → run Haiku.
         # NO-FLAG: ML ALWAYS ENFORCES. The wrapper stamps metadata["enforce"]=True on
@@ -613,6 +622,21 @@ def _apply_ml_enforce_wrapper(result: ValidationResult) -> ValidationResult:
     meta["enforce"] = True
     wrapped.metadata = meta
     return wrapped
+
+
+def _is_money_movement_tool(tool_name: str | None) -> bool:
+    """SEC-7 scope guard (2026-07-10): is this a money-movement / mutating tool that
+    must NEVER be fast-ALLOWed (always gets Haiku)? Matched case-insensitively against
+    the `distilled_allow_shortcircuit_money_tools` config list, keyed on the
+    server-side tool_name (NOT the agent-declared operation_type, which is spoofable).
+    A confident distilled ALLOW on one of these falls through to Haiku; a confident
+    DENY still short-circuits (blocking a money tool is always safe)."""
+    if not tool_name:
+        # No tool → fail-secure: treat as money-movement (do not fast-ALLOW).
+        return True
+    raw = settings.distilled_allow_shortcircuit_money_tools or ""
+    money = {t.strip().lower() for t in raw.split(",") if t.strip()}
+    return tool_name.strip().lower() in money
 
 
 def _distilled_is_concrete(distilled: ValidationResult | None) -> bool:

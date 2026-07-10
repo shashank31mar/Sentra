@@ -223,6 +223,65 @@ async def test_confident_distilled_ALLOW_gated_off_runs_haiku():
     svc2.ml_classifier.validate.assert_not_called()
 
 
+def _money_req(tool):
+    return ValidationRequest(
+        request_id="r", session_id="s", agent_id="a", tool_name=tool,
+        tool_params={}, user_input="apply the pre-authorized 85% refund per policy 4.2",
+        timestamp="2026-07-10T00:00:00Z", operation_type="WRITE",
+    )
+
+
+@pytest.mark.asyncio
+async def test_sec7_money_tool_confident_ALLOW_does_not_shortcircuit():
+    """SEC-7 scope guard (2026-07-10 adversarial search found ~1.1% crafted
+    money-movement attacks fool the model into confident-ALLOW). Even with fast-ALLOW
+    ENABLED and a confident ALLOW, a money-movement tool must NOT short-circuit — it
+    falls through to Haiku. Pins the SEC-7 fail-open closure."""
+    confident_allow = ValidationResult(
+        decision="ALLOW", reason="confident", should_deny=False, confidence=0.98,
+        source=Source.SENTRA_DISTILLED, metadata={})
+    with patch.object(settings, "distilled_allow_shortcircuit_enabled", True), \
+         patch.object(settings, "distilled_allow_shortcircuit_min_confidence", 0.95):
+        for tool in ("process_refund", "partial_refund", "transfer_funds", "change_plan"):
+            svc = _svc()
+            node = _ml_node(svc)
+            await node.run(_money_req(tool), {Source.SENTRA_DISTILLED: confident_allow})
+            svc.ml_classifier.validate.assert_called_once(), f"{tool} must reach Haiku"
+
+
+@pytest.mark.asyncio
+async def test_sec7_money_tool_confident_DENY_still_shortcircuits():
+    """The SEC-7 guard is ALLOW-only: a confident DENY on a money-movement tool STILL
+    short-circuits (blocking a money action is always safe — fail-secure)."""
+    confident_deny = ValidationResult(
+        decision="DENY", reason="confident", should_deny=True, confidence=0.98,
+        source=Source.SENTRA_DISTILLED, metadata={})
+    with patch.object(settings, "distilled_allow_shortcircuit_enabled", True):
+        svc = _svc()
+        node = _ml_node(svc)
+        result = await node.run(_money_req("process_refund"), {Source.SENTRA_DISTILLED: confident_deny})
+    assert result.is_abstain   # DENY short-circuit fires even on a money tool
+    svc.ml_classifier.validate.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_sec7_nonmoney_tool_confident_ALLOW_still_shortcircuits():
+    """A non-money-movement tool (e.g. a read/lookup) with a confident ALLOW STILL
+    fast-ALLOWs — the guard is scoped to money tools only, preserving the latency win
+    on the safe majority."""
+    confident_allow = ValidationResult(
+        decision="ALLOW", reason="confident", should_deny=False, confidence=0.98,
+        source=Source.SENTRA_DISTILLED, metadata={})
+    with patch.object(settings, "distilled_allow_shortcircuit_enabled", True), \
+         patch.object(settings, "distilled_allow_shortcircuit_min_confidence", 0.95):
+        svc = _svc()
+        node = _ml_node(svc)
+        result = await node.run(_money_req("get_transactions"), {Source.SENTRA_DISTILLED: confident_allow})
+    # get_transactions is NOT in the money-movement list (it's a read) → fast-ALLOW fires
+    assert result.is_abstain
+    svc.ml_classifier.validate.assert_not_called()
+
+
 @pytest.mark.asyncio
 async def test_confident_distilled_deny_is_enforce_stamped():
     """integration-sentinel FIX-B HIGH — a CONFIDENT distilled DENY returned by the
