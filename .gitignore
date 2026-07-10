@@ -179,3 +179,13 @@ Sentra.code-workspace
 
 # harness autopilot workflow scratch (not project code)
 .autopilot/
+
+# Distilled-model training: heavy/regenerable artifacts (weights, data, bundle).
+# The trained model binaries (esp. embedder_st/model.safetensors, ~449MB) exceed
+# GitHub's 100MB limit and are NOT source — they're rebuilt into the sidecar image
+# at build (docker/Dockerfile.distilled-classifier), not committed. Keep on disk,
+# out of git. (Re-added after a history reset dropped the original rule from 6fadd7c.)
+training/distilled-classifier/venv/
+training/distilled-classifier/artifacts/
+training/distilled-classifier/model_bundle/
+training/distilled-classifier/data/
