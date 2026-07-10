@@ -27,6 +27,7 @@ State legend: `Not contacted` → `Sent (LinkedIn)` → `Responded` → `Moved t
 | 15 | Maxime Petazzoni | Traversal | Head/VP Engineering (eng-leadership; exact title unconfirmed) | Cold | LinkedIn | Design partner (autonomous AI-SRE remediation actions) | **Sent (LinkedIn)** | — | Await reply; economic buyer = CEO Anish Agarwal (founder-run); Amex Ventures warm path |
 | 16 | Leon Kuperman | Cast AI | Co-Founder & CTO (ex-Zenedge/Oracle security) | Cold | LinkedIn | Design partner (governing 3rd-party agent actions on their multi-cloud clusters) | **Sent (LinkedIn)** | — | Await reply; perfect buyer (CTO + security founder); warm path also exists via Chris Murphy (#17, Cast AI angel) |
 | 17 | Chris Murphy | MS&AD Ventures (+ angel) | Venture Partner / Angel Investor | Cold (2nd-degree) | LinkedIn | **Investor (funding, soft ask)** + can warm-intro to Cast AI (#16) | **Sent (LinkedIn)** | — | Await reply; if interested, send pitch/one-pager (investor track). Cast AI angel → warm intro to Leon Kuperman |
+| 18 | Sunny Shah | Sarvam AI | Head of Engineering (ex-INDmoney, ex-Goibibo) | Cold | LinkedIn | Design partner (BFSI agents — Arya backend orchestration / Claim-Bot record writes) | **Sent (LinkedIn)** | — | Await reply; escalation = co-founders Pratyush Kumar / Vivek Raghavan; latency (sub-500ms) will be scrutinized → lead in-VPC local-floor |
 
 ## Detail / history
 
@@ -170,6 +171,17 @@ State legend: `Not contacted` → `Sent (LinkedIn)` → `Responded` → `Moved t
 - **Spans both tracks** (like #10 Jyoti) — but led with the **funding (soft)** ask per founder instruction: state what's built, offer a call OR to send the pitch, no hard ask.
 - **2026-07-09** — **Sent (LinkedIn).** Soft investor note: what's built + live (deterministic checks + audit) + early design-partner conversations; "not asking for anything today — call or send the pitch if interested, easy no". Cast AI tie softened to "researching Cast AI" (single-source). Link aegionai.ai. **Investor track = the one-pager IS the right artifact to send if he bites.**
 - **Next:** await reply. If interested → send investor one-pager + book call. Separately, ask for the warm intro to Leon (#16).
+
+### 18. Sunny Shah — Sarvam AI (Head of Engineering) — cold, design partner
+- LinkedIn: https://in.linkedin.com/in/sunny-shah-8924577 (verified via slug + The Official Board; canonical title "Head of Engineering @ Sarvam.ai", one byline "Engineering Leader")
+- **Verified background (strong hook):** ex-Head of Engineering @ **INDmoney** (regulated fintech/wealth) → ex-Head of Data Science & Eng @ **Goibibo/MakeMyTrip**; 15+ yrs scaling fintech/consumer platforms. Owns the runtime Sarvam's agents plug into + lived the AI-in-regulated-fintech compliance pain → ideal design-partner champion (better first contact than founders for a POC motion).
+- **Sarvam ICP verdict — PARTIAL (corrected from target doc):** Sarvam is PRIMARILY a **sovereign foundation-model** company (Sarvam-1/30B/105B, IndiaAI Mission, unicorn $1.5B Jun-2026 Series B led by HCLTech); agents (**Samvaad** voice/chat + **Arya** multi-agent orchestration) are a growing SECONDARY surface.
+- **⚠️ Autonomy honesty (target doc overstated):** BFSI voice deployments (Tata Capital, SBI Life — BOTH confirmed real) are mostly **converse/inform/assist with explicit human-in-the-loop — NOT confirmed to move money or do policy renewals.** Do NOT claim voice agents wire money / renew policies (the "Finn moves money" trap). The DEFENSIBLE action surface = **Arya committing multi-step backend work to records** + **SBI Life Claim-Bot** reading scanned death certificates → advancing claims. Framed the email around THAT, respecting their human-in-the-loop.
+- **India residency angle:** RBI/IRDAI/DPDP + Sarvam's sovereign-AI posture = strong in-VPC/air-gapped fit — framed HONESTLY as roadmap (only Serverless AWS+Azure ships today).
+- **Warm paths:** shared-investor (Peak XV + Lightspeed both back Sarvam), AI4Bharat / IIT Madras network. Founders: Pratyush Kumar (CEO, most technical — escalation for strategic), Vivek Raghavan (Aadhaar/DPI background — best for residency angle; verified LinkedIn in.linkedin.com/in/vivek-raghavan-16005424).
+- **2026-07-10** — **Sent (LinkedIn).** Founder-led note; one-line hook (owns Sarvam eng + regulated-fintech background); failure mode = mis-read doc / injected turn → advance a claim it shouldn't / out-of-range record write; per-action check alongside their human-in-the-loop; in-VPC/air-gapped as roadmap; explicit design-partner ask; link aegionai.ai.
+- **⚠️ On the call:** Sarvam advertises sub-500ms agent latency → our overhead will be scrutinized; lead with the in-VPC local-floor path, NOT the Serverless ~0.6–1.2s number.
+- **Next:** await reply. If engages → design-partner call (lead in-VPC/latency framing); escalate to Pratyush/Vivek if it goes strategic.
 
 ### 10. Jyoti Bansal — Harness (CEO) + Unusual Ventures (Co-Founder) — **two-doors-one-key**
 - LinkedIn: https://www.linkedin.com/in/jyotibansal/
