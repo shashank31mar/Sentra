@@ -108,29 +108,60 @@
 
     // Skip-if-authenticated guard: the org page is the front door for the
     // NORMAL entry path (splash CTA + post-logout), so a visitor who already
-    // has a live Cognito session must not be made to pick their org again.
-    // /whoami is a same-origin nginx endpoint that echoes the ALB-injected
-    // x-amzn-oidc-identity (empty string when there is no session). A non-empty
-    // email ⇒ already signed in ⇒ bounce straight to the console. This is UX
-    // only: the ALB still Cognito-gates /overview and every /v1/* call, and the
-    // server re-validates tenant membership — the guard can't grant access, only
-    // save an authenticated operator a redundant screen. Fail-open to the org
-    // form on any error (never trap a user who can't be identified).
+    // has a live Cognito session must not be made to pick their org again —
+    // UNLESS they genuinely still need to pick (multi-membership, no binding),
+    // which is exactly the persona ADR-039 forbids silently primary-binding.
+    //
+    // BUGFIX (WS-G / lld/40): the old guard skipped on /whoami liveness ALONE
+    // (email non-empty ⇒ bounce to /overview). But the Cognito session (ALB
+    // persistent cookie) OUTLIVES the per-tab sessionStorage tenant binding, so a
+    // multi-membership operator who closes the tab and reopens was simultaneously
+    // "authenticated" (skip → /overview) AND "unbound-multi-membership"
+    // (RequireBoundTenant → back to /org.html): an INFINITE org.html ⇄ /overview
+    // loop. The skip predicate must be the NEGATION of that loop condition, which
+    // needs is_platform + memberships — data /whoami does NOT carry (groups:[], no
+    // is_platform/memberships). So consult GET /v1/me (the same server-derived
+    // MeContext the SPA's RequireBoundTenant/RequireCustomerRoot guards read), and
+    // skip in ONLY when the app's own guards would NOT bounce back:
+    //   needsToPick = is_platform !== true            (platform op → /platform, has no org to type)
+    //              && memberships.length > 1           (single-membership → server resolves the sole one)
+    //              && no non-empty sessionStorage[TENANT_KEY]   (already bound → guards pass)
+    // needsToPick ⇒ STAY on the form (only persona that must choose). Else skip in.
+    // This is UX only: the ALB still Cognito-gates /overview and every /v1/* call,
+    // and the server re-validates tenant membership — the guard can't grant access.
+    // Fail-open to the org form on any error (never trap an unidentifiable user).
     (function skipIfAuthenticated() {
       try {
-        // /whoami is Cognito-gated at the ALB: with no session it 302s to the
-        // Cognito authorize endpoint. `redirect: 'manual'` makes that come back as
-        // an opaque-redirect (status 0, ok=false) instead of the fetch chasing a
-        // cross-origin login page (which would throw a CORS error into the console) —
-        // matches the app's own http.ts idiom. A live session returns 200 with the
-        // ALB-injected identity. Same-origin fetch sends the session cookie by
-        // default, so an authenticated operator gets their email and is skipped in.
-        fetch('/whoami', { headers: { 'Accept': 'application/json' }, cache: 'no-store', redirect: 'manual' })
+        // /v1/me is Cognito-gated at the ALB and proxied by the same nginx
+        // `location /v1/` that serves the SPA's calls (api-key injected server-side,
+        // session cookie forwarded). A live session ⇒ 200 with the MeContext body;
+        // no session ⇒ the ALB denies cleanly (401, ok=false). `redirect: 'manual'`
+        // guards against chasing a cross-origin Cognito login page — matches the
+        // app's own http.ts idiom.
+        fetch('/v1/me', { headers: { 'Accept': 'application/json' }, cache: 'no-store', redirect: 'manual' })
           .then(function (r) { return r.ok ? r.json() : null; })
-          .then(function (who) {
-            if (who && typeof who.email === 'string' && who.email.trim() !== '') {
+          .then(function (me) {
+            // Not ok / not a valid object ⇒ not authenticated (or unreadable) ⇒
+            // fail-open to the org form. Never redirect on an unverifiable body.
+            if (!me || typeof me !== 'object') return;
+            // Validate the untrusted body defensively (mirrors submitOrg): a partial
+            // body is treated as the SAFE case — missing is_platform ⇒ false, missing
+            // memberships ⇒ length 0 ⇒ effectively single-membership ⇒ skip in.
+            var isPlatform = me.is_platform === true;
+            var membershipCount = Array.isArray(me.memberships) ? me.memberships.length : 0;
+            var bound = false;
+            try {
+              var stored = sessionStorage.getItem(TENANT_KEY);
+              bound = typeof stored === 'string' && stored.trim() !== '';
+            } catch (_) { /* storage unavailable ⇒ treat as unbound */ }
+            // The negation of RequireBoundTenant's loop condition, plus the platform
+            // carve-out: only an unbound multi-membership customer operator must pick.
+            var needsToPick = !isPlatform && membershipCount > 1 && !bound;
+            if (!needsToPick) {
+              // Persona 2 (single-membership), 4 (already bound), 5 (platform) → in.
               window.location.replace('/overview');
             }
+            // else persona 3 (unbound multi-membership) → STAY on the form to pick.
           })
           .catch(function () { /* no session / endpoint error → show the org form */ });
       } catch (_) { /* fetch unavailable → show the org form */ }
