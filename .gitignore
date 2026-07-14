@@ -194,3 +194,8 @@ training/distilled-classifier/data/
 # the controller source); track only the handler, not the vendored copies.
 lambda/distilled_drift_check/ml_classifier_prompts.py
 lambda/distilled_drift_check/ml_classifier_schema.py
+
+# NDA signature image crops (raw reusable ink extracted from the executed NDA).
+# The signatures are still embedded in the rendered PDFs / base64 in the .md, but
+# keep the loose reusable PNGs out of git so they aren't trivially lifted.
+pitch/legal/assets/
