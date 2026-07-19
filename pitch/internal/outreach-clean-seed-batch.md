@@ -61,6 +61,43 @@ aegionai.ai
 
 ---
 
-## 3. Runtime Ventures — David Endler (HELD — pending conflict re-verify)
+## 3. Uncork Capital — Andy McLoughlin
 
-**⚠️ Do not send until confirmed clean.** Runtime is a re-open candidate, not verified clean: SplxAI (portco) is red-team and *reportedly* exited to Zscaler, but their portfolio page listed a stealth **"Policy Enforcement for Agents"** company — if live, that's a direct competitor and a hard conflict. Re-verify (1) SplxAI/Zscaler exit closed, (2) what the stealth listing is, before drafting. Cyber-native, cold-OK if clean.
+**Channel:** email `pitches@uncorkcapital.com` (dedicated pitch inbox — **ATTACH the 3-page brief** [../share/AegionAI-pitch.pdf](../share/AegionAI-pitch.pdf); they asked for pitches, so attach, don't offer). Alt: X DM `@bandrew`. **ADJACENT, safe** (apple-to-apple 2026-07-19): Andy led SurePath (GenAI DLP/gateway → exited to F5) + Lunar.dev (MCP/API gateway) — both govern the *call*, neither the action. Cold-OK, leads $1.5–5M (both those seeds were ~$5M in this space). Risk = soft pattern-match to Lunar's "control plane" framing → draw the daylight in the opener.
+
+**Subject:** Blocking AI agents from taking the action that can't be undone
+
+**Body:**
+
+Hi Andy,
+
+You led SurePath (now part of F5) and Lunar, so you've already made the bet that governing enterprise AI is a category. Both govern the *call* — the prompt, the traffic at the gateway. Neither reaches the action itself. That's the layer I'm building.
+
+AegionAI sits in front of every action an AI agent takes and decides, in real time, whether to let it through. Not "is this tool allowed." What the action actually does: how much money, to whom, whether the required steps ran first, whether this agent is authorized at all. If something's off, we block it before it runs. One control plane, across AWS, Azure, GCP, and on-prem, with a tamper-evident record of every action for the auditors who now ask.
+
+Two layers do the work. A deterministic floor that enforces the hard rules: real limits, sequence checks, quarantine for an agent gone rogue. And our own detection model, trained on our own traffic, with one job, hunt the attack buried in the prompt, sharper every time it sees a new one. Most tools stop at that second piece, a model guessing whether a prompt looks bad. The floor underneath is the part regulated teams actually need, and almost no one does it.
+
+We start where a mistake can't be walked back. An agent moving money. An agent told to leave prod alone that wipes the database anyway. Same engine handles the rest as agents take over more of the fleet.
+
+Background: I'm the technical founder. At Amazon I built the ML platform behind OpenSearch's vector search and ran a security-telemetry effort across two orgs. AegionAI is live across two clouds right now, patent filed. Pre-revenue, raising a $5M seed.
+
+I've attached a 3-page brief. Worth 20 minutes?
+
+Thanks,
+Shashank
+aegionai.ai · shashank31mar@gmail.com
+
+---
+
+## 4. Runtime Ventures — OUT (re-verified 2026-07-19, do not send)
+
+Conflict CONFIRMED. SplxAI is a non-issue (Zscaler acquisition *closed* 2025-11-03 = exit; was red-team anyway). The kill: runtime.vc/portfolio carries a **live stealth portco labeled verbatim "Policy Enforcement for Agents"** — AegionAI's exact direct-competitor category, distinct from their "Agentic Pentesting" / "AI Risk & Compliance" labels. A cyber-only GP on that bet reads us head-on. GPs are David Endler + Michael Sutton (not "Gene Hodges" — old note was wrong). **Skip.**
+
+## Also OUT (flipped conflicted on re-check)
+- **Mango Capital** — co-led **Dome Systems** $14M seed (neutral cross-vendor "agent operations control plane," inline tool-call enforcement — near-twin). OUT.
+- **SVCI** — holds **Runlayer + Noma**. OUT.
+
+## Next clean cold-reachable (not yet drafted)
+- **Fika Ventures** (TX Zhuo, X DM `@txzhuo`) — ADJACENT, leads $1–5M, fintech×cyber beachhead; hook = "SGNL governs *who* the agent is → CrowdStrike exit; we govern *what the action does*."
+- **Zetta** (Jocelyn Goldfein, X DM `@jgoldfein`) — ADJACENT, leads, warm-preferred (lower odds cold).
+- **Venture in Security** (Ross Haleliuk, `info@ventureinsecurity.net`) — CLEAN but a practitioner SPV (fill/credibility, not a lead).
