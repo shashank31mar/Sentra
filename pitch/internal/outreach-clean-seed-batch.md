@@ -97,7 +97,29 @@ Conflict CONFIRMED. SplxAI is a non-issue (Zscaler acquisition *closed* 2025-11-
 - **Mango Capital** — co-led **Dome Systems** $14M seed (neutral cross-vendor "agent operations control plane," inline tool-call enforcement — near-twin). OUT.
 - **SVCI** — holds **Runlayer + Noma**. OUT.
 
+## 5. Fika Ventures — TX Zhuo — SENT 2026-07-19
+
+**Channel:** LinkedIn `/in/tianxiangzhuo` (or X `@txzhuo`) — no public pitch email, DM. If InMail: subject "Blocking AI agents from taking the action that can't be undone." ADJACENT/safe (apple-to-apple); leads $1–5M; fintech×cyber beachhead.
+
+**Message (sent):**
+
+Hi TX — you backed SGNL through to a CrowdStrike exit, so you've already bet on governing *who* an agent is. I'm building the layer next to it: *what the action does*.
+
+AegionAI sits in front of every action an AI agent takes and decides, in real time, whether to let it through. Not "is this tool allowed." What it actually does: the amount, the recipient, whether the required steps ran first, whether the agent is even authorized. If it's wrong, we block it before it runs. Not a dashboard that watches after the fact, an actual control plane that enforces, across AWS, Azure, GCP, and on-prem, with a tamper-evident record of everything.
+
+Two layers. A deterministic floor: real limits, sequence checks, quarantine for an agent gone rogue. And our own detection model, trained on our own traffic, hunting the attack buried in the prompt and getting sharper every time it sees one. Most tools stop at that second piece. The floor underneath is the part regulated teams need.
+
+We start where a mistake can't be walked back, and where you already invest: agents that move money. Wrong amount, wrong recipient, out of order, and it's an instant loss. The fintech names in your book will all be running these within a couple of years.
+
+At Amazon I built the ML platform behind OpenSearch's vector search and ran a cross-org security-telemetry effort. AegionAI is live across two clouds already, patent filed, pre-revenue, raising a $5M seed.
+
+Worth 20 minutes? Or I can send a short brief. Either way, I'd value your read.
+
+Shashank
+aegionai.ai
+
+---
+
 ## Next clean cold-reachable (not yet drafted)
-- **Fika Ventures** (TX Zhuo, X DM `@txzhuo`) — ADJACENT, leads $1–5M, fintech×cyber beachhead; hook = "SGNL governs *who* the agent is → CrowdStrike exit; we govern *what the action does*."
 - **Zetta** (Jocelyn Goldfein, X DM `@jgoldfein`) — ADJACENT, leads, warm-preferred (lower odds cold).
 - **Venture in Security** (Ross Haleliuk, `info@ventureinsecurity.net`) — CLEAN but a practitioner SPV (fill/credibility, not a lead).
