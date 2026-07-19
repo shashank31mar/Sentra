@@ -1,0 +1,272 @@
+<!DOCTYPE html>
+<!--
+  AegionAI — Company introduction letter (Government of Assam meeting)
+  ---------------------------------------------------
+  HOW TO USE
+    1. Open in Chrome / Edge / Safari.
+    2. Fill the [BRACKETED] placeholders (date, Minister's name & portfolio,
+       Ms Pallavi Rabha's designation, signatory name, contact details in footer).
+    3. Print -> Cmd/Ctrl + P -> "Save as PDF"  (A4, default margins, Background graphics ON).
+       The header band + contact footer repeat on every printed page.
+  NOTE: kept entity-neutral (brand only, no legal entity / registration) per the
+  undecided US-vs-India structure. Add the entity line back when settled.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AegionAI — Introduction (Government of Assam)</title>
+<style>
+  :root{
+    --navy:#0A2540; --navy-soft:#31465f; --teal:#14B8A6;
+    --ink:#1c2733; --muted:#6b7a8d; --hair:#d9e0e8; --page:210mm;
+  }
+  *{box-sizing:border-box;}
+  html,body{margin:0;padding:0;background:#eef1f5;color:var(--ink);
+    font-family:-apple-system,"Segoe UI",Helvetica,Arial,sans-serif;
+    font-size:10.8pt;line-height:1.52;-webkit-font-smoothing:antialiased;}
+
+  .page{position:relative;width:var(--page);min-height:297mm;margin:24px auto;
+    background:#fff;padding:16mm 22mm 14mm 22mm;box-shadow:0 6px 30px rgba(10,37,64,.14);
+    display:flex;flex-direction:column;}
+
+  /* ---- masthead (in-flow, so it renders reliably in headless print) ---- */
+  .lh-header{display:flex;align-items:center;justify-content:space-between;gap:16px;
+    padding-bottom:6mm;}
+  .brand{display:flex;align-items:center;gap:12px;}
+  .mark{width:46px;height:46px;flex:0 0 auto;}
+  .wordmark{font-size:22pt;font-weight:700;letter-spacing:.2px;color:var(--navy);line-height:1;}
+  .wordmark .ai{color:var(--teal);}
+  .tagline{font-size:7.6pt;letter-spacing:2.1px;text-transform:uppercase;color:var(--muted);margin-top:4px;font-weight:600;}
+  .header-right{text-align:right;font-size:8pt;color:var(--muted);line-height:1.55;}
+  .header-right .entity{color:var(--navy);font-weight:700;font-size:8.6pt;letter-spacing:.3px;}
+  .rule{height:2px;margin-bottom:6mm;
+    background:linear-gradient(90deg,var(--navy) 0%,var(--navy) 62%,var(--teal) 62%,var(--teal) 100%);}
+
+  /* ---- footer (in-flow, pinned to bottom of first page via margin-top:auto) ---- */
+  .lh-footer{margin-top:auto;padding-top:5mm;
+    border-top:1px solid var(--hair);display:flex;justify-content:space-between;gap:14px;
+    font-size:7.7pt;color:var(--muted);line-height:1.5;}
+  .lh-footer .col b{color:var(--navy-soft);font-weight:700;}
+  .lh-footer a{color:var(--navy-soft);text-decoration:none;}
+  .foot-center{text-align:center;} .foot-right{text-align:right;}
+
+  /* ---- body ---- */
+  .body{position:relative;z-index:1;}
+  .meta{color:var(--muted);font-size:10pt;margin-bottom:14px;}
+  .to .lbl{color:var(--muted);font-size:9pt;}
+  .to{margin-bottom:14px;line-height:1.45;}
+  .to .name{font-weight:700;color:var(--ink);}
+  .subject{margin:14px 0 16px 0;padding:8px 12px;border-left:3px solid var(--teal);
+    background:#f4f8f8;font-weight:700;color:var(--navy);font-size:10.6pt;}
+  .salutation{margin-bottom:10px;}
+  .body p{margin:0 0 11px 0;text-align:justify;}
+  h3.sec{font-size:10.4pt;color:var(--navy);margin:16px 0 6px 0;
+    text-transform:uppercase;letter-spacing:.6px;border-bottom:1px solid var(--hair);padding-bottom:3px;}
+  ul.tight{margin:2px 0 11px 0;padding-left:18px;}
+  ul.tight li{margin-bottom:4px;}
+  .signoff{margin-top:22px;}
+  .signoff .space{height:40px;}
+  .signoff .name{font-weight:700;color:var(--navy);}
+  .signoff .role{color:var(--muted);font-size:9.5pt;}
+  .placeholder{color:#b0392e;}
+
+  /* representative call-out */
+  .repnote{margin:16px 0 6px 0;padding:10px 13px;border-left:3px solid var(--navy);
+    background:#f5f7fa;font-size:10.3pt;line-height:1.5;}
+  .repnote b{color:var(--navy);}
+  /* numbered proposals */
+  ol.props{margin:2px 0 11px 0;padding-left:20px;}
+  ol.props li{margin-bottom:7px;}
+  ol.props li b{color:var(--navy);}
+
+  .noprint{max-width:var(--page);margin:20px auto 0;padding:10px 16px;background:var(--navy);
+    color:#dbe6f2;border-radius:8px;font-size:9.5pt;line-height:1.5;}
+  .noprint b{color:#fff;} .noprint code{background:rgba(255,255,255,.14);padding:1px 6px;border-radius:4px;color:#fff;}
+
+  @media print{
+    html,body{background:#fff;-webkit-print-color-adjust:exact;print-color-adjust:exact;}
+    .noprint{display:none !important;}
+    .page{margin:0;box-shadow:none;width:auto;min-height:auto;padding:0;display:block;}
+    *{-webkit-print-color-adjust:exact;print-color-adjust:exact;}
+    .placeholder{color:inherit;}
+    @page{size:A4;margin:16mm 20mm 14mm 20mm;}
+  }
+</style>
+</head>
+<body>
+
+  <div class="noprint">
+    <b>This bar won't print.</b> To export: <b>Cmd/Ctrl + P → Save as PDF</b> (A4, margins: Default, Background graphics ON).
+  </div>
+
+  <!-- ===== PAGE ===== -->
+  <main class="page">
+
+    <!-- masthead (in-flow) -->
+    <header class="lh-header">
+      <div class="brand">
+        <svg class="mark" viewBox="0 0 48 48" fill="none" xmlns="http://www.w3.org/2000/svg" aria-label="AegionAI shield">
+          <path d="M24 3 L41 9 V22 C41 33 33.5 41.5 24 45 C14.5 41.5 7 33 7 22 V9 Z" fill="#0A2540"/>
+          <path d="M14.5 27.5 L24 20 L33.5 27.5" stroke="#14B8A6" stroke-width="3.4" stroke-linecap="round" stroke-linejoin="round"/>
+          <path d="M14.5 34.5 L24 27 L33.5 34.5" stroke="#FFFFFF" stroke-width="3.4" stroke-linecap="round" stroke-linejoin="round"/>
+        </svg>
+        <div>
+          <div class="wordmark">Aegion<span class="ai">AI</span></div>
+          <div class="tagline">Runtime Governance for AI Agents</div>
+        </div>
+      </div>
+      <div class="header-right">
+        <div class="entity">Runtime Security for AI Agents</div>
+      </div>
+    </header>
+    <div class="rule"></div>
+
+    <div class="body">
+
+      <div class="meta">18 July 2026</div>
+
+      <div class="to">
+        <span class="lbl">To,</span><br>
+        <span class="name">Dr.&nbsp;Himanta&nbsp;Biswa&nbsp;Sarma</span><br>
+        Hon'ble Chief Minister<br>
+        Government of Assam<br>
+        Dispur, Guwahati, Assam
+      </div>
+
+      <div class="subject">
+        Subject: Introduction to AegionAI — a neutral, sovereign security layer for Assam's AI-first governance initiatives
+      </div>
+
+      <div class="salutation">Respected Sir / Madam,</div>
+
+      <p>We are grateful for the opportunity to meet and to contribute to the Government of Assam's
+        vision for an <b>AI-first administration</b> and for what your Government has aptly called
+        <b>Assam's Techade</b>. The foundations are already in place &mdash; the digital public
+        infrastructure built over the past four years, from the Sewa&nbsp;Setu platform now
+        delivering hundreds of citizen services to the consolidation of the State's systems within
+        the Assam State Data Centre; the recent Steering Committee on AI Adoption and the proposed
+        State-wide AI architecture; the Assam State Data Policy and the new Centre for Data
+        Management; and the early use of <em>agentic AI</em> to help officials process
+        citizen-service applications, with a human official kept firmly in the loop. As AI systems
+        increasingly <em>act</em> on the Government's behalf, the security of what those systems are
+        permitted to <em>do</em> becomes as important as the intelligence itself. AegionAI is being
+        built precisely for this challenge, and we would be honoured to support Assam's programmes
+        in digital and defence security.</p>
+
+      <h3 class="sec">About AegionAI</h3>
+      <p>AegionAI is a security company building a neutral control layer that governs the actions
+        of AI agents in real time — evaluating <em>what an action does</em> (its parameters,
+        the identity behind it, and the sequence of steps) and stopping a harmful action the
+        instant it occurs, rather than merely inspecting the text of a prompt. In short, we make
+        autonomous AI safe to deploy in high-stakes environments.</p>
+      <ul class="tight">
+        <li><b>Action-level protection:</b> blocks harmful or unauthorised AI actions before they execute, with a fail-secure, deny-by-default design.</li>
+        <li><b>Vendor-neutral:</b> one governance layer across major cloud platforms (AWS, Azure, Google Cloud) and on-premises systems — no lock-in to a single provider.</li>
+        <li><b>Built for sovereignty:</b> deployment options span cloud, private-cloud (in-VPC), and fully on-premises / air-gapped installations, so sensitive data and models can remain entirely within the State's own boundary.</li>
+        <li><b>Tamper-evident audit:</b> an append-only record of every AI decision, designed as an accountable system-of-record for oversight and compliance.</li>
+      </ul>
+
+      <h3 class="sec">Our experience</h3>
+      <p>Our founding team brings over <b>13 years of experience</b> designing and scaling
+        enterprise-grade technology platforms — including services that have grown into
+        <b>multi-billion-dollar (US $6&nbsp;billion+) global businesses</b> at one of the world's
+        largest technology companies. We have translated that experience in building secure,
+        reliable systems at massive scale into a working AI-security platform, and we bring deep
+        expertise in cloud security, large-scale systems, and applied machine learning.</p>
+
+      <h3 class="sec">Relevance to Assam's digital &amp; defence security priorities</h3>
+      <p>As the State deploys AI across citizen services, governance, and security, AegionAI can
+        serve as the protective layer that keeps those AI systems safe, accountable, and sovereign:</p>
+      <ul class="tight">
+        <li>Secure the AI agents the State adopts so they cannot be manipulated, misused, or exceed their authorised scope.</li>
+        <li>Keep data and AI models <b>within India / within Assam</b> through on-premises and air-gapped deployment &mdash; a natural fit for the Assam State Data Centre and the new Centre for Data Management, where the State's systems and citizen data are increasingly consolidated.</li>
+        <li>Provide a verifiable, tamper-evident audit trail for oversight, investigation, and the independent audits and impact assessments now expected under India's data-protection framework.</li>
+        <li>Remain independent of any single technology vendor, protecting the State's long-term flexibility and negotiating position across cloud and on-premises systems.</li>
+      </ul>
+
+      <h3 class="sec">Initiatives we would like to explore with the State</h3>
+      <p>Rather than a new idea to be adopted, each of the following <em>strengthens a programme the
+        State has already committed to</em>. We offer them as starting points for discussion:</p>
+      <ol class="props">
+        <li><b>Enforcing the human-in-the-loop on agentic Sewa&nbsp;Setu.</b> The State has rightly
+          made human oversight mandatory for its agentic-AI use. AegionAI can make that rule
+          <em>enforceable in the system itself</em> &mdash; checking every action an AI agent
+          attempts (its parameters, the identity behind it, and the sequence of steps), blocking an
+          unauthorised or harmful action before it executes, and recording each decision in a
+          tamper-evident log for accountability.</li>
+        <li><b>A data-sovereignty control layer for the State data repository.</b> As the Centre for
+          Data Management builds a unified, State-wide data repository for analytics and AI,
+          AegionAI can govern <em>what AI systems are permitted to do</em> against that data &mdash;
+          deployed inside the State's own environment (in-VPC or fully air-gapped) so data and
+          enforcement never leave Assam's boundary, with audit evidence ready for compliance.</li>
+        <li><b>A sovereign AI-security deployment in the State's data-centre infrastructure.</b>
+          Our fully self-contained (&ldquo;nothing leaves&rdquo;) deployment can run inside Assam's
+          sovereign data-centre environment, so protection for AI workloads that handle sensitive
+          citizen data stays entirely within the State's control.</li>
+        <li><b>A local partnership for indigenous, trusted AI security.</b> We would welcome
+          co-developing and testing these capabilities with Assam's academic and research
+          institutions &mdash; building local capacity and an India-origin approach to safe and
+          trusted AI.</li>
+      </ol>
+
+      <h3 class="sec">Securing borders and defence with AI</h3>
+      <p>Assam's position on India's international frontier, and your Government's
+        <em>rights-based, technology-enabled approach to policing</em>, make security a priority of
+        a different order. As these functions increasingly use AI &mdash; to analyse surveillance
+        and sensor feeds, support intelligence and situational-awareness decisions, and operate
+        autonomous systems &mdash; the AI itself becomes a target and a point of failure. AegionAI
+        does not build the surveillance, forensic, or command systems themselves, nor the sensors
+        or cameras they rely on; we secure the <em>AI that runs on top of them</em>, so it can be
+        trusted in the field:</p>
+      <ul class="tight">
+        <li><b>Non-manipulable AI:</b> we detect and block attempts to deceive or hijack an AI
+          system &mdash; through manipulated inputs, poisoned data, or injected instructions &mdash;
+          before it can act on them, so an adversary cannot turn the State's own AI against it.</li>
+        <li><b>Actions stay within authorised limits:</b> an AI agent supporting a security or
+          defence decision is held to exactly what it is permitted to do; any action beyond its
+          mandate is stopped before it executes, keeping a human in command of consequential
+          decisions.</li>
+        <li><b>Fully sovereign and offline-capable:</b> our air-gapped deployment runs entirely
+          within secured premises with no external connectivity &mdash; nothing leaves the network
+          &mdash; which is essential for classified and frontier environments.</li>
+        <li><b>Tamper-evident record:</b> every AI-assisted action is logged in an append-only,
+          tamper-evident trail, providing accountability and a clear chain of custody for review and
+          investigation.</li>
+      </ul>
+
+      <h3 class="sec">Purpose of this meeting</h3>
+      <p>We seek to understand the Government of Assam's priorities for AI in digital and defence
+        security, and to explore how AegionAI can partner with the State — through pilot programmes,
+        knowledge-sharing, and a trusted governance layer for Assam's AI initiatives. We are keen to
+        align our capabilities with the State's roadmap and to contribute meaningfully to a secure,
+        AI-enabled Assam.</p>
+
+      <div class="repnote">
+        AegionAI is represented at this meeting by <b>Ms&nbsp;Pallavi&nbsp;Rabha</b>, who is duly
+        authorised to speak for the company, discuss these initiatives, and take matters forward on
+        AegionAI's behalf.
+      </div>
+
+      <p>We look forward to a constructive dialogue and to the possibility of a lasting association
+        with the Government of Assam.</p>
+
+      <div class="signoff">
+        With respect and regards,
+        <div class="space"></div>
+        <div class="name">Shashank Gupta</div>
+        <div class="role">Founder, AegionAI</div>
+      </div>
+
+    </div>
+
+    <!-- contact footer (in-flow, pinned to bottom of page) -->
+    <footer class="lh-footer">
+      <div class="col"><b>Contact</b><br>Shashank Gupta<br>+91 89711 77811</div>
+      <div class="col foot-right"><b>Email</b><br><a href="mailto:shashank31mar@gmail.com">shashank31mar@gmail.com</a></div>
+    </footer>
+
+  </main>
+
+</body>
+</html>

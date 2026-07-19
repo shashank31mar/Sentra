@@ -1,0 +1,201 @@
+<!DOCTYPE html>
+<!--
+  AegionAI — official letterhead template
+  ---------------------------------------------------
+  HOW TO USE
+    1. Open this file in Chrome / Edge / Safari.
+    2. Replace the [BRACKETED] placeholders (address, phone, CIN, etc.).
+    3. Type your letter in the "LETTER BODY" area.
+    4. Print  ->  Cmd/Ctrl + P  ->  Destination: "Save as PDF".
+       - Paper size: A4   - Margins: Default   - Background graphics: ON
+    The header band and footer repeat automatically on every printed page.
+
+  BRANDING
+    Parent company : AegionAI  (product / customer-facing brand: "AegionAI Guard")
+    Colours        : Navy #0A2540  |  Teal accent #14B8A6
+    Swap the address / registration lines for the correct legal entity
+    (e.g. AegionAI, Inc. — US   OR   AegionAI Private Limited — India).
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AegionAI — Letterhead</title>
+<style>
+  :root{
+    --navy:#0A2540;
+    --navy-soft:#31465f;
+    --teal:#14B8A6;
+    --ink:#1c2733;
+    --muted:#6b7a8d;
+    --hair:#d9e0e8;
+    --page:210mm;
+  }
+
+  *{box-sizing:border-box;}
+
+  html,body{margin:0;padding:0;background:#eef1f5;color:var(--ink);
+    font-family:-apple-system,"Segoe UI",Helvetica,Arial,sans-serif;
+    font-size:11pt;line-height:1.5;-webkit-font-smoothing:antialiased;}
+
+  /* ---- The printable page ---- */
+  .page{
+    position:relative;
+    width:var(--page);
+    min-height:297mm;
+    margin:24px auto;
+    background:#fff;
+    padding:34mm 22mm 30mm 22mm;   /* room for fixed header + footer */
+    box-shadow:0 6px 30px rgba(10,37,64,.14);
+  }
+
+  /* ================= HEADER ================= */
+  .lh-header{
+    position:fixed; top:0; left:0; right:0;
+    padding:14mm 22mm 6mm 22mm;
+    display:flex; align-items:center; justify-content:space-between;
+    gap:16px;
+  }
+  .brand{display:flex; align-items:center; gap:12px;}
+  .mark{width:42px; height:42px; flex:0 0 auto;}
+  .wordmark{font-size:21pt; font-weight:700; letter-spacing:.2px; color:var(--navy); line-height:1;}
+  .wordmark .ai{color:var(--teal);}
+  .tagline{font-size:7.6pt; letter-spacing:2.1px; text-transform:uppercase;
+    color:var(--muted); margin-top:4px; font-weight:600;}
+  .header-right{text-align:right; font-size:8pt; color:var(--muted); line-height:1.55;}
+  .header-right .entity{color:var(--navy); font-weight:700; font-size:8.6pt; letter-spacing:.3px;}
+
+  .rule{position:fixed; top:33mm; left:22mm; right:22mm; height:2px;
+    background:linear-gradient(90deg,var(--navy) 0%,var(--navy) 62%,var(--teal) 62%,var(--teal) 100%);}
+
+  /* ================= FOOTER ================= */
+  .lh-footer{
+    position:fixed; bottom:0; left:0; right:0;
+    padding:5mm 22mm 12mm 22mm;
+    border-top:1px solid var(--hair);
+    display:flex; justify-content:space-between; gap:14px;
+    font-size:7.7pt; color:var(--muted); line-height:1.5;
+  }
+  .lh-footer .col b{color:var(--navy-soft); font-weight:700;}
+  .lh-footer a{color:var(--navy-soft); text-decoration:none;}
+  .foot-center{text-align:center;}
+  .foot-right{text-align:right;}
+
+  /* ================= LETTER BODY ================= */
+  .body{position:relative; z-index:1;}
+  .meta{color:var(--muted); font-size:10pt; margin-bottom:18px;}
+  .recipient{margin-bottom:22px;}
+  .recipient .name{font-weight:700; color:var(--ink);}
+  .salutation{margin-bottom:12px;}
+  .body p{margin:0 0 12px 0;}
+  .signoff{margin-top:26px;}
+  .signoff .space{height:42px;}
+  .signoff .name{font-weight:700; color:var(--navy);}
+  .signoff .role{color:var(--muted); font-size:9.5pt;}
+
+  .placeholder{color:#b0392e;}   /* highlights [BRACKETS] on screen only */
+
+  /* ---- On-screen helper (never prints) ---- */
+  .noprint{
+    max-width:var(--page); margin:20px auto 0; padding:10px 16px;
+    background:var(--navy); color:#dbe6f2; border-radius:8px;
+    font-size:9.5pt; line-height:1.5;
+  }
+  .noprint b{color:#fff;}
+  .noprint code{background:rgba(255,255,255,.14); padding:1px 6px; border-radius:4px; color:#fff;}
+
+  @media print{
+    html,body{background:#fff;}
+    .noprint{display:none !important;}
+    .page{margin:0; box-shadow:none; width:auto; min-height:auto; padding:34mm 22mm 30mm 22mm;}
+    .placeholder{color:inherit;}          /* don't print the red hint colour */
+    @page{size:A4; margin:0;}
+  }
+</style>
+</head>
+<body>
+
+  <div class="noprint">
+    <b>This blue bar won't print.</b> Fill in the <code>[bracketed]</code> placeholders, type your letter,
+    then <b>Cmd/Ctrl + P → Save as PDF</b> (A4, "Background graphics" ON). The header &amp; footer repeat on every page.
+  </div>
+
+  <!-- ===================== FIXED HEADER (repeats every page) ===================== -->
+  <header class="lh-header">
+    <div class="brand">
+      <!-- Aegis / shield mark: layered chevrons = defense in depth -->
+      <svg class="mark" viewBox="0 0 48 48" fill="none" xmlns="http://www.w3.org/2000/svg" aria-label="AegionAI shield">
+        <path d="M24 3 L41 9 V22 C41 33 33.5 41.5 24 45 C14.5 41.5 7 33 7 22 V9 Z" fill="#0A2540"/>
+        <path d="M14.5 27.5 L24 20 L33.5 27.5" stroke="#14B8A6" stroke-width="3.4"
+              stroke-linecap="round" stroke-linejoin="round"/>
+        <path d="M14.5 34.5 L24 27 L33.5 34.5" stroke="#FFFFFF" stroke-width="3.4"
+              stroke-linecap="round" stroke-linejoin="round"/>
+      </svg>
+      <div>
+        <div class="wordmark">Aegion<span class="ai">AI</span></div>
+        <!-- Edit or delete this tagline -->
+        <div class="tagline">Runtime Governance for AI Agents</div>
+      </div>
+    </div>
+    <div class="header-right">
+      <div class="entity">www.aegionai.ai</div>
+    </div>
+  </header>
+
+  <div class="rule"></div>
+
+  <!-- ===================== FIXED FOOTER (repeats every page) ===================== -->
+  <footer class="lh-footer">
+    <div class="col">
+      <b>Address</b><br>
+      [Street address]<br>
+      [City, State ZIP, Country]
+    </div>
+    <div class="col foot-center">
+      <b>Contact</b><br>
+      <a href="mailto:hello@aegionai.ai">hello@aegionai.ai</a><br>
+      [+1 (000) 000-0000]
+    </div>
+    <div class="col foot-right">
+      <b>Web</b><br>
+      <a href="https://www.aegionai.ai">www.aegionai.ai</a><br>
+      [linkedin.com/company/aegionai]
+    </div>
+  </footer>
+
+  <!-- ===================== PAGE + LETTER BODY ===================== -->
+  <main class="page">
+    <div class="body">
+
+      <div class="meta">[Month DD, YYYY]</div>
+
+      <div class="recipient">
+        <div class="name">[Recipient name]</div>
+        <div>[Title]</div>
+        <div>[Organisation]</div>
+        <div>[Address]</div>
+      </div>
+
+      <div class="salutation">Dear [Name],</div>
+
+      <p><span class="placeholder">[Letter body — replace this paragraph.]</span> This is a
+        print-ready A4 letterhead for AegionAI. The navy shield, wordmark and the contact
+        footer are set as fixed elements, so they appear on every page automatically when you
+        print to PDF — you only edit this body area.</p>
+
+      <p>Keep paragraphs concise and left-aligned. Use one blank line between paragraphs. When
+        you are finished, print with <em>Save as PDF</em>, A4 paper, default margins, and
+        "Background graphics" enabled so the header band renders in full colour.</p>
+
+      <div class="signoff">
+        Sincerely,
+        <div class="space"></div>
+        <div class="name">[Your name]</div>
+        <div class="role">[Title], AegionAI</div>
+      </div>
+
+    </div>
+  </main>
+
+</body>
+</html>
