@@ -6,6 +6,16 @@
 >
 > **Track:** investor (fundraising). Per [outreach-tracker.md](outreach-tracker.md), the **investor one-pager is the right artifact** to share here (unlike design-partner outreach). Move a name into the tracker once you start contacting.
 
+## Outreach status (contacted from this shortlist)
+
+> Live status for shortlist names we've actually reached out to. Full history lives in [outreach-tracker.md](outreach-tracker.md); this is the quick view. State legend: `Sent` → `Responded` → `Call scheduled` → `Call done` → `Next step` · `No response` · `Passed`.
+
+| Fund | Partner | Contacted via | Channel / follow-up | Date | State | Artifact | Next |
+|---|---|---|---|---|---|---|---|
+| **boldstart ventures** | Ed Sim | LinkedIn (connected + InMail) | Follow up via LinkedIn (no public pitch email) | 2026-07-18 | **Sent** | [outreach-boldstart-edsim.md](outreach-boldstart-edsim.md) | Await reply; if bites → two-pager + 30 min. Tracker #19 |
+
+*All other shortlist names below are **Not contacted** yet. As you reach out, add a row here and a detail block in the tracker.*
+
 > **Two independent ratings per fund — don't conflate them:**
 > - **Fit** (bullseye / strong / adjacent) = how well they match *AegionAI's thesis* and can lead your round. This drives who to contact.
 > - **Prestige** (T1 / T2 / T3 / Emerging) = the fund's *industry brand/standing* (AUM, exits, signaling weight), independent of fit. **T1** = top-brand megafunds + elite seed brands (a16z, Accel, Bessemer, Lux, Bain Capital Ventures…); **T2** = established sector/seed specialists (Wing, boldstart, Ballistic, YL, Cyberstarts, Conviction, Costanoa…); **T3** = credible but smaller/newer/regional; **Emerging** = Fund I/II, solo-GP, micro-VC, accelerator/studio.

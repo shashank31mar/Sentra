@@ -1,6 +1,6 @@
 # AegionAI — Design Partner Outreach Tracker
 
-**Last updated:** 2026-07-09
+**Last updated:** 2026-07-19
 
 > Two tracks here: **design partners** (#1–6, pilot/customer motion — do NOT send the investor one-pager) and **investors** (#7+, fundraising motion — the investor one-pager IS appropriate). Keep them separate. **Exception: #10 Jyoti Bansal spans both** (Harness = design partner, Unusual Ventures = investor) — lead with the design-partner ask.
 
@@ -28,6 +28,7 @@ State legend: `Not contacted` → `Sent (LinkedIn)` → `Responded` → `Moved t
 | 16 | Leon Kuperman | Cast AI | Co-Founder & CTO (ex-Zenedge/Oracle security) | Cold | LinkedIn | Design partner (governing 3rd-party agent actions on their multi-cloud clusters) | **Sent (LinkedIn)** | — | Await reply; perfect buyer (CTO + security founder); warm path also exists via Chris Murphy (#17, Cast AI angel) |
 | 17 | Chris Murphy | MS&AD Ventures (+ angel) | Venture Partner / Angel Investor | Cold (2nd-degree) | LinkedIn | **Investor (funding, soft ask)** + can warm-intro to Cast AI (#16) | **Sent (LinkedIn)** | — | Await reply; if interested, send pitch/one-pager (investor track). Cast AI angel → warm intro to Leon Kuperman |
 | 18 | Sunny Shah | Sarvam AI | Head of Engineering (ex-INDmoney, ex-Goibibo) | Cold | LinkedIn | Design partner (BFSI agents — Arya backend orchestration / Claim-Bot record writes) | **Sent (LinkedIn)** | — | Await reply; escalation = co-founders Pratyush Kumar / Vivek Raghavan; latency (sub-500ms) will be scrutinized → lead in-VPC local-floor |
+| 19 | Ed Sim | boldstart ventures | Founder & General Partner | Cold | LinkedIn (connected + InMail) | **Investor (fundraising)** — first shortlist name contacted | **Sent (LinkedIn)** | — | Await reply; from [aegionai-investor-shortlist.md](aegionai-investor-shortlist.md) top-8; complementary-to-Keycard angle; if bites → send two-pager + book 30 min |
 
 ## Detail / history
 
@@ -182,6 +183,14 @@ State legend: `Not contacted` → `Sent (LinkedIn)` → `Responded` → `Moved t
 - **2026-07-10** — **Sent (LinkedIn).** Founder-led note; one-line hook (owns Sarvam eng + regulated-fintech background); failure mode = mis-read doc / injected turn → advance a claim it shouldn't / out-of-range record write; per-action check alongside their human-in-the-loop; in-VPC/air-gapped as roadmap; explicit design-partner ask; link aegionai.ai.
 - **⚠️ On the call:** Sarvam advertises sub-500ms agent latency → our overhead will be scrutinized; lead with the in-VPC local-floor path, NOT the Serverless ~0.6–1.2s number.
 - **Next:** await reply. If engages → design-partner call (lead in-VPC/latency framing); escalate to Pratyush/Vivek if it goes strategic.
+
+### 19. Ed Sim — boldstart ventures (Founder & GP) — cold, investor track
+- LinkedIn: https://www.linkedin.com/in/edsim · X: @edsim (no public pitch email; boldstart.vc/contact-us is a bare form — LinkedIn is the real path).
+- **Verified fit:** day-one infra+security seed specialist ($1.1B AUM); personally led **Protect AI** (→Palo Alto), co-led **Keycard** $8M w/ a16z, seeded **Snyk**. From [aegionai-investor-shortlist.md](aegionai-investor-shortlist.md) Part-B top-8 (bullseye).
+- **⚠️ Adjacency to guard:** boldstart holds **Keycard** (agent *identity/access*) — NOT a direct competitor (identity = WHO; AegionAI = WHAT the action may do), and the hook, but confirm a partner-level info-wall before sharing sensitive architecture. Clean of a *direct* competitor (no Straiker/Zenity/Runlayer).
+- **Angle:** positioned AegionAI as the action-governance guardrail complementary to Keycard; led on deterministic action-parameter enforcement (vs probabilistic content detection) + in-VPC/air-gapped residency — the two wedges that survive vs Straiker.
+- **2026-07-18** — **Sent (LinkedIn).** Connected + InMail (subject "The guardrail for what agents *do* — pairs with Keycard"); ~1,890-char note (under InMail cap). Ordered defense-stack (identity → policy/params → cross-cloud sequence → trust/containment → cross-agent), honest staging (floor blocks live, ML shadow, injection/memory detectors rolling out), in-VPC/air-gapped differentiator, $5M seed, offered 30 min OR a two-pager. Full copy in [outreach-boldstart-edsim.md](outreach-boldstart-edsim.md). Link aegionai.ai + shashank31mar@gmail.com.
+- **Next:** await reply. If interested → send **two-pager** (not full deck — adjacent-portfolio info-leakage caution) + book 30 min. Investor track = two-pager/one-pager is the right artifact.
 
 ### 10. Jyoti Bansal — Harness (CEO) + Unusual Ventures (Co-Founder) — **two-doors-one-key**
 - LinkedIn: https://www.linkedin.com/in/jyotibansal/
