@@ -1,67 +1,66 @@
 # Outreach — clean seed batch (post apple-to-apple re-screen, 2026-07-19)
 
-Cold-reachable funds verified clean/re-opened. Send order: Glasswing → Basis Set → In-Q-Tel (Runtime pending SplxAI/Zscaler re-verify). All lead with the ONE proof no competitor has — **deterministic numeric parameter bounds + ordered cross-cloud sequence integrity + trust→quarantine, blocking a real money-movement action inline, neutral across clouds, in-VPC/air-gapped** — the set even the one true twin (Runlayer) can't match.
+Cold-reachable funds verified clean/re-opened. Send order: **Glasswing → Basis Set** (In-Q-Tel skipped for now; Runtime held pending SplxAI/Zscaler + stealth-listing re-verify).
 
-> Standing rule: no over-disclosure of architecture in a cold note. State the wedge + the proof + the ask. Deep design goes behind a call / two-pager.
+Voice: punchy + human — short sentences, no AI tells, competitive point folded in (not announced). Lead with the wedge + the proof + a soft ask. No over-disclosure of architecture in a cold note; deep design goes behind a call / the 3-page brief.
+
+**Shared subject (both):** Blocking AI agents from taking the action that can't be undone
+
+> Framing rules baked in: never state employment status ("At Amazon I built…" = pedigree, not "I work there today" which reads as moonlighting). Never say what is/isn't built — describe both layers present-tense. Attach nothing to a cold email — offer the 3-page brief, send on reply. Domain = aegionai.ai (confirmed).
 
 ---
 
 ## 1. Glasswing Ventures — Rick Grinnell (BEST COLD-OPEN)
 
-**Channel:** email `info@glasswing.vc`, addressed to Rick Grinnell (Founder & MP, owns the security book). Clean — his agent bets (Nametag, Trustle) are agent *identity*, not action-governance → we fill an open slot.
+**Channel:** email `info@glasswing.vc`, addressed to Rick Grinnell (Founder & MP, owns the security book). Clean — his agent bets (Nametag, Trustle) are agent *identity*, not action-governance → we fill an open slot. Offer the brief, don't attach.
 
-**Subject:** Deterministic control plane for what AI agents *do* — blocking money-movement inline
+**Subject:** Blocking AI agents from taking the action that can't be undone
 
 **Body:**
 
-Rick —
+Hi Rick,
 
-Your security book covers agent *identity* (Nametag, Trustle) — who the agent is. I'm building the layer next to it: *what the action is allowed to do*, enforced inline before it runs.
+You backed the identity side of agent security with Nametag and Trustle. Once you know who the agent is, something still has to decide what it's allowed to *do*. That's what I'm building.
 
-AegionAI is a neutral, cross-vendor control plane that blocks harmful AI-agent actions across AWS, Azure, GCP, and on-prem. Not "is this tool allowed" — we check what the action *does*: the amount, the recipient, whether the required prior steps ran (in order, even across clouds), whether the identity is authorized. If it holds, it passes; if not, we block it before it executes. Probabilistic injection detection runs as a second layer, not the whole product.
+AegionAI sits in front of every action an agent takes and decides, in real time, whether to let it through. Not "is this tool allowed." What the action actually does: how much money, to whom, whether the required steps ran first, whether this agent is authorized at all. If something's off, we block it before it runs. One control plane, across AWS, Azure, GCP, and on-prem, with a tamper-evident record of every action for the auditors who now ask.
 
-Most of the field is a single ML classifier guessing if a prompt *looks* malicious. The deterministic floor — real numeric bounds, cross-cloud sequence integrity, trust-based quarantine — is what banks need and what no one else ships.
+Two layers do the work. A deterministic floor that enforces the hard rules: real limits, sequence checks, quarantine for an agent gone rogue. And our own detection model, trained on our own traffic, with one job, hunt the attack buried in the prompt, sharper every time it sees a new one. Most tools are only that second piece, a model guessing whether a prompt looks bad. The floor underneath is the part regulated teams actually need, and almost no one does it.
 
-Beachhead: agents that move money, where a wrong action is an instant loss. Pre-revenue, but the core is built and running live across two clouds; provisional patent filed. Raising a $5M seed.
+We start where a mistake can't be walked back. An agent moving money. An agent told to leave prod alone that wipes the database anyway. Same engine handles the rest as agents take over more of the fleet.
 
-Worth 20 minutes? I can send a two-pager if that's easier to start.
+Background: I'm the technical founder. At Amazon I built the ML platform behind OpenSearch's vector search and ran a security-telemetry effort across two orgs. AegionAI is live across two clouds right now, patent filed. Pre-revenue, raising a $5M seed.
 
-— Shashank Gupta, Founder, AegionAI · aegionai.ai · shashank31mar@gmail.com
+Worth 20 minutes? I can send a short brief first if that's easier.
 
----
-
-## 2. Basis Set Ventures — Chang Xu (parallel, same week)
-
-**Channel:** LinkedIn DM `/in/changx` (or X `@_changxu`). Her FAQ explicitly invites cold founder DMs; she authored Basis Set's "Security Foundation Model" thesis. Warm bridge: **Clearly AI founders are ex-Amazon security engineers** (her portco) — mention if you have any overlap. Frame to avoid her "wrapper / point-tool" objection: we're a control plane, not a thin layer.
-
-**DM (short — LinkedIn):**
-
-Chang — saw your "security foundation model" thesis; it's the problem I'm building for from the enforcement side.
-
-AegionAI is a neutral cross-vendor control plane that blocks harmful AI-agent *actions* inline — governing what the action does (amount, recipient, sequence, authorization) deterministically, with probabilistic injection detection layered on top. Not a prompt-classifier wrapper: it's the floor that actually blocks a bad money-movement action before it executes, across AWS/Azure/GCP/on-prem, with in-VPC/air-gapped editions for regulated buyers.
-
-Ex-Amazon (built the ML platform behind OpenSearch vector search; ran a cross-org SIEM). Live two-cloud demo today, patent filed, pre-revenue, raising a $5M seed. Would love 20 min — or I can send a two-pager. Either way, would value your read.
-
-— Shashank · aegionai.ai
+Thanks,
+Shashank
+aegionai.ai · shashank31mar@gmail.com
 
 ---
 
-## 3. In-Q-Tel — public intake (high-value: air-gapped/regulated fit)
+## 2. Basis Set Ventures — Chang Xu
 
-**Channel:** iqt.org submission form (public intake). Re-opened (only holds Ent = endpoint DLP, different plane) AND structurally aligned with the air-gapped/dual-use edition. Lead with the regulated/gov angle, not the fintech beachhead.
+**Channel:** LinkedIn DM `/in/changx` (or X `@_changxu`). Her FAQ explicitly invites cold founder DMs; she authored Basis Set's "Security Foundation Model" thesis — the first line ties to it. Clean. If InMail (not connected), use the shared subject above; a plain DM needs no subject.
 
-**Note (form / cover):**
+**Message:**
 
-AegionAI is a neutral, cross-vendor control plane that governs and blocks the *actions* AI agents take — deterministically checking an action's parameters, sequence, and authorization before it executes — across AWS, Azure, GCP, and on-prem, with **in-VPC and air-gapped editions** where nothing leaves the customer boundary.
+Hi Chang — your "security foundation model" thesis is basically the bet I'm making on one of our two layers.
 
-For national-security and regulated deployments this closes a gap the cloud providers structurally can't: each governs only its own cloud, and none will sit inline in a rival's runtime. We are neutral by design, self-hostable, and built to run disconnected.
+AegionAI sits in front of every action an AI agent takes and decides, in real time, whether to let it through. Not "is this tool allowed." What it actually does: the amount, the recipient, whether the required steps ran first, whether the agent is even authorized. If it's wrong, we block it before it runs. Not a dashboard that watches after the fact, an actual control plane that enforces, across AWS, Azure, GCP, and on-prem, with a tamper-evident record of everything.
 
-Status: deterministic enforcement live across two clouds today; provisional patent filed; pre-revenue, raising a $5M seed. The air-gapped edition is the roadmap item this round funds. Founder is ex-Amazon (ML platform behind OpenSearch semantic search; cross-org SIEM across the security + OpenSearch orgs).
+Two layers. A deterministic floor: real limits, sequence checks, quarantine for an agent gone rogue. And our own detection model, trained on our own traffic, hunting the attack buried in the prompt and getting sharper every time it sees a new one. That second layer is where your thesis lives. Most tools stop there. The floor underneath is the part regulated teams actually need.
 
-— Shashank Gupta, Founder, AegionAI · aegionai.ai · shashank31mar@gmail.com
+We start where a mistake can't be walked back. An agent moving money. An agent told to leave prod alone that wipes the database anyway.
+
+At Amazon I built the ML platform behind OpenSearch's vector search and ran a cross-org security-telemetry effort. AegionAI is live across two clouds already, patent filed, pre-revenue, raising a $5M seed.
+
+Worth 20 minutes? Or I can send a short brief. Either way, I'd value your read.
+
+Shashank
+aegionai.ai
 
 ---
 
-## 4. Runtime Ventures — David Endler (PENDING re-verify)
+## 3. Runtime Ventures — David Endler (HELD — pending conflict re-verify)
 
-**⚠️ Do not send until you confirm SplxAI's exit to Zscaler closed AND Runtime holds no live agent-action-governance bet** (their portfolio page listed a stealth "Policy Enforcement for Agents" — resolve what that is first). If clean: cyber-native, cold-OK. Draft on request once re-verified.
+**⚠️ Do not send until confirmed clean.** Runtime is a re-open candidate, not verified clean: SplxAI (portco) is red-team and *reportedly* exited to Zscaler, but their portfolio page listed a stealth **"Policy Enforcement for Agents"** company — if live, that's a direct competitor and a hard conflict. Re-verify (1) SplxAI/Zscaler exit closed, (2) what the stealth listing is, before drafting. Cyber-native, cold-OK if clean.

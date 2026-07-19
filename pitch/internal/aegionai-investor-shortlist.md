@@ -13,6 +13,8 @@
 | Fund | Partner | Contacted via | Channel / follow-up | Date | State | Artifact | Next |
 |---|---|---|---|---|---|---|---|
 | **boldstart ventures** | Ed Sim | LinkedIn (connected + InMail) | Follow up via LinkedIn (no public pitch email) | 2026-07-18 | **Sent** | [outreach-boldstart-edsim.md](outreach-boldstart-edsim.md) | Await reply; if bites → two-pager + 30 min. Tracker #19 |
+| **Glasswing Ventures** | Rick Grinnell | Email `info@glasswing.vc` | Follow up via email | 2026-07-19 | **Sent** | [outreach-clean-seed-batch.md](outreach-clean-seed-batch.md) | CLEAN (apple-to-apple). Await reply; if bites → 3-page brief + 20 min. Tracker #20 |
+| **Basis Set Ventures** | Chang Xu | LinkedIn DM `/in/changx` | Follow up via LinkedIn | 2026-07-19 | **Sent** | [outreach-clean-seed-batch.md](outreach-clean-seed-batch.md) | CLEAN; invites cold DMs. Await reply; if bites → 3-page brief + 20 min. Tracker #21 |
 
 *All other shortlist names below are **Not contacted** yet. As you reach out, add a row here and a detail block in the tracker.*
 

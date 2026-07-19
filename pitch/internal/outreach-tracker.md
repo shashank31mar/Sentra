@@ -29,6 +29,8 @@ State legend: `Not contacted` → `Sent (LinkedIn)` → `Responded` → `Moved t
 | 17 | Chris Murphy | MS&AD Ventures (+ angel) | Venture Partner / Angel Investor | Cold (2nd-degree) | LinkedIn | **Investor (funding, soft ask)** + can warm-intro to Cast AI (#16) | **Sent (LinkedIn)** | — | Await reply; if interested, send pitch/one-pager (investor track). Cast AI angel → warm intro to Leon Kuperman |
 | 18 | Sunny Shah | Sarvam AI | Head of Engineering (ex-INDmoney, ex-Goibibo) | Cold | LinkedIn | Design partner (BFSI agents — Arya backend orchestration / Claim-Bot record writes) | **Sent (LinkedIn)** | — | Await reply; escalation = co-founders Pratyush Kumar / Vivek Raghavan; latency (sub-500ms) will be scrutinized → lead in-VPC local-floor |
 | 19 | Ed Sim | boldstart ventures | Founder & General Partner | Cold | LinkedIn (connected + InMail) | **Investor (fundraising)** — first shortlist name contacted | **Sent (LinkedIn)** | — | Await reply; from [aegionai-investor-shortlist.md](aegionai-investor-shortlist.md) top-8; complementary-to-Keycard angle; if bites → send two-pager + book 30 min |
+| 20 | Rick Grinnell | Glasswing Ventures | Founder & Managing Partner | Cold | Email `info@glasswing.vc` | **Investor (fundraising)** — CLEAN (identity-only bets; apple-to-apple screen) | **Sent (email)** | — | Sent 2026-07-19; drafts in [outreach-clean-seed-batch.md](outreach-clean-seed-batch.md); "fill the gap next to your identity bets" angle; if bites → send 3-page brief + 20 min |
+| 21 | Chang Xu | Basis Set Ventures | Partner (authored "security foundation model" thesis) | Cold | LinkedIn DM `/in/changx` | **Investor (fundraising)** — CLEAN; invites cold DMs | **Sent (LinkedIn)** | — | Sent 2026-07-19; thesis-hook opener (her "security foundation model" = our 2nd layer); ex-Amazon-security tie via Clearly AI; if bites → 3-page brief + 20 min |
 
 ## Detail / history
 
@@ -191,6 +193,20 @@ State legend: `Not contacted` → `Sent (LinkedIn)` → `Responded` → `Moved t
 - **Angle:** positioned AegionAI as the action-governance guardrail complementary to Keycard; led on deterministic action-parameter enforcement (vs probabilistic content detection) + in-VPC/air-gapped residency — the two wedges that survive vs Straiker.
 - **2026-07-18** — **Sent (LinkedIn).** Connected + InMail (subject "The guardrail for what agents *do* — pairs with Keycard"); ~1,890-char note (under InMail cap). Ordered defense-stack (identity → policy/params → cross-cloud sequence → trust/containment → cross-agent), honest staging (floor blocks live, ML shadow, injection/memory detectors rolling out), in-VPC/air-gapped differentiator, $5M seed, offered 30 min OR a two-pager. Full copy in [outreach-boldstart-edsim.md](outreach-boldstart-edsim.md). Link aegionai.ai + shashank31mar@gmail.com.
 - **Next:** await reply. If interested → send **two-pager** (not full deck — adjacent-portfolio info-leakage caution) + book 30 min. Investor track = two-pager/one-pager is the right artifact.
+
+### 20. Rick Grinnell — Glasswing Ventures (Founder & MP) — cold, investor track
+- Channel: email `info@glasswing.vc`, addressed to Grinnell (no public partner email; owns the security book).
+- **Conflict: CLEAN** (apple-to-apple re-screen 2026-07-19). His agent bets — Nametag, Trustle — are agent *identity/access*, NOT action-governance → we fill an open slot, not compete. Leads seed at ~$4–6M (fits a $5M solo-lead).
+- **Angle:** open on his identity portfolio → position action-governance as the adjacent layer; deterministic floor (numeric bounds, cross-cloud sequence, quarantine) + in-house detection model + tamper-evident system-of-record; irreversible-action beachhead (money-movement + prod-deletion). Bio = "At Amazon I built…" (pedigree, not employment status).
+- **2026-07-19** — **Sent (email).** Punchy/human draft, subject "Blocking AI agents from taking the action that can't be undone"; offered a 3-page brief (not attached — deliverability). Full copy in [outreach-clean-seed-batch.md](outreach-clean-seed-batch.md).
+- **Next:** await reply. If interested → send 3-page brief ([../share/AegionAI-pitch.pdf](../share/AegionAI-pitch.pdf)) + book 20 min.
+
+### 21. Chang Xu — Basis Set Ventures (Partner) — cold, investor track
+- Channel: LinkedIn DM `/in/changx` (or X `@_changxu`). Her FAQ invites cold founder DMs.
+- **Conflict: CLEAN** (apple-to-apple re-screen). Authored Basis Set's "security foundation model" thesis; portco Clearly AI founders are ex-Amazon security engineers (warm-bridge if overlap).
+- **Angle:** first line ties to her published thesis (her "security foundation model" = our 2nd/detection layer); then the deterministic floor as the part regulated teams need. "Not a dashboard that watches — a control plane that enforces." Same irreversible-action beachhead.
+- **2026-07-19** — **Sent (LinkedIn).** Same subject if InMail; DM carries the thesis hook in line 1. Full copy in [outreach-clean-seed-batch.md](outreach-clean-seed-batch.md).
+- **Next:** await reply. If interested → 3-page brief + 20 min.
 
 ### 10. Jyoti Bansal — Harness (CEO) + Unusual Ventures (Co-Founder) — **two-doors-one-key**
 - LinkedIn: https://www.linkedin.com/in/jyotibansal/
