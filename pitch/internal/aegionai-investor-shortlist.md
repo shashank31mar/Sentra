@@ -21,7 +21,17 @@
 > - **Prestige** (T1 / T2 / T3 / Emerging) = the fund's *industry brand/standing* (AUM, exits, signaling weight), independent of fit. **T1** = top-brand megafunds + elite seed brands (a16z, Accel, Bessemer, Lux, Bain Capital Ventures…); **T2** = established sector/seed specialists (Wing, boldstart, Ballistic, YL, Cyberstarts, Conviction, Costanoa…); **T3** = credible but smaller/newer/regional; **Emerging** = Fund I/II, solo-GP, micro-VC, accelerator/studio.
 > - **For a pre-seed/seed raise, best-fit ≠ highest-prestige — and that's correct.** Most of the right *seed leads* are T2/T3; the T1 megafunds mostly sit in the wave-2 hold list (signaling risk if approached cold-first). Of 199 funds rated: **25 T1 · 84 T2 · 49 T3 · 41 Emerging.**
 
-> **⚠️ Competitor-conflict crosses (verified cap tables) — cross ALL of these.** These funds have already backed a direct AegionAI competitor and are **unlikely to invest** (they protect the portfolio co). Rows are flagged inline; **`(OUT)` = treat as excluded; `(CAUTION)` = adjacent competitor, only if a call proves the wedge is differentiated.** 13 conflicted funds total:
+> **🔄 APPLE-TO-APPLE RE-SCREEN (2026-07-19) — READ THIS FIRST; it overrides the cross list below.** The blunt "backs any AI-agent-security co = conflict" filter over-counted. Re-scored every flagged portco on AegionAI's *actual* stack (deterministic action-PARAMETER/SEQUENCE/authz governance that blocks inline + probabilistic depth + neutral cross-vendor + in-VPC/air-gapped). Result: **only TWO genuine apple-to-apple competitors exist** —
+> - **Runlayer** (→ **Felicis, Khosla**) — the *one* true DIRECT-TWIN: deterministic policy on argument values + authz + inline fail-closed block. Even it misses our core: **no numeric bounds (`amount > X`)**, no ordered/cross-cloud sequence, MCP-bound + AWS-only self-host, no trust/quarantine.
+> - **CodeIntegrity** (→ **SYN**) — near-twin; shallower (tool/data-flow, not param bounds), SaaS-only.
+>
+> Everything else does **ONE layer** of our stack (content classifier / posture / identity / SOC / red-team) = component or complement, **not** the deterministic-action-governance core. **BUT** — a VC still pattern-matches by market/buyer/GTM, so a fund holding a *platform* partial (Noma/Onyx/Zenity/WitnessAI/Gray Swan/Straiker) will read us as competitive regardless of the architectural daylight → keep those OUT for leading the raise. The funds that RE-OPEN are those whose only bet is on a genuinely *different plane*:
+> - **RE-OPENED (safe to approach):** **Decibel** (Ent = endpoint/insider-risk DLP), **In-Q-Tel** (Ent-only + *wants* our air-gapped/regulated angle — high-value), **Sequoia · Craft · Crosspoint · Shield** (Ent-only), **Costanoa** (+ Cherry, Rain, Modern Technical — Manifold = off-path AIDR, complementary), **Runtime Ventures** (SplxAI = red-team, already exited to Zscaler), **YL Ventures** (Autonomous = desktop-AI-tool EDR — approach, lead with the 4 differentiators to preempt an optics question).
+> - **STILL CONFLICTED (do not lead here):** Felicis + Khosla (Runlayer twin), SYN (CodeIntegrity+Arcade), Ballistic (Noma+WitnessAI), Wing (Gray Swan+BlueRock), BCV + Lightspeed + Citi/Illuminate/Workday (Straiker), Conviction + Cyberstarts (Onyx), Madrona, Mayfield, Glilot, Evolution Equity, Fin Capital, GV, Vertex Israel (Zenity).
+>
+> _Full evidence: apple-to-apple screen 2026-07-19 (14 companies scored + adversarially re-verified). The pre-screen cross list below is RETAINED for the primary-source cap-table citations, but its verdicts are superseded by the block above._
+
+> **⚠️ Competitor-conflict crosses (verified cap tables) — pre-screen list, verdicts SUPERSEDED by the apple-to-apple block above (retained for cap-table citations).** These funds have backed *an* AI-agent-security co; per the re-screen only Felicis/Khosla (Runlayer) + SYN (CodeIntegrity) are true twins — the rest are platform/partial pattern-matches. Rows flagged inline; **`(OUT)` = pre-screen excluded; `(CAUTION)` = adjacent.** Original 13-fund list:
 > - **`(OUT)` — thesis-twin / direct competitor backers:**
 >   - **Straiker** → Bain Capital Ventures, Lightspeed, Rain Capital, Sixty Degree Capital
 >   - **Runlayer** → Felicis*, Khosla Ventures
@@ -125,14 +135,28 @@ Fresh sourcing across five archetypes (AI-runtime-security · cybersecurity-seed
 
 ## The 8 to contact first
 
-1. **Ballistic Ventures** (Jake Seid / Barmak Meftah) — deepest agent-security book, cyber-only, incubates.
-2. **SYN Ventures** (Jay Leek) — thesis-twins Arcade / CodeIntegrity; SYN Seed Fund, apply direct.
+> **⚠️ This "8 first" list PREDATES the apple-to-apple re-screen (2026-07-19). Ballistic, SYN, BCV are CONFLICTED (Noma/WitnessAI, CodeIntegrity, Straiker) — do NOT lead the raise there. Use the CURRENT cold-reachable order below instead.**
+
+**CURRENT cold-reachable order (post apple-to-apple re-screen, 2026-07-19):**
+1. **Glasswing** (Rick Grinnell) — CLEAN (identity-only bets), leads ~$5M, **cold-OK** via `info@glasswing.vc`. **Best cold-open.**
+2. **Runtime Ventures** (David Endler) — RE-OPENED (SplxAI = red-team, exited to Zscaler), cyber-native, cold-OK. *Re-verify SplxAI/Zscaler close before sending.*
+3. **Basis Set** (Chang Xu) — CLEAN; **FAQ invites cold DMs**; ex-Amazon-security tie via Clearly AI. DM `/in/changx`.
+4. **In-Q-Tel** — RE-OPENED (Ent-only) + *wants* our air-gapped/regulated angle; public intake.
+5. **boldstart** (Ed Sim) — ✅ CONTACTED 2026-07-18 (LinkedIn InMail; complementary-to-Keycard).
+6. **Decibel · Sequoia · Craft · Crosspoint · Shield** — RE-OPENED (Ent = different plane); warm-preferred.
+7. **Costanoa** (Manifold = complementary AIDR) · **YL Ventures** (Autonomous = desktop EDR; lead with the 4 differentiators) — RE-OPENED, approach with care.
+
+---
+
+_Original "8 first" list (pre-screen, kept for reference — items 1/2/8 now conflicted):_
+1. ~~**Ballistic Ventures**~~ — ⚠️ CONFLICTED (Noma + WitnessAI).
+2. ~~**SYN Ventures**~~ — ⚠️ CONFLICTED (CodeIntegrity near-twin + Arcade).
 3. **boldstart ventures** (Ed Sim) — day-one inception check, founder-accessible pre-product; SDK/connector wedge. **✅ CONTACTED — connected with Ed Sim on LinkedIn (2026-07-18); InMail sent (`outreach-boldstart-edsim.md`), pitching action-governance as complementary to Keycard.**
-4. **SPRUNG Capital** (Sergej Epp) — dedicated "AI & Agent Security" vertical + operator-CISO who *is* our buyer; strongest single warm target.
-5. **SineWave Ventures** (Suissa / Muoio) — best fit for air-gapped/dual-use edition + non-dilutive federal GTM (SBIR/OTA).
-6. **Acrew Capital** (Mark Kraynak) — led Keycard A; understands the identity-vs-action adjacency; fintech cred.
+4. **SPRUNG Capital** (Sergej Epp) — dedicated "AI & Agent Security" vertical + operator-CISO who *is* our buyer; strongest single warm target. *(Re-verify conflict before contact.)*
+5. **SineWave Ventures** (Suissa / Muoio) — ⚠️ CONFLICTED per shortlist (Operant AI); air-gapped/dual-use fit but check.
+6. **Acrew Capital** (Mark Kraynak) — led Keycard A; understands the identity-vs-action adjacency; fintech cred. (Keycard = complementary, not a conflict.)
 7. **Silicon Valley CISO Investments (SVCI)** — public intake; ~70 CISO members = check + design-partner pipeline.
-8. **Bain Capital Ventures** — led Straiker + Cogent; fintech-security overlap fits the BFSI beachhead.
+8. ~~**Bain Capital Ventures**~~ — ⚠️ CONFLICTED (Straiker).
 
 ## Tier 1 — Bullseye (funded AI-agent / LLM security directly)
 
