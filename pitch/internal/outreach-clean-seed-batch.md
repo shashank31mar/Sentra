@@ -120,6 +120,35 @@ aegionai.ai
 
 ---
 
+## 6. pi Ventures — Shubham Sandeep — SENT 2026-07-21 (email)
+
+**Channel:** `info@piventures.in` (deck attached — pi's FAQ directs pitches here; no form). Partner: Shubham Sandeep (AI/deep-tech), Manish Singhal (Founding Partner) fallback. ADJACENT/safe — Repello (co-led by pi) = red-team + content-guardrails, NOT deterministic action-governance; drew the daylight so it reads complementary, not a "we have Repello" collision. Skipped LinkedIn per pi's stated info@ process.
+
+**Subject:** Blocking AI agents from taking the action that can't be undone
+
+**Body:**
+
+Hi Shubham,
+
+You backed Repello, so you already see the AI-agent security problem. Repello finds and scans the attack — red-teaming, content guardrails at runtime. I'm building the layer next to it: enforcing what the agent's action is actually allowed to *do*.
+
+AegionAI sits in front of every action an AI agent takes and decides, in real time, whether to let it through. Not "is this tool allowed," and not whether the prompt looks malicious — but what the action actually does: the amount, the recipient, whether the required steps ran first, whether the agent is authorized. If it's wrong, we block it before it runs. Across AWS, Azure, GCP, and on-prem, from one place, with a tamper-evident record of every action.
+
+Two layers: a deterministic floor that enforces the hard rules (limits, sequence checks, quarantine), and our own detection model, trained on our own traffic, hunting attacks in the prompt. Repello lives in that second layer; the deterministic floor underneath is what regulated teams need and what we own. For Indian BFSI under RBI and DPDP, we run in-VPC or air-gapped, so nothing leaves their boundary.
+
+I know pi backs deep tech on technical strength before revenue — that's us. At Amazon I built the ML platform behind OpenSearch's vector search and ran a cross-org security-telemetry effort; the team is in India, and AegionAI is live across two clouds today with a provisional patent filed. Pre-revenue, raising a $5M seed.
+
+I've attached a 3-page brief. Worth 20 minutes?
+
+Thanks,
+Shashank
+aegionai.ai · shashank31mar@gmail.com
+
+---
+
 ## Next clean cold-reachable (not yet drafted)
+- **Unicorn India** (Bhaskar Majumdar, F6S form `f6s.com/unicorn-india-ventures-2021/apply` + LinkedIn) — IN FLIGHT, waiting on Sr-PE reference; anchor/co-lead (~$0.5–2M lead), not full-round lead.
+- **3one4 Capital** (Pranav Pai, Typeform pitch + deck upload) — CLEAN, India-build/US-sell thesis, leads $0.5–7M.
+- **Speciale Invest** (Vishesh Rajaram, Typeform) — ADJACENT, air-gapped/sovereign fit (QNu Labs).
 - **Zetta** (Jocelyn Goldfein, X DM `@jgoldfein`) — ADJACENT, leads, warm-preferred (lower odds cold).
 - **Venture in Security** (Ross Haleliuk, `info@ventureinsecurity.net`) — CLEAN but a practitioner SPV (fill/credibility, not a lead).

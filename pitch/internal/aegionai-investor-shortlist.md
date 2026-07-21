@@ -18,6 +18,7 @@
 | **Uncork Capital** | Andy McLoughlin | Email `pitches@uncorkcapital.com` (brief attached) | Follow up via email | 2026-07-19 | **Sent** | [outreach-clean-seed-batch.md](outreach-clean-seed-batch.md) | ADJACENT/safe. Best cold target (leads $5M; led SurePath+Lunar). Sent w/ brief. Tracker #22 |
 | **Fika Ventures** | TX Zhuo | LinkedIn `/in/tianxiangzhuo` (X `@txzhuo`) | Follow up via LinkedIn | 2026-07-19 | **Sent** | [outreach-clean-seed-batch.md](outreach-clean-seed-batch.md) | ADJACENT/safe; leads $1–5M; fintech×cyber beachhead (SGNL exit hook). Tracker #23 |
 | **Kalaari Capital** | Sampath P | `kalaari.com/seek-funding-form` + `investments@kalaari.com` | Follow up via form / partner LinkedIn `/in/prsampath` | 2026-07-21 | **Applied** | [outreach-clean-seed-batch.md](outreach-clean-seed-batch.md) | ADJACENT/safe (Matters.AI=data-layer); can LEAD full $5M; India-team fit + RBI/DPDP in-VPC. Tracker #24 |
+| **pi Ventures** | Shubham Sandeep | `info@piventures.in` (deck attached) | Follow up via email (pi FAQ directs pitches to info@) | 2026-07-21 | **Sent** | [outreach-clean-seed-batch.md](outreach-clean-seed-batch.md) | ADJACENT/safe (Repello=red-team/content, not action-gov); backs pre-revenue on tech; co-led Repello → drew daylight. Tracker #25(inv) |
 
 *All other shortlist names below are **Not contacted** yet. As you reach out, add a row here and a detail block in the tracker.*
 
