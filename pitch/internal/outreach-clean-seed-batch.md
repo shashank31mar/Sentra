@@ -146,8 +146,40 @@ aegionai.ai · shashank31mar@gmail.com
 
 ---
 
+## 7. Together Fund — Manav Garg — SENT 2026-07-22 (email)
+
+**Channel:** `deals@together.fund` (deck attached; ⚠️ `pitch@togetherfund.com` is DEAD/wrong-domain). Partner: Manav Garg (Co-Founder & MP, ex-Eka; `/in/manav-garg-227254`). CLEAN — can LEAD full $5M ($1–10M, AI-native only). Hook = their portfolio IS the agent stack beneath us (Protecto=data, Securden/ScaleKit=identity, Composio=tool-auth — all 4 verified in-portfolio); position as the action-governance layer that completes it.
+
+**Subject:** Blocking AI agents from taking the action that can't be undone
+
+**Body:**
+
+Hi Manav,
+
+You've been building the agent stack a layer at a time — Protecto for the data, Securden and ScaleKit for identity, Composio for tool access. There's one layer above all of them still open: governing what the agent's action is actually allowed to *do*. That's what I'm building.
+
+AegionAI sits in front of every action an AI agent takes and decides, in real time, whether to let it through. Not "is this tool allowed," and not whether the prompt looks malicious — but what the action actually does: the amount, the recipient, whether the required steps ran first, whether the agent is authorized. If it's wrong, we block it before it runs. Across AWS, Azure, GCP, and on-prem, from one place, with a tamper-evident record of every action.
+
+Two layers do the work: a deterministic floor that enforces the hard rules — limits, sequence checks, quarantine for an agent gone rogue — and our own detection model, trained on our own traffic, that hunts attacks buried in the prompt. ScaleKit answers who the agent is; we answer what its action is allowed to do. For Indian BFSI under RBI and DPDP, we run in-VPC or air-gapped, so nothing leaves their boundary.
+
+This is the India-built, sell-globally company you know well — the engineering team is in India, and I'm bringing on a security CTO here. At Amazon I built the ML platform behind OpenSearch's vector search and ran a security-telemetry effort across two orgs. AegionAI is live across two clouds today, patent filed. Pre-revenue, raising a $5M seed.
+
+I've attached a 3-page brief. Worth 20 minutes?
+
+Thanks,
+Shashank Gupta
+Founder & CEO, AegionAI
+aegionai.ai · shashank31mar@gmail.com
+
+---
+
 ## Next clean cold-reachable (not yet drafted)
 - **Unicorn India** (Bhaskar Majumdar, F6S form `f6s.com/unicorn-india-ventures-2021/apply` + LinkedIn) — IN FLIGHT, waiting on Sr-PE reference; anchor/co-lead (~$0.5–2M lead), not full-round lead.
+- **Stellaris VP** (Alok Goyal, `alok@stellarisvp.com` direct) — CLEAN, cold-OK, leads (lead+syndicate for $5M). Next best send.
+- **Peak XV Surge** (Rajan Anandan, `surge.peakxv.com/apply` open form) — ADJACENT, cold-OK, T1.
+- **Blume** (Sanjay Nath — confirm `sanjay@blume.vc` on LinkedIn first) · **Elevation** (Mukul Arora, enterprise-AI partner — NOT Mridul/fintech) · **Prime** (`info@primevp.in`, pitch as SaaS+fintech not security) — all can lead, need channel/warm prep.
+- **Endiya** (`contact@endiya.com`) · **Shastra** (`vasant@shastra.vc`, cold-OK, strongest air-gapped fit) — co-lead/fill only, can't anchor $5M.
+- **Venture Highway/GC** (`narora@generalcatalyst.com`) — ADJACENT but highest-friction (led Repello, board seat); send last, daylight framing, route around Repello partner.
 - **3one4 Capital** (Pranav Pai, Typeform pitch + deck upload) — CLEAN, India-build/US-sell thesis, leads $0.5–7M.
 - **Speciale Invest** (Vishesh Rajaram, Typeform) — ADJACENT, air-gapped/sovereign fit (QNu Labs).
 - **Zetta** (Jocelyn Goldfein, X DM `@jgoldfein`) — ADJACENT, leads, warm-preferred (lower odds cold).
