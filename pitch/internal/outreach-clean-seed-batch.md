@@ -173,10 +173,36 @@ aegionai.ai · shashank31mar@gmail.com
 
 ---
 
+## 8. Stellaris Venture Partners — Alok Goyal — SENT 2026-07-22 (email)
+
+**Channel:** `alok@stellarisvp.com` (verified on his firm bio page; no pitch form/`/contact` exists). LinkedIn `/in/alok-goyal-536557` backup. CLEAN (Signzy=KYC adjacent, not a conflict). Hook = their PUBLISHED `/sdlc` thesis names "shift-left security" + autonomous agents as white space they want → we're the runtime action-governance layer their portfolio lacks. Real proof points only: Drizz/Kombai (agent tooling), Signzy (regulated-fintech comfort).
+
+**Subject:** Blocking AI agents from taking the action that can't be undone
+
+**Body:**
+
+Hi Alok,
+
+Your AI-×-SDLC thesis names the thing I'm building. It calls out shift-left security and autonomous agents that "operate like junior employees with minimal human input" — and the open question those agents raise is what they're allowed to actually *do*. That's AegionAI.
+
+We sit in front of every action an AI agent takes and decide, in real time, whether to let it through. Not "is this tool allowed," and not whether the prompt looks malicious — but what the action actually does: the amount, the recipient, whether the required steps ran first, whether the agent is authorized. If it's wrong, we block it before it runs. Across AWS, Azure, GCP, and on-prem, from one place, with a tamper-evident record of every action.
+
+Two layers do the work: a deterministic floor that enforces the hard rules — limits, sequence checks, quarantine for an agent gone rogue — and our own detection model, trained on our own traffic, that hunts attacks buried in the prompt. You back agents in the dev loop (Drizz, Kombai) and the regulated-fintech infra around them (Signzy); the layer none of them owns is runtime governance of the action itself. That's the white space, and it's what we build.
+
+This is the India-built, sell-globally company you know from the enterprise stack — the engineering team is in India, and I'm bringing on a security CTO here. At Amazon I built the ML platform behind OpenSearch's vector search and ran a security-telemetry effort across two orgs. AegionAI is live across two clouds today, patent filed. For Indian BFSI under RBI and DPDP, we run in-VPC or air-gapped. Pre-revenue, raising a $5M seed.
+
+I've attached a 3-page brief. Worth 20 minutes?
+
+Thanks,
+Shashank Gupta
+Founder & CEO, AegionAI
+aegionai.ai · shashank31mar@gmail.com
+
+---
+
 ## Next clean cold-reachable (not yet drafted)
 - **Unicorn India** (Bhaskar Majumdar, F6S form `f6s.com/unicorn-india-ventures-2021/apply` + LinkedIn) — IN FLIGHT, waiting on Sr-PE reference; anchor/co-lead (~$0.5–2M lead), not full-round lead.
-- **Stellaris VP** (Alok Goyal, `alok@stellarisvp.com` direct) — CLEAN, cold-OK, leads (lead+syndicate for $5M). Next best send.
-- **Peak XV Surge** (Rajan Anandan, `surge.peakxv.com/apply` open form) — ADJACENT, cold-OK, T1.
+- **Peak XV Surge** (Rajan Anandan, `surge.peakxv.com/apply` open form) — ADJACENT, cold-OK, T1. Next best send.
 - **Blume** (Sanjay Nath — confirm `sanjay@blume.vc` on LinkedIn first) · **Elevation** (Mukul Arora, enterprise-AI partner — NOT Mridul/fintech) · **Prime** (`info@primevp.in`, pitch as SaaS+fintech not security) — all can lead, need channel/warm prep.
 - **Endiya** (`contact@endiya.com`) · **Shastra** (`vasant@shastra.vc`, cold-OK, strongest air-gapped fit) — co-lead/fill only, can't anchor $5M.
 - **Venture Highway/GC** (`narora@generalcatalyst.com`) — ADJACENT but highest-friction (led Repello, board seat); send last, daylight framing, route around Repello partner.
