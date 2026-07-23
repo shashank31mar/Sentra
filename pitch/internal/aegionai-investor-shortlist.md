@@ -41,6 +41,14 @@
 >
 > _Full evidence: apple-to-apple screen 2026-07-19 (14 companies scored + adversarially re-verified). The pre-screen cross list below is RETAINED for the primary-source cap-table citations, but its verdicts are superseded by the block above._
 
+> ### ⚠️ Session verdict overrides (2026-07-22/23 re-verification — these SUPERSEDE any row below)
+> Later per-fund re-verification changed three verdicts the deep tables (Parts A–C) still show wrong — **trust these, not the older rows:**
+> - **Runtime Ventures → CONFLICTED / OUT** (reverses the "RE-OPENED" note above and the "bullseye Cold-OK" Part-C row). SplxAI is a non-issue (red-team, exited to Zscaler) — but their portfolio page carries a **live stealth "Policy Enforcement for Agents" portco = a direct twin.** Do NOT approach.
+> - **Mango Capital → CONFLICTED / OUT** (Part-C row still reads as a clean "agent infrastructure" target). **Co-led Dome Systems** ($14M seed) — a neutral cross-vendor "agent operations control plane" with inline tool-call enforcement ≈ our exact wedge. Do NOT approach.
+> - **SVCI (Silicon Valley CISO Investments) → CONFLICTED / OUT** (still listed in the "top-8 contact first"). Holds **Runlayer + Noma**. Do NOT pitch the wedge.
+>
+> **India batch (vetted 2026-07-22, all apple-to-apple CLEAN/ADJACENT — safe):** Kalaari, pi Ventures, Together Fund, Stellaris, Peak XV/Surge, Unicorn India (all contacted); **queued clean:** 3one4, Speciale, Blume, Elevation, Prime, Endiya, Shastra, Venture Highway/GC (ADJACENT — Repello is red-team, but VH has a board seat → highest-friction, send last). **Neon Fund** = clean but can't lead $5M (sub-$500K checks). See [outreach-tracker.md](outreach-tracker.md) for live status.
+
 > **⚠️ Competitor-conflict crosses (verified cap tables) — pre-screen list, verdicts SUPERSEDED by the apple-to-apple block above (retained for cap-table citations).** These funds have backed *an* AI-agent-security co; per the re-screen only Felicis/Khosla (Runlayer) + SYN (CodeIntegrity) are true twins — the rest are platform/partial pattern-matches. Rows flagged inline; **`(OUT)` = pre-screen excluded; `(CAUTION)` = adjacent.** Original 13-fund list:
 > - **`(OUT)` — thesis-twin / direct competitor backers:**
 >   - **Straiker** → Bain Capital Ventures, Lightspeed, Rain Capital, Sixty Degree Capital
