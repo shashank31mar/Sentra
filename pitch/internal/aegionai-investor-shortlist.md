@@ -22,6 +22,7 @@
 | **Together Fund** | Manav Garg | `deals@together.fund` (deck attached) | Follow up via email / LinkedIn `/in/manav-garg-227254` | 2026-07-22 | **Sent** | [outreach-clean-seed-batch.md](outreach-clean-seed-batch.md) | CLEAN; **leads full $5M**; "complete your agent stack" hook (Protecto/Securden/ScaleKit/Composio). Tracker #26(inv) |
 | **Stellaris VP** | Alok Goyal | `alok@stellarisvp.com` (deck attached) | Follow up via email / LinkedIn `/in/alok-goyal-536557` | 2026-07-22 | **Sent** (→ CoS Spriha per OOO) | [outreach-clean-seed-batch.md](outreach-clean-seed-batch.md) | CLEAN (Signzy=KYC adjacent); leads; opened on their /sdlc thesis (shift-left security white space). Tracker #27(inv) |
 | **Peak XV (Surge)** | Rajan Anandan | Form `surge.peakxv.com/apply` (open, rolling) | Await 2-3wk response | 2026-07-22 | **Applied** | [outreach-clean-seed-batch.md](outreach-clean-seed-batch.md) | CLEAN (Exaforce=SOC adjacent/partner); up to $5M (top of band). Exaforce-validation + fintech-book hook. Tracker #28(inv) |
+| **Unicorn India Ventures** | Bhaskar Majumdar | Form `f6s.com/unicorn-india-ventures-2021/apply` (+ LinkedIn `/in/bmajumdar/`) | Await reply | 2026-07-23 | **Applied** | [outreach-clean-seed-batch.md](outreach-clean-seed-batch.md) | CLEAN; tightest India BFSI-AI-security fit (led Deep Algorithm); anchor/co-lead only (~$0.5–2M). Tracker #29(inv) |
 
 *All other shortlist names below are **Not contacted** yet. As you reach out, add a row here and a detail block in the tracker.*
 
