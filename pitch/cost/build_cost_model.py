@@ -358,7 +358,7 @@ bucket_subtotals["Physical infra & facilities"] = sub
 
 # --- Bucket 3: AI coding tools (Claude Code) ---
 r, sub = bucket(oc, r, "3 · AI Coding Tools (Claude Code)", [
-    ("Claude Code — subscriptions + PAYG overflow (3× base)", 43200, False, "8 seats × $150 blended subscription, ×3 to cover pay-as-you-go / usage-credit overflow from heavy agent-loop / multi-instance use on top of subscriptions. Source: claude.com/pricing + code.claude.com/docs/en/costs."),
+    ("Claude Code — Team plan (8 × $150/seat)", 14400, False, "8 seats × $150/seat/mo × 12. Anthropic Team plan (premium seat, annual): Claude Code + org SSO / central billing / admin; cheaper than 8 individual Max subscriptions. Source: claude.com/pricing."),
 ])
 bucket_subtotals["Claude Code"] = sub
 
@@ -494,8 +494,8 @@ for col in [1,3,4,6]:
 # start-team delta = 3rd SDE2 + PM payroll (loaded) + 2 Claude seats (×3 PAYG), all ×(1+buffer).
 LEAN_MONTHS = 9
 rw.cell(row=r, column=1, value="Phased hiring (recommended): 6 heads → full team ~mo %d" % LEAN_MONTHS).font = BOLD
-# start recurring = full total − (SDE2 + PM loaded)*(1+buf) − (2 seats*$150*12*3)*(1+buf)
-start_delta = f"(('Team & Compensation'!E9+'Team & Compensation'!E12)*(1+{LOAD})+2*150*12*3)*(1+{BUFFER})"
+# start recurring = full total − (SDE2 + PM loaded)*(1+buf) − (2 Team seats*$150*12)*(1+buf)
+start_delta = f"(('Team & Compensation'!E9+'Team & Compensation'!E12)*(1+{LOAD})+2*150*12)*(1+{BUFFER})"
 rw.cell(row=r, column=3, value=f"=F{TOTAL_REC_ROW}-{start_delta}").number_format = USD; rw.cell(row=r, column=3).alignment = RIGHT
 # phased runway = LEAN_MONTHS + (cash - start_burn*LEAN_MONTHS)/full_burn_mo
 rw.cell(row=r, column=4, value=(

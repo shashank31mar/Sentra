@@ -52,7 +52,7 @@ BUCKETS = {
     ("Office deposit + setup", 11_100, True, "₹10L ÷ 90", "Refundable deposit + fit-out"),
 ],
 "3 · AI Coding Tools (Claude Code)": [
-    ("Claude Code — subscriptions + PAYG overflow", 43_200, False, "8 seats × $150 blended × 12 = $14.4K, × 3 for PAYG", "3× base: heavy agent-loop / multi-instance use spills past Max 20x caps into pay-as-you-go on top of subscriptions"),
+    ("Claude Code — Team plan (8 × $150/seat)", 14_400, False, "8 seats × $150/seat/mo × 12", "Anthropic Team plan (premium seat, annual): Claude Code + org SSO / central billing / admin; cheaper than 8 individual Max subscriptions"),
 ],
 "4 · Cloud / AWS Infrastructure": [
     ("Bedrock foundation-model inference", 30_000, False, "~$2.5K/mo × 12 (real run-rate)", "Dominant lever; declines as distilled sidecar absorbs ALLOWs"),
@@ -121,7 +121,7 @@ high_rw = (RAISE - onetime_total) / high * 12
 SDE2_loaded = 5_000_000 / FX * (1 + LOAD)
 PM_loaded = 7_000_000 / FX * (1 + LOAD)
 start_india = india_loaded - SDE2_loaded - PM_loaded              # drop 3rd SDE2 + PM to start
-start_claude = 6 * 150 * 12 * 3                                   # 6 seats instead of 8
+start_claude = 6 * 150 * 12                                       # 6 Team seats instead of 8
 start_sub = buckets_subtotal - (india_loaded - start_india) - (claude - start_claude)
 start_burn_mo = start_sub * (1 + BUFFER) / 12
 full_burn_mo = recurring_total / 12

@@ -13,30 +13,30 @@
 | Metric | Value | How derived |
 |---|---:|---|
 | Total raise | **$5,000,000** | Seed round |
-| Recurring burn / year | **$1,386,236** | buckets subtotal $1,066,335 + 30% buffer $319,901 |
-| Recurring burn / month | **$115,520** | annual ÷ 12 |
+| Recurring burn / year | **$1,348,796** | buckets subtotal $1,037,535 + 30% buffer $311,261 |
+| Recurring burn / month | **$112,400** | annual ÷ 12 |
 | One-time costs | **$90,300** | laptops + deposits + SOC2 T1 + seed legal/patent + formation |
-| **Base runway (months)** | **42.5** | ($5,000,000 − $90,300 one-time) ÷ $1,386,236/yr × 12 |
+| **Base runway (months)** | **43.7** | ($5,000,000 − $90,300 one-time) ÷ $1,348,796/yr × 12 |
 | Headcount (India base) | 8 | + US AE when hired = 9 |
 
 ## Use of Funds — where the $5M goes
 
-Share of the raise over the 43-month base runway (US AE deferred).
+Share of the raise over the 44-month base runway (US AE deferred).
 
 | Bucket | Annual | Over runway | % of $5M |
 |---|---:|---:|---:|
-| Team — eng + product + leadership (India) | $677,222 | $2,398,552 | **48.0%** |
-| GTM — programs only, founder-led sales (AE deferred) | $100,800 | $357,008 | **7.1%** |
-| Cloud / AWS + AI coding tools | $108,900 | $385,697 | **7.7%** |
-| Physical infra & facilities | $33,333 | $118,057 | **2.4%** |
-| Operations & G&A | $71,680 | $253,873 | **5.1%** |
-| Compliance & certifications | $74,400 | $263,506 | **5.3%** |
-| Contingency buffer (30%) | $319,901 | $1,133,008 | **22.7%** |
+| Team — eng + product + leadership (India) | $677,222 | $2,465,131 | **49.3%** |
+| GTM — programs only, founder-led sales (AE deferred) | $100,800 | $366,918 | **7.3%** |
+| Cloud / AWS + AI coding tools | $80,100 | $291,569 | **5.8%** |
+| Physical infra & facilities | $33,333 | $121,334 | **2.4%** |
+| Operations & G&A | $71,680 | $260,920 | **5.2%** |
+| Compliance & certifications | $74,400 | $270,821 | **5.4%** |
+| Contingency buffer (30%) | $311,261 | $1,133,008 | **22.7%** |
 | **Total** | | **$4,909,700** | **98.2%** |
 
-*Memo (not summed into Total above): if the US enterprise AE is hired full-year, GTM (programs + AE, loaded) ≈ **27.1%** of $5M and runway drops to **33.2 months** — see the "+ US AE" scenario below.*
+*Memo (not summed into Total above): if the US enterprise AE is hired full-year, GTM (programs + AE, loaded) ≈ **27.7%** of $5M and runway drops to **33.9 months** — see the "+ US AE" scenario below.*
 
-> **Note:** **Team ≈ 48.0% of spend**; real **cloud/infra is only ~7.7%** (not a red flag — the distilled model self-hosts on CPU, so no ~$1M GPU line is needed). **GTM here (7.1%) is programs-only** — founder-led sales, AE deferred; see the memo above for the ~27.1% figure once the AE is hired.
+> **Note:** **Team ≈ 49.3% of spend**; real **cloud/infra is only ~5.8%** (not a red flag — the distilled model self-hosts on CPU, so no ~$1M GPU line is needed). **GTM here (7.3%) is programs-only** — founder-led sales, AE deferred; see the memo above for the ~27.7% figure once the AE is hired.
 
 ## Team & Compensation
 
@@ -75,11 +75,11 @@ Bucket 1 is payroll (above). Buckets 2–7 below; *(one-time)* rows are excluded
 | Mac Studio × 1 (ML/dev) | $4,400 | one-time | ₹4L ÷ 90 | One-time |
 | Office deposit + setup | $11,100 | one-time | ₹10L ÷ 90 | Refundable deposit + fit-out |
 
-**3 · AI Coding Tools (Claude Code)** — recurring **$43,200/yr**
+**3 · AI Coding Tools (Claude Code)** — recurring **$14,400/yr**
 
 | Line item | Annual | Type | How derived | Note |
 |---|---:|:--:|---|---|
-| Claude Code — subscriptions + PAYG overflow | $43,200 | recurring | 8 seats × $150 blended × 12 = $14.4K, × 3 for PAYG | 3× base: heavy agent-loop / multi-instance use spills past Max 20x caps into pay-as-you-go on top of subscriptions |
+| Claude Code — Team plan (8 × $150/seat) | $14,400 | recurring | 8 seats × $150/seat/mo × 12 | Anthropic Team plan (premium seat, annual): Claude Code + org SSO / central billing / admin; cheaper than 8 individual Max subscriptions |
 
 **4 · Cloud / AWS Infrastructure** — recurring **$65,700/yr**
 
@@ -134,11 +134,11 @@ Runway = (Raise − one-time) ÷ annual recurring burn × 12. All scenarios incl
 
 | Scenario | Annual burn | Runway (mo) | How derived |
 |---|---:|---:|---|
-| **Phased hiring** (recommended) | ramps | **43.9** | start 6 heads $97,739/mo for 9 mo, then full team |
-| Base (full India team day 1, founder-led sales) | $1,386,236 | 42.5 | buckets + buffer, US AE deferred |
-| + US enterprise AE (full year) | $1,776,236 | 33.2 | base + AE $300,000 × 1.30 |
-| Lean (trim AWS legacy + GTM) | $1,303,036 | 45.2 | base − ~$64K, + buffer |
-| High (AE + fractional VP + high cloud) | $1,932,236 | 30.5 | base + (AE + $120K VP) × 1.30 |
+| **Phased hiring** (recommended) | ramps | **45.0** | start 6 heads $95,399/mo for 9 mo, then full team |
+| Base (full India team day 1, founder-led sales) | $1,348,796 | 43.7 | buckets + buffer, US AE deferred |
+| + US enterprise AE (full year) | $1,738,796 | 33.9 | base + AE $300,000 × 1.30 |
+| Lean (trim AWS legacy + GTM) | $1,265,596 | 46.6 | base − ~$64K, + buffer |
+| High (AE + fractional VP + high cloud) | $1,894,796 | 31.1 | base + (AE + $120K VP) × 1.30 |
 
 **Phased hiring plan (recommended):**
 
@@ -148,7 +148,7 @@ Runway = (Raise − one-time) ÷ annual recurring burn × 12. All scenarios incl
 | Scale | ~mo 9 | + 3rd SDE2 + **Product Manager** | PM once design-partner delivery outgrows founder |
 | Sell | ~mo 12–18 | + US enterprise AE | Once founder-led sales prove a repeatable motion |
 
-*The starting 6-head team burns only ~$97,739/mo — if never scaled it would run 50 months. Phasing the last India hires in at ~mo 9 lands ~44 months total. Adding the US AE full-time from day one is what drops the plan to 33 months, so that hire waits for traction.*
+*The starting 6-head team burns only ~$95,399/mo — if never scaled it would run 51 months. Phasing the last India hires in at ~mo 9 lands ~45 months total. Adding the US AE full-time from day one is what drops the plan to 34 months, so that hire waits for traction.*
 
 ## Sources
 
