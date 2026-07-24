@@ -199,3 +199,6 @@ lambda/distilled_drift_check/ml_classifier_schema.py
 # The signatures are still embedded in the rendered PDFs / base64 in the .md, but
 # keep the loose reusable PNGs out of git so they aren't trivially lifted.
 pitch/legal/assets/
+
+# Office/Excel lock + temp files
+~$*
