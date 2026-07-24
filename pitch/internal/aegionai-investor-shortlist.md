@@ -473,6 +473,54 @@ Net: run wave-1 as ~8 US core-infra/cyber seed leads + 1 fintech-beachhead (Fika
 > **Read India on two axes, not one.** For a **US-anchored** company, an India fund should almost never *lead* the priced round — that belongs to a US enterprise-security/infra lead. India capital is best as **(a) opportunistic co-invest that also opens BFSI doors**, or **(b) a pure go-to-market channel** into Indian banks/fintechs/insurers (the financial-action-agent beachhead — Gnani/Sarvam/Razorpay orbit). So each fund carries a **BFSI channel** rating alongside fit.
 > **Ask in the first email:** *"Do you invest in Delaware C-corps with India GTM?"* — several India-domiciled funds can't/won't back a US HoldCo, and that one question saves a wasted pitch.
 
+## ✅ Competitor cross-verification (2026-07-23) — READ THIS FIRST for Part D
+
+Every next-wave India fund was web-re-verified against AegionAI's competitor set on 2026-07-23 (2-stage: live-portfolio verify → adversarial skeptic pass hunting a missed bet; 23 funds, workflows `wf_6af18f4f-ddb` + `wf_11d0a6e9-42a`). **Result: 0 DIRECT competitors — no India fund holds a true inline agent-action-governance rival (Zenity/Runlayer/Straiker/CodeIntegrity class).** The split is **CLEAN** vs **CAUTION** (holds an *adjacent* AI-security bet a partner will pattern-match — still fundable, but name the daylight in the first meeting). These verdicts **override the stale flags** in the tables below.
+
+| Fund | Verdict | Leads? | US C-corp? | Adjacent bet → "name X" | Contact now? |
+|---|---|---|---|---|---|
+| **3one4 Capital** | ✅ CLEAN | leads | **yes** | — | **Yes — cleanest capital-lead** |
+| **Prime Venture Partners** | ✅ CLEAN | leads | **uncertain** (India-focused mandate) | — | Yes — confirm C-corp first |
+| **Z47** (ex-Matrix India) | ✅ CLEAN | sometimes-leads | **yes** | Scalekit = agent-identity (COMPLEMENT) | **Yes — fintech book = beachhead** |
+| **Eximius** | ✅ CLEAN | leads | confirm | — | Yes (confirm C-corp) |
+| **8i Ventures** | ✅ CLEAN | confirm | confirm | Difenz = fraud (COMPLEMENT) | Yes (confirm lead + C-corp) |
+| **GrowX** | ✅ CLEAN | leads | confirm | — | Yes (confirm C-corp) |
+| **YourNest** | ✅ CLEAN | leads | India-domicile gate | — | Only w/ India entity |
+| **Merak** | ✅ CLEAN | leads | **NO** (needs India ties) | — | Only w/ India ops |
+| **Nexus** | ⚠️ CAUTION | leads | **yes** | Aurva (data-access monitoring) | **Yes — India-US anchor/credibility** |
+| **Better Capital** | ⚠️ CAUTION | leads | **yes** | Matters.AI (they *led* it) | **Yes — pre-empt Matters.AI** |
+| **Carya** (Part D #1) | ⚠️ CAUTION | sometimes-leads | **yes** | Matters.AI (they *led* it) | Yes — pre-empt Matters.AI |
+| **Neon Fund** | ⚠️ CAUTION | leads | **yes** | CloudSEK + Astra (SOC/pentest) | Yes — security-literate, US-GTM partner |
+| **Endiya** | ⚠️ CAUTION | leads | confirm | Matters.AI (co-led seed) | Yes — pre-empt Matters.AI |
+| **Bharat Innovation** | ⚠️ CAUTION | leads | **yes** | FireCompass (red-team) | Yes |
+| **Blume** | ⚠️ CAUTION | leads | **yes** | Astra (AI pentest) | Yes |
+| **Arali** | ⚠️ CAUTION | leads | confirm | Protecto (data-DLP for AI) | Yes |
+| **Speciale** | ⚠️ CAUTION | leads | confirm | QNu Labs (quantum-crypto — weak) | Yes; Kawa "governed agents" flag was a FALSE ALARM (name collision w/ Kawa Space) |
+| **Chiratae** (Sonic) | ⚠️ CAUTION | leads | confirm | Deepfence (CNAPP) | Yes |
+| **Dallas VC** | ⚠️ CAUTION | sometimes-leads | **yes** | Secufusion + Fiddler | Yes, with sharp differentiation (GP has a formed AI-sec thesis) |
+| **100X.VC** | ⚠️ CAUTION | sometimes | **NO** (iSAFE = India co) | Bugbase (weak) | Channel-only |
+| **2am VC** | ⚠️ CAUTION | leads | likely NO (India-only) | Bugbase (weak) | Channel-only |
+| **Kunal Shah** (angel) | ⚠️ CAUTION | follows | yes | SydeLabs (exited → Protect AI) | Channel/angel only, not a lead |
+| **Golden Sparrow** | ⚠️ CAUTION → **WATCH** | sometimes | **yes** | **Oryo — "control plane for AI Agents"** (ex-Okta/Wiz) | **HOLD** — re-classify to CONFLICT if Oryo ships inline action-blocking |
+
+**Two sharpest-adjacency flags.** (1) **Golden Sparrow → Oryo** brands itself *"the enterprise security control plane for AI Agents"* — ADJACENT today (API-based discovery/posture + least-privilege identity, **not** inline block-before-execute) but the closest brand-collision in the set; **HOLD** and re-check before approaching. (2) **Dallas VC → Secufusion** (*"monitor autonomous agent workflows and identify unsafe/unauthorized actions"*) + **Fiddler** (*"inline enforcement on the agent request/response path"*) — both content/detection-level, not cross-vendor action governance, but this GP already has an AI-security thesis so expect the sharpest grilling.
+
+**Already-contacted overlap to note:** **Kalaari (#24)** and **Endiya** both **co-led Matters.AI's seed** — you have already pitched a fund holding the canonical adjacent bet; pre-empt the Matters.AI comparison if Kalaari re-engages. Every CAUTION answer is the same shape: *"they secure the data / test for vulns / verify identity — we govern and block the action the agent takes, inline, across every cloud."*
+
+### 🎯 Next 5 to reach out NOW — verified application channels (2026-07-23, workflow `wf_11d0a6e9-42a`)
+
+Screened on *can-lead + backs a US Delaware C-corp + strong fit + no conflict*. Channels below are web-verified live; do **not** guess a partner email where marked unverified.
+
+| # | Fund | Verdict | How to apply (verified) | Address to | Pre-empt |
+|---|------|---------|------------------------|------------|----------|
+| 1 | **3one4 Capital** | ✅ CLEAN | **"Pitch To Us" Typeform** `3one4capital.typeform.com/to/fsVovi` (deck upload, ≤10 MB) · fallback `hello@3one4capital.com` | Pranav Pai, Founding Partner & CIO — `/in/pranavpai`, X `@pai_dpiper` | Frame as enterprise-AI infra (their thesis names SaaS/enterprise, not cyber); position at **seed** |
+| 2 | **Z47** (ex-Matrix India) | ✅ CLEAN | **Cold email + deck** `vikram@z47.com` (firm-published) · fallback form `z47.com/contact` | Vikram Vaidyanathan, MD (Fintech/AI/Enterprise SaaS) — `/in/vikram-vaidyanathan-0957572`, X `@vikramv23`; EA `seema@z47.com` | Lead w/ India eng team + BFSI money-movement fit; Scalekit = complement not rival |
+| 3 | **Nexus Venture Partners** | ⚠️ CAUTION | **Warm intro preferred**, else cold **LinkedIn/X DM** (no deck on first touch) — `/in/jishnu-b-3063271`, X `@b_jishnu`. ⚠️ **Do NOT email `plans@nexusvp.com`** — site is compromised/spam-injected | Jishnu Bhattacharjee, MD (enterprise/data/AI infra; led Aurva, backed CloudSEK) | "Aurva watches data access; we govern & block the action" |
+| 4 | **Better Capital** | ⚠️ CAUTION | **Cold X DM** `x.com/vaibhavbetter` (short; deck after reply). No email/form published — do not guess `vaibhav@` | Vaibhav Domkundwar, Founder/CEO (sole decision-maker) | He **led Matters.AI** — pre-empt up front: "they secure data; we block the action" + ask the C-corp Q |
+| 5 | **Neon Fund** | ⚠️ CAUTION | **Apply Typeform** `h9o6fjobcym.typeform.com/to/YhLztiSK` (via `neon.fund/fund-application-page`; ~24h response) · fallback `hello@neon.fund` | Siddhartha Ahluwalia, Co-Founder & MP — `/in/siddharthaahluwalia` (runs The Neon Show) | Distinguish from CloudSEK (threat-intel) + Astra (pentest); lead w/ **US enterprise GTM** (their model) |
+
+**Bench (verified CLEAN, hold for wave-2 or if a slot opens):** Eximius, 8i, GrowX (all confirm C-corp first). **Prime Ventures** ✅ CLEAN (Amit Somani; leads; ~$2–4M) — but India-focused mandate, confirm US-C-corp eligibility before spending a pitch.
+
 ## The 8 to contact first (India)
 
 | # | Fund | For | Why |
