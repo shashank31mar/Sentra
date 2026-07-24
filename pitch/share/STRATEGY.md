@@ -144,7 +144,7 @@ Aligns to the product's P0/P1/P2 phasing and the GTM ladder. Detailed year-by-ye
 | SOC 2 status | Type II milestone (in progress) |
 | Runway | Months remaining vs raise plan |
 
-**The Ask:** raising **$5M for ~30 months runway** → ship the third cloud, harden for enterprise (Dedicated + self-managed, on-device detection, resiliency, verified identity), convert 3 design partners into 3–5 paying enterprises incl. one marquee financial-services name, reach **~$500K–$1M ARR**, SOC 2 Type II underway. ($5M ≈ $165K/month for a ~8-person team; full breakdown in Appendix C.) This is the seed; the milestones unlock a credible Series A.
+**The Ask:** raising **$5M for 40+ months runway** → ship the third cloud, harden for enterprise (Dedicated + self-managed, on-device detection, resiliency, verified identity), sign 3 observe-only design partners and convert 1–3 to paid (incl. a marquee financial-services name as funded upside), reach **~$500K–$1M ARR**, SOC 2 Type II underway. (~$115K/month for a ~8-person India-based core with the US enterprise seller deferred to founder-led sales; full breakdown in Appendix C.) This is the seed; the milestones unlock a credible Series A.
 
 ## 8. Open Questions
 
@@ -236,14 +236,15 @@ Prompt-injection *reports* on HackerOne's platform up **540% YoY** (2024→2025;
 | **Legal / Prof. services** | Fast | Med–high | Medium | Medium | Mod–high | Good | 2/3 — adjacent |
 | **Government / Defense** | Growing | Extreme | **Max** | Very hard | Very high | Strong (gated) | 3 — long-term |
 
-**Funding detail — $5M over ~30 months** (~$165K/month average burn):
-- **Team (~$2.0–2.5M):** ~8-person core — founder, security/red-team lead, ~4–5 engineers (backend / ML / frontend for the cross-cloud, in-VPC, and sidecar build), product, and an enterprise GTM hire.
-- **Infrastructure (~$0.8–1.2M):** 3-cloud + **GPU** for self-hosted models and the in-VPC / air-gapped editions.
-- **Compliance (~$0.2M):** SOC 2 Type II (+ Type I interim) + GDPR-ready data program (DPA, SCCs, processor role) + pen tests.
-- **Go-to-market (~$0.5M):** enterprise sales, conferences, design-partner support.
-- Plus **patent prosecution, tooling/ops, and buffer.**
+**Funding detail — $5M over 40+ months** (~$115K/month recurring burn; full model in `pitch/cost/`):
+- **~50% engineering:** ~8-person India-based core — founder, security CTO, ~5 engineers (backend / ML / frontend for the cross-cloud, in-VPC, and sidecar build), and product. (US enterprise seller deferred to founder-led sales, added ~mo 12–18 as traction proves out.)
+- **~10% operations:** legal, accounting, insurance (D&O, E&O/cyber), US C-corp + India Pvt Ltd, banking.
+- **~10% infrastructure:** cloud (Bedrock pay-per-token + a **CPU-served** distilled model — no always-on GPU) + AI coding tooling; GPU only for periodic distillation runs.
+- **~10% go-to-market:** conferences, founder US travel, design-partner support, CRM.
+- **Compliance (folded in ops):** SOC 2 Type II (+ Type I interim) + GDPR-ready data program (DPA, SCCs, processor role) + pen tests.
+- **~20% held in contingency reserve** (plus patent prosecution).
 
-*The earlier $3M plan was thin once GPU infrastructure for self-hosted models, dual certifications, and enterprise GTM are funded; $5M buys ~30 months with proper cushion to convert design partners and reach SOC 2 Type II + GDPR readiness. This is the seed round — the milestones unlock a credible Series A.*
+*The earlier $3M plan was thin once dual certifications and enterprise GTM are funded; $5M buys 40+ months with a proper contingency cushion to convert design partners and reach SOC 2 Type II + GDPR readiness. Note: self-hosting on a distilled CPU model (not GPU) keeps infrastructure to ~10% — spend is people-heavy, as seed capital should be. This is the seed round — the milestones unlock a credible Series A.*
 
 ## Appendix D — Buyer & competitive notes
 
