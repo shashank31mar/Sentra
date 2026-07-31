@@ -340,6 +340,31 @@ monitoring:
     dynamodb_throttle_count: 5     # DynamoDB throttled requests in 1 min
     high_severity_threats: 10      # High-severity threats in 5 min
 
+# Static Site (AegionAI public marketing site on S3 + CloudFront).
+# DISABLED by default → the StaticSiteStack is not synthesized, so it cannot
+# affect the existing controller/console deploys. Flip enabled:true only when
+# doing the hosting cutover (see docs/static-site-cutover.md).
+#
+# certificate_arn MUST be an ACM cert in us-east-1 covering the domains below
+# (apex aegionai.ai + www). The existing ALB cert is *.aegionai.ai and does NOT
+# cover the apex — request a separate cert (runbook step 1) and paste its ARN.
+# Leave certificate_arn/domain_name empty to deploy on the default CloudFront
+# domain (dxxxx.cloudfront.net) for a pre-DNS smoke test.
+#
+# hosted_zone_id/hosted_zone_name: set ONLY for the "move DNS to Route53" path
+# (creates apex+www alias records). For the "keep DNS at GoDaddy" path, leave
+# them empty and point GoDaddy records at the CloudFront domain manually.
+static_site:
+  enabled: true
+  domain_name: "aegionai.ai"
+  alternate_domains:
+    - "www.aegionai.ai"
+  certificate_arn: "arn:aws:acm:us-east-1:531109575379:certificate/f4180f88-6edb-47e4-b072-6002ab70d5fd"  # apex+www, us-east-1 (pending www DNS validation as of 2026-07-27)
+  hosted_zone_id: ""           # Route53 public zone id — only for the Route53-DNS path
+  hosted_zone_name: "aegionai.ai"
+  retain_on_delete: false      # true → keep bucket/objects if the stack is deleted
+  # bucket_name: (optional) omit to let CloudFormation auto-name the origin bucket
+
 # Tags (applied to all resources)
 tags:
   Project: "Sentra"

@@ -1,0 +1,7 @@
+# VC outreach automation — runtime deps (install into a venv)
+#   python -m venv scripts/outreach/venv && source scripts/outreach/venv/bin/activate
+#   pip install -r scripts/outreach/requirements.txt
+google-api-python-client>=2.100.0
+google-auth-oauthlib>=1.2.0
+google-auth>=2.30.0
+PyYAML>=6.0

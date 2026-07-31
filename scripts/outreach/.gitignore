@@ -1,0 +1,7 @@
+# Secrets + PII — never commit
+credentials.json
+token.json
+state/
+venv/
+__pycache__/
+*.pyc

@@ -1,8 +1,8 @@
 const METRICS = [
-  { label: 'Threats Blocked', value: '12.4K', color: 'text-cyan' },
+  { label: 'Actions Blocked', value: '12.4K', color: 'text-cyan' },
   { label: 'Active Agents', value: '312', color: 'text-green' },
   { label: 'Quarantined', value: '7', color: 'text-amber' },
-  { label: 'False Positive Rate', value: '<2%', color: 'text-purple' },
+  { label: 'Cloud Vendors', value: '2', color: 'text-purple' },
 ] as const
 
 const BAR_HEIGHTS = [40, 55, 45, 70, 60, 80, 75, 90, 65, 85, 70, 95] as const
@@ -29,7 +29,7 @@ export default function Dashboard() {
             <div className="w-3 h-3 rounded-full bg-amber/50" />
             <div className="w-3 h-3 rounded-full bg-green/50" />
             <span className="font-body text-xs text-muted ml-3">
-              AegionAI — Unified Security Dashboard
+              AegionAI — Unified Security Dashboard (illustrative)
             </span>
           </div>
 

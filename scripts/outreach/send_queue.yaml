@@ -1,0 +1,556 @@
+# CURATED investor send-queue — FAIL-SECURE.
+# Built 2026-07-28 (hand-curated by reading the shortlist override blocks + the tracker's
+# live contacted state; two automated agent passes stalled, so this was done directly).
+#
+# ELIGIBLE = safe to send a fresh cold fundraising email/DM. Ordered T1 -> T2 -> T3 -> Emerging,
+# then confidence. Every entry checked against: (1) not already contacted (tracker), (2) not a
+# competitor-backer per the NET of the shortlist override blocks (2026-07-19 apple-to-apple
+# re-screen + 2026-07-22/23 session overrides + India 2026-07-23 cross-verify).
+#
+# >>> FOUNDER: review this list before the pipeline sends anything. <<<
+# Key trap this caught: Wing / Conviction / Cyberstarts read as "bullseye, contact first" in the
+# Part-C tables but are CONFLICTED per the override block (Gray Swan/BlueRock, Onyx). Excluded.
+meta:
+  built: "2026-07-28"
+  source_shortlist: pitch/internal/aegionai-investor-shortlist.md
+  source_tracker: pitch/internal/outreach-tracker.md
+  rule: "fail-secure: any conflict/contacted ambiguity -> excluded, review_drop"
+  overrides_applied:
+    - "2026-07-19 apple-to-apple re-screen (RE-OPENED vs STILL-CONFLICTED)"
+    - "2026-07-22/23 session verdicts (Runtime, Mango, SVCI -> CONFLICTED)"
+    - "2026-07-23 India cross-verify (0 direct competitors; CLEAN vs CAUTION)"
+
+eligible:
+  # ---- T1 (elite brand; most are conflicted/held, so this tier is thin) ----
+  - fund: "Sequoia Capital"
+    prestige: "T1"
+    partner: ""
+    stage: "Seed-growth"
+    geo: "US"
+    lead_capable: true
+    thesis_evidence: "RE-OPENED by the 2026-07-19 re-screen (Ent = a different plane); warm-preferred. Elite brand; approach once there is a hot process or warm intro."
+    contact_hint: "none-found"
+    confidence: "med"
+
+  # ---- T2 (established seed/sector specialists — the core of the live list) ----
+  - fund: "Work-Bench"
+    prestige: "T2"
+    partner: ""
+    stage: "Seed (leads)"
+    geo: "US (NYC)"
+    lead_capable: true
+    thesis_evidence: "NYC enterprise-infra seed LEAD; clean solo-lead; cyber portfolio. Part-C bullseye, clean (not on any conflict list). Warm preferred, cold viable."
+    contact_hint: "https://www.work-bench.com"
+    confidence: "high"
+
+  - fund: "Shield Capital"
+    prestige: "T2"
+    partner: "Raj Shah (ex-DIU); Philip Bilden"
+    stage: "Seed/A (leads)"
+    geo: "US (SF/DC)"
+    lead_capable: true
+    thesis_evidence: "Commercial + NatSec convergence (AI/cyber/autonomy); NatSec advisory board. RE-OPENED (Ent = different plane) AND a Part-B strong. Fits the air-gapped/regulated lane."
+    contact_hint: "none-found"
+    confidence: "high"
+
+  - fund: "YL Ventures"
+    prestige: "T2"
+    partner: "Yoav Andrew Leitersdorf, Managing Partner"
+    stage: "Seed only"
+    geo: "US (SV) + Israel"
+    lead_capable: true
+    thesis_evidence: "Seed-only cyber, heavily agentic (Miggo, MIND, Hush; led Aim). CISO advisory net = design-partner pipeline. RE-OPENED — approach, lead with the 4 differentiators to pre-empt the Autonomous-Security optics question."
+    contact_hint: "https://www.ylventures.com"
+    confidence: "high"
+
+  - fund: "Acrew Capital"
+    prestige: "T2"
+    partner: "Mark Kraynak, Founding Partner"
+    stage: "Seed->A/B"
+    geo: "US (SF)"
+    lead_capable: true
+    thesis_evidence: "Led Keycard A (agent access + tamper-resistant logging), co-led Protect AI; fintech cred (At-Bay, Vanta). Keycard = COMPLEMENTARY (WHO vs WHAT), explicitly NOT crossed. Position as complement to Keycard."
+    contact_hint: "https://www.acrewcapital.com"
+    confidence: "high"
+
+  - fund: "StageOne Ventures"
+    prestige: "T2"
+    partner: ""
+    stage: "Seed (leads)"
+    geo: "Israel (US-enterprise-oriented)"
+    lead_capable: true
+    thesis_evidence: "Infra/deep-tech seed lead, US-enterprise-oriented. Part-C top-12, clean."
+    contact_hint: "https://stageonevc.com"
+    confidence: "high"
+
+  - fund: "Decibel Partners"
+    prestige: "T2"
+    partner: ""
+    stage: "Seed/early"
+    geo: "US"
+    lead_capable: true
+    thesis_evidence: "RE-OPENED (Enterprise = endpoint/insider-risk DLP, a different plane). Warm-preferred."
+    contact_hint: "none-found"
+    confidence: "med"
+
+  - fund: "Craft Ventures"
+    prestige: "T2"
+    partner: ""
+    stage: "Seed/A"
+    geo: "US"
+    lead_capable: true
+    thesis_evidence: "RE-OPENED (Ent = different plane). Warm-preferred."
+    contact_hint: "none-found"
+    confidence: "med"
+
+  - fund: "Crosspoint Capital"
+    prestige: "T2"
+    partner: ""
+    stage: "Seed/A"
+    geo: "US"
+    lead_capable: true
+    thesis_evidence: "RE-OPENED (Ent = different plane). Cybersecurity-focused. Warm-preferred."
+    contact_hint: "none-found"
+    confidence: "med"
+
+  - fund: "Costanoa Ventures"
+    prestige: "T2"
+    partner: "Greg Sands"
+    stage: "Seed-A"
+    geo: "US"
+    lead_capable: true
+    thesis_evidence: "Fintech-infra + security crossover (Basis Theory, Cyberhaven); Manifold = off-path AIDR (complementary), so RE-OPENED. Pitch: runtime action-control for the fintech-infra stack you already back."
+    contact_hint: "none-found"
+    confidence: "med"
+
+  - fund: "Foundation Capital"
+    prestige: "T2"
+    partner: "Sid Trivedi"
+    stage: "Seed-A"
+    geo: "US (Palo Alto)"
+    lead_capable: true
+    thesis_evidence: "Visible seed cyber investor + CISO circles (Trivedi authors 'Security, Funded'). Profile fit, no confirmed AI-security check (so not a proven bullseye) — but clean, no conflict."
+    contact_hint: "none-found"
+    confidence: "med"
+
+  - fund: "NightDragon"
+    prestige: "T2"
+    partner: "Dave DeWalt (ex-FireEye/McAfee CEO)"
+    stage: "Growth"
+    geo: "US (Sausalito)"
+    lead_capable: true
+    thesis_evidence: "Cyber+AI+NatSec 'SecureTech' (Horizon3, HUMAN). Clean. STAGE CAVEAT: growth/late — better as a Series-B+ target than a seed lead; keep warm now."
+    contact_hint: "none-found"
+    confidence: "low"
+
+  - fund: "Amplify Partners"
+    prestige: "T2"
+    partner: "Sarah Catanzaro"
+    stage: "Seed-A"
+    geo: "US"
+    lead_capable: true
+    thesis_evidence: "Purest AI-infra/MLOps/dev-tools archetype; no confirmed security bet. A PDP/PEP architecture walkthrough is the wedge. Low confidence but clean."
+    contact_hint: "none-found"
+    confidence: "low"
+
+  # ---- T3 / regional ----
+  - fund: "Scout Ventures"
+    prestige: "T3"
+    partner: "Brad Harrison (MP)"
+    stage: "Seed (leads $2-5M)"
+    geo: "US (NY/Austin)"
+    lead_capable: true
+    thesis_evidence: "Dual-use seed lead from military/IC founders (DeepSig, Tomahawk). Clean; fits the dual-use / air-gapped lane."
+    contact_hint: "none-found"
+    confidence: "high"
+
+  # ---- India (0 direct competitors per 2026-07-23 cross-verify; CLEAN or CAUTION) ----
+  - fund: "Z47"
+    prestige: "T2"
+    partner: "Vikram Vaidyanathan, MD (Fintech/AI/Enterprise SaaS)"
+    stage: "Seed (sometimes-leads)"
+    geo: "India"
+    lead_capable: true
+    thesis_evidence: "CLEAN (Scalekit = agent-identity, a COMPLEMENT). Fintech-heavy book = BFSI beachhead. US C-corp: yes. Lead with India eng team + BFSI money-movement fit."
+    contact_hint: "email vikram@z47.com (firm-published); EA seema@z47.com; fallback z47.com/contact; /in/vikram-vaidyanathan-0957572"
+    confidence: "high"
+
+  - fund: "GrowX Ventures"
+    prestige: "T3"
+    partner: ""
+    stage: "Seed (leads)"
+    geo: "India"
+    lead_capable: true
+    thesis_evidence: "CLEAN, leads. Confirm US-C-corp eligibility first."
+    contact_hint: "none-found"
+    confidence: "med"
+
+  - fund: "Better Capital"
+    prestige: "T2"
+    partner: "Vaibhav Domkundwar, Founder/CEO (sole decision-maker)"
+    stage: "Pre-seed (leads day-zero)"
+    geo: "India (US C-corp: yes)"
+    lead_capable: true
+    thesis_evidence: "CAUTION — he LED Matters.AI (AI data-security), so pre-empt up front: 'they secure the data; we govern & block the action, inline, across every cloud.' Deep fintech-infra portfolio (M2P, Open, Jupiter)."
+    contact_hint: "Cold X DM x.com/vaibhavbetter (short; deck after reply). No email/form published — do NOT guess vaibhav@."
+    confidence: "med"
+
+  - fund: "Carya Venture Partners"
+    prestige: "T3"
+    partner: "(6 partners per Tracxn; none verified — do NOT attribute a name unconfirmed)"
+    stage: "Pre-seed/seed (leads)"
+    geo: "India (US C-corp: yes)"
+    lead_capable: true
+    thesis_evidence: "Only India 'bullseye' fit (B2B SaaS / deeptech / AI, seed). CAUTION — LED Matters.AI pre-seed, so pre-empt the Matters.AI comparison. Verify live cyber/AI-infra thesis + check size before sending."
+    contact_hint: "none-found"
+    confidence: "med"
+
+  - fund: "Dallas Venture Capital"
+    prestige: "T3"
+    partner: ""
+    stage: "Seed (sometimes-leads)"
+    geo: "US-India (US-domiciled)"
+    lead_capable: true
+    thesis_evidence: "CAUTION — GP has a formed AI-security thesis (portfolio: Secufusion, Fiddler = content/detection-level, not cross-vendor action governance). US-domiciled = friendlier to a US cap table. Expect the sharpest grilling; differentiate hard."
+    contact_hint: "none-found"
+    confidence: "med"
+
+  - fund: "Bharat Innovation Fund"
+    prestige: "T3"
+    partner: ""
+    stage: "Seed (leads)"
+    geo: "India (US C-corp: yes)"
+    lead_capable: true
+    thesis_evidence: "CAUTION — holds FireCompass (red-team), an adjacent bet, not a direct rival. Name the daylight in the first meeting."
+    contact_hint: "none-found"
+    confidence: "med"
+
+  - fund: "Arali Ventures"
+    prestige: "T3"
+    partner: ""
+    stage: "Seed (leads)"
+    geo: "India"
+    lead_capable: true
+    thesis_evidence: "CAUTION — holds Protecto (data-DLP for AI), adjacent. Enterprise/B2B deeptech seed. Confirm C-corp."
+    contact_hint: "none-found"
+    confidence: "med"
+
+  - fund: "Chiratae Ventures (Sonic)"
+    prestige: "T2"
+    partner: ""
+    stage: "Seed (leads)"
+    geo: "India"
+    lead_capable: true
+    thesis_evidence: "CAUTION — holds Deepfence (CNAPP), adjacent. Confirm C-corp."
+    contact_hint: "none-found"
+    confidence: "med"
+
+  # ---- Not lead-capable (clean; useful as co-invest / channel / angel — NOT to anchor the round) ----
+  - fund: "In-Q-Tel"
+    prestige: "T2"
+    partner: ""
+    stage: "Follow-only"
+    geo: "US (DC)"
+    lead_capable: false
+    thesis_evidence: "RE-OPENED (Ent-only) and explicitly WANTS the air-gapped/regulated angle — high-value strategic. Follow-only (line 289), so not a round anchor; public intake. Strong for credibility + gov surface."
+    contact_hint: "public intake form on iqt.org"
+    confidence: "high"
+
+  - fund: "Neon Fund"
+    prestige: "T3"
+    partner: "Siddhartha Ahluwalia, Co-Founder & MP"
+    stage: "Seed (sub-$500K checks)"
+    geo: "India (US C-corp: yes)"
+    lead_capable: false
+    thesis_evidence: "CAUTION (CloudSEK + Astra = SOC/pentest, adjacent). CLEAN of direct rivals + security-literate + US-GTM partner, but sub-$500K checks CANNOT lead a $5M round. Distinguish from CloudSEK/Astra; lead with US enterprise GTM."
+    contact_hint: "Apply Typeform h9o6fjobcym.typeform.com/to/YhLztiSK (via neon.fund/fund-application-page); fallback hello@neon.fund; /in/siddharthaahluwalia"
+    confidence: "med"
+
+  - fund: "Gerhard Eschelbeck (angel)"
+    prestige: "Emerging"
+    partner: "Ex-Google CISO; ex-CTO Sophos"
+    stage: "Seed (angel)"
+    geo: "US (Bay)"
+    lead_capable: false
+    thesis_evidence: "Checked into Terra Security (agentic-AI pentest) — has funded agentic-AI-security. Clean. Angel check, not a lead."
+    contact_hint: "none-found"
+    confidence: "high"
+
+  - fund: "Ross Haleliuk / Venture in Security Angel Syndicate"
+    prestige: "Emerging"
+    partner: "Ross Haleliuk (ex-LimaCharlie)"
+    stage: "Seed (syndicate)"
+    geo: "US-focused"
+    lead_capable: false
+    thesis_evidence: "Only syndicate for security PRACTITIONERS; favors 'proof-based, engineering-driven founders' — rewards deterministic block-before-execute. Clean. Syndicate, not a lead."
+    contact_hint: "none-found"
+    confidence: "high"
+
+  - fund: "Kunal Shah (angel)"
+    prestige: "Emerging"
+    partner: "CRED founder"
+    stage: "Angel (follows)"
+    geo: "India"
+    lead_capable: false
+    thesis_evidence: "CAUTION (SydeLabs, exited -> Protect AI). Deepest India fintech-founder network -> BFSI design-partner intros. Channel/angel, NOT a lead."
+    contact_hint: "none-found"
+    confidence: "med"
+
+excluded:
+  # ===== competitor-conflict (net of override blocks) — DO NOT EMAIL =====
+  - fund: "Ballistic Ventures"
+    reason: "competitor_conflict:Noma+WitnessAI"
+    detail: "Led Noma, co-led WitnessAI (incubated). STILL-CONFLICTED per 2026-07-19 re-screen."
+    review_drop: false
+  - fund: "SYN Ventures"
+    reason: "competitor_conflict:CodeIntegrity+Arcade"
+    detail: "CodeIntegrity near-twin + Arcade 'secure action layer for prod AI agents'. STILL-CONFLICTED."
+    review_drop: false
+  - fund: "Bain Capital Ventures"
+    reason: "competitor_conflict:Straiker"
+    detail: "Co-led Straiker seed. STILL-CONFLICTED."
+    review_drop: false
+  - fund: "Lightspeed"
+    reason: "competitor_conflict:Straiker"
+    detail: "Co-led Straiker seed. STILL-CONFLICTED."
+    review_drop: false
+  - fund: "Felicis"
+    reason: "competitor_conflict:Runlayer+Operant"
+    detail: "Doubly conflicted — backed Runlayer (true direct-twin) + co-led Operant AI. STILL-CONFLICTED."
+    review_drop: false
+  - fund: "Khosla Ventures"
+    reason: "competitor_conflict:Runlayer"
+    detail: "Rabois + Felicis backed Runlayer ('MCP agent security'). STILL-CONFLICTED."
+    review_drop: false
+  - fund: "Conviction (Sarah Guo)"
+    reason: "competitor_conflict:Onyx"
+    detail: "Reads as bullseye 'contact first' in Part-C, but STILL-CONFLICTED (Onyx) per the 2026-07-19 override. FAIL-SECURE catch."
+    review_drop: false
+  - fund: "Cyberstarts"
+    reason: "competitor_conflict:Onyx"
+    detail: "Reads as 'contact first' in Part-C, but STILL-CONFLICTED (Onyx) per override. FAIL-SECURE catch."
+    review_drop: false
+  - fund: "Wing Venture Capital"
+    reason: "competitor_conflict:GraySwan+BlueRock"
+    detail: "Reads as bullseye 'contact first', but STILL-CONFLICTED (Gray Swan + BlueRock) per override. FAIL-SECURE catch."
+    review_drop: false
+  - fund: "Glilot Capital"
+    reason: "competitor_conflict:Noma"
+    detail: "Led Noma seed. STILL-CONFLICTED."
+    review_drop: false
+  - fund: "Vertex Ventures Israel"
+    reason: "competitor_conflict:Zenity"
+    detail: "Backed Zenity. STILL-CONFLICTED."
+    review_drop: false
+  - fund: "GV (Google Ventures)"
+    reason: "competitor_conflict:WitnessAI"
+    detail: "CAUTION-list (WitnessAI) + STILL-CONFLICTED grouping."
+    review_drop: false
+  - fund: "Fin Capital"
+    reason: "competitor_conflict:WitnessAI"
+    detail: "STILL-CONFLICTED per override."
+    review_drop: false
+  - fund: "Madrona"
+    reason: "competitor_conflict:Zenity"
+    detail: "STILL-CONFLICTED per 2026-07-19 override grouping."
+    review_drop: false
+  - fund: "Mayfield"
+    reason: "competitor_conflict:Zenity"
+    detail: "STILL-CONFLICTED per override grouping."
+    review_drop: false
+  - fund: "Evolution Equity"
+    reason: "competitor_conflict:Zenity"
+    detail: "STILL-CONFLICTED per override grouping."
+    review_drop: false
+  - fund: "Runtime Ventures"
+    reason: "competitor_conflict:stealth-policy-enforcement-for-agents"
+    detail: "Reads as #1 cold-reachable / #1 'contact first', but 2026-07-22 override FLIPPED it to OUT: portfolio holds a live stealth 'Policy Enforcement for Agents' portco = direct twin. FAIL-SECURE catch."
+    review_drop: false
+  - fund: "Mango Capital"
+    reason: "competitor_conflict:DomeSystems"
+    detail: "2026-07-22 override: co-led Dome Systems ('agent operations control plane' with inline tool-call enforcement) = our exact wedge. Do NOT approach."
+    review_drop: false
+  - fund: "SVCI (Silicon Valley CISO Investments)"
+    reason: "competitor_conflict:Runlayer+Noma"
+    detail: "2026-07-23 override: holds Runlayer + Noma. Was in 'top-8 contact first' — do NOT pitch the wedge."
+    review_drop: false
+  - fund: "Rain Capital"
+    reason: "competitor_conflict:Straiker"
+    detail: "Backed Straiker; Part-C top-12 but conflicted."
+    review_drop: false
+  - fund: "Ten Eleven Ventures"
+    reason: "competitor_conflict:Geordie"
+    detail: "Co-led Geordie ('agent-native security'), a direct competitor."
+    review_drop: false
+  - fund: "ForgePoint Capital"
+    reason: "competitor_conflict:Capsule"
+    detail: "Co-led Capsule Security ('blocking risky actions inside the execution path') = near-direct competitor."
+    review_drop: false
+  - fund: "SineWave Ventures"
+    reason: "competitor_conflict:OperantAI"
+    detail: "Co-led Operant AI; board seat. (Air-gapped/NatSec fit, but conflicted.)"
+    review_drop: false
+  - fund: "Hetz Ventures"
+    reason: "competitor_conflict:PromptSecurity"
+    detail: "Seed + doubled down on Prompt Security A. (CAUTION-list.)"
+    review_drop: false
+  - fund: "Jump Capital"
+    reason: "competitor_conflict:PromptSecurity"
+    detail: "Led Prompt Security A. (CAUTION-list; also Series-A stage.)"
+    review_drop: false
+  - fund: "Redalpine"
+    reason: "competitor_conflict:Lakera"
+    detail: "Led Lakera seed. (CAUTION-list; EU.)"
+    review_drop: false
+  - fund: "Entrée Capital"
+    reason: "competitor_conflict:Lasso"
+    detail: "Led Lasso Security seed (agentic 'Intent Security Framework'). (CAUTION-list.)"
+    review_drop: false
+  - fund: "CyberFuture"
+    reason: "competitor_conflict:PromptSecurity"
+    detail: "Co-invested Prompt Security seed. (CAUTION-list; loose alliance structure.)"
+    review_drop: false
+  - fund: "Paladin Capital Group"
+    reason: "competitor_conflict:CalypsoAI"
+    detail: "Led CalypsoAI A-1 + follow-ons (CalypsoAI -> F5, an absorbed competitor). Fail-secure exclude."
+    review_drop: false
+
+  # ===== ambiguous — HUMAN must verify before any contact =====
+  - fund: "SPRUNG Capital (Sergej Epp)"
+    reason: "ambiguous"
+    detail: "Strongest single warm operator target (dedicated 'AI & Agent Security' vertical; operator-CISO who IS the buyer). BUT that vertical may hold a competitor — shortlist says 'Re-verify conflict before contact.' Verify the portfolio first."
+    review_drop: true
+  - fund: "Golden Sparrow"
+    reason: "ambiguous"
+    detail: "Holds Oryo, which brands itself 'the enterprise security control plane for AI Agents' (ex-Okta/Wiz). Adjacent TODAY (discovery/posture + identity, not inline block) but closest brand-collision. Shortlist verdict: HOLD; re-classify to CONFLICT if Oryo ships inline action-blocking."
+    review_drop: true
+  - fund: "Greylock"
+    reason: "ambiguous"
+    detail: "Co-backed Cogent Security ($42M A). Deal partner unconfirmed (Motamedi not confirmed as lead) and unclear whether Cogent is a direct action-governance rival. Verify before contact."
+    review_drop: true
+  - fund: "Team8"
+    reason: "ambiguous"
+    detail: "Foundry with both cyber AND fintech groups (exact BFSI crossover) — but flagged conflict: led Charm Security + Clover ('security for the agentic era'). Verify Clover's overlap before contact."
+    review_drop: true
+
+  # ===== already contacted (investor-track, live in the tracker) — do not re-send =====
+  - fund: "boldstart ventures"
+    reason: "already_contacted"
+    detail: "Sent (LinkedIn InMail) 2026-07-18 — Ed Sim, complementary-to-Keycard."
+    review_drop: false
+  - fund: "Glasswing Ventures"
+    reason: "already_contacted"
+    detail: "Sent (email). (Was the 'best cold-open'; already done.)"
+    review_drop: false
+  - fund: "Basis Set Ventures"
+    reason: "already_contacted"
+    detail: "Sent (LinkedIn DM to Chang Xu)."
+    review_drop: false
+  - fund: "Uncork Capital"
+    reason: "already_contacted"
+    detail: "Sent (email)."
+    review_drop: false
+  - fund: "Fika Ventures"
+    reason: "already_contacted"
+    detail: "Sent (LinkedIn)."
+    review_drop: false
+  - fund: "XYZ Venture Capital"
+    reason: "already_contacted"
+    detail: "Sent (email)."
+    review_drop: false
+  - fund: "Point72 Ventures"
+    reason: "already_contacted"
+    detail: "Sent (email)."
+    review_drop: false
+  - fund: "Innovation Endeavors"
+    reason: "already_contacted"
+    detail: "Sent (email + LinkedIn)."
+    review_drop: false
+  - fund: "DataTribe"
+    reason: "already_contacted"
+    detail: "Applied (form + email)."
+    review_drop: false
+  - fund: "Two Bear Capital"
+    reason: "already_contacted"
+    detail: "Applied (form)."
+    review_drop: false
+  - fund: "Squadra Ventures"
+    reason: "already_contacted"
+    detail: "Applied (form)."
+    review_drop: false
+  - fund: "MS&AD Ventures"
+    reason: "already_contacted"
+    detail: "Sent (LinkedIn)."
+    review_drop: false
+  - fund: "Kalaari Capital"
+    reason: "already_contacted"
+    detail: "Applied (form). (Note: co-led Matters.AI — pre-empt if they re-engage.)"
+    review_drop: false
+  - fund: "pi Ventures"
+    reason: "already_contacted"
+    detail: "Sent (email)."
+    review_drop: false
+  - fund: "Together Fund"
+    reason: "already_contacted"
+    detail: "Sent (email)."
+    review_drop: false
+  - fund: "Stellaris Venture Partners"
+    reason: "already_contacted"
+    detail: "Sent; routed to CoS Spriha 2026-07-22."
+    review_drop: false
+  - fund: "Peak XV (Surge)"
+    reason: "already_contacted"
+    detail: "Applied (form)."
+    review_drop: false
+  - fund: "Unicorn India Ventures"
+    reason: "already_contacted"
+    detail: "Applied (form)."
+    review_drop: false
+  - fund: "3one4 Capital"
+    reason: "already_contacted"
+    detail: "Passed."
+    review_drop: false
+  - fund: "Speciale Invest"
+    reason: "already_contacted"
+    detail: "Applied (form)."
+    review_drop: false
+  - fund: "Blume Ventures"
+    reason: "already_contacted"
+    detail: "Sent (LinkedIn + email)."
+    review_drop: false
+  - fund: "Nexus Venture Partners"
+    reason: "already_contacted"
+    detail: "Sent (email). (India-US enterprise/security anchor.)"
+    review_drop: false
+  - fund: "Elevation Capital"
+    reason: "already_contacted"
+    detail: "Applied (form)."
+    review_drop: false
+  - fund: "Prime Venture Partners"
+    reason: "already_contacted"
+    detail: "Referral requested (2 paths)."
+    review_drop: false
+  - fund: "8i Ventures"
+    reason: "already_contacted"
+    detail: "Sent (email)."
+    review_drop: false
+  - fund: "Endiya Partners"
+    reason: "already_contacted"
+    detail: "Sent (email). (Co-led Matters.AI — pre-empt.)"
+    review_drop: false
+  - fund: "Shastra VC"
+    reason: "already_contacted"
+    detail: "Applied (form)."
+    review_drop: false
+  - fund: "Eximius Ventures"
+    reason: "already_contacted"
+    detail: "Applied (form)."
+    review_drop: false
+  - fund: "Athera Venture Partners"
+    reason: "already_contacted"
+    detail: "Intro call scheduled."
+    review_drop: false
+
+# NOTE on Unusual Ventures: tracker row #10 (Jyoti Bansal / Unusual) is 'Not contacted' and is a
+# LIVE target — but no shortlist row was found to source its thesis/fit, so it is NOT auto-queued.
+# Add it manually if you want it in the rotation.

@@ -235,6 +235,24 @@ def main():
     for key, value in config.get("tags", {}).items():
         cdk.Tags.of(canary_stack).add(key, value)
 
+    # Create Static Site Stack (AegionAI public marketing site on S3 + CloudFront).
+    # Config-gated: only synthesized when static_site.enabled is true, so it is
+    # inert for existing deploys until the hosting cutover is ready.
+    if config.get("static_site", {}).get("enabled", False):
+        from stacks.static_site_stack import StaticSiteStack
+
+        static_site_stack = StaticSiteStack(
+            app,
+            f"{stack_prefix}-StaticSite-Stack",
+            config=config,
+            env=env,
+            description=f"Sentra MVP ({environment}) - AegionAI marketing site (S3 + CloudFront)",
+        )
+        # No cross-stack dependency: the site is standalone (no VPC/ECS/API needs).
+
+        for key, value in config.get("tags", {}).items():
+            cdk.Tags.of(static_site_stack).add(key, value)
+
     # Synthesize CloudFormation templates
     app.synth()
 

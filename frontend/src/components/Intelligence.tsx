@@ -34,9 +34,9 @@ export default function Intelligence() {
               Security Intelligence That Grows With You
             </h2>
             <p className="font-body text-muted max-w-2xl mx-auto leading-relaxed mb-6">
-              Our proprietary ML engine continuously learns from every interaction across your fleet.
-              It reclassifies threats in real-time, reducing false positives and catching novel attack
-              patterns that static rule-based systems miss.
+              De-identified signals from across the fleet train our detection models — a cross-vendor
+              flywheel where every deployment sharpens protection for the rest. New models are validated
+              in shadow before they ever enforce, so precision improves without new false positives.
             </p>
 
             <div className="flex flex-col sm:flex-row items-center justify-center gap-3 sm:gap-6">

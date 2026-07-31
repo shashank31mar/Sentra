@@ -1,0 +1,53 @@
+# VC outreach automation — runtime config. Paths are repo-root-relative.
+send:
+  daily_cap: 10
+  weekends: false
+  throttle_seconds: 90        # spacing between sends within a batch
+  dry_run: false              # LIVE — send step will actually send. (Flipped 2026-07-29 after founder review.)
+
+sender:
+  name: "Shashank Gupta"
+  address: "shashank31mar@gmail.com"   # sender Gmail (From:)
+  greeting: "Hi {first},"     # every email opens with this (first = recipient's first name)
+  sign_off: |                 # every email ends with this block
+    Shashank Gupta
+    Founder, AegionAI
+    aegionai.ai
+
+attachment:
+  pitch_pdf: "pitch/share/AegionAI-pitch.pdf"
+
+queue:
+  file: "scripts/outreach/send_queue.yaml"
+
+prep:
+  # The 8 AM prep runs a headless Claude Code call so it reuses brand-voice / outreach
+  # / outreach-pack rather than re-implementing the email craft. {prompt_file} is the
+  # generated per-day prompt; cwd is the repo root so project + user skills load.
+  # Tune the flags/permissions to your Claude Code setup; this is the default.
+  # Full path — launchd has no shell aliases/PATH. Adjust if your claude CLI moves.
+  claude_cmd: "/Users/shshgup/.toolbox/bin/claude -p @{prompt_file} --allowedTools WebSearch WebFetch Read Write Glob Grep"
+  prompt_template: "scripts/outreach/templates/prep_prompt.md"
+  rubric: "scripts/outreach/templates/competitor_rubric.md"      # apple-to-apple conflict test
+  pitch_source: "pitch/share/AegionAI-pitch.md"
+  voice_profile: "scripts/outreach/templates/voice_profile.md"   # optional; created by brand-voice
+  # Dequeue this many x daily_cap candidates so Stage-0 conflict drops can refill to the cap.
+  working_set_multiplier: 2
+  timeout_seconds: 2400
+
+state:
+  sent_log: "scripts/outreach/state/sent_log.jsonl"
+  daily_dir: "scripts/outreach/state/daily"
+  manual_pile: "scripts/outreach/state/manual_pile.yaml"
+  # Funds dropped by a daily fresh conflict re-check — skipped by future dequeues until you
+  # clear the entry (a fund newly-conflicted doesn't get re-picked tomorrow and re-dropped).
+  dropped_log: "scripts/outreach/state/dropped_funds.jsonl"
+
+gmail:
+  credentials: "scripts/outreach/credentials.json"
+  token: "scripts/outreach/token.json"
+  scopes:
+    # ONLY what's needed + what you granted — NO mailbox read access.
+    # reconcile reads the local sent_log.jsonl (written at send time), not your Sent folder.
+    - "https://www.googleapis.com/auth/gmail.compose"    # create drafts
+    - "https://www.googleapis.com/auth/gmail.send"       # send on your "go ahead"

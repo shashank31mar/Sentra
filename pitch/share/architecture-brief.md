@@ -61,7 +61,7 @@ What the decision actually considers, beyond "is the tool allowed":
 - **Prompt-injection / jailbreak** signals on the input.
 - **Behavioral & trust state** — this agent's accumulated behavior this session (trust decays; a compromised agent gets quarantined and future calls auto-deny regardless of content).
 
-**Two-speed by design.** The common case is a deterministic decision that runs locally — no network round-trip — and returns in **single-digit milliseconds**. Only genuinely ambiguous actions escalate to the heavier ML/behavioral layer. This is what makes in-path enforcement affordable.
+**Two-speed by design.** A cheap deterministic frontier decides the common case and only genuinely ambiguous actions escalate to the heavier ML/behavioral layer — that split is live today. In the **in-VPC edition (roadmap)** that frontier runs **locally with no network round-trip**, returning in single-digit milliseconds; on today's Serverless path every call is still a round-trip to us (~0.6–1.2 s, see §4). The local floor is what makes in-path enforcement affordable at scale.
 
 ---
 
@@ -70,7 +70,7 @@ What the decision actually considers, beyond "is the tool allowed":
 In-path enforcement raises three questions any serious buyer (especially a bank) asks. The architecture answers each:
 
 - **Latency.** The deterministic floor runs **locally, single-digit ms**, with no control-plane hop; only borderline actions escalate. The in-VPC enforcement hot path **targets well under 100 ms** — a roadmap figure: in-VPC isn't deployed yet, and today's Serverless path is ~0.6–1.2 s because every call is a network round-trip to us. (The ~500 ms figure sometimes compared against is the *network-inclusive, cloud-managed* path — not in-boundary enforcement.)
-- **Reliability.** You deploy in **observe-only mode first** — we sit in-path but change nothing, logging every verdict we *would* have returned. Enforcement is turned on per workload only when trusted. If the control plane is ever unreachable, a **cached, signed policy keeps enforcing** — agents don't stop. Fail-open vs. fail-closed is a **per-tool decision the customer owns**.
+- **Reliability.** You deploy in **observe-only mode first** — we sit in-path but change nothing, logging every verdict we *would* have returned. Enforcement is turned on per workload only when trusted. Today the checkpoint **fails secure** if the engine is unreachable (deny-by-default, the customer's per-tool choice). The **in-VPC edition (roadmap)** adds a **cached, signed local policy that keeps enforcing** through a control-plane outage — so agents keep running on the last-known-good policy rather than stopping. Fail-open vs. fail-closed is a **per-tool decision the customer owns**.
 - **Data exposure.** For regulated customers we run the *same* enforcement **inside their own cloud network**, or **on-premises / air-gapped**. Sensitive payloads never leave their boundary; only de-identified signals leave in cloud editions, and nothing leaves in air-gapped.
 
 **On rollback — stated precisely.** The primary model is **block *before* execution**. Where an action has already run and is *reversible* (a compensating operation exists and the action returned a handle), we can compensate, in dependency order. We never claim the irreversible can be undone — once a wire settles, it's settled. Rollback is a bounded, opt-in capability, not a promise to un-ring every bell.

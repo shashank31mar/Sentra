@@ -1,0 +1,43 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  launchd timer: run the outreach prep every weekday at 08:00.
+  Install:
+    cp scripts/outreach/ai.aegion.outreach-prep.plist ~/Library/LaunchAgents/
+    launchctl load  ~/Library/LaunchAgents/ai.aegion.outreach-prep.plist
+  Unload:
+    launchctl unload ~/Library/LaunchAgents/ai.aegion.outreach-prep.plist
+  Test now (without waiting for 8 AM):
+    launchctl start ai.aegion.outreach-prep
+
+  StartCalendarInterval with a Weekday key fires only that weekday; five entries = Mon-Fri.
+  (prep_daily.py also self-guards weekends, so this is belt-and-suspenders.)
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>ai.aegion.outreach-prep</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/bash</string>
+    <string>/Users/shshgup/code/security-mvp/Sentra/scripts/outreach/run_prep.sh</string>
+  </array>
+
+  <key>StartCalendarInterval</key>
+  <array>
+    <dict><key>Weekday</key><integer>1</integer><key>Hour</key><integer>8</integer><key>Minute</key><integer>0</integer></dict>
+    <dict><key>Weekday</key><integer>2</integer><key>Hour</key><integer>8</integer><key>Minute</key><integer>0</integer></dict>
+    <dict><key>Weekday</key><integer>3</integer><key>Hour</key><integer>8</integer><key>Minute</key><integer>0</integer></dict>
+    <dict><key>Weekday</key><integer>4</integer><key>Hour</key><integer>8</integer><key>Minute</key><integer>0</integer></dict>
+    <dict><key>Weekday</key><integer>5</integer><key>Hour</key><integer>8</integer><key>Minute</key><integer>0</integer></dict>
+  </array>
+
+  <key>StandardOutPath</key>
+  <string>/Users/shshgup/code/security-mvp/Sentra/scripts/outreach/state/logs/launchd.out.log</string>
+  <key>StandardErrorPath</key>
+  <string>/Users/shshgup/code/security-mvp/Sentra/scripts/outreach/state/logs/launchd.err.log</string>
+
+  <key>RunAtLoad</key>
+  <false/>
+</dict>
+</plist>

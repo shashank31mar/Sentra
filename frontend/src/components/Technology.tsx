@@ -1,56 +1,56 @@
 const TECH_CARDS = [
   {
-    icon: 'ti-container',
-    title: 'Kubernetes Sidecar',
+    icon: 'ti-plug-connected',
+    title: 'Drop-in Interception',
     color: 'cyan',
-    description: 'Deploys as an Istio-style sidecar proxy — intercepts all agent tool calls at the network level. No SDK changes. No code modifications. Framework-agnostic.',
-    tags: ['Zero code changes', '< 1 sprint integration', '< 80ms latency'],
+    description: 'Intercept every agent action before it executes — a one-line SDK decorator per tool, or a drop-in connector for AWS Bedrock and Azure Foundry. A zero-code network sidecar is on the roadmap for in-VPC and air-gapped deployments.',
+    tags: ['One-line SDK', 'Bedrock + Azure connectors', 'Network sidecar — roadmap'],
   },
   {
     icon: 'ti-file-code',
     title: 'Stateful Policy Engine',
     color: 'purple',
-    description: 'Open-standard policies with stateful session tracking. Beyond stateless allow/deny, AegionAI validates action sequences — ensuring required steps happen in the right order, across an agent\'s whole session.',
-    tags: ['Open policy standards', 'Session-aware', 'No vendor lock-in'],
+    description: 'Policies authored in YAML/JSON and compiled to Cedar. Beyond stateless allow/deny, AegionAI enforces parameter bounds and action sequences — ensuring required steps happen in the right order, across an agent\'s whole session.',
+    tags: ['Cedar policy engine', 'Session-aware', 'No vendor lock-in'],
   },
   {
     icon: 'ti-brain',
     title: 'ML Detection Layer',
     color: 'green',
-    description: 'Fine-tuned transformer trained on HackAPrompt, JailbreakBench, and HarmBench datasets for prompt injection detection. Behavioral anomaly detection via Isolation Forest on tool call metadata — no content inspection required.',
-    tags: ['Transformer + Isolation Forest', 'Adaptive learning', 'Shadow-validated before enforce'],
+    description: 'Prompt-injection and jailbreak detection via an LLM classifier, backed by a distilled model (MiniLM + logistic head) trained on production-verified verdicts. Deterministic Sigma signatures enforce today; the ML tier runs in shadow until a precision/recall gate graduates it.',
+    tags: ['Sigma signatures — live', 'Distilled ML classifier', 'Shadow before enforce'],
   },
   {
     icon: 'ti-shield-off',
     title: 'Blast Radius Containment',
     color: 'amber',
-    description: 'When one agent is compromised, AegionAI quarantines it instantly and auto-rejects all flows touching quarantined agents — preventing cross-cloud cascade attacks before they propagate.',
-    tags: ['< 5s quarantine', 'Cross-cloud isolation', 'Topology-aware'],
+    description: 'When an agent\'s trust degrades, AegionAI quarantines it and auto-rejects all flows touching quarantined agents. Per-agent quarantine and cross-agent filtering are live today; cross-cloud, topology-aware containment is on the roadmap.',
+    tags: ['Trust-driven quarantine', 'Cross-agent filtering', 'Cross-cloud — roadmap'],
   },
 ] as const
 
 const INSPECTS = [
-  { title: 'Policy compliance (YAML/OPA)', desc: 'Open-standard policies you define and own' },
-  { title: 'Action sequence integrity', desc: 'Stateful step-order validation via Redis session cache' },
-  { title: 'Agent identity claims', desc: 'Zero-trust agent verification' },
-  { title: 'Prompt injection & jailbreak patterns', desc: 'Fine-tuned transformer classification' },
-  { title: 'Behavioral anomalies', desc: 'Isolation Forest on metadata — no content inspection' },
-  { title: 'PII and sensitive data', desc: 'Real-time detection & redaction' },
+  { title: 'Policy compliance (YAML/JSON → Cedar)', desc: 'Open-source Cedar policies you define and own' },
+  { title: 'Action parameters & sequence integrity', desc: 'Parameter bounds + required step-order, per session' },
+  { title: 'Agent identity & authorization', desc: 'Verified per-agent credential — never a self-asserted field' },
+  { title: 'Prompt injection & jailbreak patterns', desc: 'Sigma signatures (live) + LLM/distilled classifier' },
+  { title: 'Accumulated trust & abuse signals', desc: 'Trust decay, rate/abuse limits, cross-agent filtering' },
+  { title: 'PII and sensitive data', desc: 'Detection & redaction — roadmap' },
 ] as const
 
 const ACTIONS = [
   'Block unauthorized actions before execution',
-  'Quarantine compromised agents instantly',
+  'Quarantine agents when trust degrades',
   'Auto-reject all flows touching quarantined agents',
-  'Contain blast radius across clouds',
+  'Name the deciding layer on every verdict',
   'Roll back actions where they\'re reversible',
-  'Trace threat source across full agent topology',
+  'Record decision, reason & source for audit',
 ] as const
 
 const CLOUDS = [
   { name: 'AWS', sub: 'Bedrock', borderColor: 'border-[#ff9900]/20' },
-  { name: 'Azure', sub: 'OpenAI', borderColor: 'border-[#0078d4]/20' },
-  { name: 'GCP', sub: 'Vertex AI', borderColor: 'border-[#4285f4]/20' },
+  { name: 'Azure', sub: 'Foundry', borderColor: 'border-[#0078d4]/20' },
+  { name: 'GCP', sub: 'Vertex AI — roadmap', borderColor: 'border-[#4285f4]/20' },
 ] as const
 
 export default function Technology() {
@@ -66,7 +66,7 @@ export default function Technology() {
             Built for the Agentic Era
           </h2>
           <p className="font-body text-muted mt-4 max-w-2xl mx-auto">
-            Kubernetes-native architecture designed from the ground up for cross-cloud AI agent governance.
+            A neutral control-plane architecture built from the ground up for cross-cloud AI-agent governance.
           </p>
         </div>
 
@@ -139,7 +139,7 @@ export default function Technology() {
         {/* Cloud Support */}
         <div className="mt-16 text-center">
           <p className="font-body text-sm text-muted mb-6">
-            Works with any agent framework — zero code changes required
+            Works with any agent framework — via SDK decorator or connector
           </p>
           <div className="flex flex-wrap items-center justify-center gap-4 sm:gap-5">
             {CLOUDS.map((cloud) => (

@@ -2,7 +2,7 @@ const PILLARS = [
   {
     icon: 'ti-arrow-badge-right',
     title: 'Intercept',
-    description: 'Every agent action — tool calls, API requests, inter-agent messages — passes through our inline sidecar before execution.',
+    description: 'Every agent action — tool calls, API requests, inter-agent messages — is intercepted before it executes, via a one-line SDK decorator or a drop-in connector for AWS Bedrock and Azure Foundry.',
     color: 'cyan',
     highlighted: false,
     badge: null,
@@ -10,15 +10,15 @@ const PILLARS = [
   {
     icon: 'ti-layers-intersect',
     title: 'Validate',
-    description: 'Multi-layer deep inspection — policy compliance, step-sequence integrity, identity verification, ML threat classification, and behavioral analysis.',
+    description: 'Six layers, not one signal: agent trust state → Cedar policy (parameters + required sequence) → Sigma injection signatures → ML classifier → cross-agent trust & abuse checks → deny-overrides combiner that names which layer decided.',
     color: 'cyan',
     highlighted: true,
-    badge: 'Layered Defense Architecture',
+    badge: 'Layered defense — deny-overrides',
   },
   {
     icon: 'ti-lock-check',
     title: 'Enforce',
-    description: 'Block before execution, quarantine, contain — and roll back where the action is reversible. Compromised agents are isolated in seconds, across any cloud.',
+    description: 'Block before execution, quarantine the agent, contain the blast radius — and roll back where the action is reversible. The decision, the reason, and the deciding layer are all recorded for audit.',
     color: 'purple',
     highlighted: false,
     badge: null,
@@ -56,12 +56,16 @@ export default function About() {
             What We Do
           </span>
           <h2 className="font-heading text-3xl sm:text-4xl font-bold text-white mt-4 mb-5">
-            The Control Plane for Every AI Agent
+            Governing the Action, Not the Prompt
           </h2>
           <p className="font-body text-base sm:text-lg text-muted max-w-3xl mx-auto leading-relaxed">
-            AegionAI is to AI agents what Kubernetes is to containers. We sit between your AI agents
-            and the systems they interact with — intercepting, validating, and enforcing every action
-            before it executes. One neutral governance layer no single cloud can be. Every cloud. Every agent.
+            Point tools score prompts and content. AegionAI evaluates
+            <span className="text-white font-medium"> what the action does </span>
+            — its parameters, the agent's verified identity, the required prior
+            steps in this session, and the agent's accumulated trust state — and
+            decides in real time whether to allow, block, quarantine, or roll it
+            back. We're building the neutral standard for AI-agent security — one
+            no single cloud can set.
           </p>
         </div>
 
