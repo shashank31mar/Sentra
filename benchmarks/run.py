@@ -90,14 +90,18 @@ async def run_mode_a(config: Any) -> int:
         writer.append_row(row)
         ledger_rows.append(row.to_dict())
 
+    # Remove non-serializable score_obj reference for manifest output
+    d2_scores = {k: v for k, v in res_d2.detector_scores.items() if k != "score_obj"}
+    d3_scores = {k: v for k, v in res_d3.detector_scores.items() if k != "score_obj"}
+
     # Populate manifest results block
     manifest.data["engine"]["detector_readiness"] = {
         "D2_indirect_injection": r_d2,
         "D3_memory_write": r_d3,
     }
     manifest.data["results"]["mode_a"] = {
-        "D2_indirect_injection": res_d2.detector_scores,
-        "D3_memory_write": res_d3.detector_scores,
+        "D2_indirect_injection": d2_scores,
+        "D3_memory_write": d3_scores,
     }
 
     manifest.write(runs_dir, exit_status="complete")
