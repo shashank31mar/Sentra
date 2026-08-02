@@ -27,6 +27,15 @@ class RunContext:
     arms: Sequence[str] = field(default_factory=lambda: ("P1", "P2", "P3"))
     mode: str = "A"
 
+    @classmethod
+    def for_mode_a(cls, run_id: str, run_clock_iso: str, transcript_dir: Path = Path("/tmp")) -> "RunContext":
+        return cls(
+            run_id=run_id,
+            run_clock_iso=run_clock_iso,
+            transcript_dir=transcript_dir,
+            mode="A",
+        )
+
     def session_id_for(self, episode_id: str) -> str:
         """Derive session ID for a given episode_id under this RunContext's run_id."""
         return session_id_for(episode_id, run_id=self.run_id)
