@@ -1,0 +1,105 @@
+{
+  "schema_version": "1",
+  "benchmark": {
+    "adapter": "local_prompts",
+    "checkout": "/Users/ruchikkachaudhary/closed-source/Sentra",
+    "git_sha": "92f2a1bfab8fb759cf7c4eadaaef7321a3c7e872",
+    "dirty": true,
+    "package_version": "1.0.0",
+    "lockfile_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+    "benchmark_version": "1.0.0",
+    "suites": [
+      "all"
+    ],
+    "attack": "default",
+    "max_iters": 10,
+    "seam_fingerprint": null
+  },
+  "engine": {
+    "repo_sha": "92f2a1bfab8fb759cf7c4eadaaef7321a3c7e872",
+    "dirty": true,
+    "transport": "in-process",
+    "deployment": "local",
+    "python": "3.12",
+    "venv": "active",
+    "detectors": {},
+    "detector_readiness": {
+      "D2_indirect_injection": {
+        "activated": true,
+        "artifact": null,
+        "fired": 17,
+        "verdict": "scored"
+      },
+      "D3_memory_write": {
+        "activated": true,
+        "artifact": null,
+        "fired": 0,
+        "verdict": "inert"
+      }
+    },
+    "thresholds": {}
+  },
+  "model": {
+    "provider": "anthropic",
+    "id": "claude-3-5-sonnet",
+    "snapshot_date": "2026-07-27",
+    "sampling": "provider-default (UNPINNABLE)"
+  },
+  "policy": {
+    "synthesized": false,
+    "agent_id": "default",
+    "allowed_tools_count": 0,
+    "provisioning": "fixture",
+    "rate_limit_neutralized": true,
+    "parameter_condition_count": 0,
+    "synthesized_from": null
+  },
+  "isolation": {
+    "tenant": "_benchmark",
+    "badge": true,
+    "aws_credentials": "sentinel",
+    "metrics_publisher": "NullMetricsPublisher",
+    "audit_writer": "NullAuditWriter",
+    "prod_target_check": "skipped"
+  },
+  "corpus": {
+    "n_cases": 662,
+    "n_attack": 263,
+    "n_benign": 399,
+    "excluded_by_phase": {},
+    "corpus_digest": "ed50f70eeecd0d48b1cbd7ac335cc2e68516d0be0da9b50072dfdd28f793e1db"
+  },
+  "results": {
+    "mode_a": {
+      "D2_indirect_injection": {
+        "tp": 15,
+        "fp": 2,
+        "tn": 397,
+        "fn": 248,
+        "precision": 0.8823529411764706,
+        "recall": 0.057034220532319393,
+        "f1": 0.10714285714285714,
+        "fp_rate": 0.005012531328320802,
+        "readiness": "scored"
+      },
+      "D3_memory_write": {
+        "tp": 0,
+        "fp": 0,
+        "tn": 399,
+        "fn": 263,
+        "precision": 0.0,
+        "recall": 0.0,
+        "f1": 0.0,
+        "fp_rate": 0.0,
+        "readiness": "inert"
+      }
+    },
+    "mode_b": {}
+  },
+  "errors": [],
+  "disclosures": [],
+  "accounting": {
+    "resumed_from": null
+  },
+  "exit": "complete"
+}
