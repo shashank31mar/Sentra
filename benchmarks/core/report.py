@@ -112,3 +112,6 @@ def generate_report(
             f.write(report_content)
 
     return report_content
+
+
+generate_markdown_report = generate_report

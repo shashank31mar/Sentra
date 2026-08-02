@@ -93,3 +93,6 @@ def compare_runs(
         asr_reduction_delta_pp=delta,
         noise_floor_pp=noise_floor_pp,
     )
+
+
+compare_manifests = compare_runs
