@@ -74,10 +74,15 @@ def test_every_composite_key_carries_the_benchmark_prefix(isolated):
         "activates automatically once the seam exists."
     ),
 )
-def test_driven_validate_writes_only_under_the_benchmark_tenant(isolated):
+def test_driven_validate_writes_only_under_the_benchmark_tenant(isolated, monkeypatch):
     """Drive a real in-process validate and assert every row the rig can cause
     carries the ``_benchmark`` prefix."""
+    import botocore.credentials
+    import botocore.session
     from app.utils import tenancy
+
+    dummy_creds = botocore.credentials.Credentials("testing", "testing", "testing")
+    monkeypatch.setattr(botocore.session.Session, "get_credentials", lambda _s: dummy_creds)
 
     from benchmarks.core.guard_client import GuardClient  # type: ignore[import-not-found]
 

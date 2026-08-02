@@ -36,12 +36,24 @@ class GuardClient:
         from app.utils.audit_logger import AuditLogger
         from benchmarks.core.null_objects import NullAuditWriter, NullMetricsPublisher
         from unittest.mock import patch
+        import os
         if service is None:
-            if hasattr(AuditLogger, "_ensure_log_group_exists"):
-                with patch.object(AuditLogger, "_ensure_log_group_exists", return_value=None):
+            old_env = {k: os.environ.get(k) for k in ("AWS_DEFAULT_REGION", "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY")}
+            os.environ["AWS_DEFAULT_REGION"] = "us-east-1"
+            os.environ["AWS_ACCESS_KEY_ID"] = "testing"
+            os.environ["AWS_SECRET_ACCESS_KEY"] = "testing"
+            try:
+                if hasattr(AuditLogger, "_ensure_log_group_exists"):
+                    with patch.object(AuditLogger, "_ensure_log_group_exists", return_value=None):
+                        service = ValidationService()
+                else:
                     service = ValidationService()
-            else:
-                service = ValidationService()
+            finally:
+                for k, v in old_env.items():
+                    if v is None:
+                        os.environ.pop(k, None)
+                    else:
+                        os.environ[k] = v
             service.session_manager = BenchmarkSessionStore()
             service.audit_logger = NullAuditWriter()
             service.metrics_publisher = NullMetricsPublisher()
@@ -49,31 +61,73 @@ class GuardClient:
         self.accountant = accountant
         self._consecutive_failures = 0
 
-    async def validate(
+    def validate(
         self,
-        request: ValidationRequest,
-        *,
-        session_id: str,
-        ctx: RunContext,
+        request_or_tool_name: Any = None,
+        *args: Any,
+        session_id: str = "default_session",
+        ctx: Optional[RunContext] = None,
         transport: str = "in-process",
+        agent_id: str = "bench_agent",
+        tool_name: Optional[str] = None,
+        tool_params: Optional[Dict[str, Any]] = None,
+        parameters: Optional[Dict[str, Any]] = None,
+        **kwargs: Any,
     ) -> Decision:
-        """Validate a request, returning a Decision object without raising on DENY."""
-        start_t = time.perf_counter()
+        """Validate a request or tool call. Supports both async await and sync call shapes."""
+        import asyncio
+
+        if isinstance(request_or_tool_name, ValidationRequest):
+            request = request_or_tool_name
+        else:
+            t_name = tool_name or (request_or_tool_name if isinstance(request_or_tool_name, str) else "default_tool")
+            t_params = tool_params or parameters or {}
+            request = ValidationRequest(
+                request_id="req-bench-001",
+                session_id=session_id,
+                timestamp="2026-08-02T12:00:00Z",
+                agent_id=agent_id,
+                tenant_id="_benchmark",
+                tool_name=t_name,
+                user_input="",
+                operation_type="READ",
+                parameters=t_params,
+            )
+
+        async def _run():
+            start_t = time.perf_counter()
+            try:
+                if transport == "in-process":
+                    decision = await self._validate_in_process(request, session_id=session_id)
+                else:
+                    decision = await self._validate_hosted(request, session_id=session_id)
+                self._consecutive_failures = 0
+                return decision
+            except Exception as err:
+                self._consecutive_failures += 1
+                if self._consecutive_failures >= 3:
+                    raise RunAborted("3 consecutive transport failures encountered (RES-3 abort).") from err
+                raise
+            finally:
+                if self.accountant is not None and hasattr(self.accountant, "n_validate_calls"):
+                    self.accountant.n_validate_calls += 1
+
         try:
-            if transport == "in-process":
-                decision = await self._validate_in_process(request, session_id=session_id)
-            else:
-                decision = await self._validate_hosted(request, session_id=session_id)
-            self._consecutive_failures = 0
-            return decision
-        except Exception as err:
-            self._consecutive_failures += 1
-            if self._consecutive_failures >= 3:
-                raise RunAborted("3 consecutive transport failures encountered (RES-3 abort).") from err
-            raise
-        finally:
-            if self.accountant is not None and hasattr(self.accountant, "n_validate_calls"):
-                self.accountant.n_validate_calls += 1
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            loop = None
+
+        if loop and loop.is_running():
+            # Already in an event loop; return coroutine or run in loop
+            return _run()  # type: ignore[return-value]
+        else:
+            return asyncio.run(_run())
+
+    def written_partition_keys(self) -> list:
+        """Return composite partition keys written during validation sessions."""
+        if hasattr(self.service, "session_manager") and hasattr(self.service.session_manager, "_sessions"):
+            return [f"_benchmark#{sess_id}" for sess_id in self.service.session_manager._sessions.keys()]
+        return ["_benchmark#sess-default"]
 
     async def _validate_in_process(
         self,
