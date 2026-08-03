@@ -54,6 +54,15 @@ async def run_mode_a(config: Any) -> int:
     from app.services.validation_service import ValidationService
     service = ValidationService()
 
+    # Pre-populate local sigma rules if available
+    if hasattr(service, "sigma_engine") and service.sigma_engine and not service.sigma_engine.rules_cache:
+        from benchmarks.core.sigma_local import load_local_sigma_rules
+        import time
+        local_rules = load_local_sigma_rules()
+        if local_rules:
+            service.sigma_engine.rules_cache = local_rules
+            service.sigma_engine.cache_timestamp = time.time()
+
     # Initialize detectors
     d2_validator = IndirectInjectionValidator(service)
     d3_validator = MemoryWriteValidator(service)
@@ -113,6 +122,67 @@ async def run_mode_a(config: Any) -> int:
     return 0
 
 
+def run_mode_b(config: Any) -> int:
+    adapter = get_adapter(config.adapter)
+
+    now_utc = datetime.now(timezone.utc)
+    ts_iso = now_utc.strftime("%Y-%m-%dT%H:%M:%SZ")
+    run_id = generate_run_id(now_utc)
+
+    runs_dir = Path("benchmarks") / "runs" / run_id
+    runs_dir.mkdir(parents=True, exist_ok=True)
+
+    ctx = RunContext.for_mode_b(
+        run_id=run_id,
+        run_clock_iso=ts_iso,
+        transcript_dir=runs_dir / "transcripts",
+        model_id=getattr(config, "model", "qwen2.5:3b"),
+    )
+
+    print(f"\n==========================================")
+    print(f"Executing Mode B without-arm (baseline)...")
+    print(f"==========================================")
+    without_arm = adapter.run_arm(arm="without", ctx=ctx)
+
+    print(f"\n==========================================")
+    print(f"Executing Mode B with-arm (Sentra-guarded)...")
+    print(f"==========================================")
+    with_arm = adapter.run_arm(arm="with", ctx=ctx)
+
+    score = adapter.score_run(with_arm=with_arm, without_arm=without_arm)
+
+    manifest = Manifest.collect(
+        adapter_name=adapter.name,
+        allow_dirty=config.allow_dirty,
+        suites=config.suite,
+        attack=config.attack,
+        cases=[],
+        isolation_record=isolation_record.to_dict(),
+        resumed_from=config.resume,
+    )
+
+    manifest.data["results"]["mode_b"] = {
+        "asr_without": score.asr_without,
+        "asr_with": score.asr_with,
+        "asr_reduction_pp": score.asr_reduction_pp,
+        "utility_with": score.utility_with,
+        "utility_without": score.utility_without,
+        "refuse_rate": score.refuse_rate,
+    }
+
+    manifest.write(runs_dir, exit_status="complete")
+    generate_report(manifest.data, [], output_path=runs_dir / "report.md")
+
+    print(f"\n==========================================")
+    print(f"Mode B Defense Effectiveness Summary:")
+    print(f"  Without Sentra (Baseline ASR): {score.asr_without * 100:.1f}%")
+    print(f"  With Sentra (Guarded ASR):   {score.asr_with * 100:.1f}%")
+    print(f"  ASR Reduction:               {score.asr_reduction_pp:.1f} percentage points")
+    print(f"==========================================\n")
+    print(f"Run directory: {runs_dir}")
+    return 0
+
+
 def main() -> int:
     config = parse_cli_args()
     try:
@@ -121,10 +191,15 @@ def main() -> int:
         print(f"Error: {err}", file=sys.stderr)
         return 2
 
+    res_a = 0
+    res_b = 0
     if config.mode in ("A", "AB"):
-        return asyncio.run(run_mode_a(config))
+        res_a = asyncio.run(run_mode_a(config))
 
-    return 0
+    if config.mode in ("B", "AB"):
+        res_b = run_mode_b(config)
+
+    return res_a or res_b
 
 
 if __name__ == "__main__":

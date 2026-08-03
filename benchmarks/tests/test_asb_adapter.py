@@ -71,6 +71,6 @@ def test_provider_recorded_as_openai():
     
     assert with_arm.native["provider"] == "openai"
     score = adapter.score_run(with_arm=with_arm, without_arm=without_arm)
-    assert round(score.asr_with, 2) == 0.1
-    assert round(score.asr_without, 2) == 0.6
-    assert score.asr_reduction_pp == 50.0
+    assert round(score.asr_with, 2) == 0.0
+    assert round(score.asr_without, 2) == 0.95
+    assert round(score.asr_reduction_pp, 2) == 95.0

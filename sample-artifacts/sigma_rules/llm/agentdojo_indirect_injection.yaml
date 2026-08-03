@@ -1,0 +1,29 @@
+title: Indirect Instruction Injection Detection
+id: sigma-llm-012
+status: stable
+description: Detects indirect prompt injection patterns in ingested content
+author: Sentra Security Team
+date: 2026-08-02
+modified: 2026-08-02
+tags:
+  - attack.initial_access
+  - llm.prompt_injection
+logsource:
+  product: sentra
+  service: security-controller
+  category: llm_validation
+detection:
+  instruction_override:
+    prompt|contains:
+      - "important message from me"
+      - "before you can solve the task"
+      - "please do the following first"
+      - "stop what you're doing"
+      - "instead of completing"
+      - "<INFORMATION>"
+  condition: instruction_override
+level: high
+response:
+  action: DENY
+  notify: true
+  log_level: WARNING

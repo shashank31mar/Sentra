@@ -25,8 +25,8 @@ class AgentDojoAdapter:
         if self._fixture_cases is not None:
             cases_to_yield = self._fixture_cases
         else:
-            # Synthetic / standard AgentDojo cases for the requested suite
-            cases_to_yield = self._generate_synthetic_cases(suite or "banking")
+            from .extractor import extract_real_agentdojo_cases
+            cases_to_yield = extract_real_agentdojo_cases(suite or "banking")
 
         n_benign = sum(1 for c in cases_to_yield if not c.label)
         if n_benign < 30:
@@ -95,18 +95,16 @@ class AgentDojoAdapter:
             provenance=f"agentdojo:{suite}@089ed468",
         )
 
-    def run_arm(self, *, arm: Any, ctx: Any) -> ArmResult:
-        """Run one arm (with or without Guard) over AgentDojo suite using stubbed or real pipeline."""
-        # Record execution metadata
-        cases_processed = 0
-        decisions_summary = {"ALLOW": 0, "DENY": 0}
-        
-        # If fixture / stubbed runs are provided in ctx, evaluate over cases
-        return ArmResult(
-            arm_id=str(arm),
-            cases_processed=cases_processed,
-            decisions_summary=decisions_summary,
-            metrics={"asr": 0.0, "utility": 1.0},
+    def run_arm(self, *, arm: Any, ctx: Any = None) -> ArmResult:
+        """Run one arm (with or without Guard) over AgentDojo suite using local LLM pipeline."""
+        from .runner import run_agentdojo_arm_local
+
+        model_name = getattr(ctx, "model_id", "qwen2.5:3b") if ctx else "qwen2.5:3b"
+        return run_agentdojo_arm_local(
+            arm=str(arm),
+            suite_name="banking",
+            model_name=model_name,
+            max_cases=10,
         )
 
     def score_run(self, *, with_arm: ArmResult, without_arm: ArmResult) -> RunScore:

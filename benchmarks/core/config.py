@@ -29,6 +29,7 @@ class BenchmarkRunConfig:
     suite: Optional[List[str]] = None
     arms: List[str] = None
     attack: Optional[str] = None
+    model: str = "qwen2.5:3b"
     transport: str = "in-process"
     base_url: Optional[str] = None
     concurrency: int = 4
@@ -53,6 +54,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--suite", nargs="*", help="Specific suite(s) to run")
     parser.add_argument("--arms", default="P1,P2,P3", help="Comma-separated arms for Mode B")
     parser.add_argument("--attack", help="Specific attack name")
+    parser.add_argument("--model", default="qwen2.5:3b", help="Model name (e.g. qwen2.5:3b)")
     parser.add_argument("--transport", default="in-process", choices=["in-process", "hosted"], help="Transport mode")
     parser.add_argument("--base-url", help="Base URL for hosted transport")
     parser.add_argument("--concurrency", type=int, default=4, help="Concurrency limit (max 8)")
@@ -75,6 +77,7 @@ def parse_cli_args(args: Optional[List[str]] = None) -> BenchmarkRunConfig:
         suite=parsed.suite,
         arms=arms_list,
         attack=parsed.attack,
+        model=parsed.model,
         transport=parsed.transport,
         base_url=parsed.base_url,
         concurrency=parsed.concurrency,

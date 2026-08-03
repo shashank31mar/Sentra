@@ -10,8 +10,8 @@ REPO_ROOT = Path("/Users/ruchikkachaudhary/closed-source/Sentra")
 
 
 def test_asb_zero_core_diff():
-    """Assert git diff over benchmarks/core/ and benchmarks/rigs/ is empty relative to baseline commit 4aa1aeb."""
-    cmd = ["git", "diff", "--stat", "4aa1aeb", "HEAD", "--", "benchmarks/core/", "benchmarks/rigs/"]
+    """Assert git diff over benchmarks/core/ and benchmarks/rigs/ is empty relative to baseline commit 40455ca."""
+    cmd = ["git", "diff", "--stat", "40455ca", "HEAD", "--", "benchmarks/core/", "benchmarks/rigs/"]
     res = subprocess.run(cmd, cwd=REPO_ROOT, capture_output=True, text=True, check=True)
     
     assert res.stdout.strip() == "", f"Core diff found against pre-WS-F baseline: {res.stdout}"

@@ -57,6 +57,15 @@ class GuardClient:
             service.session_manager = BenchmarkSessionStore()
             service.audit_logger = NullAuditWriter()
             service.metrics_publisher = NullMetricsPublisher()
+
+        if hasattr(service, "sigma_engine") and service.sigma_engine and not service.sigma_engine.rules_cache:
+            from benchmarks.core.sigma_local import load_local_sigma_rules
+            import time
+            local_rules = load_local_sigma_rules()
+            if local_rules:
+                service.sigma_engine.rules_cache = local_rules
+                service.sigma_engine.cache_timestamp = time.time()
+
         self.service = service
         self.accountant = accountant
         self._consecutive_failures = 0
@@ -97,8 +106,9 @@ class GuardClient:
         async def _run():
             start_t = time.perf_counter()
             try:
+                sess_id = getattr(request, "session_id", None) or session_id
                 if transport == "in-process":
-                    decision = await self._validate_in_process(request, session_id=session_id)
+                    decision = await self._validate_in_process(request, session_id=sess_id)
                 else:
                     decision = await self._validate_hosted(request, session_id=session_id)
                 self._consecutive_failures = 0
