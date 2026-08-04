@@ -20,6 +20,7 @@ A **PEP/PDP split**: a lightweight **checkpoint (PEP)** in the customer's enviro
 | Path | What |
 |---|---|
 | [src/](src/) | Application code (Python) — `security-controller/` (the PDP), `connectors/`, demo agents, `dashboard/` |
+| [benchmarks/](benchmarks/) · [benchmarks.md](benchmarks.md) | In-process security benchmark harness & local E2E runbook (`agentdojo`, `asb`, `local_prompts`) |
 | [cdk/](cdk/) | AWS CDK infrastructure (Python) |
 | [frontend/](frontend/) | React 19 + TypeScript + Tailwind console |
 | [lld/](lld/) | Architecture + low-level design docs ([ARCHITECTURE.md](lld/ARCHITECTURE.md) is the index) |

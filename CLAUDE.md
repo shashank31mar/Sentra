@@ -56,7 +56,7 @@ This is **not a docs-only repo** — there is working implementation (Python + A
 ├── docker/                       # 7 Dockerfiles (controller, dashboard, agents, console)
 ├── tests/  ·  lambda/  ·  scripts/  ·  config/
 │
-├── lld/                          # 27 docs — ARCHITECTURE.md (the index) + NN-*.md (01–26)
+├── lld/                          # 43 docs — ARCHITECTURE.md (the index) + NN-*.md (01–41)
 ├── pitch/                        # share/ (STRATEGY, architecture-brief, AegionAI-pitch),
 │                                 #   internal/, customer/, technical/, archive/, legal/
 │
@@ -354,7 +354,7 @@ except Exception as e:
 3. Move concrete code to implementation files
 4. Reference external documents instead of duplicating content
 
-**Example Structure** (actual filenames; [lld/ARCHITECTURE.md](lld/ARCHITECTURE.md) is the index, docs run 01–26):
+**Example Structure** (actual filenames; [lld/ARCHITECTURE.md](lld/ARCHITECTURE.md) is the index, docs run 01–41):
 ```
 lld/
 ├── ARCHITECTURE.md               # the index / canonical architecture
@@ -363,7 +363,7 @@ lld/
 ├── 03-security-controller.md
 ├── 04-dashboard-v2.md
 ├── 05-ai-agents.md  /  05-agent-management-apis.md
-└── … through 26-multi-tenancy.md
+└── … through 41-benchmark-harness.md
 ```
 
 **Rationale**:

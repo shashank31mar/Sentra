@@ -37,7 +37,9 @@ def mt_env(monkeypatch):
 # --------------------------------------------------------------------------- #
 # Tenant registry (D2/D4)
 # --------------------------------------------------------------------------- #
-@pytest.mark.parametrize("reserved", ["default", "_unverified", "_platform"])
+@pytest.mark.parametrize(
+    "reserved", ["default", "_unverified", "_platform", "_benchmark"]
+)
 def test_reserved_ids_rejected(mt_env, reserved):
     from app.services.tenant_service import TenantError, get_tenant_store
 

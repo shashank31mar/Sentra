@@ -64,8 +64,15 @@ PLATFORM_TENANT = "_platform"
 # (credentials_service). Reserve it too so a tenant can never collide with it
 # (already unreachable via the slug rules, but defense-in-depth).
 REVOCATION_PSEUDO_TENANT = "_revocation"
+# `_benchmark` is the tenant the security-efficacy benchmark harness binds for the
+# whole of a run (LLD 41 §4.7 I5 / FR-14.9). Reserving it is what makes every row
+# the rig can cause separable by partition key — `compose()` prefixes it, so a row
+# that leaks past the null objects is identifiable after the fact and deletable as
+# a unit, and no customer can ever mint the id and collide with it.
+BENCHMARK_PSEUDO_TENANT = "_benchmark"
 RESERVED_TENANT_IDS = frozenset(
-    {DEFAULT_TENANT, UNVERIFIED_TENANT, PLATFORM_TENANT, REVOCATION_PSEUDO_TENANT}
+    {DEFAULT_TENANT, UNVERIFIED_TENANT, PLATFORM_TENANT, REVOCATION_PSEUDO_TENANT,
+     BENCHMARK_PSEUDO_TENANT}
 )
 
 # Runtime-identity rollout ladder (LLD-26 §7.2). Ordered so `min()` over the

@@ -1,0 +1,32 @@
+name: Benchmark Evaluation Gate
+
+on:
+  pull_request:
+    paths:
+      - 'src/security-controller/app/validators/**'
+      - 'benchmarks/**'
+  workflow_dispatch:
+
+jobs:
+  eval-gate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r src/security-controller/requirements.txt pytest pytest-cov
+
+      - name: Run Mode A Benchmark Gate
+        env:
+          AEGION_BENCHMARK: "1"
+          ML_CLASSIFIER_ENABLED: "false"
+          PYTHONPATH: "src/security-controller"
+        run: |
+          python -m benchmarks.run --adapter local_prompts --mode A

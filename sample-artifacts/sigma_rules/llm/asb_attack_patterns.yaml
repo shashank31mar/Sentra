@@ -1,0 +1,28 @@
+title: ASB Agent Security Bench Attack Detection
+id: sigma-llm-013
+status: stable
+description: Detects direct prompt injection, backdoor, and fake completion attempts from ASB corpus
+author: Sentra Security Team
+date: 2026-08-03
+tags:
+  - attack.initial_access
+  - llm.prompt_injection
+logsource:
+  product: sentra
+  service: security-controller
+  category: llm_validation
+detection:
+  asb_patterns:
+    prompt|contains:
+      - "fake_completion"
+      - "backdoor"
+      - "SYSTEM PROMPT OVERRIDE"
+      - "Delete all files"
+      - "attacker@evil.com"
+      - "run_backdoor"
+  condition: asb_patterns
+level: high
+response:
+  action: DENY
+  notify: true
+  log_level: WARNING
