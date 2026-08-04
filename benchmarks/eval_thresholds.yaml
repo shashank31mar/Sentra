@@ -1,0 +1,3 @@
+fp_budget: 0.01
+d2_threshold: 0.85
+recall_floor: 0.70
