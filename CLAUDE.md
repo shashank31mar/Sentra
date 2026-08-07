@@ -31,7 +31,7 @@ Inline blocking is **no longer the differentiator** — point tools block too no
 - **Neutral, cross-vendor** — one plane across AWS/Azure/GCP/on-prem; a position the clouds structurally cannot hold.
 - **Block-before-execute + quarantine + fail-secure** (built today); **bounded, opt-in rollback** only where an action is *reversible* (compensating op + returned handle) — never a promise to undo the irreversible (roadmap; network sidecar is **preventive-only, no rollback**).
 - **Cross-vendor threat-data flywheel** — de-identified signals up, protection down (the CrowdStrike pattern).
-- **Tamper-evident audit / system-of-record** for SOC 2 / HIPAA / EU AI Act.
+- **Audit / system-of-record** for SOC 2 / HIPAA / EU AI Act — **append-only today; tamper-evidence (hash-chaining), multi-year retention and evidence export are roadmap.** Never claim "tamper-evident" (see Core Security Features #7).
 
 ## Repository Structure
 
@@ -165,12 +165,12 @@ flowchart LR
 Runtime security enforcement, staged honestly (deterministic floors ship first; ML behind shadow→enforce):
 
 1. **Tool/API call guardrails** — Cedar allow/deny + parameter bounds + sequence integrity. **Live.**
-2. **Prompt-injection detection** — Sigma signatures (live, blocking) + ML classifier (**shadow today**, not yet enforcing).
+2. **Prompt-injection detection** — Sigma signatures (live, blocking) + ML classifier (**live and ENFORCING** — the shadow flag was removed; `compute_stack.py:1544` hardcodes `ML_CLASSIFIER_ENABLED` true and `config.py:329-333` states it always enforces when it runs). Measured indirect-injection recall **0.5649** unmasked / 0.6007 masked (n=809, `harness/ws0/results/HEADLINE_SUMMARY.json`, 2026-07-02) — so a probabilistic blocker on a regulated action path is a live design question, not a settled one.
 3. **Privilege-escalation prevention / cross-agent filtering** — `cross_agent_validator`. **Live**; mesh-wide *blast-radius containment* is roadmap.
 4. **Agent quarantine** — trust-score-driven isolation. **Live.**
-5. **Data redaction / DLP** — input-side PII/credential masking. **Roadmap** (Serverless content is unredacted-for-the-engine today; FR-3.13).
+5. **Data redaction / DLP** — **Tier-1 structured masking is LIVE and unconditional on the SDK/connector wires**: `guard.py:555-595` mints a per-call nonce and masks `tool_params`/`user_input`/`context` before egress (PAN+Luhn, US SSN with issuance validity, email, URL, IPv4/v6, phone, dates, high-entropy secrets — `redaction.py:289-700`), and a redactor failure becomes a fail-secure DENY rather than a raw send. Masking is a property of the **enforcement point**, so a non-SDK/non-connector integration gets none. **Tier-2 server-side free-text redaction is a stub** (`redaction/phi_ner.py:16-30` — no live NER model; its Fargate construct is never instantiated), so narrative content is not model-redacted. FR-3.13.
 6. **Bounded rollback** — SDK-only compensation for *reversible*, handle-returning actions, dependency-ordered. **Roadmap.** Block-before-execute is primary; **network sidecar is preventive-only (no rollback)**.
-7. **Tamper-evident audit / chain-of-thought forensics** — append-only audit is live; full forensic chain-of-thought is **roadmap**.
+7. **Audit / forensics** — **append-only is live; NOT tamper-evident.** Zero hits for `hash_chain`/`prev_hash`/WORM/S3 Object Lock across `src/` + `cdk/`; `lld/33-decision-trail.md:551` (SEC-5a) states the trail rows are access-scoped rather than cryptographically sealed, and that an actor with write access could insert/delete a ran-DENY row and silently change a past decision's **recomputed** deciding source. **Always say "append-only", never "tamper-evident"** — PRD FR-6.1 overclaims here and the LLD is right. Also disclose: 90-day default retention (CDK map caps at one year, `storage_stack.py:75-98`), a 90-day TTL on signal rows, and **no export route anywhere in the API**. Hash-chaining + multi-year retention + export are roadmap; so is full forensic chain-of-thought.
 
 ## Development Approach
 
@@ -222,7 +222,8 @@ Deliberately **two**, each strongest where the other is weakest:
 - **Containers**: **Docker** — 7 images ([docker/](docker/)).
 - **AuthN/Z**: **Cognito** (CDK `cognito_stack.py`); OIDC + RBAC.
 - **IP protection (in-VPC editions, roadmap)**: self-hostable distilled CPU model + confidential-computing enclaves (Nitro / Azure CVM / GCP CVM) — not Firecracker/Wasmtime.
-- **Not yet implemented**: CI/CD (GitOps Flux/ArgoCD planned), input-side redaction/DLP, rollback coordinator.
+- **Built but narrow**: rollback coordinator — `app/utils/rollback_coordinator.py` is 1,113 lines with a claim ledger and dependency-ordered conversation rollback, but exactly **two** compensating adapters (`_rollback_refund`, `_rollback_create_order`) and reversible-stamping hardcoded to `process_refund` (`audit_logger.py:626`).
+- **Not yet implemented**: CI/CD (GitOps Flux/ArgoCD planned), Tier-2 free-text redaction, policy signing (no signing/verification code — `content_hash` sits in the same mutable DynamoDB row as the pointer, so it is an integrity hash, not a trust anchor, despite the "signed policy" arrows in `lld/ARCHITECTURE.md`), multi-party approval/sign-off workflow (zero hits for approval/sign_off/maker/checker; `set_policy_status` is one editor, one call, immediate), model + MCP registries (`grep -i mcp` over `src/**/*.py` → **zero**), pre-deployment artifact scanning, blast-radius computation (no reverse tool→agents index), application criticality tiering, agent-level kill switch (but see: disabling a policy denies every action of every agent bound to it — `cedar/engine.py:98`).
 
 ## Key Documentation References
 
@@ -236,7 +237,7 @@ When working on specific features, refer to (the four legacy root .md files are 
 
 ## Critical Constraints
 
-1. **Low Latency**: deterministic-floor target **≤500 ms p99**; ML-hot ≤900 ms (LLD 24). Honest today: ~0.6–1.2 s on Serverless (every call is a network round-trip to us) — the in-VPC local-floor path is what closes this. A *currently-unmet target*, not a vague aspiration.
+1. **Low Latency**: deterministic-floor target **≤500 ms p99**; ML-hot ≤900 ms (LLD 24). **Honest today — the only committed measurement is `harness/ws0/results/HEADLINE_SUMMARY.json` (2026-07-02): server p99 2,850 ms / e2e WAN p99 3,454 ms at concurrency 20, with `non_escalated_count: 0` — i.e. 100% of requests reached the ML tier, so the cheap deterministic frontier was never exercised.** We therefore have **no isolated deterministic-floor number**; don't use the phrase as if it were measured. Every call is a WAN round-trip to us, and the in-VPC local-floor path is what closes it — but the SDK's `local_floor.py` is a name-only stub ("no interpreter, no bundle evaluator, no caching, no crypto"), so *degrade-to-local-floor is not offerable today*. A **currently-unmet target by ~5.7x**, not a vague aspiration.
 2. **Security First**: never compromise security for convenience; **fail-secure / deny-by-default**.
 3. **Multi-Cloud**: AWS + Azure today, **GCP roadmap**; on-prem via Self-Managed edition.
 4. **Compliance Ready**: design for SOC 2 (Type II in progress), HIPAA, GDPR, EU AI Act; tamper-evident audit is the evidence substrate.

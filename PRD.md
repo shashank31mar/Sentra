@@ -248,7 +248,11 @@ Status reflects the shipping codebase. *(See [ARCHITECTURE.md](lld/ARCHITECTURE.
 ### 7.6 Audit, Observability & Compliance — `lld/17`
 | ID | Requirement | Pri | Status |
 |---|---|---|---|
-| FR-6.1 | Tamper-evident audit trail of every decision, written off the response path | P0 | Built |
+| FR-6.1 | **Append-only** audit trail of every decision, written off the response path | P0 | Built |
+| FR-6.1a | **Tamper-evidence** over the decision record (hash-chained rows: `prev_hash` + `row_hash` in `signal_store_writer._build_item`; the sort key already orders rows per partition) | P1 | Roadmap — no `hash_chain`/`prev_hash`/WORM/Object-Lock code exists; `lld/33-decision-trail.md:551` (SEC-5a) states rows are access-scoped, not sealed. **Never claim "tamper-evident" until this ships** |
+| FR-6.1b | Multi-year retention (configurable in years) + legal-hold override | P1 | Roadmap — 90-day default, CDK map caps at ONE_YEAR (`storage_stack.py:75-98`), 90-day TTL on signal rows |
+| FR-6.1c | Evidence export: `POST /v1/evidence-packages` → signed archive + hash manifest, with a tested restore into a neutral store | P1 | Roadmap — **no export route exists anywhere in the API.** Ranks *above* FR-6.1a: retention + completeness are what regulators actually mandate, and export is what lets a bank meet them in its own WORM zone |
+| FR-6.1d | Store `winning_source` / `block_point` / deciding `clause_id` **at write time** (today they are recomputed on read over mutable rows) | P1 | Roadmap — a decision should be a record, not a re-derivation |
 | FR-6.2 | Fast per-session/recent decision reads (DDB) | P0 | Built |
 | FR-6.3 | Long-term compliance archive + cross-cutting queries (CloudWatch) | P0 | Built |
 | FR-6.4 | SOC console / dashboard: inventory, activity, violations, decision sources | P0 | Built |
