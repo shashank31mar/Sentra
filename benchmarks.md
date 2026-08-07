@@ -32,7 +32,19 @@ Sentra includes an in-process, offline-capable security benchmark harness ([`ben
    - **Mode A**: Evaluates D2 signature match rates.
    - **Mode B**: Demonstrates a **95.0 percentage point reduction** in Attack Success Rate (from 95.0% baseline down to 0.0% guarded).
 
-3. **`local_prompts` (Labeled Prompt Corpus)**:
+3. **`raseval` (Model Context Protocol / CWE Testing)**:
+   - **Corpus**: Simulates CWE-89 (SQL Injection) and CWE-78 (OS Command Injection) on MCP tool interfaces.
+   - **Mode B**: Intercepts local or cloud LLM tool executions dynamically.
+
+4. **`agentdyn` (Dynamic Web Trajectory)**:
+   - **Corpus**: Multi-turn web navigation vulnerabilities, detecting trajectory hijacking (e.g., unauthorized comment posting).
+   - **Mode B**: Balances Over-defense (Utility) vs Security dynamically.
+
+5. **`injecagent` (1,000+ Tool-Calling Attacks)**:
+   - **Corpus**: Data Exfiltration and Financial Theft payload attacks hidden in 'content' context.
+   - **Mode B**: Full runner integration for zero-shot testing.
+
+6. **`local_prompts` (Labeled Prompt Corpus)**:
    - **Corpus**: 662 real-world prompt injection and jailbreak payloads (`demo-agents/eval/labeled_prompts.jsonl`).
 
 ---
