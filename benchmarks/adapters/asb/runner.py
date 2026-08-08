@@ -9,11 +9,12 @@ from benchmarks.core.adapter import ArmResult
 from benchmarks.core.guard_client import GuardClient
 from app.api.models import ValidationRequest
 from benchmarks.core.policy_fixture import patch_policy_engine
+from benchmarks.core.llm_client import get_llm_client
 
 
 def run_asb_arm_local(arm: str, cases: list, model_name: str = "qwen2.5:3b") -> ArmResult:
-    """Run one arm (with or without Sentra) against the local Ollama LLM for ASB."""
-    client = openai.OpenAI(base_url="http://localhost:11434/v1", api_key="ollama")
+    """Run one arm (with or without Sentra) against the LLM for ASB."""
+    client = get_llm_client()
     guard = GuardClient() if arm == "with" else None
 
     # We will simulate tool calling via standard OpenAI tool structure

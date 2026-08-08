@@ -136,6 +136,8 @@ class SentraGuardedToolsExecutor(ToolsExecutor):
         return query_str, runtime, env, [*messages, *tool_call_results], extra_args
 
 
+from benchmarks.core.llm_client import get_llm_client
+
 def run_agentdojo_arm_local(
     arm: str,
     suite_name: str = "banking",
@@ -145,7 +147,7 @@ def run_agentdojo_arm_local(
 ) -> ArmResult:
     """Run one arm ('with' or 'without' Sentra Guard) locally over AgentDojo tasks."""
     suite = get_suite("v1", suite_name)
-    client = openai.OpenAI(base_url=base_url, api_key="ollama")
+    client = get_llm_client()
 
     pipe_mock = MagicMock()
     pipe_mock.name = "local_llm"
