@@ -127,20 +127,13 @@ class ASBAdapter:
             )
 
     def run_arm(self, *, arm: Arm, ctx: Any) -> ArmResult:
-        """Mode B run implementation for ASB."""
-        episodes = ("ep-dpi-001", "ep-opi-001", "ep-mp-001", "ep-pot-001", "ep-clean-001")
-        # Native results carried opaquely
-        native_results = {
-            "security": 1.00 if arm == "with" else 0.05,
-            "utility": 1.0,
-            "refuse_rate": 0.00 if arm == "with" else 0.0,
-            "provider": "openai",
-        }
-        return ArmResult(
-            arm=arm,
-            episode_ids=episodes,
-            native=native_results,
-        )
+        """Mode B run implementation for ASB using local LLM."""
+        from .runner import run_asb_arm_local
+        
+        cases = list(self.iter_cases())
+        model_name = getattr(ctx, "model_id", "qwen2.5:3b") if ctx else "qwen2.5:3b"
+        
+        return run_asb_arm_local(arm, cases, model_name=model_name)
 
     def score_run(self, *, with_arm: ArmResult, without_arm: ArmResult) -> RunScore:
         """Mode B scoring using ASB metrics."""
