@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  launchd timer: archive SUPERSEDED memory notes daily at 09:00.
+  Install:
+    cp scripts/memory-maint/ai.aegion.memory-archive.plist ~/Library/LaunchAgents/
+    launchctl load  ~/Library/LaunchAgents/ai.aegion.memory-archive.plist
+  Test now:  launchctl start ai.aegion.memory-archive
+  Unload:    launchctl unload ~/Library/LaunchAgents/ai.aegion.memory-archive.plist
+
+  Only archives notes explicitly flagged `status: superseded` (Option A) — never age/type sweeps.
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>ai.aegion.memory-archive</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/bash</string>
+    <string>/Users/shshgup/code/security-mvp/Sentra/scripts/memory-maint/run_memory_archive.sh</string>
+  </array>
+  <key>StartCalendarInterval</key>
+  <dict><key>Hour</key><integer>9</integer><key>Minute</key><integer>0</integer></dict>
+  <key>StandardOutPath</key><string>/Users/shshgup/code/security-mvp/Sentra/scripts/memory-maint/launchd.out.log</string>
+  <key>StandardErrorPath</key><string>/Users/shshgup/code/security-mvp/Sentra/scripts/memory-maint/launchd.err.log</string>
+  <key>RunAtLoad</key><false/>
+</dict>
+</plist>
