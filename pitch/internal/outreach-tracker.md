@@ -12,7 +12,7 @@ State legend: `Not contacted` → `Sent (LinkedIn)` → `Responded` → `Moved t
 |---|------|---------|-------|--------------|---------|-----|-------|----------------|-----------|
 | 1 | Vivek Garg | Swiggy | VP Engineering | Cold | LinkedIn → email | Design partner (payments/marketplace) | **No response** | vivek.garg@swiggy.in | Stalled after multiple follow-ups; deprioritize |
 | 2 | Animesh Srivastava | JPMorgan Chase | VP, GenAI & Applied ML | Cold | LinkedIn | Design partner (financial-action agents) | **Sent (LinkedIn)** | — | Await reply |
-| 3 | Parminder Bhatia | GE HealthCare | Chief AI Officer | **Warm — college senior** | LinkedIn | Advisory + design partner (healthcare) | **Responded — will connect this week** | — | He said he'll connect this week; hold a slot, come with the healthcare/HIPAA-audit angle |
+| 3 | Parminder Bhatia | Edwards Lifesciences (was GE HealthCare) | SVP of AI | **Warm — college senior** | Email | Advisory/validation → design partner (healthcare) | **Email sent 2026-08-01 (discovery note)** | (shared by him) | Await reply; on call listen for problem-match → soft ask (demo + design-partner). Prep: healthcare-agent-governance-brief.md §6 |
 | 4 | Ashish S. | Siemens | Leads Data & AI / Physical AI | Cold | LinkedIn | Advisory + design partner (securing agents, general) | **Sent (LinkedIn)** | — | Await reply |
 | 5 | Vasi Philomin | Siemens | EVP Data & AI (ex-AWS VP) | Cold | LinkedIn | Advisory + design partner (securing agents) | **Sent (LinkedIn)** | — | Await reply |
 | 6 | Mayank Shrivastava | SAP | Senior ML leader | Cold | LinkedIn | Advisory + design partner (enterprise workflows) | **Sent (LinkedIn)** | — | Await reply |
@@ -86,14 +86,13 @@ State legend: `Not contacted` → `Sent (LinkedIn)` → `Responded` → `Moved t
 - **2026-06-23** — Sent message on LinkedIn.
 - **Next:** await reply.
 
-### 3. Parminder Bhatia — GE HealthCare (Chief AI Officer)
+### 3. Parminder Bhatia — Edwards Lifesciences, SVP of AI (was GE HealthCare CAIO; ex-Amazon: Comprehend Medical + Bedrock)
 - LinkedIn: https://www.linkedin.com/in/parminder-bhatia/
 - **Warm tie — Shashank's college senior.** Highest conversion odds.
-- **Ask:** start as advisory ("get your take"), design partner in healthcare emerges naturally.
-- Warm note drafted (lead with "hope you remember me from college", defer to his schedule).
-- **2026-06-23** — Sent warm note on LinkedIn.
-- **2026-06-25** — Nudged again.
-- **Next:** await reply.
+- **Ask:** advisory/validation first ("get your read"), design partner in healthcare emerges naturally — DO NOT ask design-partner until the problem is confirmed on the call.
+- **2026-06-23** — Sent warm note on LinkedIn. **2026-06-25** — Nudged.
+- **~2026-08-01** — He shared his email; Shashank sent a discovery email: plain-language read on healthcare agent adoption + the core question "govern the action, or is model-level enough?"; named AegionAI once, explicitly not pitching; asked for 30 min.
+- **Next:** await reply → on the call, mostly listen; if he confirms the model-vs-action gap is real, soft two-step ask (show what we built → explore whether a team on his side design-partners). Call-prep + questions: [healthcare-agent-governance-brief.md](healthcare-agent-governance-brief.md) §6.
 
 ### 4. Ashish S. — Siemens (Leads Data & AI / Physical AI)
 - LinkedIn: https://www.linkedin.com/in/ashishis/
