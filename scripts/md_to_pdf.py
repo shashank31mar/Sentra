@@ -13,6 +13,7 @@ convention. Multi-page output is fine for longer docs.
 """
 import os
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -60,6 +61,8 @@ CSS = """
   }
   pre code { background: none; color: inherit; font-size: 8.6px; line-height: 1.35; padding: 0; }
   table { border-collapse: collapse; width: 100%; margin: 6px 0 10px 0; font-size: 9.6px; page-break-inside: avoid; }
+  img { max-width: 100%; height: auto; display: block; margin: 8px auto 4px auto;
+        border: 1px solid #d4d8dd; border-radius: 4px; page-break-inside: avoid; }
   th, td { border: 1px solid #cfd8e8; padding: 4px 7px; text-align: left; vertical-align: top; }
   th { background: #eef2f8; color: #0f1b2d; font-weight: 700; }
   tr:nth-child(even) td { background: #f7f9fd; }
@@ -111,6 +114,27 @@ def _reinsert_mermaid(html: str, blocks: list[str]) -> str:
     return html
 
 
+def _absolutize_images(html: str, base: Path) -> str:
+    """Point relative <img src> at the real file.
+
+    The HTML intermediate lives in the system temp dir, so a repo-relative image
+    path ("assets/shot.png") would 404 and Chrome would print a broken-image box.
+    Rewrite those to absolute file: URIs resolved against the source .md's dir.
+    """
+
+    def repl(m: "re.Match") -> str:
+        src = m.group(2)
+        if re.match(r"^(https?:|data:|file:|/)", src):
+            return m.group(0)
+        resolved = (base / src).resolve()
+        if not resolved.exists():
+            print(f"warning: image not found: {src}", file=sys.stderr)
+            return m.group(0)
+        return f"{m.group(1)}{resolved.as_uri()}{m.group(3)}"
+
+    return re.sub(r'(<img[^>]*\ssrc=")([^"]+)(")', repl, html)
+
+
 def main() -> int:
     if len(sys.argv) != 2:
         print("usage: python scripts/md_to_pdf.py <file.md>", file=sys.stderr)
@@ -124,6 +148,7 @@ def main() -> int:
         text, extensions=["tables", "fenced_code", "sane_lists", "attr_list"]
     )
     body = _reinsert_mermaid(body, mermaid_blocks)
+    body = _absolutize_images(body, src.parent)
 
     mermaid_head = ""
     if mermaid_blocks:
@@ -149,16 +174,38 @@ def main() -> int:
     with os.fdopen(fd, "w", encoding="utf-8") as fh:
         fh.write(html)
 
-    cmd = [CHROME, "--headless", "--disable-gpu", "--no-pdf-header-footer"]
-    if mermaid_blocks:
-        # let mermaid's JS render to SVG before the PDF snapshot is taken
-        cmd.append("--virtual-time-budget=20000")
-    cmd += [f"--print-to-pdf={pdf_path}", html_path.as_uri()]
+    # An isolated profile dir: without it, Chrome blocks forever on the default
+    # profile's lock whenever a normal Chrome window is already open.
+    profile_dir = tempfile.mkdtemp(prefix="md2pdf-chrome-")
+    cmd = [
+        CHROME,
+        "--headless=new",
+        "--disable-gpu",
+        "--no-first-run",
+        f"--user-data-dir={profile_dir}",
+        "--no-pdf-header-footer",
+        f"--print-to-pdf={pdf_path}",
+        html_path.as_uri(),
+    ]
+    # Two Chrome-151 headless quirks handled here:
+    #  1. --virtual-time-budget (previously used to give mermaid's JS time to
+    #     render) hangs indefinitely, so it is gone. print-to-pdf already waits
+    #     for load, and mermaid renders to SVG inside that window.
+    #  2. Chrome writes the PDF but then fails to exit. So a timeout is not a
+    #     failure: if the PDF landed, we kill Chrome and carry on.
+    # Either way, confirm with scripts/verify-doc-pdf.sh, which fails the doc
+    # on a leaked (unrendered) mermaid block.
     try:
-        subprocess.run(cmd, check=True, capture_output=True)
+        try:
+            subprocess.run(cmd, check=True, capture_output=True, timeout=90)
+        except subprocess.TimeoutExpired:
+            if not (pdf_path.exists() and pdf_path.stat().st_size > 10_000):
+                raise
+            print(f"note: Chrome did not exit; {pdf_path.name} was written, continuing")
     finally:
         # the HTML is only an intermediate for Chrome; never leave it behind
         html_path.unlink(missing_ok=True)
+        shutil.rmtree(profile_dir, ignore_errors=True)
     print(f"wrote {pdf_path.name}"
           + (f" ({len(mermaid_blocks)} mermaid diagram(s))" if mermaid_blocks else ""))
     return 0
