@@ -72,11 +72,12 @@ paths:
       summary: Validate a tool call before execution
       description: "**The core integration endpoint.** Call this *before* your agent executes any tool\
         \ that\nreads data or takes an action. Returns `ALLOW` (proceed) or `DENY` (block).\n\n- On `ALLOW`,\
-        \ run the tool.\n- On `DENY` (HTTP 200 with `decision: DENY`, or HTTP 403 depending on gateway\
-        \ config), do\n  **not** run the tool; surface `reason` to the caller.\n- Send the **same `session_id`**\
+        \ run the tool.\n- On `DENY` (HTTP 200 with `decision: DENY` \u2014 a denial is never a non-2xx\
+        \ status), do\n  **not** run the tool; surface `reason` to the caller.\n- Send the **same `session_id`**\
         \ for every call in one conversation so trust decay,\n  quarantine, and cross-cloud preconditions\
-        \ work.\n- Thread `request_id` end-to-end for tracing.\n\nTarget latency p95 \u2264 ~120 ms in-region\
-        \ (plus model time when the ML classifier escalates).\n"
+        \ work.\n- Thread `request_id` end-to-end for tracing.\n\nLatency: the only committed measurement\
+        \ (2026-07-02) is engine-side p99 2,850 ms / end-to-end p99\n3,454 ms at concurrency 20, against\
+        \ a 500 ms p99 target we do not meet today. Do not treat the\ntarget as a measurement.\n"
       requestBody:
         required: true
         content:
@@ -161,11 +162,11 @@ paths:
       x-audience: customer-integration
       operationId: postSessionSignal
       summary: Report an external (edge) signal for a session
-      description: "For connectors/guardrails that observe a threat *outside* Sentra (e.g. a Bedrock Guardrail\n\
-        or Azure content filter). The signal is grouped with Sentra's own signals by `request_id`\nand\
-        \ folded into the audit trail. Optional \u2014 most integrations only need `/v1/validate`.\n\n\
-        **Fail-closed by default:** unless the server-side `external_signal_write_enabled` flag is\non\
-        \ (the producer-credential story is still design-only), this route returns **403**.\n"
+      description: "For connectors/guardrails that observe a threat *outside* AegionAI Guard (e.g. a Bedrock\
+        \ Guardrail\nor Azure content filter). The signal is grouped with Guard's own signals by `request_id`\n\
+        and folded into the audit trail. Optional \u2014 most integrations only need `/v1/validate`.\n\
+        \n**Fail-closed by default:** unless the server-side `external_signal_write_enabled` flag is\n\
+        on (the producer-credential story is still design-only), this route returns **403**.\n"
       requestBody:
         required: true
         content:
@@ -1454,7 +1455,7 @@ paths:
       security:
       - OperatorSession: []
       description: "Provision a new tenant; the creating operator becomes its `owner`. The `tenant_id`\
-        \ is a\nSentra-derived **immutable slug** (`t_\u2026`) \u2014 never customer-chosen \u2014 and\
+        \ is a\nAegionAI-derived **immutable slug** (`t_\u2026`) \u2014 never customer-chosen \u2014 and\
         \ is baked into every\nagent id and stored key for the life of the tenant.\n"
       requestBody:
         required: true
@@ -1788,7 +1789,7 @@ components:
       required: true
       schema:
         type: string
-      description: Sentra-derived tenant slug (e.g. `t_3k9f2a8d1c0b7`).
+      description: AegionAI-derived tenant slug (e.g. `t_3k9f2a8d1c0b7`).
     TenantSwitch:
       name: X-Aegion-Tenant
       in: header

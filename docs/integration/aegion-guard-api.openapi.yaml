@@ -105,13 +105,15 @@ paths:
         reads data or takes an action. Returns `ALLOW` (proceed) or `DENY` (block).
 
         - On `ALLOW`, run the tool.
-        - On `DENY` (HTTP 200 with `decision: DENY`, or HTTP 403 depending on gateway config), do
+        - On `DENY` (HTTP 200 with `decision: DENY` — a denial is never a non-2xx status), do
           **not** run the tool; surface `reason` to the caller.
         - Send the **same `session_id`** for every call in one conversation so trust decay,
           quarantine, and cross-cloud preconditions work.
         - Thread `request_id` end-to-end for tracing.
 
-        Target latency p95 ≤ ~120 ms in-region (plus model time when the ML classifier escalates).
+        Latency: the only committed measurement (2026-07-02) is engine-side p99 2,850 ms / end-to-end p99
+        3,454 ms at concurrency 20, against a 500 ms p99 target we do not meet today. Do not treat the
+        target as a measurement.
       requestBody:
         required: true
         content:
@@ -171,8 +173,8 @@ paths:
       operationId: postSessionSignal
       summary: Report an external (edge) signal for a session
       description: |
-        For connectors/guardrails that observe a threat *outside* Sentra (e.g. a Bedrock Guardrail
-        or Azure content filter). The signal is grouped with Sentra's own signals by `request_id`
+        For connectors/guardrails that observe a threat *outside* AegionAI Guard (e.g. a Bedrock Guardrail
+        or Azure content filter). The signal is grouped with Guard's own signals by `request_id`
         and folded into the audit trail. Optional — most integrations only need `/v1/validate`.
 
         **Fail-closed by default:** unless the server-side `external_signal_write_enabled` flag is
@@ -1126,7 +1128,7 @@ paths:
       security: [ { OperatorSession: [] } ]
       description: |
         Provision a new tenant; the creating operator becomes its `owner`. The `tenant_id` is a
-        Sentra-derived **immutable slug** (`t_…`) — never customer-chosen — and is baked into every
+        AegionAI-derived **immutable slug** (`t_…`) — never customer-chosen — and is baked into every
         agent id and stored key for the life of the tenant.
       requestBody:
         required: true
@@ -1361,7 +1363,7 @@ components:
       in: path
       required: true
       schema: { type: string }
-      description: Sentra-derived tenant slug (e.g. `t_3k9f2a8d1c0b7`).
+      description: AegionAI-derived tenant slug (e.g. `t_3k9f2a8d1c0b7`).
     ConnectionId:
       name: connection_id
       in: path
