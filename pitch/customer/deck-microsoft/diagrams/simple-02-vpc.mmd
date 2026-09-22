@@ -1,0 +1,25 @@
+flowchart LR
+  subgraph MS["MICROSOFT"]
+    A["<b>Your agents</b><br/>Copilot · Foundry"]
+  end
+
+  subgraph YOU["YOUR AZURE ACCOUNT"]
+    direction TB
+    C["<b>Your application</b><br/>+ the same one line"]
+    E["<b>Guard</b><br/>allow or block<br/><i>now runs here</i>"]
+    T["<b>The action</b><br/>payment · record · file"]
+  end
+
+  N["<b>AegionAI</b><br/>rule updates in<br/>counts only out"]
+
+  A -->|"do this"| C
+  C <-->|"may I?"| E
+  C -->|"<b>only if allowed</b>"| T
+  N -.-> E
+
+  classDef ms fill:#eef4fb,stroke:#31465f,stroke-width:2px,color:#0A2540
+  classDef mine fill:#e9f8f5,stroke:#14B8A6,stroke-width:3px,color:#0A2540
+  classDef soon fill:#fbf7ee,stroke:#b0392e,stroke-dasharray: 6 4,stroke-width:2px,color:#6b2b23
+  class A ms
+  class C,T mine
+  class E,N soon

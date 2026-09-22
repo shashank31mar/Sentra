@@ -1,0 +1,20 @@
+flowchart LR
+  subgraph YOU["YOUR ENVIRONMENT — nothing leaves"]
+    direction TB
+    A["<b>Your agents</b>"]
+    C["<b>Your application</b><br/>+ the same one line"]
+    E["<b>Guard</b><br/>allow or block<br/><i>runs here</i>"]
+    T["<b>The action</b><br/>payment · record · file"]
+  end
+
+  U["<b>Rule updates</b><br/>a file your operator<br/>imports, one way"]
+
+  A -->|"do this"| C
+  C <-->|"may I?"| E
+  C -->|"<b>only if allowed</b>"| T
+  U -.-> E
+
+  classDef mine fill:#e9f8f5,stroke:#14B8A6,stroke-width:3px,color:#0A2540
+  classDef soon fill:#fbf7ee,stroke:#b0392e,stroke-dasharray: 6 4,stroke-width:2px,color:#6b2b23
+  class A,C,T mine
+  class E,U soon

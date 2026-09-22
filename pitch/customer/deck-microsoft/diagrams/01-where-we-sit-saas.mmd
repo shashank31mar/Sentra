@@ -1,0 +1,39 @@
+flowchart LR
+  subgraph MSFT["MICROSOFT CLOUD"]
+    direction TB
+    FDY["<b>Foundry Agent Service</b><br/>decides the step:<br/><i>process_refund(5000)</i>"]
+    COP["<b>Copilot Studio / M365</b><br/>connector · flow · MCP tool"]
+    BLIND["<b>Microsoft-side tools</b><br/>Bing · file search · SharePoint<br/>code interpreter · Copilot chat<br/><i>your code never runs —<br/>no third party can gate these</i>"]
+  end
+
+  subgraph CUST["YOUR AZURE SUBSCRIPTION"]
+    direction TB
+    APP["<b>Your tool-execution code</b><br/>Functions · Container Apps · AKS"]
+    PEP["<b>Guard checkpoint</b><br/>one line above your function<br/>mask → ask → enforce"]
+    KV["<b>Azure Key Vault</b><br/>agent signing key"]
+    TOOL["<b>The real action</b><br/>payments · CRM · database"]
+  end
+
+  subgraph AEG["AEGIONAI ENGINE"]
+    direction TB
+    PDP["<b>Policy engine</b><br/><i>hosted by us, on AWS today</i><br/>trust · Cedar · cross-agent<br/>Sigma · sequence · rate · ML"]
+    REC["<b>Decision record</b><br/>append-only · 90 days"]
+  end
+
+  FDY --> APP
+  COP --> APP
+  APP --> PEP
+  PEP -->|"ALLOW"| TOOL
+  PEP -->|"DENY"| APP
+  KV -.-> PEP
+  PEP <==>|"masked values<br/>Azure → AWS"| PDP
+  PDP --> REC
+
+  classDef msft fill:#eef4fb,stroke:#31465f,color:#0A2540
+  classDef mine fill:#e9f8f5,stroke:#14B8A6,stroke-width:2px,color:#0A2540
+  classDef ours fill:#f4f7fa,stroke:#0A2540,color:#0A2540
+  classDef gap fill:#f7f2f1,stroke:#b0392e,stroke-dasharray: 5 4,color:#6b2b23
+  class FDY,COP msft
+  class BLIND gap
+  class APP,PEP,KV,TOOL mine
+  class PDP,REC ours

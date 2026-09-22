@@ -1,0 +1,33 @@
+flowchart LR
+  subgraph HOST["YOUR AGENT HOST"]
+    direction TB
+    AG["<b>Your agent</b><br/>Microsoft 365 Agents SDK custom engine agent,<br/>or your own framework<br/><i>note: no disconnected Foundry Agent Service exists</i>"]
+  end
+
+  subgraph CUST["YOUR DISCONNECTED ENVIRONMENT"]
+    direction TB
+    APP["<b>Your tool-execution code</b>"]
+    PEP["<b>Guard checkpoint</b> — unchanged<br/>same one line in your code"]
+    KS["<b>Your local secret store</b><br/>agent signing key"]
+    TOOL["<b>The real action</b><br/>payments · CRM · database"]
+    PDP["<b>Policy engine</b> — your hardware<br/>or Azure Local<br/><i>NOT BUILT YET</i>"]
+    CON["<b>Console + decision record</b><br/>authoring, forensics and audit<br/>all stay inside<br/><i>NOT BUILT YET</i>"]
+  end
+
+  BUNDLE["<b>Offline update bundle</b><br/>policy + detection rules on media,<br/>imported by your operator, on your schedule<br/><i>NOT BUILT YET — needs bundle signing,<br/>which does not exist today</i>"]
+
+  AG --> APP
+  APP --> PEP
+  PEP -->|"<b>ALLOW</b>"| TOOL
+  PEP -->|"<b>DENY</b> + reason"| APP
+  KS -.->|"signs every call"| PEP
+  PEP <==>|"local call — no network egress at all"| PDP
+  PDP --> CON
+  BUNDLE -.->|"one-way, operator-initiated"| PDP
+
+  classDef msft fill:#eef4fb,stroke:#31465f,color:#0A2540
+  classDef mine fill:#e9f8f5,stroke:#14B8A6,stroke-width:2px,color:#0A2540
+  classDef notbuilt fill:#fbf7ee,stroke:#b0392e,stroke-dasharray: 6 4,stroke-width:2px,color:#6b2b23
+  class AG msft
+  class APP,PEP,KS,TOOL mine
+  class PDP,CON,BUNDLE notbuilt

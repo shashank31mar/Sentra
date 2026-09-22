@@ -1,0 +1,34 @@
+flowchart LR
+  subgraph MSFT["MICROSOFT CLOUD"]
+    direction TB
+    FDY["<b>Foundry Agent Service</b><br/>plans the step"]
+    COP["<b>Copilot Studio / M365 Copilot</b><br/>calls your endpoint"]
+  end
+
+  subgraph CUST["YOUR AZURE SUBSCRIPTION / VNet"]
+    direction TB
+    APP["<b>Your tool-execution code</b><br/>Azure Functions · Container Apps<br/>App Service · AKS"]
+    PEP["<b>Guard checkpoint</b> — unchanged<br/>same one line in your code;<br/>only the engine address changes"]
+    KV["<b>Azure Key Vault</b>"]
+    TOOL["<b>The real action</b><br/>payments · CRM · database"]
+    PDP["<b>Policy engine — inside your VNet</b><br/>private · in-region · no internet hop<br/>decision record in your own storage,<br/>on your own retention<br/><i>NOT BUILT YET</i>"]
+  end
+
+  CTL["<b>AegionAI control plane</b><br/>rule + policy updates in<br/>de-identified counts and status out<br/><i>never on the action path</i><br/><i>NOT BUILT YET</i>"]
+
+  FDY --> APP
+  COP --> APP
+  APP --> PEP
+  PEP -->|"<b>ALLOW</b>"| TOOL
+  PEP -->|"<b>DENY</b> + reason"| APP
+  KV -.->|"signs every call"| PEP
+  PEP <==>|"in-VNet call — the action's values<br/><b>never leave your network</b>"| PDP
+
+  PDP <-.->|"metadata only, never content"| CTL
+
+  classDef msft fill:#eef4fb,stroke:#31465f,color:#0A2540
+  classDef mine fill:#e9f8f5,stroke:#14B8A6,stroke-width:2px,color:#0A2540
+  classDef notbuilt fill:#fbf7ee,stroke:#b0392e,stroke-dasharray: 6 4,stroke-width:2px,color:#6b2b23
+  class FDY,COP msft
+  class APP,PEP,KV,TOOL mine
+  class PDP,CTL notbuilt

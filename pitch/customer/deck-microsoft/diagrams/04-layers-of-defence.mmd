@@ -1,0 +1,40 @@
+flowchart TB
+  IN["<b>A guarded action</b> — tool · parameters · caller · session history"]
+
+  subgraph L1["LAYER 1 · DETERMINISTIC FLOOR · LIVE"]
+    direction LR
+    C1["<b>1 Session trust</b><br/>has this session<br/>already misbehaved?"]
+    C2["<b>2 Cedar policy</b><br/>this tool, this agent,<br/>these values?"]
+    C3["<b>3 Cross-agent</b><br/>borrowing another<br/>agent's rights?"]
+    C4["<b>4 Signature rules</b><br/>known injection and<br/>exfiltration patterns"]
+    C5["<b>5 Sequence</b><br/>did the required prior<br/>step actually happen?"]
+    C6["<b>6 Rate and abuse</b><br/>a burst no human<br/>workflow produces"]
+    C1 --> C2 --> C3 --> C4 --> C5 --> C6
+  end
+
+  L2["<b>LAYER 2 · THREAT CLASSIFIER</b> — live and enforcing<br/>for the attacks no rule anticipates: reads intent, context and sequence<br/><i>can only ADD a deny — never grants a permission your policy withheld</i>"]
+
+  L3["<b>LAYER 3 · ESCALATION</b> — a stronger model, full session in view, for the ambiguous few"]
+
+  DENY["<b>ENFORCED DENY</b><br/>the action never executes · trust drops<br/>repeat offender is quarantined"]
+  ALLOW["<b>ALLOW</b><br/>your tool runs, unchanged"]
+  REC["<b>Decision record</b> — the parameter that broke the rule, <b>which layer decided</b>, and the reason in plain English"]
+
+  IN --> L1
+  L1 -->|"nothing violated"| L2
+  L1 -.->|"any one check violated"| DENY
+  L2 -->|"ambiguous"| L3
+  L2 -->|"clear"| ALLOW
+  L3 --> DENY
+  L3 --> ALLOW
+  DENY --> REC
+  ALLOW --> REC
+
+  classDef det fill:#e9f8f5,stroke:#14B8A6,stroke-width:2px,color:#0A2540
+  classDef prob fill:#eef4fb,stroke:#31465f,stroke-width:2px,color:#0A2540
+  classDef deny fill:#f7f2f1,stroke:#b0392e,stroke-width:2px,color:#6b2b23
+  classDef ok fill:#f4f7fa,stroke:#6b7a8d,color:#0A2540
+  class C1,C2,C3,C4,C5,C6 det
+  class L2,L3 prob
+  class DENY deny
+  class ALLOW,REC,IN ok
