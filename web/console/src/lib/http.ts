@@ -1,6 +1,8 @@
 import type { ApiErrorBody } from '../types/api'
 import { clearActiveTenant, getActiveTenant, tenantHeader } from './tenant'
 import { ORG_PAGE_PATH } from './orgEntry'
+import { isOidcMode } from './sso/config'
+import { getAccessToken, oidcSignIn } from './sso/oidcManager'
 
 /**
  * Thin fetch wrapper for the SOC console.
@@ -44,6 +46,17 @@ function reauthenticate(): never {
   // Clear the per-tab tenant binding on session loss (ADR-039): a re-login must
   // rebind through the org-first flow, never inherit a stale tenant preference.
   clearActiveTenant()
+
+  // OIDC mode: redirect to the IdP login page via oidc-client-ts.
+  if (isOidcMode()) {
+    oidcSignIn()
+    throw new ApiException(401, {
+      error: 'Your session has expired. Redirecting to sign in…',
+      error_code: 'AUTH_EXPIRED',
+    })
+  }
+
+  // ALB-Cognito mode: reload the page → ALB performs the interactive Cognito login.
   const last = Number(sessionStorage.getItem(REAUTH_GUARD_KEY) ?? 0)
   // Guard against redirect loops: auto-bounce at most once per 10s.
   if (Date.now() - last > 10_000) {
@@ -212,6 +225,10 @@ async function request<T>(path: string, init?: RequestInit, opts?: RequestOption
       headers: {
         Accept: 'application/json',
         ...(init?.body ? { 'Content-Type': 'application/json' } : {}),
+        // OIDC mode: attach the access token as a Bearer header (the backend
+        // verifies it against the IdP's JWKS). ALB-Cognito: the cookie rides
+        // along automatically — no Authorization header needed.
+        ...(isOidcMode() && getAccessToken() ? { Authorization: `Bearer ${getAccessToken()}` } : {}),
         // Active-tenant switch for multi-membership operators (LLD-26 WS-C).
         // Server-validated against membership; omitted when no explicit tenant.
         // FX-2.3: a platform (cross-tenant) call passes `omitTenant` so the header

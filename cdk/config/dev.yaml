@@ -15,6 +15,18 @@ aws:
 # Environment
 environment: "dev"
 
+# SSO Configuration (ADR-SSO). Governs how the SOC console authenticates operators.
+# "alb-cognito" (default): the current ALB authenticate-cognito flow — no changes.
+# "oidc": SPA-driven OIDC with a customer-provided IdP (Azure AD, Okta, Keycloak, etc.).
+# When auth_mode is "oidc", set the oidc_* env vars on the controller task
+# (OIDC_ISSUER, OIDC_AUDIENCE) and deploy /auth/config.json to the console container.
+sso:
+  auth_mode: "alb-cognito"
+  # oidc:
+  #   issuer: ""        # e.g. https://login.microsoftonline.com/{tenant}/v2.0
+  #   client_id: ""
+  #   audience: ""       # backend verifies aud claim against this
+
 # Tenancy v2 cutover flag (Multi-Cloud Agent Import — P0a, workstream §1.2).
 # false → controller reads/writes the v1 tables (today). Flip to true only
 # after the migration script has copied v1→v2 under tenant=default and the

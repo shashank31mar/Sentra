@@ -74,3 +74,8 @@ export const FleetTopologyPage = lazy(() =>
 export const SystemHealthPage = lazy(() =>
   import('../features/platform/SystemHealthPage').then((m) => ({ default: m.SystemHealthPage })),
 )
+
+/* --- SSO / OIDC auth callback (ADR-SSO) --- */
+export const AuthCallbackPage = lazy(() =>
+  import('../features/auth/AuthCallbackPage'),
+)
