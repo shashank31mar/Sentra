@@ -32,7 +32,9 @@ import {
   TenantDetailPage,
   FleetTopologyPage,
   SystemHealthPage,
+  AuthCallbackPage,
 } from './lazyPages'
+import { AuthGuard } from '../features/auth/AuthGuard'
 
 /** Wrap a lazy page in a Suspense fallback so the shell paints while its chunk
  *  loads. One helper keeps every route consistent. */
@@ -41,8 +43,10 @@ const withSuspense = (node: ReactNode) => (
 )
 
 export const router = createBrowserRouter([
+  // SSO / OIDC callback — outside the AuthGuard (it processes the login response).
+  { path: '/auth/callback', element: withSuspense(<AuthCallbackPage />) },
   {
-    element: <AppLayout />,
+    element: <AuthGuard><AppLayout /></AuthGuard>,
     errorElement: <RouteErrorBoundary />,
     children: [
       { path: ROUTES.overview, element: withSuspense(<OverviewPage />) },
@@ -88,9 +92,11 @@ export const router = createBrowserRouter([
   {
     path: ROUTES.platformOverview,
     element: (
-      <RequirePlatform>
-        <PlatformLayout />
-      </RequirePlatform>
+      <AuthGuard>
+        <RequirePlatform>
+          <PlatformLayout />
+        </RequirePlatform>
+      </AuthGuard>
     ),
     errorElement: <RouteErrorBoundary />,
     children: [

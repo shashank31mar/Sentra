@@ -15,6 +15,10 @@ aws:
 # Environment
 environment: "prod"
 
+# SSO Configuration (ADR-SSO). See dev.yaml for full documentation.
+sso:
+  auth_mode: "alb-cognito"
+
 # Tenancy v2 cutover flag (Multi-Cloud Agent Import — P0a, workstream §1.2).
 # false → controller reads/writes the v1 tables (today). Flip to true only
 # after the migration script has copied v1→v2 under tenant=default and the

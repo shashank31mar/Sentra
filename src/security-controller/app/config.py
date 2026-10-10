@@ -239,6 +239,52 @@ class Settings(BaseSettings):
     )
 
     # ------------------------------------------------------------------
+    # Generic OIDC SSO (customer-deployable console auth — ADR-SSO)
+    # ------------------------------------------------------------------
+    # When `oidc_issuer` is set, the controller accepts Bearer tokens verified
+    # against the IdP's JWKS (discovered from the issuer's .well-known endpoint).
+    # Empty (default) = legacy ALB-Cognito path (x-amzn-oidc-data / x-sentra-oidc-data
+    # header only). Both paths can coexist: the deps.py auth resolver checks for a
+    # Bearer header first (OIDC), then falls back to the ALB header (Cognito).
+    oidc_issuer: str = Field(
+        default="", validation_alias="OIDC_ISSUER"
+    )
+    oidc_audience: str = Field(
+        default="", validation_alias="OIDC_AUDIENCE"
+    )
+    # Comma-separated list of additional accepted issuers (e.g. during an IdP
+    # migration). The primary `oidc_issuer` is always accepted.
+    oidc_allowed_issuers: str = Field(
+        default="", validation_alias="OIDC_ALLOWED_ISSUERS"
+    )
+    oidc_jwks_cache_ttl: int = Field(
+        default=3600, validation_alias="OIDC_JWKS_CACHE_TTL"
+    )
+    # Claim names for extracting operator identity from the OIDC token.
+    # Customers can override if their IdP uses non-standard claim names
+    # (e.g. Azure AD uses `roles` instead of `groups`).
+    oidc_email_claim: str = Field(
+        default="email", validation_alias="OIDC_EMAIL_CLAIM"
+    )
+    oidc_name_claim: str = Field(
+        default="name", validation_alias="OIDC_NAME_CLAIM"
+    )
+    oidc_groups_claim: str = Field(
+        default="groups", validation_alias="OIDC_GROUPS_CLAIM"
+    )
+
+    def oidc_sso_enabled(self) -> bool:
+        """True when generic OIDC SSO is configured (non-empty issuer)."""
+        return bool(self.oidc_issuer.strip())
+
+    def oidc_issuer_allowlist(self) -> list[str]:
+        """All accepted issuers (primary + extras)."""
+        issuers = [self.oidc_issuer.strip()] if self.oidc_issuer.strip() else []
+        if self.oidc_allowed_issuers.strip():
+            issuers.extend(i.strip() for i in self.oidc_allowed_issuers.split(',') if i.strip())
+        return issuers
+
+    # ------------------------------------------------------------------
     # Cloud Connections (Connect-Account wizard — connections-api-spec.md)
     # ------------------------------------------------------------------
     # Born tenant-scoped (PK tenant_id) — no v1/v2 flag split (it's a net-new

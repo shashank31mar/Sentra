@@ -10,6 +10,9 @@ import type { CurrentUser } from '../types/api'
  * cross-origin and blocked by CSP `connect-src 'self'` (see lib/http.ts).
  */
 
+import { isOidcMode } from './sso/config'
+import { oidcSignOut } from './sso/oidcManager'
+
 const USE_MOCKS = import.meta.env.VITE_DATA_SOURCE === 'mock'
 
 /** Same-origin sign-out path. Overridable for non-ALB hosting. */
@@ -17,7 +20,17 @@ export const LOGOUT_URL = (import.meta.env.VITE_LOGOUT_URL as string | undefined
 
 export function signOut(): void {
   // No ALB in local dev — bounce to the app root so the demo stays usable.
-  window.location.assign(USE_MOCKS ? '/' : LOGOUT_URL)
+  if (USE_MOCKS) {
+    window.location.assign('/')
+    return
+  }
+  // OIDC mode: delegate to oidc-client-ts (IdP-driven logout, no Nginx needed).
+  if (isOidcMode()) {
+    oidcSignOut()
+    return
+  }
+  // Legacy ALB-Cognito: top-level nav to /logout (Nginx clears cookies + 302s to Cognito).
+  window.location.assign(LOGOUT_URL)
 }
 
 /** Title-case a token-ish string ("dana.reyes" → "Dana Reyes"). */

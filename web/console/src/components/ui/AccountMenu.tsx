@@ -10,6 +10,7 @@ import {
 } from '@tabler/icons-react'
 import { useCurrentUser } from '../../lib/query/useCurrentUser'
 import { displayName, initials, primaryRole, signOut, tenantLabelForDisplay } from '../../lib/auth'
+import { isOidcMode } from '../../lib/sso/config'
 
 const lineBorder = { border: '1px solid var(--color-line)' }
 
@@ -149,7 +150,7 @@ export function AccountMenu() {
             <div>
               <div className="text-[9px] uppercase tracking-wider text-faint mb-0.5">Auth method</div>
               <div className="text-secondary font-mono flex items-center gap-1">
-                <IconFingerprint size={12} className="text-cyan/70" /> Cognito-hosted
+              <IconFingerprint size={12} className="text-cyan/70" /> {isOidcMode() ? 'SSO (OIDC)' : 'Cognito-hosted'}
               </div>
             </div>
             <div>
