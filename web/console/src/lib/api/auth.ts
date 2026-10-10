@@ -1,12 +1,14 @@
 import type { CurrentUser } from '../../types/api'
+import { isOidcMode, getAuthConfig } from '../sso/config'
+import { getOidcUser } from '../sso/oidcManager'
+import { mapOidcClaims } from '../sso/claims'
 
 /**
  * Current-operator identity.
  *
- * Served same-origin by the console nginx at `/whoami`, which echoes the
- * ALB-injected Cognito claims (`x-amzn-oidc-identity`). It is deliberately NOT
- * under `/v1` — that hop is the API Gateway, which never sees the identity
- * headers — so we bypass the `/v1` http client and call `/whoami` directly.
+ * In OIDC mode: resolved from the ID token claims (no server call needed).
+ * In ALB-Cognito mode: served same-origin by the console nginx at `/whoami`,
+ * which echoes the ALB-injected Cognito claims (`x-amzn-oidc-identity`).
  * Every failure mode degrades to an unknown (but non-throwing) identity.
  */
 
@@ -31,6 +33,23 @@ interface WhoamiResponse {
 export const authApi = {
   me: async (): Promise<CurrentUser> => {
     if (USE_MOCKS) return MOCK_USER
+
+    // OIDC mode: identity comes from the ID token, not /whoami.
+    if (isOidcMode()) {
+      try {
+        const user = await getOidcUser()
+        if (!user?.profile) return UNKNOWN
+        const config = getAuthConfig()
+        return mapOidcClaims(
+          user.profile as unknown as Record<string, unknown>,
+          config.oidc?.claims_mapping,
+        )
+      } catch {
+        return UNKNOWN
+      }
+    }
+
+    // ALB-Cognito mode: /whoami (Nginx echoes ALB-injected headers).
     try {
       const res = await fetch('/whoami', {
         headers: { Accept: 'application/json' },

@@ -1,0 +1,11 @@
+<!doctype html>
+<html>
+<head><title>Silent Renew</title></head>
+<body>
+<script>
+  // oidc-client-ts silent renew callback — the parent frame processes the response.
+  // This page is loaded in a hidden iframe by the UserManager.
+  parent.postMessage(location.href, location.origin);
+</script>
+</body>
+</html>
